@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use trailgen_core::alltrails::{AllTrailsBridge, ManualAllTrailsBridge};
-use trailgen_core::io::{csv, geojson, gpx, kml, kmz, report, shapefile as shp};
+use trailgen_core::io::{csv, geojson, gpx, json_route, kml, kmz, report, shapefile as shp};
 use trailgen_core::source::{
     GeoBounds, SourceCandidate, SourceFingerprint, SourceKind, SourceManifest, adapter_registry,
     classify_path, discovery_recommendations, source_coverage,
@@ -466,7 +466,7 @@ fn build(project: &Path, source: &Path) -> Result<()> {
 
 fn build_source(source: &Path) -> Result<BuildSource> {
     match source_ext(source).as_deref() {
-        Some("geojson" | "json") => {
+        Some("geojson") => {
             let raw =
                 fs::read_to_string(source).with_context(|| format!("read {}", source.display()))?;
             match geojson::network_from_str(&raw) {
@@ -490,6 +490,7 @@ fn build_source(source: &Path) -> Result<BuildSource> {
                 }),
             }
         }
+        Some("json") => json_build_source(source),
         Some("gpx" | "csv" | "kml" | "kmz") => Ok(BuildSource {
             drafts: vec![route_source_draft(source)?],
             kind: SourceKind::SeedRoute,
@@ -504,6 +505,30 @@ fn build_source(source: &Path) -> Result<BuildSource> {
             "unsupported build source extension {ext:?}; expected geojson, json, shp, gpx, csv, kml, or kmz"
         ),
         None => bail!("build source has no extension"),
+    }
+}
+
+fn json_build_source(source: &Path) -> Result<BuildSource> {
+    let raw = fs::read_to_string(source).with_context(|| format!("read {}", source.display()))?;
+    match geojson::network_from_str(&raw) {
+        Ok(drafts) => Ok(BuildSource {
+            drafts,
+            kind: SourceKind::TrailNetwork,
+            adapter_id: "geojson-network",
+        }),
+        Err(network_error) => {
+            let (line, adapter_id) = json_route_line(&raw).with_context(|| {
+                format!(
+                    "parse {} as GeoJSON trail network ({network_error}) or JSON route",
+                    source.display()
+                )
+            })?;
+            Ok(BuildSource {
+                drafts: vec![route_source_draft_from_line(source, line)],
+                kind: SourceKind::SeedRoute,
+                adapter_id,
+            })
+        }
     }
 }
 
@@ -536,7 +561,8 @@ fn route_source_draft_from_line(source: &Path, line: LineString) -> SegmentDraft
 fn route_adapter_id(source: &Path) -> &'static str {
     match source_ext(source).as_deref() {
         Some("kml" | "kmz") => "kml-route",
-        Some("geojson" | "json") => "geojson-route",
+        Some("geojson") => "geojson-route",
+        Some("json") => "json-route",
         Some("csv") => "csv-route",
         _ => "gpx-route",
     }
@@ -2543,10 +2569,23 @@ fn load_route_line(path: &Path) -> Result<LineString> {
         Some("geojson" | "json") => {
             let raw =
                 fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-            Ok(geojson::route_line_from_str(&raw)?)
+            if source_ext(path).as_deref() == Some("json") {
+                Ok(json_route_line(&raw)?.0)
+            } else {
+                Ok(geojson::route_line_from_str(&raw)?)
+            }
         }
         Some(ext) => bail!("unsupported route extension: {ext}"),
         None => bail!("route file has no extension"),
+    }
+}
+
+fn json_route_line(raw: &str) -> Result<(LineString, &'static str)> {
+    match geojson::route_line_from_str(raw) {
+        Ok(line) => Ok((line, "geojson-route")),
+        Err(geojson_error) => json_route::route_line_from_str(raw)
+            .map(|line| (line, "json-route"))
+            .with_context(|| format!("parse JSON route after GeoJSON failed: {geojson_error}")),
     }
 }
 
@@ -3835,6 +3874,29 @@ mod tests {
                 .expect("coverage")
                 .iter()
                 .any(|entry| entry["kind"] == "trail-network" && entry["status"] == "missing")
+        );
+
+        let json_project = tmp.path().join("json-route-project");
+        let json_route = tmp.path().join("app-route.json");
+        fs::write(
+            &json_route,
+            r#"{"track":[
+                {"latitude":40.0,"longitude":-105.0,"elevation":1600},
+                {"lat":40.0,"lng":-104.995,"altitude_m":1620},
+                {"lat":40.004,"lng":-104.990,"alt":1660}
+            ]}"#,
+        )?;
+        init(&json_project, "Route JSON Build Test".to_owned(), None)?;
+        build(&json_project, &json_route)?;
+        let json_manifest: Value = serde_json::from_str(&fs::read_to_string(
+            json_project.join("sources/manifest.json"),
+        )?)?;
+        assert!(
+            json_manifest["candidates"]
+                .as_array()
+                .expect("candidates")
+                .iter()
+                .any(|candidate| candidate["adapter_id"] == "json-route")
         );
 
         let geojson_project = tmp.path().join("geojson-route-project");

@@ -116,14 +116,26 @@
         "kind": "seed-route",
         "status": "implemented",
         "consumes": [
-          "geojson",
+          "geojson"
+        ],
+        "produces": [
+          "LineString",
+          "snapped route metrics"
+        ],
+        "note": "GeoJSON seed route import."
+      },
+      {
+        "id": "json-route",
+        "kind": "seed-route",
+        "status": "implemented",
+        "consumes": [
           "json"
         ],
         "produces": [
           "LineString",
           "snapped route metrics"
         ],
-        "note": "User-supplied seed route import."
+        "note": "Provider-neutral route JSON import for coordinate arrays and point-object app exports."
       },
       {
         "id": "gpx-route",
@@ -704,6 +716,7 @@
         "adapter_ids": [
           "gpx-route",
           "geojson-route",
+          "json-route",
           "csv-route",
           "kml-route"
         ],
@@ -711,7 +724,8 @@
           "sources/seeds/completed.gpx",
           "sources/seeds/completed.csv",
           "sources/seeds/alltrails-export.gpx",
-          "sources/seeds/reference.geojson"
+          "sources/seeds/reference.geojson",
+          "sources/seeds/app-export.json"
         ],
         "acquisition_hints": [
           {
@@ -742,6 +756,7 @@
         "search_terms": [
           "personal completed hike GPX",
           "AllTrails export GPX",
+          "app route JSON export",
           "reference route KML"
         ],
         "acceptance": "Seed routes snap to the current graph and their provenance is preserved.",

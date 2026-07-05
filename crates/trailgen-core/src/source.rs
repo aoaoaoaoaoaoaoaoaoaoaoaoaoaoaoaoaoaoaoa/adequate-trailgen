@@ -273,9 +273,17 @@ fn route_adapters() -> Vec<SourceAdapter> {
             "geojson-route",
             SourceKind::SeedRoute,
             AdapterStatus::Implemented,
-            ["geojson", "json"],
+            ["geojson"],
             ["LineString", "snapped route metrics"],
-            "User-supplied seed route import.",
+            "GeoJSON seed route import.",
+        ),
+        adapter(
+            "json-route",
+            SourceKind::SeedRoute,
+            AdapterStatus::Implemented,
+            ["json"],
+            ["LineString", "snapped route metrics"],
+            "Provider-neutral route JSON import for coordinate arrays and point-object app exports.",
         ),
         adapter(
             "gpx-route",
@@ -755,17 +763,25 @@ const RECOMMENDATION_SPECS: &[RecommendationSpec] = &[
     RecommendationSpec {
         kind: SourceKind::SeedRoute,
         priority: SourcePriority::Optional,
-        adapter_ids: &["gpx-route", "geojson-route", "csv-route", "kml-route"],
+        adapter_ids: &[
+            "gpx-route",
+            "geojson-route",
+            "json-route",
+            "csv-route",
+            "kml-route",
+        ],
         suggested_paths: &[
             "sources/seeds/completed.gpx",
             "sources/seeds/completed.csv",
             "sources/seeds/alltrails-export.gpx",
             "sources/seeds/reference.geojson",
+            "sources/seeds/app-export.json",
         ],
         acquisition_hints: SEED_ROUTE_HINTS,
         search_terms: &[
             "personal completed hike GPX",
             "AllTrails export GPX",
+            "app route JSON export",
             "reference route KML",
         ],
         acceptance: "Seed routes snap to the current graph and their provenance is preserved.",
@@ -781,6 +797,14 @@ pub fn classify_path(path: &Path) -> Option<SourceCandidate> {
         "gpx" => (SourceKind::SeedRoute, "gpx-route"),
         "csv" => (SourceKind::SeedRoute, "csv-route"),
         "kml" | "kmz" => (SourceKind::SeedRoute, "kml-route"),
+        "json"
+            if path_lc.contains("route")
+                || path_lc.contains("track")
+                || path_lc.contains("seed")
+                || path_lc.contains("activity") =>
+        {
+            (SourceKind::SeedRoute, "json-route")
+        }
         "geojson" | "json" if path_lc.contains("closure") => {
             (SourceKind::Closure, "geojson-closure-overlay")
         }

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use trailgen_core::alltrails::{
     AllTrailsBridge, AllTrailsExchange, BridgeStatus, ManualAllTrailsBridge,
 };
-use trailgen_core::io::{csv, geojson, gpx, kml, kmz, report, shapefile as shp_io};
+use trailgen_core::io::{csv, geojson, gpx, json_route, kml, kmz, report, shapefile as shp_io};
 use trailgen_core::source::{
     SourceCoverageStatus, SourceKind, adapter_registry, classify_path, discovery_recommendations,
     source_coverage,
@@ -1309,6 +1309,26 @@ fn csv_route_import_reads_headered_lon_lat_ele() {
 }
 
 #[test]
+fn json_route_import_reads_coordinate_tuples_and_point_objects() {
+    let tuples = json_route::route_line_from_str(
+        r#"{"coordinates":[[-105.0,40.0,1600],[-105.0,40.01,1700]]}"#,
+    )
+    .unwrap();
+    assert_eq!(tuples.points[0], Coord::with_ele(-105.0, 40.0, 1600.0));
+
+    let points = json_route::route_line_from_str(
+        r#"{"track":[
+            {"latitude":"40.0","longitude":"-105.0","elevation_m":"1600"},
+            {"lat":40.01,"lng":-105.0,"altitude":1700}
+        ]}"#,
+    )
+    .unwrap();
+    assert_eq!(points.points.len(), 2);
+    assert_eq!(points.points[1].ele, Some(1700.0));
+    assert!(points.length_m() > 1_000.0);
+}
+
+#[test]
 fn csv_round_trip_reads_exported_route() {
     let drafts = geojson::network_from_str(include_str!("fixtures/mini_network.geojson")).unwrap();
     let graph = GraphBuilder::default().build(&drafts).unwrap();
@@ -1385,6 +1405,9 @@ fn source_registry_classifies_local_inputs() {
     let csv = classify_path(std::path::Path::new("sources/alltrails-export.csv")).unwrap();
     assert_eq!(csv.kind, SourceKind::SeedRoute);
     assert_eq!(csv.adapter_id, "csv-route");
+    let json = classify_path(std::path::Path::new("sources/app-route.json")).unwrap();
+    assert_eq!(json.kind, SourceKind::SeedRoute);
+    assert_eq!(json.adapter_id, "json-route");
     let kmz = classify_path(std::path::Path::new("sources/alltrails-export.kmz")).unwrap();
     assert_eq!(kmz.kind, SourceKind::SeedRoute);
     let access = classify_path(std::path::Path::new("sources/seasonal-access.geojson")).unwrap();
