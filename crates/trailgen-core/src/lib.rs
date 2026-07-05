@@ -3,6 +3,7 @@
 pub mod alltrails;
 pub mod builder;
 pub mod constraints;
+pub mod crs;
 pub mod difficulty;
 pub mod enrich;
 pub mod geo;

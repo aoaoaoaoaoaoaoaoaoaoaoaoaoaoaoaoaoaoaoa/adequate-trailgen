@@ -1,4 +1,5 @@
 use crate::builder::SegmentDraft;
+use crate::crs::{VectorCrsKind, validate_crs_name};
 use crate::geo::{Coord, LineString};
 use crate::model::{Access, CrossingKind, EdgeTravel, Provenance, Terrain, TrailGraph};
 use crate::overlay::{
@@ -11,6 +12,7 @@ use serde_json::{Map, Value, json};
 
 pub fn network_from_str(s: &str) -> Result<Vec<SegmentDraft>> {
     let root: Value = serde_json::from_str(s)?;
+    validate_geojson_crs(&root)?;
     let features = root
         .get("features")
         .and_then(Value::as_array)
@@ -68,6 +70,7 @@ pub fn network_from_str(s: &str) -> Result<Vec<SegmentDraft>> {
 
 pub fn route_line_from_str(s: &str) -> Result<LineString> {
     let root: Value = serde_json::from_str(s)?;
+    validate_geojson_crs(&root)?;
     if root.get("type").and_then(Value::as_str) == Some("FeatureCollection") {
         let features = root
             .get("features")
@@ -99,6 +102,7 @@ pub fn route_line_from_str(s: &str) -> Result<LineString> {
 
 pub fn access_overlays_from_str(s: &str) -> Result<Vec<AccessOverlay>> {
     let root: Value = serde_json::from_str(s)?;
+    validate_geojson_crs(&root)?;
     let features = root
         .get("features")
         .and_then(Value::as_array)
@@ -114,6 +118,7 @@ pub fn access_overlays_from_str(s: &str) -> Result<Vec<AccessOverlay>> {
 
 pub fn terrain_overlays_from_str(s: &str) -> Result<Vec<TerrainOverlay>> {
     let root: Value = serde_json::from_str(s)?;
+    validate_geojson_crs(&root)?;
     let features = root
         .get("features")
         .and_then(Value::as_array)
@@ -129,6 +134,7 @@ pub fn terrain_overlays_from_str(s: &str) -> Result<Vec<TerrainOverlay>> {
 
 pub fn context_overlays_from_str(s: &str) -> Result<Vec<ContextOverlay>> {
     let root: Value = serde_json::from_str(s)?;
+    validate_geojson_crs(&root)?;
     let features = root
         .get("features")
         .and_then(Value::as_array)
@@ -222,6 +228,41 @@ fn route_feature(graph: &TrailGraph, route: &Route) -> Value {
         },
         "geometry": line_geometry(&route.geometry(graph)),
     })
+}
+
+fn validate_geojson_crs(value: &Value) -> Result<()> {
+    if let Some(crs) = value.get("crs") {
+        validate_crs_name(VectorCrsKind::GeoJson, geojson_crs_name(crs)?)?;
+    }
+    match value.get("type").and_then(Value::as_str) {
+        Some("FeatureCollection") => {
+            if let Some(features) = value.get("features").and_then(Value::as_array) {
+                for feature in features {
+                    validate_geojson_crs(feature)?;
+                }
+            }
+        }
+        Some("Feature") => {
+            if let Some(geometry) = value.get("geometry") {
+                validate_geojson_crs(geometry)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn geojson_crs_name(crs: &Value) -> Result<&str> {
+    crs.get("properties")
+        .and_then(Value::as_object)
+        .and_then(|properties| properties.get("name"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            TrailgenError::InvalidData(
+                "GeoJSON CRS must be a named WGS84/CRS84 object; linked or opaque CRS definitions are unsupported"
+                    .to_owned(),
+            )
+        })
 }
 
 fn lines_from_geometry(geometry: &Value) -> Result<Vec<LineString>> {

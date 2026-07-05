@@ -19,6 +19,9 @@ use trailgen_core::{
     rank_routes,
 };
 
+const WGS84_PRJ: &str = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["Degree",0.0174532925199433]]"#;
+const WEB_MERCATOR_PRJ: &str = r#"PROJCS["WGS 84 / Pseudo-Mercator",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PROJECTION["Mercator_1SP"],UNIT["metre",1],AUTHORITY["EPSG","3857"]]"#;
+
 #[test]
 fn builder_splits_crossing_lines() {
     let drafts = vec![
@@ -1381,6 +1384,38 @@ fn shapefile_adapters_normalize_networks_and_overlays() {
     assert_eq!(water_overlays.len(), 1);
     assert_eq!(water_overlays[0].kind, CrossingKind::Water);
     assert_eq!(water_overlays[0].provenance.source, "agency-hydrology");
+}
+
+#[test]
+fn vector_adapters_reject_advertised_projected_crs() {
+    let projected_geojson = r#"{
+      "type": "FeatureCollection",
+      "crs": {"type": "name", "properties": {"name": "EPSG:3857"}},
+      "features": [{
+        "type": "Feature",
+        "properties": {"terrain": "trail"},
+        "geometry": {"type": "LineString", "coordinates": [[0,0], [1,1]]}
+      }]
+    }"#;
+    let error = geojson::network_from_str(projected_geojson).unwrap_err();
+    assert!(format!("{error}").contains("reproject input"));
+
+    let tmp = tempfile::tempdir().unwrap();
+    let network = tmp.path().join("trails.shp");
+    write_network_shapefile(&network);
+    std::fs::write(network.with_extension("prj"), WEB_MERCATOR_PRJ).unwrap();
+    let error = shp_io::network_from_path(&network).unwrap_err();
+    assert!(format!("{error}").contains("projected CRS"));
+}
+
+#[test]
+fn shapefile_adapter_accepts_wgs84_prj() {
+    let tmp = tempfile::tempdir().unwrap();
+    let network = tmp.path().join("trails.shp");
+    write_network_shapefile(&network);
+    std::fs::write(network.with_extension("prj"), WGS84_PRJ).unwrap();
+
+    assert_eq!(shp_io::network_from_path(&network).unwrap().len(), 1);
 }
 
 #[test]

@@ -1,4 +1,5 @@
 use crate::builder::SegmentDraft;
+use crate::crs::validate_prj_wkt;
 use crate::geo::{Coord, LineString};
 use crate::model::{Access, CrossingKind, EdgeTravel, Provenance, Terrain};
 use crate::overlay::{
@@ -7,6 +8,7 @@ use crate::overlay::{
 use crate::{Result, TrailgenError};
 use ::shapefile::dbase::{FieldValue, Record};
 use ::shapefile::{Point, PointM, PointZ, PolygonRing, Shape};
+use std::fs;
 use std::path::Path;
 
 pub fn network_from_path(path: &Path) -> Result<Vec<SegmentDraft>> {
@@ -172,9 +174,22 @@ pub fn context_overlays_from_path(path: &Path) -> Result<Vec<ContextOverlay>> {
 }
 
 fn read(path: &Path) -> Result<Vec<(Shape, Record)>> {
+    validate_shapefile_crs(path)?;
     ::shapefile::read(path).map_err(|error| {
         TrailgenError::InvalidData(format!("read shapefile {}: {error}", path.display()))
     })
+}
+
+fn validate_shapefile_crs(path: &Path) -> Result<()> {
+    let prj = path.with_extension("prj");
+    if !prj.exists() {
+        return Ok(());
+    }
+    let wkt = fs::read_to_string(&prj).map_err(|error| {
+        TrailgenError::InvalidData(format!("read shapefile CRS {}: {error}", prj.display()))
+    })?;
+    validate_prj_wkt(&wkt)?;
+    Ok(())
 }
 
 fn provenance(props: &ShpProps<'_>, default_source: &str, source_id: &str) -> Provenance {
