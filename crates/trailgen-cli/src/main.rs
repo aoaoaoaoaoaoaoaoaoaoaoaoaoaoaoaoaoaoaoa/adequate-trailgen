@@ -39,168 +39,259 @@ struct Cli {
     reason = "CLI command values are parsed once; boxing clap fields would only launder cold-start bytes into ceremony."
 )]
 enum Cmd {
+    /// Create a project directory and initial trailgen.toml.
     Init {
+        /// Project directory to create or update.
         project: PathBuf,
+        /// Human-readable project name.
         #[arg(long)]
         name: String,
+        /// Area of interest as west,south,east,north lon/lat bounds.
         #[arg(long, allow_hyphen_values = true, value_parser = parse_bounds)]
         bbox: Option<GeoBounds>,
     },
+    /// Build a routable graph from one or more network or route files.
     Build {
+        /// Project directory containing trailgen.toml.
         project: PathBuf,
+        /// `GeoJSON`, shapefile, `GPX`, `KML`/`KMZ`, `CSV`, or route `JSON` source; repeat to merge sources.
         #[arg(long, required = true)]
         source: Vec<PathBuf>,
     },
+    /// Print graph terrain, access, provenance, confidence, crossing, and seed statistics.
     Stats {
+        /// Project directory containing cache/graph.json.
         project: PathBuf,
     },
+    /// Scan sources/ and write the source recommendation and coverage manifest.
     Discover {
+        /// Project directory containing trailgen.toml.
         project: PathBuf,
+        /// Override discovery AOI as west,south,east,north lon/lat bounds for this pass.
         #[arg(long, allow_hyphen_values = true, value_parser = parse_bounds)]
         bbox: Option<GeoBounds>,
     },
+    /// Copy or download a source artifact into project/sources and fingerprint it.
     CacheSource {
+        /// Project directory containing trailgen.toml.
         project: PathBuf,
+        /// Local path, file:// URI, http:// URL, or https:// URL to cache.
         #[arg(long)]
         input: String,
+        /// Relative output path under project/sources.
         #[arg(long)]
         output: Option<PathBuf>,
+        /// Source class when the filename is ambiguous.
         #[arg(long, value_parser = parse_source_kind)]
         kind: Option<SourceKind>,
+        /// Adapter id when the filename cannot imply the normalizer.
         #[arg(long)]
         adapter: Option<String>,
     },
+    /// Recompute source fingerprints and fail on missing or drifted inputs.
     VerifySources {
+        /// Project directory containing sources/manifest.json.
         project: PathBuf,
     },
+    /// Generate ranked candidate routes from a trailhead/start coordinate.
     Generate {
+        /// Project directory with a cached graph.
         project: PathBuf,
+        /// Requested trailhead/start coordinate as lon,lat.
         #[arg(long, allow_hyphen_values = true)]
         start: String,
+        /// Minimum route distance in kilometers for this run.
         #[arg(long, default_value_t = 35.0)]
         min_km: f64,
+        /// Maximum route distance in kilometers for this run.
         #[arg(long, default_value_t = 50.0)]
         max_km: f64,
+        /// Maximum number of candidates to emit.
         #[arg(long, default_value_t = 6)]
         count: usize,
+        /// Recorded random seed for reproducibility and future stochastic solvers.
         #[arg(long, default_value_t = 0)]
         seed: u64,
+        /// Maximum allowed trailhead snap distance in meters.
         #[arg(long)]
         max_start_snap_m: Option<f64>,
+        /// Solver selection: auto, heuristic, or exact.
         #[arg(long, value_parser = parse_solver_kind)]
         solver: Option<SolverKind>,
+        /// Planning date used to materialize dated access/closure overlays.
         #[arg(long, value_parser = parse_planning_date)]
         date: Option<PlanningDate>,
+        /// Minimum scalar route difficulty.
         #[arg(long)]
         min_difficulty: Option<f64>,
+        /// Maximum scalar route difficulty.
         #[arg(long)]
         max_difficulty: Option<f64>,
+        /// Minimum route ascent in meters.
         #[arg(long)]
         min_ascent_m: Option<f64>,
+        /// Maximum route ascent in meters.
         #[arg(long)]
         max_ascent_m: Option<f64>,
+        /// Minimum route descent in meters.
         #[arg(long)]
         min_descent_m: Option<f64>,
+        /// Maximum route descent in meters.
         #[arg(long)]
         max_descent_m: Option<f64>,
+        /// Maximum road or pavement distance fraction in [0,1].
         #[arg(long)]
         max_road_fraction: Option<f64>,
+        /// Maximum low-confidence edge distance fraction in [0,1].
         #[arg(long)]
         max_low_confidence_fraction: Option<f64>,
+        /// Maximum restricted/closed/private access distance fraction in [0,1].
         #[arg(long)]
         max_restricted_access_fraction: Option<f64>,
+        /// Allowed measured route shape; repeat for multiple shapes.
         #[arg(long = "shape", value_parser = parse_shape)]
         shape: Vec<RouteShape>,
+        /// Maximum repeated-edge distance fraction in [0,1].
         #[arg(long)]
         max_repeated_edge_fraction: Option<f64>,
+        /// Terrain bucket that must not appear in emitted routes; repeatable.
         #[arg(long = "forbid-terrain", value_parser = parse_terrain)]
         forbidden_terrain: Vec<Terrain>,
+        /// One-run polygon/line avoid zone forced closed in the generated graph; repeatable.
         #[arg(long = "forbid-area")]
         forbidden_area: Vec<PathBuf>,
+        /// Required minimum terrain fraction as terrain:fraction or terrain=fraction.
         #[arg(long = "min-terrain", value_parser = parse_terrain_fraction)]
         min_terrain: Vec<TerrainFraction>,
+        /// Required maximum terrain fraction as terrain:fraction or terrain=fraction.
         #[arg(long = "max-terrain", value_parser = parse_terrain_fraction)]
         max_terrain: Vec<TerrainFraction>,
     },
+    /// Export one generated candidate route to `GPX`, `GeoJSON`, `CSV`, `KML`, or `KMZ`.
     Export {
+        /// Project directory containing routes/generated.routes.json.
         project: PathBuf,
+        /// Candidate name such as candidate-1.
         #[arg(long)]
         route: String,
+        /// Destination file.
         #[arg(long)]
         output: PathBuf,
+        /// Export format.
         #[arg(long, value_enum)]
         format: ExportFormat,
     },
+    /// Render an aggregate or single-route Markdown diagnostic report.
     Report {
+        /// Project directory containing generated routes.
         project: PathBuf,
+        /// Optional candidate name such as candidate-1.
         #[arg(long)]
         route: Option<String>,
+        /// Destination report path; stdout when omitted.
         #[arg(long)]
         output: Option<PathBuf>,
     },
+    /// Render a self-contained offline SVG/HTML diagnostic map.
     Map {
+        /// Project directory containing a graph and optional generated routes.
         project: PathBuf,
+        /// Destination HTML path.
         #[arg(long)]
         output: Option<PathBuf>,
     },
+    /// Rate a supplied route file against the current project graph.
     Rate {
+        /// Project directory containing cache/graph.json.
         project: PathBuf,
+        /// `GPX`, `GeoJSON`, `KML`/`KMZ`, `CSV`, or route `JSON` file to snap and rate.
         #[arg(long)]
         route: PathBuf,
+        /// Maximum allowed route snap distance in meters.
         #[arg(long)]
         max_route_snap_m: Option<f64>,
+        /// Optional Markdown report path.
         #[arg(long)]
         output: Option<PathBuf>,
     },
+    /// Recompute cached edge costs after hand-editing difficulty weights.
     Rerate {
+        /// Project directory containing cache/graph.json.
         project: PathBuf,
     },
+    /// Fit difficulty weights from a completed route and optional target scalar.
     Calibrate {
+        /// Project directory containing cache/graph.json.
         project: PathBuf,
+        /// Completed route file to snap and use as calibration evidence.
         #[arg(long)]
         route: PathBuf,
+        /// Desired scalar difficulty for the completed route.
         #[arg(long)]
         target_difficulty: f64,
+        /// Weight family to scale.
         #[arg(long, value_enum, default_value = "all")]
         family: CalibrationFamily,
+        /// Maximum allowed route snap distance in meters.
         #[arg(long)]
         max_route_snap_m: Option<f64>,
+        /// Persist the calibrated weights and rerate the cached graph.
         #[arg(long)]
         write: bool,
     },
+    /// Archive, snap, and register a user-supplied seed route.
     ImportSeed {
+        /// Project directory containing cache/graph.json.
         project: PathBuf,
+        /// `GPX`, `GeoJSON`, `KML`/`KMZ`, `CSV`, or route `JSON` file to import.
         #[arg(long)]
         route: PathBuf,
+        /// Optional seed name; route metadata or filename is used when omitted.
         #[arg(long)]
         name: Option<String>,
+        /// Maximum allowed route snap distance in meters.
         #[arg(long)]
         max_route_snap_m: Option<f64>,
     },
+    /// Apply one or more access/closure overlays from a shared graph baseline.
     ApplyAccess {
+        /// Project directory containing cache/graph.json.
         project: PathBuf,
+        /// Access, ownership, restriction, or closure overlay; repeat to compose sources.
         #[arg(long = "source", required = true)]
         source: Vec<PathBuf>,
+        /// Persisted planning date for `active_from`/`active_to` overlay filtering.
         #[arg(long, value_parser = parse_planning_date)]
         date: Option<PlanningDate>,
     },
+    /// Apply terrain, surface, or land-cover overlays and rerate touched edges.
     ApplyTerrain {
+        /// Project directory containing cache/graph.json.
         project: PathBuf,
+        /// `GeoJSON` or shapefile terrain overlay.
         #[arg(long)]
         source: PathBuf,
     },
+    /// Sample a local DEM and recompute edge ascent, descent, grade, and difficulty.
     ApplyElevation {
+        /// Project directory containing cache/graph.json.
         project: PathBuf,
+        /// Arc/Info ASCII Grid, north-up geographic `GeoTIFF`, or simple `VRT` `DEM`.
         #[arg(long)]
         source: PathBuf,
+        /// Confidence assigned to sampled elevation evidence.
         #[arg(long, default_value_t = 0.80)]
         confidence: f64,
     },
+    /// Apply road and hydrology context linework for crossings and road exposure.
     ApplyContext {
+        /// Project directory containing cache/graph.json.
         project: PathBuf,
+        /// `GeoJSON` or shapefile road/hydrology context layer.
         #[arg(long)]
         source: PathBuf,
     },
+    /// Print the documented `AllTrails` import/export bridge status.
     AlltrailsStatus,
 }
 
@@ -3601,7 +3692,36 @@ fn write_bytes(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory as _;
     use serde_json::Value;
+
+    #[test]
+    fn cli_help_explains_operational_commands() {
+        let mut root = Cli::command();
+        let help = root.render_help().to_string();
+        assert!(help.contains("Create a project directory"));
+        assert!(help.contains("Generate ranked candidate routes"));
+        assert!(help.contains("AllTrails"));
+
+        let mut generate = Cli::command();
+        let generate_help = generate
+            .find_subcommand_mut("generate")
+            .expect("generate command")
+            .render_help()
+            .to_string();
+        assert!(generate_help.contains("trailhead/start coordinate"));
+        assert!(generate_help.contains("Maximum road or pavement"));
+        assert!(generate_help.contains("Allowed measured route shape"));
+
+        let mut access = Cli::command();
+        let access_help = access
+            .find_subcommand_mut("apply-access")
+            .expect("apply-access command")
+            .render_help()
+            .to_string();
+        assert!(access_help.contains("shared graph baseline"));
+        assert!(access_help.contains("repeat to compose sources"));
+    }
 
     #[test]
     fn generate_options_can_override_terrain_mix_constraints() {
