@@ -30,6 +30,8 @@ For an exact small-graph search, add `--solver exact`; `--solver auto` uses the 
 Generated artifacts land in the project directory:
 
 - `cache/graph.json`: normalized attributed graph
+- `cache/graph.geojson`: edge geometry and attribution as GeoJSON
+- `cache/edges.csv` and `cache/vertices.csv`: deterministic graph tables with WKT geometry for spreadsheet/GIS inspection
 - `sources/manifest.json`: source adapter registry, AOI-bound acquisition recommendations, and discovered/used source files with byte counts and SHA-256 fingerprints
 - `sources/elevation-arc-ascii.json` or `sources/elevation-geotiff.json`: applied local DEM sampler metadata
 - `sources/terrain-overlays.json`: applied land-cover, surface, or user terrain overrides from GeoJSON or shapefile layers
@@ -49,7 +51,7 @@ Generated artifacts land in the project directory:
 
 Use `trailgen export <project> --route candidate-1 --format gpx|geojson|kml|kmz --output file` to re-export a selected generated route after the search run. Use `trailgen report <project> [--route candidate-1] [--output file.md]` to render either all generated routes or one named route, including the constraint envelope used for that generation run. Use `trailgen map <project> [--output file.html]` to regenerate the offline diagnostic map without rerunning the solver. These commands read `routes/generated.graph.json` when generated routes exist, so later cached-graph rerating or access-date changes do not silently reinterpret an old route.
 
-Use `trailgen rate <project> --route completed.gpx` to score a completed hike against the current graph. Use `trailgen calibrate <project> --route completed.gpx --target-difficulty N --family elevation|technical|navigation` to dry-run a difficulty-weight patch from that hike; add `--write` to update `trailgen.toml` and rerate cached edge costs. `trailgen rerate <project>` reapplies hand-edited `[difficulty]` weights to `cache/graph.json` and `cache/graph.geojson`.
+Use `trailgen rate <project> --route completed.gpx` to score a completed hike against the current graph. Use `trailgen calibrate <project> --route completed.gpx --target-difficulty N --family elevation|technical|navigation` to dry-run a difficulty-weight patch from that hike; add `--write` to update `trailgen.toml` and rerate cached edge costs. `trailgen rerate <project>` reapplies hand-edited `[difficulty]` weights to every cached graph surface under `cache/`.
 
 Use `trailgen cache-source <project> --input URL_OR_PATH --output trails.geojson` to copy or download a provider-neutral artifact into `sources/`, record its origin, fingerprint it, and add it to the source manifest. Local shapefile caching copies `.shp`, mandatory `.dbf`, and optional `.shx` sidecars and fingerprints the bundle. Add `--kind` and `--adapter` when filenames do not identify the source class. `trailgen discover` recommendations include acquisition hints for official/practical source surfaces such as NPS/USFS GIS, USGS TNM/3DEP, MRLC/NLCD, PAD-US, NHD, OSM extracts, and user-supplied route archives.
 

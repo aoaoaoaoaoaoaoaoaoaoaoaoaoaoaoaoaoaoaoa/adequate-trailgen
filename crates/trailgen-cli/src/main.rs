@@ -411,11 +411,7 @@ fn build(project: &Path, source: &Path) -> Result<()> {
     }
     .build(&build_source.drafts)
     .with_context(|| "build graph")?;
-    write_json(project.join("cache/graph.json"), &graph)?;
-    write_json(
-        project.join("cache/graph.geojson"),
-        &geojson::graph_to_geojson(&graph),
-    )?;
+    save_graph(project, &graph)?;
     register_source_candidate_as(project, source, build_source.kind, build_source.adapter_id)?;
     println!(
         "built graph from {}: {} vertices, {} edges",
@@ -1040,7 +1036,7 @@ fn calibrate(
             project.join("trailgen.toml").display()
         );
     } else {
-        println!("dry run; pass --write to update trailgen.toml and rerate cache/graph.json");
+        println!("dry run; pass --write to update trailgen.toml and rerate cached graph surfaces");
     }
     Ok(())
 }
@@ -1606,11 +1602,7 @@ fn import_seed(project: &Path, route: &Path, name: Option<String>) -> Result<()>
     for edge in &mut graph.edges {
         config.difficulty.apply_edge(edge);
     }
-    write_json(project.join("cache/graph.json"), &graph)?;
-    write_json(
-        project.join("cache/graph.geojson"),
-        &geojson::graph_to_geojson(&graph),
-    )?;
+    save_graph(project, &graph)?;
 
     seeds.retain(|old| old.name != seed.name);
     seeds.push(seed.clone());
@@ -1679,11 +1671,7 @@ fn apply_access(project: &Path, source: &Path, date: Option<PlanningDate>) -> Re
         config.planning_date,
         config.difficulty,
     );
-    write_json(project.join("cache/graph.json"), &graph)?;
-    write_json(
-        project.join("cache/graph.geojson"),
-        &geojson::graph_to_geojson(&graph),
-    )?;
+    save_graph(project, &graph)?;
     fs::create_dir_all(project.join("sources"))?;
     write_json(project.join("sources/access-overlays.json"), &overlays)?;
     if date_override {
@@ -1768,11 +1756,7 @@ fn apply_terrain(project: &Path, source: &Path) -> Result<()> {
     let mut graph = load_graph(project)?;
     let overlays = terrain_overlays(source)?;
     let touched = apply_terrain_overlays(&mut graph, &overlays, config.difficulty);
-    write_json(project.join("cache/graph.json"), &graph)?;
-    write_json(
-        project.join("cache/graph.geojson"),
-        &geojson::graph_to_geojson(&graph),
-    )?;
+    save_graph(project, &graph)?;
     fs::create_dir_all(project.join("sources"))?;
     write_json(project.join("sources/terrain-overlays.json"), &overlays)?;
     let adapter_id = if source_ext(source).as_deref() == Some("shp") {
@@ -1804,11 +1788,7 @@ fn apply_elevation(project: &Path, source: &Path, confidence: f64) -> Result<()>
     let config = load_config(project)?;
     let mut graph = load_graph(project)?;
     let applied = apply_elevation_source(&mut graph, source, confidence, &config)?;
-    write_json(project.join("cache/graph.json"), &graph)?;
-    write_json(
-        project.join("cache/graph.geojson"),
-        &geojson::graph_to_geojson(&graph),
-    )?;
+    save_graph(project, &graph)?;
     fs::create_dir_all(project.join("sources"))?;
     applied.write_metadata(project)?;
     register_source_candidate_as(project, source, SourceKind::Elevation, applied.adapter_id)?;
@@ -1974,11 +1954,7 @@ fn apply_context(project: &Path, source: &Path) -> Result<()> {
     let mut graph = load_graph(project)?;
     let overlays = context_overlays(source)?;
     let crossings = apply_context_overlays(&mut graph, &overlays, config.difficulty);
-    write_json(project.join("cache/graph.json"), &graph)?;
-    write_json(
-        project.join("cache/graph.geojson"),
-        &geojson::graph_to_geojson(&graph),
-    )?;
+    save_graph(project, &graph)?;
     fs::create_dir_all(project.join("sources"))?;
     write_json(project.join("sources/context-overlays.json"), &overlays)?;
     register_context_source(project, source, &overlays)?;
@@ -2045,7 +2021,168 @@ fn save_graph(project: &Path, graph: &TrailGraph) -> Result<()> {
     write_json(
         project.join("cache/graph.geojson"),
         &geojson::graph_to_geojson(graph),
+    )?;
+    write_bytes(project.join("cache/edges.csv"), graph_edges_csv(graph))?;
+    write_bytes(
+        project.join("cache/vertices.csv"),
+        graph_vertices_csv(graph),
     )
+}
+
+fn graph_vertices_csv(graph: &TrailGraph) -> String {
+    let mut out = String::from("vertex_id,lon,lat,elevation_m,wkt\n");
+    for vertex in &graph.vertices {
+        let Coord { lon, lat, ele } = vertex.coord;
+        writeln!(
+            out,
+            "{},{lon:.7},{lat:.7},{},{}",
+            vertex.id.0,
+            csv_f64(ele),
+            csv_cell(&point_wkt(vertex.coord))
+        )
+        .expect("write to string");
+    }
+    out
+}
+
+fn graph_edges_csv(graph: &TrailGraph) -> String {
+    let mut out = String::from(
+        "edge_id,from_vertex,to_vertex,travel,length_m,ascent_m,descent_m,grade_abs_mean,grade_abs_max,sustained_steep_m,terrain,surface,access,road_exposure,confidence,difficulty,seed_count,road_crossings,water_crossings,provenance,wkt\n",
+    );
+    for edge in &graph.edges {
+        let crossings = edge_crossing_counts(edge);
+        writeln!(
+            out,
+            "{},{},{},{},{:.3},{:.3},{:.3},{:.6},{:.6},{:.3},{},{},{},{:.6},{:.6},{:.6},{},{},{},{},{}",
+            edge.id.0,
+            edge.a.0,
+            edge.b.0,
+            edge_travel_tag(edge.attr.travel),
+            edge.attr.length_m,
+            edge.attr.ascent_m,
+            edge.attr.descent_m,
+            edge.attr.grade_abs_mean,
+            edge.attr.grade_abs_max,
+            edge.attr.sustained_steep_m,
+            terrain_tag(edge.attr.terrain),
+            csv_cell(edge.attr.surface.as_deref().unwrap_or("")),
+            access_tag(edge.attr.access),
+            edge.attr.road_exposure,
+            edge.attr.confidence,
+            edge.attr.difficulty,
+            edge.attr.seed_count,
+            crossings.road,
+            crossings.water,
+            csv_cell(&provenance_summary(&edge.attr.provenance)),
+            csv_cell(&line_wkt(&edge.geometry))
+        )
+        .expect("write to string");
+    }
+    out
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct CrossingCounts {
+    road: u32,
+    water: u32,
+}
+
+fn edge_crossing_counts(edge: &trailgen_core::Edge) -> CrossingCounts {
+    edge.attr
+        .crossings
+        .iter()
+        .fold(CrossingCounts::default(), |mut counts, crossing| {
+            match crossing.kind {
+                CrossingKind::Road => counts.road += crossing.count,
+                CrossingKind::Water => counts.water += crossing.count,
+            }
+            counts
+        })
+}
+
+fn provenance_summary(provenance: &[Provenance]) -> String {
+    provenance
+        .iter()
+        .map(|p| {
+            let mut s = p.source.clone();
+            if let Some(layer) = &p.layer {
+                write!(s, ":{layer}").expect("write to string");
+            }
+            if let Some(source_id) = &p.source_id {
+                write!(s, ":{source_id}").expect("write to string");
+            }
+            s
+        })
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+fn line_wkt(line: &LineString) -> String {
+    format!(
+        "LINESTRING Z ({})",
+        line.points
+            .iter()
+            .map(coord_wkt_tuple)
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn point_wkt(coord: Coord) -> String {
+    format!("POINT Z ({})", coord_wkt_tuple(&coord))
+}
+
+fn coord_wkt_tuple(coord: &Coord) -> String {
+    format!(
+        "{:.7} {:.7} {:.3}",
+        coord.lon,
+        coord.lat,
+        coord.ele.unwrap_or(0.0)
+    )
+}
+
+fn csv_cell(value: &str) -> String {
+    if value.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_owned()
+    }
+}
+
+fn csv_f64(value: Option<f64>) -> String {
+    value.map_or_else(String::new, |x| format!("{x:.3}"))
+}
+
+const fn terrain_tag(terrain: Terrain) -> &'static str {
+    match terrain {
+        Terrain::Unknown => "unknown",
+        Terrain::Trail => "trail",
+        Terrain::Forest => "forest",
+        Terrain::Alpine => "alpine",
+        Terrain::Talus => "talus",
+        Terrain::Scramble => "scramble",
+        Terrain::Pavement => "pavement",
+        Terrain::Road => "road",
+        Terrain::Water => "water",
+    }
+}
+
+const fn access_tag(access: Access) -> &'static str {
+    match access {
+        Access::Unknown => "unknown",
+        Access::Open => "open",
+        Access::Restricted => "restricted",
+        Access::Closed => "closed",
+        Access::Private => "private",
+    }
+}
+
+const fn edge_travel_tag(travel: EdgeTravel) -> &'static str {
+    match travel {
+        EdgeTravel::Both => "both",
+        EdgeTravel::Forward => "forward",
+        EdgeTravel::Backward => "backward",
+    }
 }
 
 fn access_baseline_path(project: &Path) -> PathBuf {
@@ -2879,6 +3016,29 @@ mod tests {
         assert!(text.contains("Access mix:"));
         assert!(text.contains("- Restricted:"));
         assert!(text.contains("Crossings:"));
+        Ok(())
+    }
+
+    #[test]
+    fn graph_save_writes_deterministic_vertex_and_edge_tables() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../trailgen-core/tests/fixtures/mini_network.geojson");
+
+        init(project, "Table Test".to_owned(), None)?;
+        build(project, &fixture)?;
+
+        let vertices = fs::read_to_string(project.join("cache/vertices.csv"))?;
+        assert!(vertices.starts_with("vertex_id,lon,lat,elevation_m,wkt\n"));
+        assert!(vertices.contains("POINT Z ("));
+
+        let edges = fs::read_to_string(project.join("cache/edges.csv"))?;
+        assert!(edges.starts_with("edge_id,from_vertex,to_vertex,travel,length_m,"));
+        assert!(edges.contains("LINESTRING Z ("));
+        assert!(edges.contains("fixture:north"));
+        assert!(edges.contains(",trail,"));
+
         Ok(())
     }
 

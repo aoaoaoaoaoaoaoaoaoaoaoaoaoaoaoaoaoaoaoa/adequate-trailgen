@@ -12,6 +12,8 @@ Terrain inference is evidence-bearing: explicit source tags win with high confid
 
 Imported seed routes are first-class project artifacts. A seed stores source path, format, point count, snapped edge IDs, loop-closure status, metrics, and provenance. Seed imports raise `seed_count`, `popularity`, and confidence on touched edges, and closed connected seeds are included as route candidates during generation.
 
+The normalized graph is stored in four synchronized cache forms. `cache/graph.json` is the authoritative reload format; `cache/graph.geojson` is the edge-line geospatial view; `cache/edges.csv` and `cache/vertices.csv` are deterministic tabular exports with WKT geometry, stable IDs, difficulty/access/confidence fields, and compact provenance summaries for external audit.
+
 Access overlays are applied after graph construction. A GeoJSON overlay feature declares `access` or `status`, confidence, provenance fields, and either a Polygon/MultiPolygon area or a LineString corridor. Polygon overlays affect edges whose midpoint lies inside the area; line overlays affect nearby edges within `tolerance_m`. Applied overlays set edge access status, record access provenance, lower confidence, and recompute difficulty.
 
 Context overlays are also applied after graph construction. GeoJSON or shapefile road/hydrology LineString features declare `kind` or `context`; shapefile filenames such as `roads.shp` or `streams.shp` can supply the context kind when DBF rows omit it. Segment intersections with graph edges are counted as crossings. Road crossings raise road-exposure hints, road and water crossings carry provenance, and route metrics aggregate crossing counts for reports and exports.
