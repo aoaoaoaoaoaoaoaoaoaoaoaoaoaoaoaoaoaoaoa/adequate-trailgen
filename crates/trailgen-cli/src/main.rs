@@ -1188,33 +1188,7 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
             solver,
         })?,
     )?;
-    for route in &routes {
-        write_json(
-            project.join(format!("routes/{}.geojson", route.name)),
-            &geojson::routes_to_geojson(&graph, std::slice::from_ref(route)),
-        )
-        .with_context(|| format!("write GeoJSON for {}", route.name))?;
-        fs::write(
-            project.join(format!("routes/{}.gpx", route.name)),
-            gpx::route_to_gpx(&graph, route),
-        )
-        .with_context(|| format!("write GPX for {}", route.name))?;
-        fs::write(
-            project.join(format!("routes/{}.csv", route.name)),
-            csv::route_to_csv(&graph, route),
-        )
-        .with_context(|| format!("write CSV for {}", route.name))?;
-        fs::write(
-            project.join(format!("routes/{}.kml", route.name)),
-            kml::route_to_kml(&graph, route),
-        )
-        .with_context(|| format!("write KML for {}", route.name))?;
-        fs::write(
-            project.join(format!("routes/{}.kmz", route.name)),
-            kmz::route_to_kmz(&graph, route)?,
-        )
-        .with_context(|| format!("write KMZ for {}", route.name))?;
-    }
+    write_route_artifacts(project, &graph, &routes, &config.constraints)?;
     fs::write(
         project.join("reports/generated.md"),
         render_project_report(
@@ -1231,6 +1205,53 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
         render_map_html(&config.name, &graph, &routes)?,
     )?;
     println!("generated {} route(s)", routes.len());
+    Ok(())
+}
+
+fn write_route_artifacts(
+    project: &Path,
+    graph: &TrailGraph,
+    routes: &[Route],
+    constraints: &LoopConstraints,
+) -> Result<()> {
+    for route in routes {
+        write_json(
+            project.join(format!("routes/{}.geojson", route.name)),
+            &geojson::routes_to_geojson(graph, std::slice::from_ref(route)),
+        )
+        .with_context(|| format!("write GeoJSON for {}", route.name))?;
+        fs::write(
+            project.join(format!("routes/{}.gpx", route.name)),
+            gpx::route_to_gpx(graph, route),
+        )
+        .with_context(|| format!("write GPX for {}", route.name))?;
+        fs::write(
+            project.join(format!("routes/{}.csv", route.name)),
+            csv::route_to_csv(graph, route),
+        )
+        .with_context(|| format!("write CSV for {}", route.name))?;
+        fs::write(
+            project.join(format!("routes/{}.kml", route.name)),
+            kml::route_to_kml(graph, route),
+        )
+        .with_context(|| format!("write KML for {}", route.name))?;
+        fs::write(
+            project.join(format!("routes/{}.kmz", route.name)),
+            kmz::route_to_kmz(graph, route)?,
+        )
+        .with_context(|| format!("write KMZ for {}", route.name))?;
+        write_bytes(
+            project.join(format!("reports/{}.md", route.name)),
+            render_project_report(
+                project,
+                "Generated Hiking Route",
+                graph,
+                std::slice::from_ref(route),
+                constraints,
+            )?,
+        )
+        .with_context(|| format!("write report for {}", route.name))?;
+    }
     Ok(())
 }
 
@@ -3255,6 +3276,7 @@ fn generation_artifacts(routes: &[Route]) -> Vec<String> {
             format!("routes/{}.csv", route.name),
             format!("routes/{}.kml", route.name),
             format!("routes/{}.kmz", route.name),
+            format!("reports/{}.md", route.name),
         ]);
     }
     artifacts
@@ -3788,11 +3810,7 @@ mod tests {
                 .as_array()
                 .is_some_and(|xs| !xs.is_empty())
         );
-        assert!(manifest["artifacts"].as_array().is_some_and(|xs| {
-            xs.iter().any(|x| x == "routes/generated.manifest.json")
-                && xs.iter().any(|x| x == "reports/map.html")
-                && xs.iter().any(|x| x == "routes/candidate-1.geojson")
-        }));
+        assert_generation_artifacts_manifest(&manifest);
 
         Ok(())
     }
@@ -4003,6 +4021,18 @@ mod tests {
         );
     }
 
+    fn assert_generation_artifacts_manifest(manifest: &Value) {
+        let artifacts = manifest["artifacts"].as_array().expect("artifacts");
+        for artifact in [
+            "routes/generated.manifest.json",
+            "reports/map.html",
+            "routes/candidate-1.geojson",
+            "reports/candidate-1.md",
+        ] {
+            assert!(artifacts.iter().any(|x| x == artifact), "{artifact}");
+        }
+    }
+
     #[test]
     fn generated_routes_can_be_selected_exported_and_reported() -> Result<()> {
         let tmp = tempfile::tempdir()?;
@@ -4046,6 +4076,9 @@ mod tests {
         let geojson = project.join("exports/candidate-1.geojson");
         let md = project.join("reports/candidate-1.md");
         let map = project.join("exports/map.html");
+        let generated_candidate_report = fs::read_to_string(&md)?;
+        assert!(generated_candidate_report.starts_with("# Generated Hiking Route"));
+        assert!(generated_candidate_report.contains("Source provenance:"));
         export_route(project, "candidate-1", ExportFormat::Gpx, &gpx)?;
         export_route(project, "candidate-1", ExportFormat::Csv, &csv)?;
         export_route(project, "candidate-1", ExportFormat::Geojson, &geojson)?;
