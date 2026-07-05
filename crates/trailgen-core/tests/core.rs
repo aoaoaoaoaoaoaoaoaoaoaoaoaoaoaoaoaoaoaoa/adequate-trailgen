@@ -627,6 +627,44 @@ fn loop_hunter_emits_out_and_back_when_shape_allows_repeated_edges() {
             .iter()
             .any(|r| r.metrics.shape == RouteShape::OutAndBack)
     );
+    assert!(
+        routes
+            .iter()
+            .all(|r| r.metrics.shape == RouteShape::OutAndBack)
+    );
+    assert!(routes.iter().any(|r| r.verdict.satisfied));
+}
+
+#[test]
+fn loop_hunter_builds_figure_eights_when_shape_allows_two_lobes() {
+    let graph = GraphBuilder::default().build(&bowtie_drafts()).unwrap();
+    let start = graph.nearest_vertex(Coord::new(0.0, 0.0)).unwrap();
+    let routes = LoopHunter {
+        params: SearchParams {
+            max_hops: 8,
+            max_frontier: 1_000,
+            keep: 8,
+        },
+    }
+    .hunt(
+        &graph,
+        start,
+        &LoopConstraints {
+            min_distance_m: 0.0,
+            max_distance_m: 10_000.0,
+            max_difficulty: 10_000.0,
+            allowed_shapes: vec![RouteShape::FigureEight],
+            ..LoopConstraints::default()
+        },
+        4,
+    );
+
+    assert!(!routes.is_empty());
+    assert!(
+        routes
+            .iter()
+            .all(|r| r.metrics.shape == RouteShape::FigureEight)
+    );
     assert!(routes.iter().any(|r| r.verdict.satisfied));
 }
 
@@ -1024,4 +1062,30 @@ fn simple_path_draft() -> SegmentDraft {
         confidence: 1.0,
         provenance: Provenance::fixture("simple-path"),
     }
+}
+
+fn bowtie_drafts() -> Vec<SegmentDraft> {
+    let waist = Coord::new(0.0, 0.0);
+    let east = Coord::new(0.01, 0.0);
+    let north = Coord::new(0.005, 0.008);
+    let west = Coord::new(-0.01, 0.0);
+    let south = Coord::new(-0.005, -0.008);
+    [
+        (waist, east, "right-stem"),
+        (east, north, "right-ridge"),
+        (north, waist, "right-return"),
+        (waist, west, "left-stem"),
+        (west, south, "left-ridge"),
+        (south, waist, "left-return"),
+    ]
+    .into_iter()
+    .map(|(from, to, name)| SegmentDraft {
+        geometry: LineString::new(vec![from, to]).unwrap(),
+        terrain: Terrain::Trail,
+        access: Access::Open,
+        road_exposure: 0.0,
+        confidence: 1.0,
+        provenance: Provenance::fixture(name),
+    })
+    .collect()
 }

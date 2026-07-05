@@ -107,31 +107,26 @@ impl RouteSolver for LoopHunter {
                 edges.push(edge_id);
                 if constraints.allows_shape(RouteShape::OutAndBack) {
                     let out_and_back = mirrored_route(&edges);
-                    let route = Route::from_edges(
-                        format!("candidate-{}", routes.len() + 1),
-                        graph,
-                        start,
-                        out_and_back,
-                        constraints,
-                    );
-                    if route.metrics.distance_m <= constraints.max_distance_m * 1.35 {
-                        routes.push(route);
+                    if route_distance(graph, &out_and_back) <= constraints.max_distance_m * 1.35 {
+                        push_allowed_route(&mut routes, graph, start, out_and_back, constraints);
                     }
-                }
-
-                if next == start && edges.len() >= 3 {
-                    routes.push(Route::from_edges(
-                        format!("candidate-{}", routes.len() + 1),
-                        graph,
-                        start,
-                        edges,
-                        constraints,
-                    ));
-                    continue;
                 }
 
                 let mut used = state.used.clone();
                 used.insert(edge_id);
+                if next == start && edges.len() >= 3 {
+                    push_allowed_route(&mut routes, graph, start, edges.clone(), constraints);
+                    if constraints.allows_shape(RouteShape::FigureEight) {
+                        stack.push(State {
+                            at: next,
+                            edges,
+                            used,
+                            distance_m,
+                        });
+                    }
+                    continue;
+                }
+
                 stack.push(State {
                     at: next,
                     edges,
@@ -150,6 +145,32 @@ impl RouteSolver for LoopHunter {
         }
         routes
     }
+}
+
+fn push_allowed_route(
+    routes: &mut Vec<Route>,
+    graph: &TrailGraph,
+    start: VertexId,
+    edges: Vec<EdgeId>,
+    constraints: &LoopConstraints,
+) {
+    let route = Route::from_edges(
+        format!("candidate-{}", routes.len() + 1),
+        graph,
+        start,
+        edges,
+        constraints,
+    );
+    if constraints.allows_shape(route.metrics.shape) {
+        routes.push(route);
+    }
+}
+
+fn route_distance(graph: &TrailGraph, edges: &[EdgeId]) -> f64 {
+    edges
+        .iter()
+        .map(|edge_id| graph.edges[edge_id.0].attr.length_m)
+        .sum()
 }
 
 fn mirrored_route(edges: &[EdgeId]) -> Vec<EdgeId> {

@@ -8,7 +8,7 @@
 - `max_frontier`: maximum expanded states before stopping
 - `keep`: maximum candidates retained before the CLI truncates to `--count`
 
-Closed edge-simple candidates are measured as loops or figure-eights according to their vertex visits. When `OutAndBack` is in `constraints.allowed_shapes`, the solver also mirrors each outward path into a return path, creating deliberate repeated-edge candidates. To make those candidates satisfiable, set `constraints.max_repeated_edge_fraction` above zero.
+Closed edge-simple candidates are measured as loops or figure-eights according to their vertex visits, then discarded unless their measured shape is in `constraints.allowed_shapes`. When `FigureEight` is allowed, the search may continue through the start after a closed lobe, producing deliberate multi-lobe closed routes. When `OutAndBack` is allowed, the solver mirrors each outward path into a return path, creating deliberate repeated-edge candidates. To make those mirrored candidates satisfiable, set `constraints.max_repeated_edge_fraction` above zero.
 
 Every candidate is scored after full metric measurement and constraint judgment. The persisted route score is `constraint_penalty + 0.05 × scalar_difficulty + 10 × low_confidence_fraction`; lower is better. Constraint judgment covers distance, scalar difficulty, ascent/descent windows, road/pavement fraction, restricted-access fraction, low-confidence fraction, repeated-edge fraction, shape, and terrain mix.
 

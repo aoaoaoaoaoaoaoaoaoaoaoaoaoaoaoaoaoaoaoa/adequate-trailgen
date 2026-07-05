@@ -42,7 +42,7 @@ Shape constraints are also stored in `[constraints]`:
 - `allowed_shapes`: route-shape whitelist; defaults to `["loop"]`
 - `max_repeated_edge_fraction`: required for useful `out-and-back` generation, because out-and-back routes intentionally traverse edges twice
 
-The CLI can override shape for one generation run with repeated `--shape` flags: `loop`, `figure-eight`, `out-and-back`, or `open`. It can also override repeated-edge tolerance with `--max-repeated-edge-fraction`; `--shape out-and-back --max-repeated-edge-fraction 1` is the permissive smoke-test setting. `generate --seed N` records the random seed in `routes/generated.manifest.json`; `LoopHunter` is deterministic today, but the manifest schema already preserves the seed needed by future stochastic solvers.
+The CLI can override shape for one generation run with repeated `--shape` flags: `loop`, `figure-eight`, `out-and-back`, or `open`. `LoopHunter` filters emitted candidates by their measured shape. Figure-eights are deliberate multi-lobe closures through the start; out-and-backs are deliberate mirrored paths. Override repeated-edge tolerance with `--max-repeated-edge-fraction`; `--shape out-and-back --max-repeated-edge-fraction 1` is the permissive smoke-test setting. `generate --seed N` records the random seed in `routes/generated.manifest.json`; `LoopHunter` is deterministic today, but the manifest schema already preserves the seed needed by future stochastic solvers.
 
 `[enrichment]` controls the graph enrichment phase:
 
