@@ -1427,9 +1427,7 @@ fn access_overlays(source: &Path) -> Result<Vec<trailgen_core::AccessOverlay>> {
 fn apply_terrain(project: &Path, source: &Path) -> Result<()> {
     let config = load_config(project)?;
     let mut graph = load_graph(project)?;
-    let raw = fs::read_to_string(source).with_context(|| format!("read {}", source.display()))?;
-    let overlays = geojson::terrain_overlays_from_str(&raw)
-        .with_context(|| "parse terrain overlay GeoJSON")?;
+    let overlays = terrain_overlays(source)?;
     let touched = apply_terrain_overlays(&mut graph, &overlays, config.difficulty);
     write_json(project.join("cache/graph.json"), &graph)?;
     write_json(
@@ -1438,18 +1436,29 @@ fn apply_terrain(project: &Path, source: &Path) -> Result<()> {
     )?;
     fs::create_dir_all(project.join("sources"))?;
     write_json(project.join("sources/terrain-overlays.json"), &overlays)?;
-    register_source_candidate_as(
-        project,
-        source,
-        SourceKind::Terrain,
-        "geojson-terrain-overlay",
-    )?;
+    let adapter_id = if source_ext(source).as_deref() == Some("shp") {
+        "shapefile-terrain-overlay"
+    } else {
+        "geojson-terrain-overlay"
+    };
+    register_source_candidate_as(project, source, SourceKind::Terrain, adapter_id)?;
     println!(
         "applied {} terrain overlay(s); touched {} edge(s)",
         overlays.len(),
         touched
     );
     Ok(())
+}
+
+fn terrain_overlays(source: &Path) -> Result<Vec<trailgen_core::TerrainOverlay>> {
+    if source_ext(source).as_deref() == Some("shp") {
+        shp::terrain_overlays_from_path(source).map_err(Into::into)
+    } else {
+        let raw =
+            fs::read_to_string(source).with_context(|| format!("read {}", source.display()))?;
+        Ok(geojson::terrain_overlays_from_str(&raw)
+            .with_context(|| "parse terrain overlay GeoJSON")?)
+    }
 }
 
 fn apply_elevation(project: &Path, source: &Path, confidence: f64) -> Result<()> {
@@ -1497,9 +1506,7 @@ fn apply_elevation(project: &Path, source: &Path, confidence: f64) -> Result<()>
 fn apply_context(project: &Path, source: &Path) -> Result<()> {
     let config = load_config(project)?;
     let mut graph = load_graph(project)?;
-    let raw = fs::read_to_string(source).with_context(|| format!("read {}", source.display()))?;
-    let overlays =
-        geojson::context_overlays_from_str(&raw).with_context(|| "parse context GeoJSON")?;
+    let overlays = context_overlays(source)?;
     let crossings = apply_context_overlays(&mut graph, &overlays, config.difficulty);
     write_json(project.join("cache/graph.json"), &graph)?;
     write_json(
@@ -1515,6 +1522,16 @@ fn apply_context(project: &Path, source: &Path) -> Result<()> {
         crossings
     );
     Ok(())
+}
+
+fn context_overlays(source: &Path) -> Result<Vec<trailgen_core::ContextOverlay>> {
+    if source_ext(source).as_deref() == Some("shp") {
+        shp::context_overlays_from_path(source).map_err(Into::into)
+    } else {
+        let raw =
+            fs::read_to_string(source).with_context(|| format!("read {}", source.display()))?;
+        Ok(geojson::context_overlays_from_str(&raw).with_context(|| "parse context GeoJSON")?)
+    }
 }
 
 fn load_config(project: &Path) -> Result<ProjectConfig> {
@@ -1708,13 +1725,14 @@ fn register_source_candidate_as(
 
 fn register_access_source(project: &Path, source: &Path) -> Result<()> {
     let (kind, adapter_id) = classify_path(source).map_or_else(
-        || (SourceKind::Access, "geojson-access-overlay"),
+        || (SourceKind::Access, "geojson-access-overlay".to_owned()),
         |candidate| match candidate.kind {
-            SourceKind::Closure => (SourceKind::Closure, "geojson-closure-overlay"),
-            _ => (SourceKind::Access, "geojson-access-overlay"),
+            SourceKind::Closure => (SourceKind::Closure, candidate.adapter_id),
+            SourceKind::Access => (SourceKind::Access, candidate.adapter_id),
+            _ => (SourceKind::Access, "geojson-access-overlay".to_owned()),
         },
     );
-    register_source_candidate_as(project, source, kind, adapter_id)
+    register_source_candidate_as(project, source, kind, &adapter_id)
 }
 
 fn register_context_source(
@@ -1728,10 +1746,15 @@ fn register_context_source(
         .iter()
         .any(|overlay| overlay.kind == CrossingKind::Road)
     {
+        let adapter_id = if source_ext(source).as_deref() == Some("shp") {
+            "shapefile-road-context"
+        } else {
+            "geojson-road-context"
+        };
         candidates.push(source_candidate(
             source,
             SourceKind::Road,
-            "geojson-road-context",
+            adapter_id,
             fingerprint.clone(),
         ));
     }
@@ -1739,10 +1762,15 @@ fn register_context_source(
         .iter()
         .any(|overlay| overlay.kind == CrossingKind::Water)
     {
+        let adapter_id = if source_ext(source).as_deref() == Some("shp") {
+            "shapefile-hydrology-context"
+        } else {
+            "geojson-hydrology-context"
+        };
         candidates.push(source_candidate(
             source,
             SourceKind::Hydrology,
-            "geojson-hydrology-context",
+            adapter_id,
             fingerprint,
         ));
     }
@@ -2732,6 +2760,40 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn shapefile_apply_commands_register_true_adapter_ids() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path().join("project");
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../trailgen-core/tests/fixtures/mini_network.geojson");
+        let closure = tmp.path().join("raptor-closure.shp");
+        let terrain = tmp.path().join("talus-terrain.shp");
+        let roads = tmp.path().join("roads.shp");
+        write_status_polygon_shapefile(&closure, "closed");
+        write_terrain_polygon_shapefile(&terrain);
+        write_context_line_shapefile(&roads, "road");
+
+        init(&project, "Shapefile Apply Test".to_owned(), None)?;
+        build(&project, &fixture)?;
+        apply_access(&project, &closure)?;
+        apply_terrain(&project, &terrain)?;
+        apply_context(&project, &roads)?;
+
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(project.join("sources/manifest.json"))?)?;
+        let candidates = manifest["candidates"].as_array().expect("candidates");
+        assert!(candidates.iter().any(|candidate| {
+            candidate["kind"] == "closure" && candidate["adapter_id"] == "shapefile-closure-layer"
+        }));
+        assert!(candidates.iter().any(|candidate| {
+            candidate["kind"] == "terrain" && candidate["adapter_id"] == "shapefile-terrain-overlay"
+        }));
+        assert!(candidates.iter().any(|candidate| {
+            candidate["kind"] == "road" && candidate["adapter_id"] == "shapefile-road-context"
+        }));
+        Ok(())
+    }
+
     fn write_test_shapefile(path: &Path, id: &str) {
         let table = ::shapefile::dbase::TableWriterBuilder::new()
             .add_character_field("id".try_into().unwrap(), 32)
@@ -2745,6 +2807,59 @@ mod tests {
         record.insert("id".to_owned(), id.to_owned().into());
         record.insert("terrain".to_owned(), "trail".to_owned().into());
         writer.write_shape_and_record(&line, &record).unwrap();
+    }
+
+    fn write_status_polygon_shapefile(path: &Path, status: &str) {
+        let table = ::shapefile::dbase::TableWriterBuilder::new()
+            .add_character_field("name".try_into().unwrap(), 32)
+            .add_character_field("status".try_into().unwrap(), 16);
+        let mut writer = ::shapefile::Writer::from_path(path, table).unwrap();
+        let mut record = ::shapefile::dbase::Record::default();
+        record.insert("name".to_owned(), "closure-1".to_owned().into());
+        record.insert("status".to_owned(), status.to_owned().into());
+        writer
+            .write_shape_and_record(&fixture_polygon(), &record)
+            .unwrap();
+    }
+
+    fn write_terrain_polygon_shapefile(path: &Path) {
+        let table = ::shapefile::dbase::TableWriterBuilder::new()
+            .add_character_field("name".try_into().unwrap(), 32)
+            .add_character_field("terrain".try_into().unwrap(), 16)
+            .add_character_field("surface".try_into().unwrap(), 16);
+        let mut writer = ::shapefile::Writer::from_path(path, table).unwrap();
+        let mut record = ::shapefile::dbase::Record::default();
+        record.insert("name".to_owned(), "talus-1".to_owned().into());
+        record.insert("terrain".to_owned(), "talus".to_owned().into());
+        record.insert("surface".to_owned(), "scree".to_owned().into());
+        writer
+            .write_shape_and_record(&fixture_polygon(), &record)
+            .unwrap();
+    }
+
+    fn write_context_line_shapefile(path: &Path, kind: &str) {
+        let table = ::shapefile::dbase::TableWriterBuilder::new()
+            .add_character_field("name".try_into().unwrap(), 32)
+            .add_character_field("kind".try_into().unwrap(), 16);
+        let mut writer = ::shapefile::Writer::from_path(path, table).unwrap();
+        let line = ::shapefile::Polyline::new(vec![
+            ::shapefile::Point::new(-104.995, 39.999),
+            ::shapefile::Point::new(-104.995, 40.006),
+        ]);
+        let mut record = ::shapefile::dbase::Record::default();
+        record.insert("name".to_owned(), "road-1".to_owned().into());
+        record.insert("kind".to_owned(), kind.to_owned().into());
+        writer.write_shape_and_record(&line, &record).unwrap();
+    }
+
+    fn fixture_polygon() -> ::shapefile::Polygon {
+        ::shapefile::Polygon::with_rings(vec![::shapefile::PolygonRing::Outer(vec![
+            ::shapefile::Point::new(-105.001, 39.999),
+            ::shapefile::Point::new(-104.990, 39.999),
+            ::shapefile::Point::new(-104.990, 40.006),
+            ::shapefile::Point::new(-105.001, 40.006),
+            ::shapefile::Point::new(-105.001, 39.999),
+        ])])
     }
 
     #[test]

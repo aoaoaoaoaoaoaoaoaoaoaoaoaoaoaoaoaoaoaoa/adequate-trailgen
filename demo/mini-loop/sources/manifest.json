@@ -114,6 +114,21 @@
       "note": "GeoJSON land-cover, surface, or user terrain overlays applied after graph construction."
     },
     {
+      "id": "shapefile-terrain-overlay",
+      "kind": "terrain",
+      "status": "implemented",
+      "consumes": [
+        "shp",
+        "dbf",
+        "shx"
+      ],
+      "produces": [
+        "terrain overrides",
+        "confidence/provenance"
+      ],
+      "note": "Polygon or line shapefile land-cover, surface, or terrain overlays applied after graph construction."
+    },
+    {
       "id": "geojson-access-overlay",
       "kind": "access",
       "status": "implemented",
@@ -171,6 +186,21 @@
       "note": "GeoJSON road/street context lines used to infer trail crossings."
     },
     {
+      "id": "shapefile-road-context",
+      "kind": "road",
+      "status": "implemented",
+      "consumes": [
+        "shp",
+        "dbf",
+        "shx"
+      ],
+      "produces": [
+        "road crossings",
+        "road exposure hints"
+      ],
+      "note": "Shapefile road/street centerlines used to infer trail crossings."
+    },
+    {
       "id": "geojson-hydrology-context",
       "kind": "hydrology",
       "status": "implemented",
@@ -182,6 +212,20 @@
         "water crossings"
       ],
       "note": "GeoJSON stream/river context lines used to infer water crossings."
+    },
+    {
+      "id": "shapefile-hydrology-context",
+      "kind": "hydrology",
+      "status": "implemented",
+      "consumes": [
+        "shp",
+        "dbf",
+        "shx"
+      ],
+      "produces": [
+        "water crossings"
+      ],
+      "note": "Shapefile stream/river centerlines used to infer water crossings."
     },
     {
       "id": "shapefile-closure-layer",
@@ -255,11 +299,13 @@
       "kind": "terrain",
       "priority": "recommended",
       "adapter_ids": [
-        "geojson-terrain-overlay"
+        "geojson-terrain-overlay",
+        "shapefile-terrain-overlay"
       ],
       "suggested_paths": [
         "sources/terrain.geojson",
-        "sources/landcover.geojson"
+        "sources/landcover.geojson",
+        "sources/terrain.shp"
       ],
       "search_terms": [
         "land cover polygons",
@@ -331,11 +377,13 @@
       "kind": "road",
       "priority": "recommended",
       "adapter_ids": [
-        "geojson-road-context"
+        "geojson-road-context",
+        "shapefile-road-context"
       ],
       "suggested_paths": [
         "sources/roads.geojson",
-        "sources/context-roads.geojson"
+        "sources/context-roads.geojson",
+        "sources/roads.shp"
       ],
       "search_terms": [
         "road centerline GeoJSON",
@@ -355,11 +403,13 @@
       "kind": "hydrology",
       "priority": "recommended",
       "adapter_ids": [
-        "geojson-hydrology-context"
+        "geojson-hydrology-context",
+        "shapefile-hydrology-context"
       ],
       "suggested_paths": [
         "sources/hydrology.geojson",
-        "sources/streams.geojson"
+        "sources/streams.geojson",
+        "sources/hydrology.shp"
       ],
       "search_terms": [
         "NHD stream lines",

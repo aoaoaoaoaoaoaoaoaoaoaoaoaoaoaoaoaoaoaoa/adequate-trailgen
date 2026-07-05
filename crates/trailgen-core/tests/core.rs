@@ -1025,15 +1025,30 @@ fn source_registry_classifies_local_inputs() {
     let shp_closure = classify_path(std::path::Path::new("sources/raptor-closure.shp")).unwrap();
     assert_eq!(shp_closure.kind, SourceKind::Closure);
     assert_eq!(shp_closure.adapter_id, "shapefile-closure-layer");
+    let shp_terrain = classify_path(std::path::Path::new("sources/landcover-terrain.shp")).unwrap();
+    assert_eq!(shp_terrain.kind, SourceKind::Terrain);
+    assert_eq!(shp_terrain.adapter_id, "shapefile-terrain-overlay");
+    let shp_road = classify_path(std::path::Path::new("sources/roads.shp")).unwrap();
+    assert_eq!(shp_road.kind, SourceKind::Road);
+    assert_eq!(shp_road.adapter_id, "shapefile-road-context");
+    let shp_water = classify_path(std::path::Path::new("sources/streams.shp")).unwrap();
+    assert_eq!(shp_water.kind, SourceKind::Hydrology);
+    assert_eq!(shp_water.adapter_id, "shapefile-hydrology-context");
 }
 
 #[test]
-fn shapefile_adapters_normalize_networks_and_access_overlays() {
+fn shapefile_adapters_normalize_networks_and_overlays() {
     let tmp = tempfile::tempdir().unwrap();
     let network = tmp.path().join("trails.shp");
     let access = tmp.path().join("access.shp");
+    let terrain = tmp.path().join("terrain.shp");
+    let road = tmp.path().join("roads.shp");
+    let water = tmp.path().join("streams.shp");
     write_network_shapefile(&network);
     write_access_shapefile(&access);
+    write_terrain_shapefile(&terrain);
+    write_context_shapefile(&road, "road-1", "road");
+    write_context_shapefile(&water, "stream-1", "water");
 
     let drafts = shp_io::network_from_path(&network).unwrap();
     assert_eq!(drafts.len(), 1);
@@ -1051,6 +1066,25 @@ fn shapefile_adapters_normalize_networks_and_access_overlays() {
         overlays[0].geometry,
         trailgen_core::OverlayGeometry::Polygon(_)
     ));
+
+    let terrain_overlays = shp_io::terrain_overlays_from_path(&terrain).unwrap();
+    assert_eq!(terrain_overlays.len(), 1);
+    assert_eq!(terrain_overlays[0].terrain, Terrain::Talus);
+    assert_eq!(terrain_overlays[0].surface.as_deref(), Some("scree"));
+    assert!(matches!(
+        terrain_overlays[0].geometry,
+        trailgen_core::OverlayGeometry::Polygon(_)
+    ));
+
+    let road_overlays = shp_io::context_overlays_from_path(&road).unwrap();
+    assert_eq!(road_overlays.len(), 1);
+    assert_eq!(road_overlays[0].kind, CrossingKind::Road);
+    assert_eq!(road_overlays[0].provenance.source, "agency-roads");
+
+    let water_overlays = shp_io::context_overlays_from_path(&water).unwrap();
+    assert_eq!(water_overlays.len(), 1);
+    assert_eq!(water_overlays[0].kind, CrossingKind::Water);
+    assert_eq!(water_overlays[0].provenance.source, "agency-hydrology");
 }
 
 #[test]
@@ -1129,6 +1163,50 @@ fn write_access_shapefile(path: &std::path::Path) {
     record.insert("status".to_owned(), "closed".to_owned().into());
     record.insert("source".to_owned(), "agency".to_owned().into());
     writer.write_shape_and_record(&polygon, &record).unwrap();
+}
+
+fn write_terrain_shapefile(path: &std::path::Path) {
+    let table = ::shapefile::dbase::TableWriterBuilder::new()
+        .add_character_field("name".try_into().unwrap(), 32)
+        .add_character_field("terrain".try_into().unwrap(), 16)
+        .add_character_field("surface".try_into().unwrap(), 16)
+        .add_character_field("source".try_into().unwrap(), 32);
+    let mut writer = ::shapefile::Writer::from_path(path, table).unwrap();
+    let polygon = ::shapefile::Polygon::with_rings(vec![::shapefile::PolygonRing::Outer(vec![
+        ::shapefile::Point::new(-0.001, -0.001),
+        ::shapefile::Point::new(0.011, -0.001),
+        ::shapefile::Point::new(0.011, 0.001),
+        ::shapefile::Point::new(-0.001, 0.001),
+        ::shapefile::Point::new(-0.001, -0.001),
+    ])]);
+    let mut record = ::shapefile::dbase::Record::default();
+    record.insert("name".to_owned(), "talus-1".to_owned().into());
+    record.insert("terrain".to_owned(), "talus".to_owned().into());
+    record.insert("surface".to_owned(), "scree".to_owned().into());
+    record.insert("source".to_owned(), "agency-terrain".to_owned().into());
+    writer.write_shape_and_record(&polygon, &record).unwrap();
+}
+
+fn write_context_shapefile(path: &std::path::Path, name: &str, kind: &str) {
+    let table = ::shapefile::dbase::TableWriterBuilder::new()
+        .add_character_field("name".try_into().unwrap(), 32)
+        .add_character_field("kind".try_into().unwrap(), 16)
+        .add_character_field("source".try_into().unwrap(), 32);
+    let mut writer = ::shapefile::Writer::from_path(path, table).unwrap();
+    let line = ::shapefile::Polyline::new(vec![
+        ::shapefile::Point::new(0.005, -0.001),
+        ::shapefile::Point::new(0.005, 0.001),
+    ]);
+    let mut record = ::shapefile::dbase::Record::default();
+    record.insert("name".to_owned(), name.to_owned().into());
+    record.insert("kind".to_owned(), kind.to_owned().into());
+    let source = if kind == "water" {
+        "agency-hydrology"
+    } else {
+        "agency-roads"
+    };
+    record.insert("source".to_owned(), source.to_owned().into());
+    writer.write_shape_and_record(&line, &record).unwrap();
 }
 
 #[test]

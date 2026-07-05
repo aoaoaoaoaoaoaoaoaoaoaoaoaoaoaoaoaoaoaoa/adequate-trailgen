@@ -1,7 +1,7 @@
 use crate::builder::SegmentDraft;
 use crate::geo::{Coord, LineString};
-use crate::model::{Access, Provenance, Terrain};
-use crate::overlay::{AccessOverlay, OverlayGeometry};
+use crate::model::{Access, CrossingKind, Provenance, Terrain};
+use crate::overlay::{AccessOverlay, ContextOverlay, OverlayGeometry, TerrainOverlay};
 use crate::{Result, TrailgenError};
 use ::shapefile::dbase::{FieldValue, Record};
 use ::shapefile::{Point, PointM, PointZ, PolygonRing, Shape};
@@ -90,10 +90,111 @@ pub fn access_overlays_from_path(path: &Path) -> Result<Vec<AccessOverlay>> {
     Ok(overlays)
 }
 
+pub fn terrain_overlays_from_path(path: &Path) -> Result<Vec<TerrainOverlay>> {
+    let mut overlays = Vec::new();
+    for (i, row) in read(path)?.into_iter().enumerate() {
+        let (shape, record) = row;
+        let props = ShpProps::new(&record);
+        let surface = props.str("surface").map(str::to_owned);
+        let terrain = props
+            .str("terrain")
+            .or(surface.as_deref())
+            .or_else(|| props.str("landcover"))
+            .or_else(|| props.str("land_cover"))
+            .map_or(Terrain::Unknown, Terrain::from_tag);
+        if terrain == Terrain::Unknown {
+            return Err(TrailgenError::InvalidData(format!(
+                "shapefile terrain feature {i} has no recognized terrain/surface/landcover tag"
+            )));
+        }
+        let name = props
+            .str("name")
+            .or_else(|| props.str("id"))
+            .map_or_else(|| format!("terrain-{i}"), str::to_owned);
+        let provenance = provenance(&props, "shapefile-terrain-overlay", &name);
+        for geometry in overlay_geometries(&shape)? {
+            overlays.push(TerrainOverlay {
+                name: name.clone(),
+                terrain,
+                surface: surface.clone(),
+                confidence: props.f64("confidence").unwrap_or(0.75).clamp(0.0, 1.0),
+                tolerance_m: props.f64("tolerance_m").unwrap_or(20.0).max(0.0),
+                provenance: provenance.clone(),
+                geometry,
+            });
+        }
+    }
+    Ok(overlays)
+}
+
+pub fn context_overlays_from_path(path: &Path) -> Result<Vec<ContextOverlay>> {
+    let mut overlays = Vec::new();
+    for (i, row) in read(path)?.into_iter().enumerate() {
+        let (shape, record) = row;
+        let props = ShpProps::new(&record);
+        let Some(kind) = props
+            .str("kind")
+            .or_else(|| props.str("context"))
+            .or_else(|| props.str("type"))
+            .and_then(CrossingKind::from_tag)
+            .or_else(|| context_kind_from_path(path))
+        else {
+            continue;
+        };
+        let name = props
+            .str("name")
+            .or_else(|| props.str("id"))
+            .map_or_else(|| format!("context-{i}"), str::to_owned);
+        let provenance = provenance(&props, default_context_source(kind), &name);
+        for geometry in lines(&shape)? {
+            overlays.push(ContextOverlay {
+                name: name.clone(),
+                kind,
+                confidence: props.f64("confidence").unwrap_or(0.80).clamp(0.0, 1.0),
+                provenance: provenance.clone(),
+                geometry,
+            });
+        }
+    }
+    Ok(overlays)
+}
+
 fn read(path: &Path) -> Result<Vec<(Shape, Record)>> {
     ::shapefile::read(path).map_err(|error| {
         TrailgenError::InvalidData(format!("read shapefile {}: {error}", path.display()))
     })
+}
+
+fn provenance(props: &ShpProps<'_>, default_source: &str, source_id: &str) -> Provenance {
+    Provenance {
+        source: props.str("source").unwrap_or(default_source).to_owned(),
+        layer: props.str("layer").map(str::to_owned),
+        source_id: Some(source_id.to_owned()),
+        license: props.str("license").map(str::to_owned),
+    }
+}
+
+fn context_kind_from_path(path: &Path) -> Option<CrossingKind> {
+    let name = path.display().to_string().to_ascii_lowercase();
+    if name.contains("road") || name.contains("street") {
+        Some(CrossingKind::Road)
+    } else if name.contains("hydrology")
+        || name.contains("water")
+        || name.contains("stream")
+        || name.contains("creek")
+        || name.contains("river")
+    {
+        Some(CrossingKind::Water)
+    } else {
+        None
+    }
+}
+
+const fn default_context_source(kind: CrossingKind) -> &'static str {
+    match kind {
+        CrossingKind::Road => "shapefile-road-context",
+        CrossingKind::Water => "shapefile-hydrology-context",
+    }
 }
 
 fn lines(shape: &Shape) -> Result<Vec<LineString>> {

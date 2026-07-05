@@ -318,6 +318,14 @@ fn overlay_context_adapters() -> Vec<SourceAdapter> {
             "GeoJSON land-cover, surface, or user terrain overlays applied after graph construction.",
         ),
         adapter(
+            "shapefile-terrain-overlay",
+            SourceKind::Terrain,
+            AdapterStatus::Implemented,
+            ["shp", "dbf", "shx"],
+            ["terrain overrides", "confidence/provenance"],
+            "Polygon or line shapefile land-cover, surface, or terrain overlays applied after graph construction.",
+        ),
+        adapter(
             "geojson-access-overlay",
             SourceKind::Access,
             AdapterStatus::Implemented,
@@ -350,12 +358,28 @@ fn overlay_context_adapters() -> Vec<SourceAdapter> {
             "GeoJSON road/street context lines used to infer trail crossings.",
         ),
         adapter(
+            "shapefile-road-context",
+            SourceKind::Road,
+            AdapterStatus::Implemented,
+            ["shp", "dbf", "shx"],
+            ["road crossings", "road exposure hints"],
+            "Shapefile road/street centerlines used to infer trail crossings.",
+        ),
+        adapter(
             "geojson-hydrology-context",
             SourceKind::Hydrology,
             AdapterStatus::Implemented,
             ["geojson", "json"],
             ["water crossings"],
             "GeoJSON stream/river context lines used to infer water crossings.",
+        ),
+        adapter(
+            "shapefile-hydrology-context",
+            SourceKind::Hydrology,
+            AdapterStatus::Implemented,
+            ["shp", "dbf", "shx"],
+            ["water crossings"],
+            "Shapefile stream/river centerlines used to infer water crossings.",
         ),
         adapter(
             "shapefile-closure-layer",
@@ -457,8 +481,12 @@ const RECOMMENDATION_SPECS: &[RecommendationSpec] = &[
     RecommendationSpec {
         kind: SourceKind::Terrain,
         priority: SourcePriority::Recommended,
-        adapter_ids: &["geojson-terrain-overlay"],
-        suggested_paths: &["sources/terrain.geojson", "sources/landcover.geojson"],
+        adapter_ids: &["geojson-terrain-overlay", "shapefile-terrain-overlay"],
+        suggested_paths: &[
+            "sources/terrain.geojson",
+            "sources/landcover.geojson",
+            "sources/terrain.shp",
+        ],
         search_terms: &[
             "land cover polygons",
             "trail surface GIS layer",
@@ -504,8 +532,12 @@ const RECOMMENDATION_SPECS: &[RecommendationSpec] = &[
     RecommendationSpec {
         kind: SourceKind::Road,
         priority: SourcePriority::Recommended,
-        adapter_ids: &["geojson-road-context"],
-        suggested_paths: &["sources/roads.geojson", "sources/context-roads.geojson"],
+        adapter_ids: &["geojson-road-context", "shapefile-road-context"],
+        suggested_paths: &[
+            "sources/roads.geojson",
+            "sources/context-roads.geojson",
+            "sources/roads.shp",
+        ],
         search_terms: &[
             "road centerline GeoJSON",
             "street context lines",
@@ -517,8 +549,12 @@ const RECOMMENDATION_SPECS: &[RecommendationSpec] = &[
     RecommendationSpec {
         kind: SourceKind::Hydrology,
         priority: SourcePriority::Recommended,
-        adapter_ids: &["geojson-hydrology-context"],
-        suggested_paths: &["sources/hydrology.geojson", "sources/streams.geojson"],
+        adapter_ids: &["geojson-hydrology-context", "shapefile-hydrology-context"],
+        suggested_paths: &[
+            "sources/hydrology.geojson",
+            "sources/streams.geojson",
+            "sources/hydrology.shp",
+        ],
         search_terms: &[
             "NHD stream lines",
             "hydrology GeoJSON",
@@ -584,6 +620,25 @@ pub fn classify_path(path: &Path) -> Option<SourceCandidate> {
         "shp" if path_lc.contains("closure") => (SourceKind::Closure, "shapefile-closure-layer"),
         "shp" if path_lc.contains("access") || path_lc.contains("ownership") => {
             (SourceKind::Access, "shapefile-access-overlay")
+        }
+        "shp"
+            if path_lc.contains("terrain")
+                || path_lc.contains("surface")
+                || path_lc.contains("landcover")
+                || path_lc.contains("land-cover")
+                || path_lc.contains("land_cover") =>
+        {
+            (SourceKind::Terrain, "shapefile-terrain-overlay")
+        }
+        "shp" if path_lc.contains("road") || path_lc.contains("street") => {
+            (SourceKind::Road, "shapefile-road-context")
+        }
+        "shp"
+            if path_lc.contains("hydrology")
+                || path_lc.contains("water")
+                || path_lc.contains("stream") =>
+        {
+            (SourceKind::Hydrology, "shapefile-hydrology-context")
         }
         "shp" => (SourceKind::TrailNetwork, "shapefile-network"),
         _ => return None,
