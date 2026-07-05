@@ -53,16 +53,16 @@ Largest difficulty contributors:
 - edge 1 distance: 1.33 (0.1% of route), Talus, 1334 m
 
 Most dubious segments:
-- edge 2: 1022 m, Trail, grade max 2.3%, grade bins flat 100% / rolling 0% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:south
-- edge 1: 1334 m, Talus, grade max 9.0%, grade bins flat 0% / rolling 100% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:east
-- edge 0: 1022 m, Trail, grade max 4.0%, grade bins flat 100% / rolling 0% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:north
-- edge 3: 1334 m, Talus, grade max 9.0%, grade bins flat 0% / rolling 100% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:west
+- edge 2: 1022 m, Trail, surface unknown, grade max 2.3%, grade bins flat 100% / rolling 0% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:south
+- edge 1: 1334 m, Talus, surface unknown, grade max 9.0%, grade bins flat 0% / rolling 100% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:east
+- edge 0: 1022 m, Trail, surface unknown, grade max 4.0%, grade bins flat 100% / rolling 0% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:north
+- edge 3: 1334 m, Talus, surface unknown, grade max 9.0%, grade bins flat 0% / rolling 100% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:west
 
 Terrain/elevation evidence:
-- edge 2: Trail 90%: explicit source terrain tag; elevation source arc-ascii-grid
-- edge 1: Forest 90%: explicit source terrain tag; elevation source arc-ascii-grid
-- edge 0: Trail 90%: explicit source terrain tag; elevation source arc-ascii-grid
-- edge 3: Talus 90%: explicit source terrain tag; elevation source arc-ascii-grid
+- edge 2: Trail 90%: explicit source terrain tag; surface unknown; elevation source arc-ascii-grid
+- edge 1: Forest 90%: explicit source terrain tag; surface unknown; elevation source arc-ascii-grid
+- edge 0: Trail 90%: explicit source terrain tag; surface unknown; elevation source arc-ascii-grid
+- edge 3: Talus 90%: explicit source terrain tag; surface unknown; elevation source arc-ascii-grid
 
 ## candidate-2
 
@@ -118,14 +118,14 @@ Largest difficulty contributors:
 - edge 2 distance: 1.02 (0.1% of route), Trail, 1022 m
 
 Most dubious segments:
-- edge 4: 1681 m, Alpine, grade max 5.7%, grade bins flat 58% / rolling 42% / steep 0% / savage 0%, crossings 2, confidence 0.81, seed count 0, provenance fixture:diagonal
-- edge 2: 1022 m, Trail, grade max 2.3%, grade bins flat 100% / rolling 0% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:south
-- edge 1: 1334 m, Talus, grade max 9.0%, grade bins flat 0% / rolling 100% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:east
+- edge 4: 1681 m, Alpine, surface unknown, grade max 5.7%, grade bins flat 58% / rolling 42% / steep 0% / savage 0%, crossings 2, confidence 0.81, seed count 0, provenance fixture:diagonal
+- edge 2: 1022 m, Trail, surface unknown, grade max 2.3%, grade bins flat 100% / rolling 0% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:south
+- edge 1: 1334 m, Talus, surface unknown, grade max 9.0%, grade bins flat 0% / rolling 100% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:east
 
 Terrain/elevation evidence:
-- edge 2: Trail 90%: explicit source terrain tag; elevation source arc-ascii-grid
-- edge 1: Forest 90%: explicit source terrain tag; elevation source arc-ascii-grid
-- edge 4: Alpine 90%: explicit source terrain tag; elevation source arc-ascii-grid
+- edge 2: Trail 90%: explicit source terrain tag; surface unknown; elevation source arc-ascii-grid
+- edge 1: Forest 90%: explicit source terrain tag; surface unknown; elevation source arc-ascii-grid
+- edge 4: Alpine 90%: explicit source terrain tag; surface unknown; elevation source arc-ascii-grid
 
 ## candidate-3
 
@@ -180,16 +180,16 @@ Largest difficulty contributors:
 - edge 3 distance: 1.33 (0.1% of route), Talus, 1334 m
 
 Most dubious segments:
-- edge 3: 1334 m, Talus, grade max 9.0%, grade bins flat 0% / rolling 100% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:west
-- edge 0: 1022 m, Trail, grade max 4.0%, grade bins flat 100% / rolling 0% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:north
-- edge 1: 1334 m, Talus, grade max 9.0%, grade bins flat 0% / rolling 100% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:east
-- edge 2: 1022 m, Trail, grade max 2.3%, grade bins flat 100% / rolling 0% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:south
+- edge 3: 1334 m, Talus, surface unknown, grade max 9.0%, grade bins flat 0% / rolling 100% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:west
+- edge 0: 1022 m, Trail, surface unknown, grade max 4.0%, grade bins flat 100% / rolling 0% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:north
+- edge 1: 1334 m, Talus, surface unknown, grade max 9.0%, grade bins flat 0% / rolling 100% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:east
+- edge 2: 1022 m, Trail, surface unknown, grade max 2.3%, grade bins flat 100% / rolling 0% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:south
 
 Terrain/elevation evidence:
-- edge 3: Talus 90%: explicit source terrain tag; elevation source arc-ascii-grid
-- edge 0: Trail 90%: explicit source terrain tag; elevation source arc-ascii-grid
-- edge 1: Forest 90%: explicit source terrain tag; elevation source arc-ascii-grid
-- edge 2: Trail 90%: explicit source terrain tag; elevation source arc-ascii-grid
+- edge 3: Talus 90%: explicit source terrain tag; surface unknown; elevation source arc-ascii-grid
+- edge 0: Trail 90%: explicit source terrain tag; surface unknown; elevation source arc-ascii-grid
+- edge 1: Forest 90%: explicit source terrain tag; surface unknown; elevation source arc-ascii-grid
+- edge 2: Trail 90%: explicit source terrain tag; surface unknown; elevation source arc-ascii-grid
 
 ## candidate-4
 
@@ -245,14 +245,14 @@ Largest difficulty contributors:
 - edge 2 distance: 1.02 (0.1% of route), Trail, 1022 m
 
 Most dubious segments:
-- edge 4: 1681 m, Alpine, grade max 5.7%, grade bins flat 58% / rolling 42% / steep 0% / savage 0%, crossings 2, confidence 0.81, seed count 0, provenance fixture:diagonal
-- edge 1: 1334 m, Talus, grade max 9.0%, grade bins flat 0% / rolling 100% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:east
-- edge 2: 1022 m, Trail, grade max 2.3%, grade bins flat 100% / rolling 0% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:south
+- edge 4: 1681 m, Alpine, surface unknown, grade max 5.7%, grade bins flat 58% / rolling 42% / steep 0% / savage 0%, crossings 2, confidence 0.81, seed count 0, provenance fixture:diagonal
+- edge 1: 1334 m, Talus, surface unknown, grade max 9.0%, grade bins flat 0% / rolling 100% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:east
+- edge 2: 1022 m, Trail, surface unknown, grade max 2.3%, grade bins flat 100% / rolling 0% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:south
 
 Terrain/elevation evidence:
-- edge 4: Alpine 90%: explicit source terrain tag; elevation source arc-ascii-grid
-- edge 1: Forest 90%: explicit source terrain tag; elevation source arc-ascii-grid
-- edge 2: Trail 90%: explicit source terrain tag; elevation source arc-ascii-grid
+- edge 4: Alpine 90%: explicit source terrain tag; surface unknown; elevation source arc-ascii-grid
+- edge 1: Forest 90%: explicit source terrain tag; surface unknown; elevation source arc-ascii-grid
+- edge 2: Trail 90%: explicit source terrain tag; surface unknown; elevation source arc-ascii-grid
 
 ## Constraint Envelope
 

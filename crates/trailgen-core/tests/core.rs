@@ -24,6 +24,7 @@ fn builder_splits_crossing_lines() {
         SegmentDraft {
             geometry: LineString::new(vec![Coord::new(0.0, 0.5), Coord::new(1.0, 0.5)]).unwrap(),
             terrain: Terrain::Trail,
+            surface: None,
             access: Access::Open,
             road_exposure: 0.0,
             confidence: 1.0,
@@ -32,6 +33,7 @@ fn builder_splits_crossing_lines() {
         SegmentDraft {
             geometry: LineString::new(vec![Coord::new(0.5, 0.0), Coord::new(0.5, 1.0)]).unwrap(),
             terrain: Terrain::Trail,
+            surface: None,
             access: Access::Open,
             road_exposure: 0.0,
             confidence: 1.0,
@@ -106,6 +108,7 @@ fn near_miss_drafts() -> Vec<SegmentDraft> {
         SegmentDraft {
             geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(1.0, 0.0)]).unwrap(),
             terrain: Terrain::Trail,
+            surface: None,
             access: Access::Open,
             road_exposure: 0.0,
             confidence: 1.0,
@@ -115,6 +118,7 @@ fn near_miss_drafts() -> Vec<SegmentDraft> {
             geometry: LineString::new(vec![Coord::new(0.5, 0.00005), Coord::new(0.5, 0.01)])
                 .unwrap(),
             terrain: Terrain::Trail,
+            surface: None,
             access: Access::Open,
             road_exposure: 0.0,
             confidence: 1.0,
@@ -128,6 +132,7 @@ fn difficulty_penalizes_rough_uncertain_closed_edges() {
     let smooth = SegmentDraft {
         geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
         terrain: Terrain::Trail,
+        surface: Some("dirt".to_owned()),
         access: Access::Open,
         road_exposure: 0.0,
         confidence: 1.0,
@@ -135,6 +140,7 @@ fn difficulty_penalizes_rough_uncertain_closed_edges() {
     };
     let savage = SegmentDraft {
         terrain: Terrain::Scramble,
+        surface: Some("dirt".to_owned()),
         access: Access::Closed,
         confidence: 0.25,
         provenance: Provenance::fixture("savage"),
@@ -142,6 +148,7 @@ fn difficulty_penalizes_rough_uncertain_closed_edges() {
     };
     let uncertain = SegmentDraft {
         terrain: Terrain::Unknown,
+        surface: Some("dirt".to_owned()),
         access: Access::Open,
         confidence: 0.9,
         provenance: Provenance::fixture("uncertain"),
@@ -158,6 +165,7 @@ fn difficulty_penalizes_rough_uncertain_closed_edges() {
         (edge.attr.difficulty - edge.attr.difficulty_breakdown.total()).abs() <= 1.0e-9
     }));
     assert!(graph.edges[1].attr.difficulty_breakdown.access > 900.0);
+    assert_eq!(graph.edges[0].attr.surface.as_deref(), Some("dirt"));
     assert!(graph.edges[1].attr.difficulty_breakdown.technical > 0.0);
     assert!(
         graph.edges[1].attr.difficulty_breakdown.technical
@@ -182,6 +190,7 @@ fn terrain_multipliers_are_configurable_and_defaulted() {
     let draft = SegmentDraft {
         geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
         terrain: Terrain::Talus,
+        surface: None,
         access: Access::Open,
         road_exposure: 0.0,
         confidence: 1.0,
@@ -208,11 +217,46 @@ fn terrain_multipliers_are_configurable_and_defaulted() {
 }
 
 #[test]
+fn geojson_network_preserves_surface_tags() {
+    let drafts = geojson::network_from_str(
+        r#"{"type":"FeatureCollection","features":[{
+            "type":"Feature",
+            "properties":{"surface":"asphalt","source":"fixture","id":"surface-edge"},
+            "geometry":{"type":"LineString","coordinates":[[0.0,0.0],[0.01,0.0]]}
+        }]}"#,
+    )
+    .unwrap();
+    let graph = GraphBuilder::default().build(&drafts).unwrap();
+    let edge = &graph.edges[0];
+
+    assert_eq!(edge.attr.surface.as_deref(), Some("asphalt"));
+    assert_eq!(edge.attr.terrain, Terrain::Pavement);
+    assert!(geojson::graph_to_geojson(&graph)["features"][0]["properties"]["surface"] == "asphalt");
+    let report = report::render(
+        &graph,
+        &[Route::from_edges(
+            "surface",
+            &graph,
+            edge.a,
+            vec![edge.id],
+            &LoopConstraints {
+                min_distance_m: 0.0,
+                max_distance_m: 10_000.0,
+                allowed_shapes: vec![RouteShape::Open],
+                ..LoopConstraints::default()
+            },
+        )],
+    );
+    assert!(report.contains("surface asphalt"));
+}
+
+#[test]
 fn road_fraction_counts_road_and_pavement_terrain() {
     let graph = GraphBuilder::default()
         .build(&[SegmentDraft {
             geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
             terrain: Terrain::Pavement,
+            surface: Some("asphalt".to_owned()),
             access: Access::Open,
             road_exposure: 0.0,
             confidence: 1.0,
@@ -989,6 +1033,7 @@ fn elevation_enrichment_densifies_rates_and_infers_terrain() {
     let draft = SegmentDraft {
         geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.0, 0.01)]).unwrap(),
         terrain: Terrain::Unknown,
+        surface: None,
         access: Access::Open,
         road_exposure: 0.0,
         confidence: 0.9,
@@ -1074,6 +1119,7 @@ fn simple_path_draft() -> SegmentDraft {
         ])
         .unwrap(),
         terrain: Terrain::Trail,
+        surface: None,
         access: Access::Open,
         road_exposure: 0.0,
         confidence: 1.0,
@@ -1099,6 +1145,7 @@ fn bowtie_drafts() -> Vec<SegmentDraft> {
     .map(|(from, to, name)| SegmentDraft {
         geometry: LineString::new(vec![from, to]).unwrap(),
         terrain: Terrain::Trail,
+        surface: None,
         access: Access::Open,
         road_exposure: 0.0,
         confidence: 1.0,

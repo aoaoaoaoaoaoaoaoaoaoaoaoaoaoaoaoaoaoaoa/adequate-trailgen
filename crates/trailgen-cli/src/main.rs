@@ -446,6 +446,7 @@ fn route_source_draft_from_line(source: &Path, line: LineString) -> SegmentDraft
     SegmentDraft {
         geometry: line,
         terrain: Terrain::Unknown,
+        surface: None,
         access: Access::Unknown,
         road_exposure: 0.0,
         confidence: 0.65,

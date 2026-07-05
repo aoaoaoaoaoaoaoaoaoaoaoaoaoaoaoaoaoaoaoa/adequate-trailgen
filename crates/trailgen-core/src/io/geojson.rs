@@ -21,7 +21,10 @@ pub fn network_from_str(s: &str) -> Result<Vec<SegmentDraft>> {
             .and_then(Value::as_object)
             .cloned()
             .unwrap_or_default();
-        let terrain = prop_str(&properties, "terrain").map_or(Terrain::Unknown, Terrain::from_tag);
+        let surface = prop_str(&properties, "surface").map(str::to_owned);
+        let terrain = prop_str(&properties, "terrain")
+            .or(surface.as_deref())
+            .map_or(Terrain::Unknown, Terrain::from_tag);
         let access = prop_str(&properties, "access").map_or(Access::Unknown, Access::from_tag);
         let confidence = prop_f64(&properties, "confidence").unwrap_or(0.75);
         let road_exposure = prop_f64(&properties, "road_exposure")
@@ -47,6 +50,7 @@ pub fn network_from_str(s: &str) -> Result<Vec<SegmentDraft>> {
             drafts.push(SegmentDraft {
                 geometry: line,
                 terrain,
+                surface: surface.clone(),
                 access,
                 road_exposure,
                 confidence,
@@ -149,36 +153,40 @@ pub fn graph_to_geojson(graph: &TrailGraph) -> Value {
     json!({
         "type": "FeatureCollection",
         "features": graph.edges.iter().map(|edge| {
+            let mut properties = Map::from_iter([
+                ("edge_id".to_owned(), json!(edge.id.0)),
+                ("from".to_owned(), json!(edge.a.0)),
+                ("to".to_owned(), json!(edge.b.0)),
+                ("length_m".to_owned(), json!(edge.attr.length_m)),
+                ("ascent_m".to_owned(), json!(edge.attr.ascent_m)),
+                ("descent_m".to_owned(), json!(edge.attr.descent_m)),
+                ("grade_abs_mean".to_owned(), json!(edge.attr.grade_abs_mean)),
+                ("grade_abs_max".to_owned(), json!(edge.attr.grade_abs_max)),
+                ("sustained_steep_m".to_owned(), json!(edge.attr.sustained_steep_m)),
+                ("grade_distribution".to_owned(), json!(edge.attr.grade_distribution)),
+                ("difficulty".to_owned(), json!(edge.attr.difficulty)),
+                ("difficulty_breakdown".to_owned(), json!(edge.attr.difficulty_breakdown)),
+                ("terrain".to_owned(), json!(edge.attr.terrain)),
+                ("terrain_confidence".to_owned(), json!(edge.attr.terrain_confidence)),
+                ("terrain_evidence".to_owned(), json!(edge.attr.terrain_evidence)),
+                ("access".to_owned(), json!(edge.attr.access)),
+                ("access_confidence".to_owned(), json!(edge.attr.access_confidence)),
+                ("access_provenance".to_owned(), json!(edge.attr.access_provenance)),
+                ("crossings".to_owned(), json!(edge.attr.crossings)),
+                ("confidence".to_owned(), json!(edge.attr.confidence)),
+                ("seed_count".to_owned(), json!(edge.attr.seed_count)),
+                ("popularity".to_owned(), json!(edge.attr.popularity)),
+                ("seed_provenance".to_owned(), json!(edge.attr.seed_provenance)),
+                ("road_exposure".to_owned(), json!(edge.attr.road_exposure)),
+                ("elevation_provenance".to_owned(), json!(edge.attr.elevation_provenance)),
+                ("provenance".to_owned(), json!(edge.attr.provenance)),
+            ]);
+            if let Some(surface) = &edge.attr.surface {
+                properties.insert("surface".to_owned(), json!(surface));
+            }
             json!({
                 "type": "Feature",
-                "properties": {
-                    "edge_id": edge.id.0,
-                    "from": edge.a.0,
-                    "to": edge.b.0,
-                    "length_m": edge.attr.length_m,
-                    "ascent_m": edge.attr.ascent_m,
-                    "descent_m": edge.attr.descent_m,
-                    "grade_abs_mean": edge.attr.grade_abs_mean,
-                    "grade_abs_max": edge.attr.grade_abs_max,
-                    "sustained_steep_m": edge.attr.sustained_steep_m,
-                    "grade_distribution": edge.attr.grade_distribution,
-                    "difficulty": edge.attr.difficulty,
-                    "difficulty_breakdown": edge.attr.difficulty_breakdown,
-                    "terrain": edge.attr.terrain,
-                    "terrain_confidence": edge.attr.terrain_confidence,
-                    "terrain_evidence": edge.attr.terrain_evidence,
-                    "access": edge.attr.access,
-                    "access_confidence": edge.attr.access_confidence,
-                    "access_provenance": edge.attr.access_provenance,
-                    "crossings": edge.attr.crossings,
-                    "confidence": edge.attr.confidence,
-                    "seed_count": edge.attr.seed_count,
-                    "popularity": edge.attr.popularity,
-                    "seed_provenance": edge.attr.seed_provenance,
-                    "road_exposure": edge.attr.road_exposure,
-                    "elevation_provenance": edge.attr.elevation_provenance,
-                    "provenance": edge.attr.provenance,
-                },
+                "properties": properties,
                 "geometry": line_geometry(&edge.geometry),
             })
         }).collect::<Vec<_>>()
@@ -303,6 +311,7 @@ fn terrain_overlay_from_feature(feature: &Value, i: usize) -> Result<TerrainOver
     Ok(TerrainOverlay {
         name,
         terrain,
+        surface: prop_str(&properties, "surface").map(str::to_owned),
         confidence: prop_f64(&properties, "confidence")
             .unwrap_or(0.75)
             .clamp(0.0, 1.0),

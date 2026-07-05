@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, btree_map::Entry};
 pub struct SegmentDraft {
     pub geometry: LineString,
     pub terrain: Terrain,
+    pub surface: Option<String>,
     pub access: Access,
     pub road_exposure: f64,
     pub confidence: f64,
@@ -200,6 +201,7 @@ fn edge_attr(
         sustained_steep_m: 0.0,
         grade_distribution: GradeDistribution::default().add_segment(length_m, grade_abs_mean),
         terrain: draft.terrain,
+        surface: draft.surface.clone(),
         terrain_confidence: if draft.terrain == Terrain::Unknown {
             0.0
         } else {

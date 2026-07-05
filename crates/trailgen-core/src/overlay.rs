@@ -20,6 +20,8 @@ pub struct AccessOverlay {
 pub struct TerrainOverlay {
     pub name: String,
     pub terrain: Terrain,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface: Option<String>,
     pub confidence: f64,
     pub tolerance_m: f64,
     pub provenance: Provenance,
@@ -108,6 +110,9 @@ pub fn apply_terrain_overlays(
             touched += 1;
             changed = true;
             edge.attr.terrain = overlay.terrain;
+            if let Some(surface) = &overlay.surface {
+                edge.attr.surface = Some(surface.clone());
+            }
             edge.attr.terrain_confidence = edge.attr.terrain_confidence.max(overlay.confidence);
             edge.attr.confidence = edge.attr.confidence.min(overlay.confidence);
             push_terrain_evidence(edge, overlay);

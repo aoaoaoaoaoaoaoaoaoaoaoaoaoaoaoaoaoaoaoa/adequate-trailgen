@@ -196,10 +196,11 @@ fn render_dubious_edge(edge: &Edge, s: &mut String) {
     );
     let _ = writeln!(
         s,
-        "- edge {}: {:.0} m, {:?}, grade max {:.1}%, grade bins {}, crossings {}, confidence {:.2}, seed count {}, provenance {prov}",
+        "- edge {}: {:.0} m, {:?}, surface {}, grade max {:.1}%, grade bins {}, crossings {}, confidence {:.2}, seed count {}, provenance {prov}",
         edge.id.0,
         edge.attr.length_m,
         edge.attr.terrain,
+        edge.attr.surface.as_deref().unwrap_or("unknown"),
         edge.attr.grade_abs_max * 100.0,
         grade_bins(edge),
         edge.attr.crossings.iter().map(|x| x.count).sum::<u32>(),
@@ -235,13 +236,14 @@ fn render_evidence(graph: &TrailGraph, route: &Route, s: &mut String) {
                 )
             },
         );
+        let surface = edge.attr.surface.as_deref().unwrap_or("unknown");
         let elevation = edge.attr.elevation_provenance.first().map_or_else(
             || "no elevation provenance".to_owned(),
             |p| p.source.clone(),
         );
         let _ = writeln!(
             s,
-            "- edge {}: {terrain}; elevation source {elevation}",
+            "- edge {}: {terrain}; surface {surface}; elevation source {elevation}",
             edge.id.0
         );
     }

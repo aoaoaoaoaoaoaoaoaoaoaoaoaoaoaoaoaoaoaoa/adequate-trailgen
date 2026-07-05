@@ -175,6 +175,8 @@ pub struct EdgeAttr {
     #[serde(default)]
     pub grade_distribution: GradeDistribution,
     pub terrain: Terrain,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface: Option<String>,
     #[serde(default)]
     pub terrain_confidence: f64,
     #[serde(default)]
