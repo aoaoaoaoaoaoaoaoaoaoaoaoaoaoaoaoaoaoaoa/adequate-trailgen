@@ -42,6 +42,7 @@ Generated artifacts land in the project directory:
 - `routes/generated.geojson`: Pareto-ranked generated loops with persisted route scores, constraint penalties, terrain/access fractions, dubious segments, difficulty hotspots, and source provenance summaries
 - `routes/generated.graph.json`: effective graph snapshot used by generated route exports, reports, and maps
 - `routes/generated.manifest.json`: app version, random seed, requested/concrete solver, effective config, fingerprinted source manifest, one-run forbidden-area sources, graph summary, exact route edge sequences, and artifact list for reproducing a generation run
+- `routes/candidate-*.geojson`: per-route GeoJSON exports with the same diagnostics as `routes/generated.geojson`
 - `routes/candidate-*.gpx`: GPX exports
 - `routes/candidate-*.csv`: lon/lat/elevation CSV exports
 - `routes/candidate-*.kml`: KML exports

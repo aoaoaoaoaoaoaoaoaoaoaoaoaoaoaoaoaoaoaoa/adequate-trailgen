@@ -1189,6 +1189,11 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
         })?,
     )?;
     for route in &routes {
+        write_json(
+            project.join(format!("routes/{}.geojson", route.name)),
+            &geojson::routes_to_geojson(&graph, std::slice::from_ref(route)),
+        )
+        .with_context(|| format!("write GeoJSON for {}", route.name))?;
         fs::write(
             project.join(format!("routes/{}.gpx", route.name)),
             gpx::route_to_gpx(&graph, route),
@@ -3245,6 +3250,7 @@ fn generation_artifacts(routes: &[Route]) -> Vec<String> {
     ];
     for route in routes {
         artifacts.extend([
+            format!("routes/{}.geojson", route.name),
             format!("routes/{}.gpx", route.name),
             format!("routes/{}.csv", route.name),
             format!("routes/{}.kml", route.name),
@@ -3785,6 +3791,7 @@ mod tests {
         assert!(manifest["artifacts"].as_array().is_some_and(|xs| {
             xs.iter().any(|x| x == "routes/generated.manifest.json")
                 && xs.iter().any(|x| x == "reports/map.html")
+                && xs.iter().any(|x| x == "routes/candidate-1.geojson")
         }));
 
         Ok(())
@@ -4051,6 +4058,13 @@ mod tests {
         assert!(csv::route_line_from_str(&csv_text)?.length_m() > 3_000.0);
         let selected_geojson = serde_json::from_str::<Value>(&fs::read_to_string(geojson)?)?;
         assert_eq!(selected_geojson["type"], "FeatureCollection");
+        let generated_geojson = serde_json::from_str::<Value>(&fs::read_to_string(
+            project.join("routes/candidate-1.geojson"),
+        )?)?;
+        assert_eq!(
+            generated_geojson["features"][0]["properties"]["name"],
+            "candidate-1"
+        );
         let selected_properties = &selected_geojson["features"][0]["properties"];
         assert!(selected_properties["restricted_access_fraction"].is_number());
         assert!(selected_properties["terrain_fraction"].is_object());
