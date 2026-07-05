@@ -46,6 +46,12 @@ Terrain mix:
 - Trail: 43.4%
 - Talus: 56.6%
 
+Source provenance:
+- fixture:east: 1.33 km (28.3%)
+- fixture:north: 1.02 km (21.7%)
+- fixture:south: 1.02 km (21.7%)
+- fixture:west: 1.33 km (28.3%)
+
 Largest difficulty contributors:
 - edge 3 access: 1000.00 (98.6% of route), Talus, 1334 m
 - edge 1 technical: 1.59 (0.2% of route), Talus, 1334 m
@@ -60,10 +66,10 @@ Most dubious segments:
 - edge 3: 1334 m, Talus, surface unknown, grade max 9.0%, grade bins flat 0% / rolling 100% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:west
 
 Terrain/elevation evidence:
-- edge 2: Trail 90%: explicit source terrain tag; surface unknown; elevation source arc-ascii-grid
-- edge 1: Forest 90%: explicit source terrain tag; surface unknown; elevation source arc-ascii-grid
-- edge 0: Trail 90%: explicit source terrain tag; surface unknown; elevation source arc-ascii-grid
-- edge 3: Talus 90%: explicit source terrain tag; surface unknown; elevation source arc-ascii-grid
+- edge 2: current Trail; terrain evidence Trail 90%: explicit source terrain tag (fixture:south); surface unknown; elevation sources arc-ascii-grid:mini_dem.asc
+- edge 1: current Talus; terrain evidence Forest 90%: explicit source terrain tag (fixture:east) | Talus 87%: terrain overlay (fixture-landcover:talus-basin); surface unknown; elevation sources arc-ascii-grid:mini_dem.asc
+- edge 0: current Trail; terrain evidence Trail 90%: explicit source terrain tag (fixture:north); surface unknown; elevation sources arc-ascii-grid:mini_dem.asc
+- edge 3: current Talus; terrain evidence Talus 90%: explicit source terrain tag (fixture:west); surface unknown; elevation sources arc-ascii-grid:mini_dem.asc
 
 ## Constraint Envelope
 
