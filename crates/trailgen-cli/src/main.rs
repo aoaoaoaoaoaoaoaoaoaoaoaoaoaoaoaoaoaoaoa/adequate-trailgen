@@ -1105,7 +1105,13 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
     }
     fs::write(
         project.join("reports/generated.md"),
-        render_project_report(project, &graph, &routes, &config.constraints)?,
+        render_project_report(
+            project,
+            "Generated Hiking Routes",
+            &graph,
+            &routes,
+            &config.constraints,
+        )?,
     )
     .with_context(|| "write generated report")?;
     write_bytes(
@@ -1204,7 +1210,13 @@ fn rate(
         "rated-route",
         max_route_snap_m.unwrap_or(config.max_route_snap_m),
     )?;
-    let text = render_project_report(project, &graph, &[route], &config.constraints)?;
+    let text = render_project_report(
+        project,
+        "Rated Hiking Route",
+        &graph,
+        &[route],
+        &config.constraints,
+    )?;
     if let Some(output) = output {
         write_bytes(output, text)?;
         println!("wrote rated-route report {}", output.display());
@@ -1523,7 +1535,13 @@ fn report_generated(project: &Path, route_name: Option<&str>, output: Option<&Pa
             .map(|config| config.constraints)
             .unwrap_or_default()
     });
-    let text = render_project_report(project, &graph, report_routes, &constraints)?;
+    let text = render_project_report(
+        project,
+        "Generated Hiking Routes",
+        &graph,
+        report_routes,
+        &constraints,
+    )?;
     if let Some(output) = output {
         write_bytes(output, text)?;
         println!("wrote report {}", output.display());
@@ -1773,11 +1791,12 @@ fn html_text(raw: &str) -> String {
 
 fn render_project_report(
     project: &Path,
+    title: &str,
     graph: &TrailGraph,
     routes: &[Route],
     constraints: &LoopConstraints,
 ) -> Result<String> {
-    let mut text = report::render(graph, routes);
+    let mut text = report::render_titled(title, graph, routes);
     render_constraints_section(&mut text, constraints);
     render_source_manifest_section(&mut text, load_source_manifest(project)?.as_ref());
     Ok(text)
@@ -3829,6 +3848,7 @@ mod tests {
         let report = project.join("reports/rated.md");
         rate(project, &route, Some(20_000_000.0), Some(&report))?;
         let report = fs::read_to_string(report)?;
+        assert!(report.starts_with("# Rated Hiking Route"));
         assert!(report.contains("rated-route"));
         assert!(report.contains("Difficulty decomposition"));
         assert!(report.contains("Most dubious segments"));

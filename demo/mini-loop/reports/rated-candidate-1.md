@@ -1,4 +1,4 @@
-# Generated Hiking Routes
+# Rated Hiking Route
 
 ## candidate-1
 

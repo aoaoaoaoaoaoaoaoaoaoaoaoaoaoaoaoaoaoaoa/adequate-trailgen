@@ -5,7 +5,12 @@ use std::fmt::Write as _;
 
 #[must_use]
 pub fn render(graph: &TrailGraph, routes: &[Route]) -> String {
-    let mut s = String::from("# Generated Hiking Routes\n\n");
+    render_titled("Generated Hiking Routes", graph, routes)
+}
+
+#[must_use]
+pub fn render_titled(title: &str, graph: &TrailGraph, routes: &[Route]) -> String {
+    let mut s = format!("# {title}\n\n");
     if routes.is_empty() {
         s.push_str("No candidate routes were generated.\n");
         return s;
