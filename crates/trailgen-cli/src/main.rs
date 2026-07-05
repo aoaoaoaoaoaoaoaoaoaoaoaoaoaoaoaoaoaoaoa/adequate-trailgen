@@ -149,6 +149,8 @@ enum Cmd {
         route: PathBuf,
         #[arg(long)]
         max_route_snap_m: Option<f64>,
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
     Rerate {
         project: PathBuf,
@@ -385,7 +387,8 @@ fn main() -> Result<()> {
             project,
             route,
             max_route_snap_m,
-        } => rate(&project, &route, max_route_snap_m),
+            output,
+        } => rate(&project, &route, max_route_snap_m, output.as_deref()),
         Cmd::Rerate { project } => rerate(&project),
         Cmd::Calibrate {
             project,
@@ -1186,7 +1189,12 @@ fn apply_generate_options(constraints: &mut LoopConstraints, options: &GenerateO
     }
 }
 
-fn rate(project: &Path, route: &Path, max_route_snap_m: Option<f64>) -> Result<()> {
+fn rate(
+    project: &Path,
+    route: &Path,
+    max_route_snap_m: Option<f64>,
+    output: Option<&Path>,
+) -> Result<()> {
     let config = load_config(project)?;
     let graph = load_graph(project)?;
     let route = snapped_route(
@@ -1196,10 +1204,13 @@ fn rate(project: &Path, route: &Path, max_route_snap_m: Option<f64>) -> Result<(
         "rated-route",
         max_route_snap_m.unwrap_or(config.max_route_snap_m),
     )?;
-    println!(
-        "{}",
-        render_project_report(project, &graph, &[route], &config.constraints)?
-    );
+    let text = render_project_report(project, &graph, &[route], &config.constraints)?;
+    if let Some(output) = output {
+        write_bytes(output, text)?;
+        println!("wrote rated-route report {}", output.display());
+    } else {
+        println!("{text}");
+    }
     Ok(())
 }
 
@@ -1255,14 +1266,20 @@ fn snapped_route(
     name: &str,
     max_route_snap_m: f64,
 ) -> Result<Route> {
-    let line = load_route_line(route_path)?;
-    let snap = graph.snap_line_edges_within(&line, max_route_snap_m);
+    let route_file = load_route_file(route_path)?;
+    let snap = graph.snap_line_edges_within(&route_file.line, max_route_snap_m);
     ensure_route_snap_accepted(&snap.stats, max_route_snap_m, "route")?;
     let edges = snap.edges;
     let start = graph
-        .snapped_line_start(&line, &edges)
+        .snapped_line_start(&route_file.line, &edges)
         .with_context(|| "route snapped to edges but no traversable start vertex was found")?;
-    Ok(Route::from_edges(name, graph, start, edges, constraints))
+    Ok(Route::from_edges(
+        route_file.metadata.title_or(name),
+        graph,
+        start,
+        edges,
+        constraints,
+    ))
 }
 
 fn ensure_route_snap_accepted(
@@ -3807,9 +3824,16 @@ mod tests {
             "longitude,latitude,elevation_m\n0.0000,0.0000,0\n0.0000,0.0100,0\n",
         )?;
 
-        let error = rate(project, &route, None).expect_err("remote route should be rejected");
+        let error = rate(project, &route, None, None).expect_err("remote route should be rejected");
         assert!(format!("{error:#}").contains("max_route_snap_m 100"));
-        rate(project, &route, Some(20_000_000.0))?;
+        let report = project.join("reports/rated.md");
+        rate(project, &route, Some(20_000_000.0), Some(&report))?;
+        let report = fs::read_to_string(report)?;
+        assert!(report.contains("rated-route"));
+        assert!(report.contains("Difficulty decomposition"));
+        assert!(report.contains("Most dubious segments"));
+        assert!(report.contains("## Constraint Envelope"));
+        assert!(report.contains("## Source Manifest"));
         Ok(())
     }
 

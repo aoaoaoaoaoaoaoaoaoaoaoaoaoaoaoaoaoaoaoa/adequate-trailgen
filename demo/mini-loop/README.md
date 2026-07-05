@@ -16,7 +16,7 @@ cargo run -p trailgen -- export demo/mini-loop --route candidate-1 --format geoj
 cargo run -p trailgen -- export demo/mini-loop --route candidate-1 --format csv --output demo/mini-loop/routes/candidate-1.selected.csv
 cargo run -p trailgen -- report demo/mini-loop --route candidate-1 --output demo/mini-loop/reports/candidate-1.md
 cargo run -p trailgen -- map demo/mini-loop --output demo/mini-loop/reports/map.html
-cargo run -p trailgen -- rate demo/mini-loop --route demo/mini-loop/routes/candidate-1.kmz
+cargo run -p trailgen -- rate demo/mini-loop --route demo/mini-loop/routes/candidate-1.kmz --output demo/mini-loop/reports/rated-candidate-1.md
 cargo run -p trailgen -- calibrate demo/mini-loop --route demo/mini-loop/routes/candidate-1.gpx --target-difficulty 1020 --family elevation
 cargo run -p trailgen -- rerate demo/mini-loop
 ```
