@@ -637,18 +637,22 @@ fn discover(project: &Path, area: Option<GeoBounds>) -> Result<()> {
     let config = load_config(project)?;
     let area = area.or(config.area);
     fs::create_dir_all(project.join("sources"))?;
-    let mut candidates = Vec::new();
+    let mut discovered = Vec::new();
     for path in source_files(&project.join("sources"))? {
         if let Some(mut candidate) = classify_path(&path) {
             candidate.fingerprint = Some(source_fingerprint(&path)?);
-            candidates.push(candidate);
+            discovered.push(candidate);
         }
     }
-    let manifest = source_manifest(area, candidates);
+    let discovered_count = discovered.len();
+    let mut manifest =
+        load_source_manifest(project)?.unwrap_or_else(|| source_manifest(area, Vec::new()));
+    merge_source_candidates(&mut manifest.candidates, discovered);
+    refresh_source_coverage_for_area(&mut manifest, area);
     write_json(project.join("sources/manifest.json"), &manifest)?;
     println!(
         "discovered {} local candidate(s), recommended {} source class(es), evaluated {} source class(es); wrote {}",
-        manifest.candidates.len(),
+        discovered_count,
         manifest.recommendations.len(),
         manifest.coverage.len(),
         project.join("sources/manifest.json").display()
@@ -2344,6 +2348,10 @@ fn refresh_source_coverage(manifest: &mut SourceManifest) {
         .recommendations
         .iter()
         .find_map(|recommendation| recommendation.area);
+    refresh_source_coverage_for_area(manifest, area);
+}
+
+fn refresh_source_coverage_for_area(manifest: &mut SourceManifest, area: Option<GeoBounds>) {
     manifest.adapters = adapter_registry();
     manifest.recommendations = discovery_recommendations(area);
     manifest.coverage = source_coverage(
@@ -2498,17 +2506,19 @@ fn register_source_candidates(project: &Path, candidates: Vec<SourceCandidate>) 
     }
     let mut manifest =
         load_source_manifest(project)?.unwrap_or_else(|| source_manifest(None, Vec::new()));
-    manifest.candidates.retain(|old| {
+    merge_source_candidates(&mut manifest.candidates, candidates);
+    refresh_source_coverage(&mut manifest);
+    write_json(project.join("sources/manifest.json"), &manifest)
+}
+
+fn merge_source_candidates(into: &mut Vec<SourceCandidate>, candidates: Vec<SourceCandidate>) {
+    into.retain(|old| {
         candidates
             .iter()
             .all(|candidate| candidate.path != old.path)
     });
-    manifest.candidates.extend(candidates);
-    manifest
-        .candidates
-        .sort_by(|a, b| (&a.path, a.kind, &a.adapter_id).cmp(&(&b.path, b.kind, &b.adapter_id)));
-    refresh_source_coverage(&mut manifest);
-    write_json(project.join("sources/manifest.json"), &manifest)
+    into.extend(candidates);
+    into.sort_by(|a, b| (&a.path, a.kind, &a.adapter_id).cmp(&(&b.path, b.kind, &b.adapter_id)));
 }
 
 fn unregister_source_candidate_path(project: &Path, path: &str) -> Result<()> {
@@ -3057,6 +3067,34 @@ mod tests {
 
         let files = source_files(&sources)?;
         assert_eq!(files, vec![sources.join("trails.geojson")]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_preserves_registered_ingestion_sources() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../trailgen-core/tests/fixtures/mini_network.geojson");
+
+        init(project, "Discover Preservation Test".to_owned(), None)?;
+        discover(project, None)?;
+        build(project, &fixture)?;
+        discover(project, None)?;
+
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(project.join("sources/manifest.json"))?)?;
+        assert!(
+            manifest["candidates"]
+                .as_array()
+                .expect("candidates")
+                .iter()
+                .any(|candidate| {
+                    candidate["path"].as_str() == Some(fixture.to_str().unwrap())
+                        && candidate["adapter_id"] == "geojson-network"
+                })
+        );
 
         Ok(())
     }
