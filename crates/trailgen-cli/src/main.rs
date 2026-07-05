@@ -28,6 +28,10 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "CLI command values are parsed once; boxing clap fields would only launder cold-start bytes into ceremony."
+)]
 enum Cmd {
     Init {
         project: PathBuf,
@@ -84,6 +88,12 @@ enum Cmd {
         shape: Vec<RouteShape>,
         #[arg(long)]
         max_repeated_edge_fraction: Option<f64>,
+        #[arg(long = "forbid-terrain", value_parser = parse_terrain)]
+        forbidden_terrain: Vec<Terrain>,
+        #[arg(long = "min-terrain", value_parser = parse_terrain_fraction)]
+        min_terrain: Vec<TerrainFraction>,
+        #[arg(long = "max-terrain", value_parser = parse_terrain_fraction)]
+        max_terrain: Vec<TerrainFraction>,
     },
     Export {
         project: PathBuf,
@@ -177,6 +187,12 @@ enum ExportFormat {
     Kmz,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TerrainFraction {
+    terrain: Terrain,
+    fraction: f64,
+}
+
 const fn default_snap_tolerance_m() -> f64 {
     8.0
 }
@@ -209,6 +225,9 @@ fn main() -> Result<()> {
             max_low_confidence_fraction,
             shape,
             max_repeated_edge_fraction,
+            forbidden_terrain,
+            min_terrain,
+            max_terrain,
         } => generate(
             &project,
             &GenerateOptions {
@@ -227,6 +246,9 @@ fn main() -> Result<()> {
                 max_low_confidence_fraction,
                 shape,
                 max_repeated_edge_fraction,
+                forbidden_terrain,
+                min_terrain,
+                max_terrain,
             },
         ),
         Cmd::Export {
@@ -393,6 +415,9 @@ struct GenerateOptions {
     max_low_confidence_fraction: Option<f64>,
     shape: Vec<RouteShape>,
     max_repeated_edge_fraction: Option<f64>,
+    forbidden_terrain: Vec<Terrain>,
+    min_terrain: Vec<TerrainFraction>,
+    max_terrain: Vec<TerrainFraction>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -530,6 +555,17 @@ fn apply_generate_options(constraints: &mut LoopConstraints, options: &GenerateO
     }
     if let Some(max_repeated_edge_fraction) = options.max_repeated_edge_fraction {
         constraints.max_repeated_edge_fraction = max_repeated_edge_fraction;
+    }
+    if !options.forbidden_terrain.is_empty() {
+        constraints
+            .forbidden_terrain
+            .clone_from(&options.forbidden_terrain);
+    }
+    for TerrainFraction { terrain, fraction } in &options.min_terrain {
+        constraints.min_terrain_fraction.insert(*terrain, *fraction);
+    }
+    for TerrainFraction { terrain, fraction } in &options.max_terrain {
+        constraints.max_terrain_fraction.insert(*terrain, *fraction);
     }
 }
 
@@ -1307,6 +1343,33 @@ fn parse_shape(raw: &str) -> Result<RouteShape, String> {
     }
 }
 
+fn parse_terrain(raw: &str) -> Result<Terrain, String> {
+    let terrain = Terrain::from_tag(raw);
+    if terrain == Terrain::Unknown && !raw.trim().eq_ignore_ascii_case("unknown") {
+        Err(format!(
+            "unknown terrain {raw:?}; expected one of unknown, trail, forest, alpine, talus, scramble, pavement, road, water"
+        ))
+    } else {
+        Ok(terrain)
+    }
+}
+
+fn parse_terrain_fraction(raw: &str) -> Result<TerrainFraction, String> {
+    let Some((terrain, fraction)) = raw.split_once(':').or_else(|| raw.split_once('=')) else {
+        return Err("terrain fraction must be terrain:fraction or terrain=fraction".to_owned());
+    };
+    let terrain = parse_terrain(terrain)?;
+    let fraction = fraction
+        .trim()
+        .parse::<f64>()
+        .map_err(|error| error.to_string())?;
+    if (0.0..=1.0).contains(&fraction) {
+        Ok(TerrainFraction { terrain, fraction })
+    } else {
+        Err("terrain fraction must be in [0,1]".to_owned())
+    }
+}
+
 fn write_json(path: impl AsRef<Path>, value: &impl Serialize) -> Result<()> {
     let path = path.as_ref();
     if let Some(parent) = path.parent() {
@@ -1328,6 +1391,61 @@ fn write_bytes(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> Result<()> {
 mod tests {
     use super::*;
     use serde_json::Value;
+
+    #[test]
+    fn generate_options_can_override_terrain_mix_constraints() {
+        let mut constraints = LoopConstraints::default();
+        apply_generate_options(
+            &mut constraints,
+            &GenerateOptions {
+                start: "-105.0000,40.0000".to_owned(),
+                min_km: 3.0,
+                max_km: 8.0,
+                count: 2,
+                seed: 0,
+                min_difficulty: None,
+                max_difficulty: None,
+                min_ascent_m: None,
+                max_ascent_m: None,
+                min_descent_m: None,
+                max_descent_m: None,
+                max_road_fraction: None,
+                max_low_confidence_fraction: None,
+                shape: Vec::new(),
+                max_repeated_edge_fraction: None,
+                forbidden_terrain: vec![Terrain::Pavement, Terrain::Road],
+                min_terrain: vec![TerrainFraction {
+                    terrain: Terrain::Trail,
+                    fraction: 0.65,
+                }],
+                max_terrain: vec![TerrainFraction {
+                    terrain: Terrain::Talus,
+                    fraction: 0.10,
+                }],
+            },
+        );
+
+        assert_eq!(
+            constraints.forbidden_terrain,
+            vec![Terrain::Pavement, Terrain::Road]
+        );
+        assert_eq!(
+            constraints.min_terrain_fraction.get(&Terrain::Trail),
+            Some(&0.65)
+        );
+        assert_eq!(
+            constraints.max_terrain_fraction.get(&Terrain::Talus),
+            Some(&0.10)
+        );
+        assert_eq!(
+            parse_terrain_fraction("scramble=0.25").unwrap(),
+            TerrainFraction {
+                terrain: Terrain::Scramble,
+                fraction: 0.25,
+            }
+        );
+        assert!(parse_terrain_fraction("scramble=1.25").is_err());
+    }
 
     #[test]
     fn generation_manifest_captures_reproducibility_contract() -> Result<()> {
@@ -1361,6 +1479,15 @@ mod tests {
                 max_low_confidence_fraction: None,
                 shape: Vec::new(),
                 max_repeated_edge_fraction: None,
+                forbidden_terrain: vec![Terrain::Road],
+                min_terrain: vec![TerrainFraction {
+                    terrain: Terrain::Trail,
+                    fraction: 0.50,
+                }],
+                max_terrain: vec![TerrainFraction {
+                    terrain: Terrain::Pavement,
+                    fraction: 0.05,
+                }],
             },
         )?;
 
@@ -1372,6 +1499,18 @@ mod tests {
         assert_eq!(
             manifest["effective_config"]["constraints"]["min_distance_m"],
             3_000.0
+        );
+        assert_eq!(
+            manifest["effective_config"]["constraints"]["forbidden_terrain"][0],
+            "road"
+        );
+        assert_eq!(
+            manifest["effective_config"]["constraints"]["min_terrain_fraction"]["trail"],
+            0.50
+        );
+        assert_eq!(
+            manifest["effective_config"]["constraints"]["max_terrain_fraction"]["pavement"],
+            0.05
         );
         assert!(manifest["source_manifest"]["adapters"].as_array().is_some());
         assert_eq!(
@@ -1437,6 +1576,9 @@ mod tests {
                 max_low_confidence_fraction: None,
                 shape: Vec::new(),
                 max_repeated_edge_fraction: None,
+                forbidden_terrain: Vec::new(),
+                min_terrain: Vec::new(),
+                max_terrain: Vec::new(),
             },
         )?;
 
@@ -1519,6 +1661,9 @@ mod tests {
                 max_low_confidence_fraction: None,
                 shape: Vec::new(),
                 max_repeated_edge_fraction: None,
+                forbidden_terrain: Vec::new(),
+                min_terrain: Vec::new(),
+                max_terrain: Vec::new(),
             },
         )?;
         import_seed(
@@ -1544,6 +1689,9 @@ mod tests {
                 max_low_confidence_fraction: None,
                 shape: Vec::new(),
                 max_repeated_edge_fraction: None,
+                forbidden_terrain: Vec::new(),
+                min_terrain: Vec::new(),
+                max_terrain: Vec::new(),
             },
         )?;
         verify_sources(project)?;

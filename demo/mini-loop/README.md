@@ -22,6 +22,7 @@ Optional shape smoke:
 ```sh
 cargo run -p trailgen -- generate demo/mini-loop --start=-105.0000,40.0000 --min-km 1 --max-km 6 --shape out-and-back --max-repeated-edge-fraction 1 --count 2
 cargo run -p trailgen -- generate demo/mini-loop --start=-105.0000,40.0000 --min-km 3 --max-km 8 --max-ascent-m 50 --max-descent-m 50 --count 2
+cargo run -p trailgen -- generate demo/mini-loop --start=-105.0000,40.0000 --min-km 3 --max-km 8 --forbid-terrain pavement --min-terrain trail:0.50 --max-terrain talus=0.20 --count 2
 ```
 
 The fixture network, Arc/Info ASCII DEM, terrain overlay, and road/hydrology context overlay are synthetic and public-domain-like; they exist to test topology, elevation enrichment, terrain overrides, crossing inference, scoring, route export, and reporting without downloads.
