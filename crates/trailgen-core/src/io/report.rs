@@ -20,7 +20,7 @@ fn render_route(graph: &TrailGraph, route: &Route, s: &mut String) {
     let _ = write!(s, "## {}\n\n", route.name);
     let _ = write!(
         s,
-        "- score: {:.2}\n- pareto rank: {}\n- shape: {:?}\n- distance: {:.2} km\n- ascent/descent: {:.0} m / {:.0} m\n- scalar difficulty: {:.2}\n- road exposure: {:.1}%\n- low-confidence fraction: {:.1}%\n- restricted-access fraction: {:.1}%\n- repeated-edge fraction: {:.1}%\n- constraint verdict: {}\n",
+        "- score: {:.2}\n- pareto rank: {}\n- shape: {:?}\n- distance: {:.2} km\n- ascent/descent: {:.0} m / {:.0} m\n- scalar difficulty: {:.2}\n- road/pavement exposure: {:.1}%\n- low-confidence fraction: {:.1}%\n- restricted-access fraction: {:.1}%\n- repeated-edge fraction: {:.1}%\n- constraint verdict: {}\n",
         route.score,
         route.pareto_rank,
         route.metrics.shape,

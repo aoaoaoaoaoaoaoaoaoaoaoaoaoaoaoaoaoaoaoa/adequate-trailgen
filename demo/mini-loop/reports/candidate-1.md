@@ -8,7 +8,7 @@
 - distance: 4.71 km
 - ascent/descent: 137 m / 137 m
 - scalar difficulty: 1010.43
-- road exposure: 1.3%
+- road/pavement exposure: 1.3%
 - low-confidence fraction: 0.0%
 - restricted-access fraction: 28.3%
 - repeated-edge fraction: 0.0%
@@ -68,7 +68,7 @@ Terrain/elevation evidence:
 - scalar difficulty: 0.00–90.00
 - ascent: 0–3000 m
 - descent: 0–3000 m
-- max road exposure: 12.0%
+- max road/pavement exposure: 12.0%
 - max low-confidence fraction: 20.0%
 - max restricted-access fraction: 0.0%
 - max repeated-edge fraction: 0.0%

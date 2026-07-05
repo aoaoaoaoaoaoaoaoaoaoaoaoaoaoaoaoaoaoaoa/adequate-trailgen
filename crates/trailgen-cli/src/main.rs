@@ -732,7 +732,7 @@ fn render_constraints_section(text: &mut String, constraints: &LoopConstraints) 
     );
     let _ = writeln!(
         text,
-        "- max road exposure: {:.1}%",
+        "- max road/pavement exposure: {:.1}%",
         constraints.max_road_fraction * 100.0
     );
     let _ = writeln!(

@@ -245,7 +245,9 @@ impl RouteMetrics {
             m.descent_m += descent_m;
             m.difficulty += a.difficulty;
             m.difficulty_breakdown += a.difficulty_breakdown;
-            road_m = a.length_m.mul_add(a.road_exposure.clamp(0.0, 1.0), road_m);
+            road_m = a
+                .length_m
+                .mul_add(road_pavement_exposure(a.terrain, a.road_exposure), road_m);
             if a.confidence < 0.6 {
                 low_conf_m += a.length_m;
             }
@@ -297,6 +299,16 @@ const fn is_restricted_access(access: Access) -> bool {
         access,
         Access::Restricted | Access::Closed | Access::Private
     )
+}
+
+const fn road_pavement_exposure(terrain: Terrain, road_exposure: f64) -> f64 {
+    road_exposure
+        .clamp(0.0, 1.0)
+        .max(if matches!(terrain, Terrain::Pavement | Terrain::Road) {
+            1.0
+        } else {
+            0.0
+        })
 }
 
 fn classify_shape(

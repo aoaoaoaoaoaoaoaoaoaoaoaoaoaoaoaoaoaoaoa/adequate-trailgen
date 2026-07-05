@@ -188,6 +188,42 @@ fn terrain_multipliers_are_configurable_and_defaulted() {
 }
 
 #[test]
+fn road_fraction_counts_road_and_pavement_terrain() {
+    let graph = GraphBuilder::default()
+        .build(&[SegmentDraft {
+            geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
+            terrain: Terrain::Pavement,
+            access: Access::Open,
+            road_exposure: 0.0,
+            confidence: 1.0,
+            provenance: Provenance::fixture("paved"),
+        }])
+        .unwrap();
+    let route = Route::from_edges(
+        "pavement",
+        &graph,
+        graph.edges[0].a,
+        vec![graph.edges[0].id],
+        &LoopConstraints {
+            min_distance_m: 0.0,
+            max_distance_m: 10_000.0,
+            max_difficulty: 10_000.0,
+            allowed_shapes: vec![RouteShape::Open],
+            ..LoopConstraints::default()
+        },
+    );
+
+    assert!((route.metrics.road_fraction - 1.0).abs() <= f64::EPSILON);
+    assert!(
+        route
+            .verdict
+            .violations
+            .iter()
+            .any(|v| v == "road/pavement fraction 100.0% above maximum 12.0%")
+    );
+}
+
+#[test]
 fn pareto_ranking_preserves_tradeoffs_and_demotes_dominated_routes() {
     let constraints = LoopConstraints {
         min_distance_m: 3_000.0,

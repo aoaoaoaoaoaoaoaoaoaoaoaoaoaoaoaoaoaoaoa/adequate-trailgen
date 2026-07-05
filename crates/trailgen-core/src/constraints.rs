@@ -159,7 +159,7 @@ impl LoopConstraints {
             violations,
             metrics.road_fraction > self.max_road_fraction,
             format!(
-                "road fraction {:.1}% above maximum {:.1}%",
+                "road/pavement fraction {:.1}% above maximum {:.1}%",
                 metrics.road_fraction * 100.0,
                 self.max_road_fraction * 100.0
             ),
