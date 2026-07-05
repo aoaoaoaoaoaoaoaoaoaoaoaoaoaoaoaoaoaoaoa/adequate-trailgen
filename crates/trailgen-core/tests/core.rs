@@ -775,6 +775,25 @@ fn terrain_overlays_override_edges_with_provenance_and_rerating() {
     assert!(overlaid.iter().all(|edge| {
         (edge.attr.difficulty - edge.attr.difficulty_breakdown.total()).abs() <= 1.0e-9
     }));
+    let overlaid_edge = overlaid[0];
+    let rendered = report::render(
+        &graph,
+        &[Route::from_edges(
+            "overlaid",
+            &graph,
+            overlaid_edge.a,
+            vec![overlaid_edge.id],
+            &LoopConstraints {
+                min_distance_m: 0.0,
+                max_distance_m: 10_000.0,
+                max_difficulty: 10_000.0,
+                allowed_shapes: vec![RouteShape::Open],
+                ..LoopConstraints::default()
+            },
+        )],
+    );
+    assert!(rendered.contains("current Talus"));
+    assert!(rendered.contains("terrain overlay (fixture-landcover:"));
     let evidence_count = graph
         .edges
         .iter()

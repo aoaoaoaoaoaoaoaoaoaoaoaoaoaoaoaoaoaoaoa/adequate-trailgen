@@ -1,5 +1,5 @@
 use crate::difficulty::DifficultyFactor;
-use crate::model::{Access, Edge, TrailGraph};
+use crate::model::{Access, Edge, Provenance, TerrainEvidence, TrailGraph};
 use crate::route::Route;
 use std::fmt::Write as _;
 
@@ -119,14 +119,11 @@ fn render_access_warnings(graph: &TrailGraph, route: &Route, s: &mut String) {
     }
     s.push_str("\nAccess warnings:\n");
     for edge in warnings {
-        let prov = edge.attr.access_provenance.first().map_or_else(
-            || "unknown".to_owned(),
-            |p| {
-                p.source_id
-                    .as_ref()
-                    .map_or_else(|| p.source.clone(), |id| format!("{}:{id}", p.source))
-            },
-        );
+        let prov = edge
+            .attr
+            .access_provenance
+            .first()
+            .map_or_else(|| "unknown".to_owned(), provenance_label);
         let _ = writeln!(
             s,
             "- edge {}: {:?}, confidence {:.0}%, provenance {prov}",
@@ -191,14 +188,11 @@ fn render_dubious_edges(graph: &TrailGraph, route: &Route, s: &mut String) {
 }
 
 fn render_dubious_edge(edge: &Edge, s: &mut String) {
-    let prov = edge.attr.provenance.first().map_or_else(
-        || "unknown".to_owned(),
-        |p| {
-            p.source_id
-                .as_ref()
-                .map_or_else(|| p.source.clone(), |id| format!("{}:{id}", p.source))
-        },
-    );
+    let prov = edge
+        .attr
+        .provenance
+        .first()
+        .map_or_else(|| "unknown".to_owned(), provenance_label);
     let _ = writeln!(
         s,
         "- edge {}: {:.0} m, {:?}, surface {}, grade max {:.1}%, grade bins {}, crossings {}, confidence {:.2}, seed count {}, provenance {prov}",
@@ -230,28 +224,55 @@ fn render_evidence(graph: &TrailGraph, route: &Route, s: &mut String) {
     s.push_str("\nTerrain/elevation evidence:\n");
     for edge_id in route.edges.iter().take(8) {
         let edge = &graph.edges[edge_id.0];
-        let terrain = edge.attr.terrain_evidence.first().map_or_else(
-            || "no terrain evidence".to_owned(),
-            |e| {
-                format!(
-                    "{:?} {:.0}%: {}",
-                    e.terrain,
-                    e.confidence * 100.0,
-                    e.rationale
-                )
-            },
-        );
         let surface = edge.attr.surface.as_deref().unwrap_or("unknown");
-        let elevation = edge.attr.elevation_provenance.first().map_or_else(
-            || "no elevation provenance".to_owned(),
-            |p| p.source.clone(),
-        );
         let _ = writeln!(
             s,
-            "- edge {}: {terrain}; surface {surface}; elevation source {elevation}",
-            edge.id.0
+            "- edge {}: current {:?}; terrain evidence {}; surface {surface}; elevation sources {}",
+            edge.id.0,
+            edge.attr.terrain,
+            terrain_evidence_summary(&edge.attr.terrain_evidence),
+            provenance_summary(&edge.attr.elevation_provenance),
         );
     }
+}
+
+fn terrain_evidence_summary(evidence: &[TerrainEvidence]) -> String {
+    if evidence.is_empty() {
+        return "none".to_owned();
+    }
+    evidence
+        .iter()
+        .map(|e| {
+            format!(
+                "{:?} {:.0}%: {}{}",
+                e.terrain,
+                e.confidence * 100.0,
+                e.rationale,
+                e.provenance
+                    .as_ref()
+                    .map_or_else(String::new, |p| format!(" ({})", provenance_label(p)))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+fn provenance_summary(provenance: &[Provenance]) -> String {
+    if provenance.is_empty() {
+        "none".to_owned()
+    } else {
+        provenance
+            .iter()
+            .map(provenance_label)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+fn provenance_label(p: &Provenance) -> String {
+    p.source_id
+        .as_ref()
+        .map_or_else(|| p.source.clone(), |id| format!("{}:{id}", p.source))
 }
 
 fn sorted_factors<const N: usize>(
