@@ -313,6 +313,15 @@ impl TrailGraph {
 
     #[must_use]
     pub fn nearest_vertex(&self, coord: crate::geo::Coord) -> Option<VertexId> {
+        self.nearest_vertex_with_distance(coord)
+            .map(|(vertex, _)| vertex)
+    }
+
+    #[must_use]
+    pub fn nearest_vertex_with_distance(
+        &self,
+        coord: crate::geo::Coord,
+    ) -> Option<(VertexId, f64)> {
         self.vertices
             .iter()
             .min_by(|a, b| {
@@ -320,7 +329,7 @@ impl TrailGraph {
                     .planar_distance2(coord)
                     .total_cmp(&b.coord.planar_distance2(coord))
             })
-            .map(|v| v.id)
+            .map(|v| (v.id, v.coord.haversine_m(coord)))
     }
 
     #[must_use]

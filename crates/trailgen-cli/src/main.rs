@@ -81,6 +81,8 @@ enum Cmd {
         count: usize,
         #[arg(long, default_value_t = 0)]
         seed: u64,
+        #[arg(long)]
+        max_start_snap_m: Option<f64>,
         #[arg(long, value_parser = parse_solver_kind)]
         solver: Option<SolverKind>,
         #[arg(long, value_parser = parse_planning_date)]
@@ -203,6 +205,8 @@ struct ProjectConfig {
     constraints: LoopConstraints,
     #[serde(default)]
     search: SearchParams,
+    #[serde(default = "default_max_start_snap_m")]
+    max_start_snap_m: f64,
     #[serde(default)]
     solver: SolverKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -219,6 +223,7 @@ impl ProjectConfig {
             difficulty: DifficultyWeights::default(),
             constraints: LoopConstraints::default(),
             search: SearchParams::default(),
+            max_start_snap_m: default_max_start_snap_m(),
             solver: SolverKind::default(),
             planning_date: None,
         }
@@ -260,6 +265,10 @@ const fn default_snap_tolerance_m() -> f64 {
     8.0
 }
 
+const fn default_max_start_snap_m() -> f64 {
+    500.0
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "Clap command dispatch is a single declarative cold path; splitting it would scatter the command algebra."
@@ -295,6 +304,7 @@ fn main() -> Result<()> {
             max_km,
             count,
             seed,
+            max_start_snap_m,
             solver,
             date,
             min_difficulty,
@@ -319,6 +329,7 @@ fn main() -> Result<()> {
                 max_km,
                 count,
                 seed,
+                max_start_snap_m,
                 solver,
                 date,
                 min_difficulty,
@@ -719,6 +730,7 @@ struct GenerateOptions {
     max_km: f64,
     count: usize,
     seed: u64,
+    max_start_snap_m: Option<f64>,
     solver: Option<SolverKind>,
     date: Option<PlanningDate>,
     min_difficulty: Option<f64>,
@@ -746,6 +758,8 @@ struct GenerationManifest {
     random_seed: u64,
     requested_start: Coord,
     snapped_start_vertex: VertexId,
+    snapped_start_coord: Coord,
+    start_snap_m: f64,
     effective_config: ProjectConfig,
     source_manifest: Option<SourceManifest>,
     graph: GraphManifest,
@@ -757,6 +771,8 @@ struct GenerationManifest {
 struct StartSnap {
     requested: Coord,
     snapped: VertexId,
+    snapped_coord: Coord,
+    distance_m: f64,
 }
 
 struct BuildSource {
@@ -874,17 +890,18 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
     if let Some(date) = options.date {
         config.planning_date = Some(date);
     }
+    if let Some(max_start_snap_m) = options.max_start_snap_m {
+        config.max_start_snap_m = max_start_snap_m;
+    }
     apply_generate_options(&mut config.constraints, options);
     let graph = materialize_effective_graph(project, &config)?;
     let start_coord = parse_coord(&options.start)?;
-    let start_vertex = graph
-        .nearest_vertex(start_coord)
-        .with_context(|| "graph has no vertices")?;
+    let start = snap_generation_start(&graph, start_coord, config.max_start_snap_m)?;
     let solver = config.solver.resolve(&graph);
     let mut routes = solver.solve(
         config.search,
         &graph,
-        start_vertex,
+        start.snapped,
         &config.constraints,
         options.count,
     );
@@ -907,18 +924,7 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
     write_json(project.join("routes/generated.routes.json"), &routes)?;
     write_json(
         project.join("routes/generated.manifest.json"),
-        &generation_manifest(
-            project,
-            options,
-            &config,
-            &graph,
-            StartSnap {
-                requested: start_coord,
-                snapped: start_vertex,
-            },
-            &routes,
-            solver,
-        )?,
+        &generation_manifest(project, options, &config, &graph, start, &routes, solver)?,
     )?;
     for route in &routes {
         fs::write(
@@ -953,6 +959,30 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
     )?;
     println!("generated {} route(s)", routes.len());
     Ok(())
+}
+
+fn snap_generation_start(
+    graph: &TrailGraph,
+    requested: Coord,
+    max_snap_m: f64,
+) -> Result<StartSnap> {
+    let (snapped, distance_m) = graph
+        .nearest_vertex_with_distance(requested)
+        .with_context(|| "graph has no vertices")?;
+    if distance_m > max_snap_m {
+        bail!(
+            "start coordinate is {:.0} m from nearest graph vertex {}, above max_start_snap_m {:.0}; choose a nearer trailhead or raise the limit",
+            distance_m,
+            snapped.0,
+            max_snap_m
+        );
+    }
+    Ok(StartSnap {
+        requested,
+        snapped,
+        snapped_coord: graph.vertices[snapped.0].coord,
+        distance_m,
+    })
 }
 
 fn apply_generate_options(constraints: &mut LoopConstraints, options: &GenerateOptions) {
@@ -2688,6 +2718,8 @@ fn generation_manifest(
         random_seed: options.seed,
         requested_start: start.requested,
         snapped_start_vertex: start.snapped,
+        snapped_start_coord: start.snapped_coord,
+        start_snap_m: start.distance_m,
         effective_config: config.clone(),
         source_manifest: load_source_manifest(project)?,
         graph: graph_manifest(graph),
@@ -3014,6 +3046,7 @@ mod tests {
                 max_km: 8.0,
                 count: 2,
                 seed: 0,
+                max_start_snap_m: None,
                 solver: None,
                 date: None,
                 min_difficulty: None,
@@ -3196,6 +3229,7 @@ mod tests {
                 max_km: 8.0,
                 count: 2,
                 seed: 77,
+                max_start_snap_m: None,
                 solver: Some(SolverKind::Exact),
                 date: Some("2026-05-15".parse().unwrap()),
                 min_difficulty: None,
@@ -3227,6 +3261,13 @@ mod tests {
         assert_eq!(manifest["solver"], "exact-enumerator");
         assert_eq!(manifest["requested_solver"], "exact");
         assert_eq!(manifest["random_seed"], 77);
+        assert_eq!(manifest["snapped_start_coord"]["lon"], -105.0);
+        assert!(
+            manifest["start_snap_m"]
+                .as_f64()
+                .is_some_and(|meters| meters <= 1.0)
+        );
+        assert_eq!(manifest["effective_config"]["max_start_snap_m"], 500.0);
         assert_eq!(manifest["effective_config"]["planning_date"], "2026-05-15");
         assert_effective_constraints_manifest(&manifest);
         assert!(manifest["source_manifest"]["adapters"].as_array().is_some());
@@ -3268,6 +3309,60 @@ mod tests {
                 && xs.iter().any(|x| x == "reports/map.html")
         }));
 
+        Ok(())
+    }
+
+    #[test]
+    fn generation_rejects_remote_start_without_explicit_snap_override() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../trailgen-core/tests/fixtures/mini_network.geojson");
+
+        init(project, "Start Snap Test".to_owned(), None)?;
+        build(project, &fixture)?;
+        let mut options = GenerateOptions {
+            start: "0.0000,0.0000".to_owned(),
+            min_km: 3.0,
+            max_km: 8.0,
+            count: 1,
+            seed: 0,
+            max_start_snap_m: None,
+            solver: Some(SolverKind::Exact),
+            date: None,
+            min_difficulty: None,
+            max_difficulty: None,
+            min_ascent_m: None,
+            max_ascent_m: None,
+            min_descent_m: None,
+            max_descent_m: None,
+            max_road_fraction: None,
+            max_low_confidence_fraction: None,
+            max_restricted_access_fraction: None,
+            shape: Vec::new(),
+            max_repeated_edge_fraction: None,
+            forbidden_terrain: Vec::new(),
+            min_terrain: Vec::new(),
+            max_terrain: Vec::new(),
+        };
+
+        let error = generate(project, &options).expect_err("remote start should be rejected");
+        assert!(format!("{error:#}").contains("above max_start_snap_m 500"));
+
+        options.max_start_snap_m = Some(20_000_000.0);
+        generate(project, &options)?;
+        let manifest: Value = serde_json::from_str(&fs::read_to_string(
+            project.join("routes/generated.manifest.json"),
+        )?)?;
+        assert_eq!(
+            manifest["effective_config"]["max_start_snap_m"],
+            20_000_000.0
+        );
+        assert!(
+            manifest["start_snap_m"]
+                .as_f64()
+                .is_some_and(|meters| meters > 1_000_000.0)
+        );
         Ok(())
     }
 
@@ -3313,6 +3408,7 @@ mod tests {
                 max_km: 8.0,
                 count: 2,
                 seed: 0,
+                max_start_snap_m: None,
                 solver: None,
                 date: None,
                 min_difficulty: None,
@@ -3466,6 +3562,7 @@ mod tests {
                 max_km: 8.0,
                 count: 2,
                 seed: 0,
+                max_start_snap_m: None,
                 solver: Some(SolverKind::Exact),
                 date: Some("2026-07-15".parse().unwrap()),
                 min_difficulty: None,
@@ -3522,6 +3619,7 @@ mod tests {
                 max_km: 8.0,
                 count: 1,
                 seed: 0,
+                max_start_snap_m: None,
                 solver: None,
                 date: None,
                 min_difficulty: None,
@@ -3994,6 +4092,7 @@ mod tests {
                 max_km: 8.0,
                 count: 2,
                 seed: 0,
+                max_start_snap_m: None,
                 solver: None,
                 date: None,
                 min_difficulty: None,
@@ -4025,6 +4124,7 @@ mod tests {
                 max_km: 8.0,
                 count: 2,
                 seed: 0,
+                max_start_snap_m: None,
                 solver: None,
                 date: None,
                 min_difficulty: None,

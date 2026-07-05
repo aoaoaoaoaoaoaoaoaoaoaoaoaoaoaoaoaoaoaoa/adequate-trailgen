@@ -9,6 +9,12 @@
     "lat": 40.0
   },
   "snapped_start_vertex": 3,
+  "snapped_start_coord": {
+    "lon": -105.0,
+    "lat": 40.0,
+    "ele": 1660.0
+  },
+  "start_snap_m": 0.0,
   "effective_config": {
     "name": "Mini Loop",
     "area": {
@@ -69,6 +75,7 @@
       "max_frontier": 200000,
       "keep": 12
     },
+    "max_start_snap_m": 500.0,
     "solver": "auto",
     "planning_date": "2026-05-15"
   },
