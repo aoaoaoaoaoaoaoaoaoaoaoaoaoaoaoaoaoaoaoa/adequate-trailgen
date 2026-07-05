@@ -15,8 +15,8 @@ cargo run -p trailgen -- build demo/mini-loop --source crates/trailgen-core/test
 cargo run -p trailgen -- apply-elevation demo/mini-loop --source crates/trailgen-core/tests/fixtures/mini_dem.asc --confidence 0.81
 cargo run -p trailgen -- apply-terrain demo/mini-loop --source crates/trailgen-core/tests/fixtures/terrain_overlay.geojson
 cargo run -p trailgen -- apply-context demo/mini-loop --source crates/trailgen-core/tests/fixtures/context_overlay.geojson
-cargo run -p trailgen -- apply-access demo/mini-loop --source crates/trailgen-core/tests/fixtures/closure_overlay.geojson --date 2026-05-15
 cargo run -p trailgen -- import-seed demo/mini-loop --route demo/mini-loop/routes/candidate-1.gpx --name "Known Good Loop"
+cargo run -p trailgen -- apply-access demo/mini-loop --source crates/trailgen-core/tests/fixtures/closure_overlay.geojson --date 2026-05-15
 cargo run -p trailgen -- verify-sources demo/mini-loop
 cargo run -p trailgen -- stats demo/mini-loop
 cargo run -p trailgen -- generate demo/mini-loop --start=-105.0000,40.0000 --min-km 4 --max-km 9 --count 4 --seed 0
@@ -34,8 +34,10 @@ Generated artifacts land in the project directory:
 - `sources/elevation-arc-ascii.json` or `sources/elevation-geotiff.json`: applied local DEM sampler metadata
 - `sources/terrain-overlays.json`: applied land-cover, surface, or user terrain overrides from GeoJSON or shapefile layers
 - `sources/access-overlays.json`: applied access/closure overlays
+- `sources/access-baseline.json`: pre-access graph state used to re-materialize dated overlays without cumulative access drift
 - `sources/context-overlays.json`: applied road/hydrology context overlays from GeoJSON or shapefile linework
 - `routes/generated.geojson`: Pareto-ranked generated loops with persisted route scores
+- `routes/generated.graph.json`: effective graph snapshot used by generated route exports, reports, and maps
 - `routes/generated.manifest.json`: app version, random seed, requested/concrete solver, effective config, fingerprinted source manifest, graph summary, exact route edge sequences, and artifact list for reproducing a generation run
 - `routes/candidate-*.gpx`: GPX exports
 - `routes/candidate-*.kml`: KML exports
@@ -45,7 +47,7 @@ Generated artifacts land in the project directory:
 - `reports/generated.md`: route diagnostics, the generation constraint envelope, and fingerprinted source manifest summary
 - `reports/map.html`: self-contained offline SVG map of the attributed graph and generated routes
 
-Use `trailgen export <project> --route candidate-1 --format gpx|geojson|kml|kmz --output file` to re-export a selected generated route after the search run. Use `trailgen report <project> [--route candidate-1] [--output file.md]` to render either all generated routes or one named route, including the constraint envelope used for that generation run. Use `trailgen map <project> [--output file.html]` to regenerate the offline diagnostic map without rerunning the solver.
+Use `trailgen export <project> --route candidate-1 --format gpx|geojson|kml|kmz --output file` to re-export a selected generated route after the search run. Use `trailgen report <project> [--route candidate-1] [--output file.md]` to render either all generated routes or one named route, including the constraint envelope used for that generation run. Use `trailgen map <project> [--output file.html]` to regenerate the offline diagnostic map without rerunning the solver. These commands read `routes/generated.graph.json` when generated routes exist, so later cached-graph rerating or access-date changes do not silently reinterpret an old route.
 
 Use `trailgen rate <project> --route completed.gpx` to score a completed hike against the current graph. Use `trailgen calibrate <project> --route completed.gpx --target-difficulty N --family elevation|technical|navigation` to dry-run a difficulty-weight patch from that hike; add `--write` to update `trailgen.toml` and rerate cached edge costs. `trailgen rerate <project>` reapplies hand-edited `[difficulty]` weights to `cache/graph.json` and `cache/graph.geojson`.
 

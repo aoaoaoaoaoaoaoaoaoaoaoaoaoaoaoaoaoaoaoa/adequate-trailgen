@@ -13,11 +13,12 @@ use trailgen_core::source::{
     classify_path, discovery_recommendations, source_coverage,
 };
 use trailgen_core::{
-    Access, ArcAsciiGrid, Coord, CrossingKind, DifficultyBreakdown, DifficultyWeights, EdgeId,
-    EdgeTravel, EnrichmentConfig, GeoTiffDem, GraphBuilder, LineString, LoopConstraints,
-    PlanningDate, Provenance, Route, RouteMetrics, RouteShape, SearchParams, SeedRoute,
-    SegmentDraft, SolverKind, Terrain, TrailGraph, VertexId, VrtDem, apply_access_overlays,
-    apply_context_overlays, apply_terrain_overlays, enrich_graph, rank_routes, slug,
+    Access, AccessOverlay, ArcAsciiGrid, Coord, CrossingKind, DifficultyBreakdown,
+    DifficultyWeights, EdgeId, EdgeTravel, EnrichmentConfig, GeoTiffDem, GraphBuilder, LineString,
+    LoopConstraints, PlanningDate, Provenance, Route, RouteMetrics, RouteShape, SearchParams,
+    SeedRoute, SegmentDraft, SolverKind, Terrain, TrailGraph, VertexId, VrtDem,
+    apply_access_overlays, apply_context_overlays, apply_terrain_overlays, enrich_graph,
+    rank_routes, slug,
 };
 
 #[derive(Parser)]
@@ -783,6 +784,69 @@ struct RouteManifestEntry {
     rank: u32,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct AccessBaseline {
+    edges: Vec<EdgeAccessBaseline>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct EdgeAccessBaseline {
+    edge: EdgeId,
+    access: Access,
+    access_confidence: f64,
+    confidence: f64,
+    access_provenance: Vec<Provenance>,
+}
+
+impl AccessBaseline {
+    fn capture(graph: &TrailGraph) -> Self {
+        Self {
+            edges: graph
+                .edges
+                .iter()
+                .map(|edge| EdgeAccessBaseline {
+                    edge: edge.id,
+                    access: edge.attr.access,
+                    access_confidence: edge.attr.access_confidence,
+                    confidence: edge.attr.confidence,
+                    access_provenance: edge.attr.access_provenance.clone(),
+                })
+                .collect(),
+        }
+    }
+
+    fn restore(&self, graph: &mut TrailGraph, weights: DifficultyWeights) -> Result<()> {
+        if self.edges.len() != graph.edges.len() {
+            bail!(
+                "access baseline has {} edge(s), cached graph has {}; rebuild graph before changing planning-date access overlays",
+                self.edges.len(),
+                graph.edges.len()
+            );
+        }
+        for baseline in &self.edges {
+            let edge = graph
+                .edges
+                .get_mut(baseline.edge.0)
+                .with_context(|| format!("missing edge {} in access baseline", baseline.edge.0))?;
+            if edge.id != baseline.edge {
+                bail!(
+                    "access baseline edge id mismatch at index {}: cached graph has {:?}",
+                    baseline.edge.0,
+                    edge.id
+                );
+            }
+            edge.attr.access = baseline.access;
+            edge.attr.access_confidence = baseline.access_confidence;
+            edge.attr.confidence = baseline.confidence;
+            edge.attr
+                .access_provenance
+                .clone_from(&baseline.access_provenance);
+            weights.apply_edge(edge);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Calibration {
     family: CalibrationFamily,
@@ -801,7 +865,6 @@ struct DifficultySnippet {
 
 fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
     let mut config = load_config(project)?;
-    let graph = load_graph(project)?;
     if let Some(solver) = options.solver {
         config.solver = solver;
     }
@@ -809,6 +872,7 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
         config.planning_date = Some(date);
     }
     apply_generate_options(&mut config.constraints, options);
+    let graph = materialize_effective_graph(project, &config)?;
     let start_coord = parse_coord(&options.start)?;
     let start_vertex = graph
         .nearest_vertex(start_coord)
@@ -836,6 +900,7 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
         project.join("routes/generated.geojson"),
         &geojson::routes_to_geojson(&graph, &routes),
     )?;
+    write_json(project.join("routes/generated.graph.json"), &graph)?;
     write_json(project.join("routes/generated.routes.json"), &routes)?;
     write_json(
         project.join("routes/generated.manifest.json"),
@@ -1184,7 +1249,7 @@ fn export_route(
     format: ExportFormat,
     output: &Path,
 ) -> Result<()> {
-    let graph = load_graph(project)?;
+    let graph = load_generated_graph(project)?;
     let routes = load_generated_routes(project)?;
     let route = select_route(&routes, route_name)?;
     match format {
@@ -1201,7 +1266,7 @@ fn export_route(
 }
 
 fn report_generated(project: &Path, route_name: Option<&str>, output: Option<&Path>) -> Result<()> {
-    let graph = load_graph(project)?;
+    let graph = load_generated_graph(project)?;
     let routes = load_generated_routes(project)?;
     let selected;
     let report_routes = if let Some(route_name) = route_name {
@@ -1226,9 +1291,13 @@ fn report_generated(project: &Path, route_name: Option<&str>, output: Option<&Pa
 }
 
 fn map_html(project: &Path, output: Option<&Path>) -> Result<()> {
-    let graph = load_graph(project)?;
     let routes = load_generated_routes(project).unwrap_or_default();
     let config = load_config(project)?;
+    let graph = if routes.is_empty() {
+        materialize_effective_graph(project, &config)?
+    } else {
+        load_generated_graph(project)?
+    };
     let output = output.map_or_else(|| project.join("reports/map.html"), Path::to_path_buf);
     write_bytes(&output, render_map_html(&config.name, &graph, &routes)?)?;
     println!("wrote map {}", output.display());
@@ -1597,11 +1666,13 @@ fn archive_seed_route(project: &Path, route: &Path, name: &str) -> Result<PathBu
 
 fn apply_access(project: &Path, source: &Path, date: Option<PlanningDate>) -> Result<()> {
     let mut config = load_config(project)?;
+    let date_override = date.is_some();
     if let Some(date) = date {
         config.planning_date = Some(date);
     }
     let mut graph = load_graph(project)?;
     let overlays = access_overlays(source)?;
+    restore_or_capture_access_baseline(project, &mut graph, &overlays, config.difficulty)?;
     let touched = apply_access_overlays(
         &mut graph,
         &overlays,
@@ -1615,6 +1686,9 @@ fn apply_access(project: &Path, source: &Path, date: Option<PlanningDate>) -> Re
     )?;
     fs::create_dir_all(project.join("sources"))?;
     write_json(project.join("sources/access-overlays.json"), &overlays)?;
+    if date_override {
+        save_config(project, &config)?;
+    }
     register_access_source(project, source)?;
     println!(
         "applied {} access overlay(s); touched {} edge(s)",
@@ -1633,6 +1707,60 @@ fn access_overlays(source: &Path) -> Result<Vec<trailgen_core::AccessOverlay>> {
         Ok(geojson::access_overlays_from_str(&raw)
             .with_context(|| "parse access overlay GeoJSON")?)
     }
+}
+
+fn restore_or_capture_access_baseline(
+    project: &Path,
+    graph: &mut TrailGraph,
+    overlays: &[AccessOverlay],
+    weights: DifficultyWeights,
+) -> Result<()> {
+    if let Some(baseline) = load_access_baseline(project)? {
+        baseline.restore(graph, weights)?;
+        return Ok(());
+    }
+    if graph_contains_access_overlays(graph, overlays) {
+        bail!(
+            "cached graph already contains access-overlay provenance but sources/access-baseline.json is missing; rebuild the graph, reapply enrichment/context, then rerun apply-access"
+        );
+    }
+    write_json(
+        access_baseline_path(project),
+        &AccessBaseline::capture(graph),
+    )
+}
+
+fn materialize_effective_graph(project: &Path, config: &ProjectConfig) -> Result<TrailGraph> {
+    let mut graph = load_graph(project)?;
+    let overlays = load_stored_access_overlays(project)?;
+    if overlays.is_empty() {
+        return Ok(graph);
+    }
+    if let Some(baseline) = load_access_baseline(project)? {
+        baseline.restore(&mut graph, config.difficulty)?;
+    } else if graph_contains_access_overlays(&graph, &overlays) {
+        bail!(
+            "cached graph contains access-overlay provenance but sources/access-baseline.json is missing; rebuild graph and rerun apply-access before date-specific generation"
+        );
+    }
+    apply_access_overlays(
+        &mut graph,
+        &overlays,
+        config.planning_date,
+        config.difficulty,
+    );
+    Ok(graph)
+}
+
+fn graph_contains_access_overlays(graph: &TrailGraph, overlays: &[AccessOverlay]) -> bool {
+    graph.edges.iter().any(|edge| {
+        overlays.iter().any(|overlay| {
+            edge.attr
+                .access_provenance
+                .iter()
+                .any(|provenance| provenance == &overlay.provenance)
+        })
+    })
 }
 
 fn apply_terrain(project: &Path, source: &Path) -> Result<()> {
@@ -1889,7 +2017,25 @@ fn save_config(project: &Path, config: &ProjectConfig) -> Result<()> {
 fn load_graph(project: &Path) -> Result<TrailGraph> {
     let raw = fs::read_to_string(project.join("cache/graph.json"))
         .with_context(|| "read cache/graph.json; run `trailgen build` first")?;
-    let mut graph: TrailGraph = serde_json::from_str(&raw)?;
+    load_graph_json(&raw)
+}
+
+fn load_generated_graph(project: &Path) -> Result<TrailGraph> {
+    let path = project.join("routes/generated.graph.json");
+    if path.exists() {
+        let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+        return load_graph_json(&raw);
+    }
+    let config = if let Some(config) = load_generated_config(project)? {
+        config
+    } else {
+        load_config(project)?
+    };
+    materialize_effective_graph(project, &config)
+}
+
+fn load_graph_json(raw: &str) -> Result<TrailGraph> {
+    let mut graph: TrailGraph = serde_json::from_str(raw)?;
     graph.rebuild_adjacency();
     Ok(graph)
 }
@@ -1900,6 +2046,28 @@ fn save_graph(project: &Path, graph: &TrailGraph) -> Result<()> {
         project.join("cache/graph.geojson"),
         &geojson::graph_to_geojson(graph),
     )
+}
+
+fn access_baseline_path(project: &Path) -> PathBuf {
+    project.join("sources/access-baseline.json")
+}
+
+fn load_access_baseline(project: &Path) -> Result<Option<AccessBaseline>> {
+    let path = access_baseline_path(project);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+    serde_json::from_str(&raw).map(Some).map_err(Into::into)
+}
+
+fn load_stored_access_overlays(project: &Path) -> Result<Vec<AccessOverlay>> {
+    let path = project.join("sources/access-overlays.json");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+    serde_json::from_str(&raw).map_err(Into::into)
 }
 
 fn rerate_cached_graph(project: &Path, weights: DifficultyWeights) -> Result<usize> {
@@ -1970,6 +2138,10 @@ fn load_generated_routes(project: &Path) -> Result<Vec<Route>> {
 }
 
 fn load_generated_constraints(project: &Path) -> Result<Option<LoopConstraints>> {
+    Ok(load_generated_config(project)?.map(|config| config.constraints))
+}
+
+fn load_generated_config(project: &Path) -> Result<Option<ProjectConfig>> {
     let path = project.join("routes/generated.manifest.json");
     if !path.exists() {
         return Ok(None);
@@ -1978,7 +2150,6 @@ fn load_generated_constraints(project: &Path) -> Result<Option<LoopConstraints>>
     let manifest = serde_json::from_str::<serde_json::Value>(&raw)?;
     manifest
         .get("effective_config")
-        .and_then(|config| config.get("constraints"))
         .cloned()
         .map(serde_json::from_value)
         .transpose()
@@ -2343,6 +2514,7 @@ fn route_manifest_entry(route: &Route) -> RouteManifestEntry {
 fn generation_artifacts(routes: &[Route]) -> Vec<String> {
     let mut artifacts = vec![
         "routes/generated.geojson".to_owned(),
+        "routes/generated.graph.json".to_owned(),
         "routes/generated.routes.json".to_owned(),
         "routes/generated.manifest.json".to_owned(),
         "reports/generated.md".to_owned(),
@@ -2962,6 +3134,72 @@ mod tests {
                 .expect("candidates")
                 .iter()
                 .any(|candidate| candidate["adapter_id"] == "geojson-route")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn generation_date_materializes_access_from_baseline_snapshot() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../trailgen-core/tests/fixtures/mini_network.geojson");
+        let closure = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../trailgen-core/tests/fixtures/closure_overlay.geojson");
+
+        init(project, "Date Access Test".to_owned(), None)?;
+        build(project, &fixture)?;
+        apply_access(project, &closure, Some("2026-05-15".parse().unwrap()))?;
+        assert!(
+            load_graph(project)?
+                .edges
+                .iter()
+                .any(|edge| edge.attr.access == Access::Closed)
+        );
+
+        generate(
+            project,
+            &GenerateOptions {
+                start: "-105.0000,40.0000".to_owned(),
+                min_km: 3.0,
+                max_km: 8.0,
+                count: 2,
+                seed: 0,
+                solver: Some(SolverKind::Exact),
+                date: Some("2026-07-15".parse().unwrap()),
+                min_difficulty: None,
+                max_difficulty: None,
+                min_ascent_m: None,
+                max_ascent_m: None,
+                min_descent_m: None,
+                max_descent_m: None,
+                max_road_fraction: None,
+                max_low_confidence_fraction: None,
+                max_restricted_access_fraction: None,
+                shape: Vec::new(),
+                max_repeated_edge_fraction: None,
+                forbidden_terrain: Vec::new(),
+                min_terrain: Vec::new(),
+                max_terrain: Vec::new(),
+            },
+        )?;
+
+        let generated_graph = load_generated_graph(project)?;
+        assert!(
+            !generated_graph
+                .edges
+                .iter()
+                .any(|edge| edge.attr.access == Access::Closed)
+        );
+        let manifest: Value = serde_json::from_str(&fs::read_to_string(
+            project.join("routes/generated.manifest.json"),
+        )?)?;
+        assert_eq!(manifest["effective_config"]["planning_date"], "2026-07-15");
+        assert!(
+            manifest["artifacts"]
+                .as_array()
+                .is_some_and(|xs| { xs.iter().any(|x| x == "routes/generated.graph.json") })
         );
 
         Ok(())

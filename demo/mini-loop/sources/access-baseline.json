@@ -1,0 +1,46 @@
+{
+  "edges": [
+    {
+      "edge": 0,
+      "access": "open",
+      "access_confidence": 0.9,
+      "confidence": 0.82,
+      "access_provenance": []
+    },
+    {
+      "edge": 1,
+      "access": "open",
+      "access_confidence": 0.9,
+      "confidence": 0.82,
+      "access_provenance": []
+    },
+    {
+      "edge": 2,
+      "access": "open",
+      "access_confidence": 0.9,
+      "confidence": 0.82,
+      "access_provenance": []
+    },
+    {
+      "edge": 3,
+      "access": "open",
+      "access_confidence": 0.9,
+      "confidence": 0.82,
+      "access_provenance": []
+    },
+    {
+      "edge": 4,
+      "access": "open",
+      "access_confidence": 0.9,
+      "confidence": 0.81,
+      "access_provenance": []
+    },
+    {
+      "edge": 5,
+      "access": "open",
+      "access_confidence": 0.9,
+      "confidence": 0.65,
+      "access_provenance": []
+    }
+  ]
+}
