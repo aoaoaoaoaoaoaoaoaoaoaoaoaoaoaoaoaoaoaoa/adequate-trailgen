@@ -88,6 +88,8 @@ pub struct SourceCandidate {
     pub kind: SourceKind,
     pub adapter_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fingerprint: Option<SourceFingerprint>,
 }
 
@@ -401,6 +403,7 @@ pub fn classify_path(path: &Path) -> Option<SourceCandidate> {
         path: path.display().to_string(),
         kind,
         adapter_id: adapter_id.to_owned(),
+        origin: None,
         fingerprint: None,
     })
 }

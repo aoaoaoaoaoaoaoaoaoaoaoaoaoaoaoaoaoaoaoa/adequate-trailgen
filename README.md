@@ -43,6 +43,8 @@ Generated artifacts land in the project directory:
 
 Use `trailgen export <project> --route candidate-1 --format gpx|geojson|kml|kmz --output file` to re-export a selected generated route after the search run. Use `trailgen report <project> [--route candidate-1] [--output file.md]` to render either all generated routes or one named route, including the constraint envelope used for that generation run.
 
+Use `trailgen cache-source <project> --input URL_OR_PATH --output trails.geojson` to copy or download a provider-neutral artifact into `sources/`, record its origin, fingerprint it, and add it to the source manifest. Add `--kind` and `--adapter` when filenames do not identify the source class.
+
 Use `trailgen verify-sources <project>` before reproduction-sensitive generation runs; it recomputes source byte counts and SHA-256 hashes from `sources/manifest.json` and fails on missing, unfingerprinted, or drifted inputs. Generated and selected route reports include the same source manifest summary for human review.
 
 See [docs/model.md](docs/model.md), [docs/data-sources.md](docs/data-sources.md), [docs/difficulty.md](docs/difficulty.md), [docs/optimizer.md](docs/optimizer.md), and [docs/alltrails.md](docs/alltrails.md).

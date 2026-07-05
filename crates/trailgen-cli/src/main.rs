@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use trailgen_core::alltrails::{AllTrailsBridge, ManualAllTrailsBridge};
 use trailgen_core::io::{csv, geojson, gpx, kml, kmz, report};
 use trailgen_core::source::{
@@ -52,6 +52,17 @@ enum Cmd {
         project: PathBuf,
         #[arg(long, allow_hyphen_values = true, value_parser = parse_bounds)]
         bbox: Option<GeoBounds>,
+    },
+    CacheSource {
+        project: PathBuf,
+        #[arg(long)]
+        input: String,
+        #[arg(long)]
+        output: Option<PathBuf>,
+        #[arg(long, value_parser = parse_source_kind)]
+        kind: Option<SourceKind>,
+        #[arg(long)]
+        adapter: Option<String>,
     },
     VerifySources {
         project: PathBuf,
@@ -207,6 +218,19 @@ fn main() -> Result<()> {
         Cmd::Build { project, source } => build(&project, &source),
         Cmd::Stats { project } => stats(&project),
         Cmd::Discover { project, bbox } => discover(&project, bbox),
+        Cmd::CacheSource {
+            project,
+            input,
+            output,
+            kind,
+            adapter,
+        } => cache_source(
+            &project,
+            &input,
+            output.as_deref(),
+            kind,
+            adapter.as_deref(),
+        ),
         Cmd::VerifySources { project } => verify_sources(&project),
         Cmd::Generate {
             project,
@@ -368,6 +392,30 @@ fn discover(project: &Path, area: Option<GeoBounds>) -> Result<()> {
         manifest.candidates.len(),
         manifest.recommendations.len(),
         project.join("sources/manifest.json").display()
+    );
+    Ok(())
+}
+
+fn cache_source(
+    project: &Path,
+    input: &str,
+    output: Option<&Path>,
+    kind: Option<SourceKind>,
+    adapter: Option<&str>,
+) -> Result<()> {
+    fs::create_dir_all(project.join("sources"))?;
+    let path = cached_source_path(project, input, output)?;
+    let bytes = read_source_input(input)?;
+    write_bytes(&path, &bytes)?;
+    let fingerprint = source_fingerprint(&path)?;
+    let mut candidate = cached_source_candidate(&path, kind, adapter, fingerprint)?;
+    candidate.origin = Some(input.to_owned());
+    register_source_candidates(project, vec![candidate])?;
+    println!(
+        "cached source {} from {} ({} bytes)",
+        path.display(),
+        input,
+        bytes.len()
     );
     Ok(())
 }
@@ -717,9 +765,13 @@ fn render_source_manifest_section(text: &mut String, manifest: Option<&SourceMan
             || "unfingerprinted".to_owned(),
             |fingerprint| format!("{} bytes, sha256 {}", fingerprint.bytes, fingerprint.sha256),
         );
+        let origin = candidate
+            .origin
+            .as_ref()
+            .map_or_else(String::new, |origin| format!("; origin {origin}"));
         let _ = writeln!(
             text,
-            "- {}: {:?} via {}; {fingerprint}",
+            "- {}: {:?} via {}; {fingerprint}{origin}",
             candidate.path, candidate.kind, candidate.adapter_id
         );
     }
@@ -1129,7 +1181,62 @@ fn source_candidate(
         path: source.display().to_string(),
         kind,
         adapter_id: adapter_id.to_owned(),
+        origin: None,
         fingerprint: Some(fingerprint),
+    }
+}
+
+fn cached_source_candidate(
+    source: &Path,
+    kind: Option<SourceKind>,
+    adapter: Option<&str>,
+    fingerprint: SourceFingerprint,
+) -> Result<SourceCandidate> {
+    let classified = classify_path(source);
+    let kind = kind
+        .or_else(|| classified.as_ref().map(|candidate| candidate.kind))
+        .with_context(|| {
+            format!(
+                "cannot infer source kind for {}; pass --kind",
+                source.display()
+            )
+        })?;
+    let adapter_id = adapter
+        .map(str::to_owned)
+        .or_else(|| classified.map(|candidate| candidate.adapter_id))
+        .unwrap_or_else(|| default_adapter_id(kind).to_owned());
+    ensure_adapter_supports_kind(kind, &adapter_id)?;
+    Ok(source_candidate(source, kind, &adapter_id, fingerprint))
+}
+
+const fn default_adapter_id(kind: SourceKind) -> &'static str {
+    match kind {
+        SourceKind::TrailNetwork => "geojson-network",
+        SourceKind::SeedRoute => "gpx-route",
+        SourceKind::Elevation => "arc-ascii-elevation",
+        SourceKind::Terrain => "geojson-terrain-overlay",
+        SourceKind::Access => "geojson-access-overlay",
+        SourceKind::Closure => "geojson-closure-overlay",
+        SourceKind::Road => "geojson-road-context",
+        SourceKind::Hydrology => "geojson-hydrology-context",
+    }
+}
+
+fn ensure_adapter_supports_kind(kind: SourceKind, adapter_id: &str) -> Result<()> {
+    let Some(adapter) = adapter_registry()
+        .into_iter()
+        .find(|adapter| adapter.id == adapter_id)
+    else {
+        bail!("unknown source adapter {adapter_id:?}");
+    };
+    if adapter.kind == kind {
+        Ok(())
+    } else {
+        bail!(
+            "adapter {adapter_id:?} has kind {:?}, not {:?}",
+            adapter.kind,
+            kind
+        );
     }
 }
 
@@ -1279,6 +1386,52 @@ fn source_files(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+fn cached_source_path(project: &Path, input: &str, output: Option<&Path>) -> Result<PathBuf> {
+    let relative = output.map_or_else(|| inferred_source_name(input), PathBuf::from);
+    ensure_safe_relative_source_path(&relative)?;
+    Ok(project.join("sources").join(relative))
+}
+
+fn inferred_source_name(input: &str) -> PathBuf {
+    let head = input
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(input)
+        .trim_end_matches('/');
+    let name = Path::new(head)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("source.bin");
+    PathBuf::from(name)
+}
+
+fn ensure_safe_relative_source_path(path: &Path) -> Result<()> {
+    if path
+        .components()
+        .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
+    {
+        Ok(())
+    } else {
+        bail!("source cache output must be a relative path under project/sources")
+    }
+}
+
+fn read_source_input(input: &str) -> Result<Vec<u8>> {
+    if input.starts_with("http://") || input.starts_with("https://") {
+        Ok(reqwest::blocking::get(input)
+            .with_context(|| format!("GET {input}"))?
+            .error_for_status()
+            .with_context(|| format!("GET {input} returned an error status"))?
+            .bytes()
+            .with_context(|| format!("read response body from {input}"))?
+            .to_vec())
+    } else {
+        let path = input.strip_prefix("file://").unwrap_or(input);
+        fs::read(path).with_context(|| format!("read {path}"))
+    }
+}
+
 fn crossing_totals(graph: &TrailGraph) -> BTreeMap<CrossingKind, u32> {
     let mut totals = BTreeMap::new();
     for crossing in graph
@@ -1330,6 +1483,23 @@ fn parse_bounds(raw: &str) -> Result<GeoBounds, String> {
         Ok(bounds)
     } else {
         Err("bbox must satisfy -180≤west<east≤180 and -90≤south<north≤90".to_owned())
+    }
+}
+
+fn parse_source_kind(raw: &str) -> Result<SourceKind, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "trail-network" | "network" | "trails" => Ok(SourceKind::TrailNetwork),
+        "seed-route" | "seed" | "route" => Ok(SourceKind::SeedRoute),
+        "elevation" | "dem" => Ok(SourceKind::Elevation),
+        "terrain" | "surface" | "landcover" | "land-cover" => Ok(SourceKind::Terrain),
+        "access" => Ok(SourceKind::Access),
+        "closure" | "closures" => Ok(SourceKind::Closure),
+        "road" | "roads" => Ok(SourceKind::Road),
+        "hydrology" | "water" | "streams" => Ok(SourceKind::Hydrology),
+        _ => Err(
+            "expected trail-network, seed-route, elevation, terrain, access, closure, road, or hydrology"
+                .to_owned(),
+        ),
     }
 }
 
@@ -1630,6 +1800,54 @@ mod tests {
         let error = verify_sources(project).expect_err("source drift should fail verification");
         assert!(format!("{error:#}").contains("source verification failed"));
         assert!(format!("{error:#}").contains("drifted"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn cache_source_copies_bytes_under_sources_and_records_origin() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path().join("project");
+        let source = tmp.path().join("raw-network.geojson");
+        fs::write(
+            &source,
+            include_str!("../../trailgen-core/tests/fixtures/mini_network.geojson"),
+        )?;
+
+        init(&project, "Cache Test".to_owned(), None)?;
+        cache_source(
+            &project,
+            source.to_str().expect("utf-8 temp path"),
+            Some(Path::new("cached/network.geojson")),
+            None,
+            None,
+        )?;
+        verify_sources(&project)?;
+
+        let cached = project.join("sources/cached/network.geojson");
+        assert_eq!(fs::read(&cached)?, fs::read(&source)?);
+        assert!(cached_source_path(&project, "x", Some(Path::new("../x"))).is_err());
+
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(project.join("sources/manifest.json"))?)?;
+        let candidate = manifest["candidates"]
+            .as_array()
+            .expect("candidates")
+            .iter()
+            .find(|candidate| {
+                candidate["path"]
+                    .as_str()
+                    .is_some_and(|p| p.ends_with("cached/network.geojson"))
+            })
+            .expect("cached candidate");
+        assert_eq!(candidate["kind"], "trail-network");
+        assert_eq!(candidate["adapter_id"], "geojson-network");
+        assert_eq!(candidate["origin"], source.display().to_string());
+        assert!(
+            candidate["fingerprint"]["sha256"]
+                .as_str()
+                .is_some_and(|hash| hash.len() == 64)
+        );
 
         Ok(())
     }
