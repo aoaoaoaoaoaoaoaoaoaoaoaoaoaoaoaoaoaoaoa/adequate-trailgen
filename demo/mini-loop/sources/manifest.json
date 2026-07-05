@@ -268,6 +268,37 @@
         "sources/network.geojson",
         "sources/trails.shp"
       ],
+      "acquisition_hints": [
+        {
+          "label": "NPS official GIS open data",
+          "url": "https://www.nps.gov/subjects/gisandmapping/tools-and-data.htm",
+          "formats": [
+            "GeoJSON",
+            "Shapefile",
+            "Feature Service"
+          ],
+          "note": "Use first for National Park Service units; cache exported trail linework under sources/ with provenance intact."
+        },
+        {
+          "label": "USFS geospatial data discovery",
+          "url": "https://data-usfs.hub.arcgis.com/",
+          "formats": [
+            "Shapefile",
+            "File Geodatabase",
+            "Feature Service"
+          ],
+          "note": "Use for National Forest roads/trails and agency-managed transportation layers before falling back to volunteered data."
+        },
+        {
+          "label": "Geofabrik OpenStreetMap extracts",
+          "url": "https://download.geofabrik.de/",
+          "formats": [
+            "OSM PBF",
+            "Shapefile"
+          ],
+          "note": "Use as a broad fallback extract, then filter hiking paths/tracks and normalize to GeoJSON or shapefile."
+        }
+      ],
       "search_terms": [
         "official trail GIS line layer",
         "OSM hiking path extract",
@@ -293,6 +324,26 @@
       "suggested_paths": [
         "sources/dem.asc",
         "sources/dem.tif"
+      ],
+      "acquisition_hints": [
+        {
+          "label": "USGS The National Map Downloader",
+          "url": "https://www.usgs.gov/tools/download-data-maps-national-map",
+          "formats": [
+            "GeoTIFF",
+            "IMG"
+          ],
+          "note": "Use 3DEP DEM products for United States AOIs; prefer GeoTIFF tiles that cover the graph envelope."
+        },
+        {
+          "label": "USGS TNMAccess API",
+          "url": "https://apps.nationalmap.gov/tnmaccess/",
+          "formats": [
+            "GeoTIFF",
+            "JSON metadata"
+          ],
+          "note": "Use for scripted 3DEP product discovery by bounding box before caching selected raster downloads."
+        }
       ],
       "search_terms": [
         "USGS 3DEP DEM",
@@ -320,6 +371,27 @@
         "sources/landcover.geojson",
         "sources/terrain.shp"
       ],
+      "acquisition_hints": [
+        {
+          "label": "MRLC NLCD data",
+          "url": "https://www.mrlc.gov/data",
+          "formats": [
+            "GeoTIFF",
+            "Raster service"
+          ],
+          "note": "Use for broad land-cover evidence, then convert relevant classes into terrain overlays with explicit confidence."
+        },
+        {
+          "label": "Agency surface or land-cover GIS",
+          "url": "https://data-usfs.hub.arcgis.com/",
+          "formats": [
+            "Shapefile",
+            "GeoJSON",
+            "Feature Service"
+          ],
+          "note": "Prefer local agency surface, land-cover, or trail-condition attributes when available."
+        }
+      ],
       "search_terms": [
         "land cover polygons",
         "trail surface GIS layer",
@@ -345,6 +417,28 @@
         "sources/closures.geojson",
         "sources/access.geojson",
         "sources/closures.shp"
+      ],
+      "acquisition_hints": [
+        {
+          "label": "Agency closure and alert GIS",
+          "url": "https://public-nps.opendata.arcgis.com/",
+          "formats": [
+            "GeoJSON",
+            "Shapefile",
+            "Feature Service"
+          ],
+          "note": "Use current official closure/restriction features; preserve dates and alert provenance in cached overlays."
+        },
+        {
+          "label": "Local park or forest alerts",
+          "url": "https://www.nps.gov/subjects/gisandmapping/tools-and-data.htm",
+          "formats": [
+            "GeoJSON",
+            "Shapefile",
+            "Web page"
+          ],
+          "note": "When no machine layer exists, hand-normalize official closure geometry into a small GeoJSON overlay."
+        }
       ],
       "search_terms": [
         "official trail closure layer",
@@ -372,6 +466,26 @@
         "sources/ownership.geojson",
         "sources/access.shp"
       ],
+      "acquisition_hints": [
+        {
+          "label": "USGS PAD-US data download",
+          "url": "https://www.usgs.gov/programs/gap-analysis-project/science/pad-us-data-download",
+          "formats": [
+            "File Geodatabase",
+            "Shapefile"
+          ],
+          "note": "Use protected-area ownership/manager data as access context; normalize to open/restricted/private where justified."
+        },
+        {
+          "label": "PAD-US protected areas overview",
+          "url": "https://www.usgs.gov/programs/gap-analysis-project/science/protected-areas",
+          "formats": [
+            "Metadata",
+            "Download links"
+          ],
+          "note": "Use to understand PAD-US scope before treating ownership as a route legality signal."
+        }
+      ],
       "search_terms": [
         "public access boundary GeoJSON",
         "land ownership parcel open space GIS",
@@ -397,6 +511,37 @@
         "sources/roads.geojson",
         "sources/context-roads.geojson",
         "sources/roads.shp"
+      ],
+      "acquisition_hints": [
+        {
+          "label": "USFS roads data",
+          "url": "https://data.fs.usda.gov/geodata/edw/datasets.php?dsetCategory=transportation",
+          "formats": [
+            "Shapefile",
+            "File Geodatabase",
+            "Map service"
+          ],
+          "note": "Use for National Forest road exposure and crossings; cache centerlines as road context."
+        },
+        {
+          "label": "The National Map transportation",
+          "url": "https://apps.nationalmap.gov/tnmaccess/",
+          "formats": [
+            "Shapefile",
+            "GeoPackage",
+            "JSON metadata"
+          ],
+          "note": "Use TNM transportation products when local road centerlines are absent."
+        },
+        {
+          "label": "Geofabrik OpenStreetMap roads",
+          "url": "https://download.geofabrik.de/",
+          "formats": [
+            "OSM PBF",
+            "Shapefile"
+          ],
+          "note": "Use as a fallback road/street extract, then filter and normalize to context linework."
+        }
       ],
       "search_terms": [
         "road centerline GeoJSON",
@@ -424,6 +569,27 @@
         "sources/streams.geojson",
         "sources/hydrology.shp"
       ],
+      "acquisition_hints": [
+        {
+          "label": "USGS National Hydrography products",
+          "url": "https://www.usgs.gov/national-hydrography/access-national-hydrography-products",
+          "formats": [
+            "Shapefile",
+            "File Geodatabase"
+          ],
+          "note": "Use NHD/3DHP stream and waterbody linework to infer water crossings."
+        },
+        {
+          "label": "The National Map hydrography",
+          "url": "https://apps.nationalmap.gov/tnmaccess/",
+          "formats": [
+            "Shapefile",
+            "File Geodatabase",
+            "JSON metadata"
+          ],
+          "note": "Use TNMAccess to locate hydrography products by AOI before caching selected linework."
+        }
+      ],
       "search_terms": [
         "NHD stream lines",
         "hydrology GeoJSON",
@@ -450,6 +616,29 @@
         "sources/seeds/completed.gpx",
         "sources/seeds/alltrails-export.gpx",
         "sources/seeds/reference.geojson"
+      ],
+      "acquisition_hints": [
+        {
+          "label": "AllTrails import/export support",
+          "url": "https://support.alltrails.com/hc/en-us/sections/360006411352-Importing-and-exporting-files",
+          "formats": [
+            "GPX",
+            "KML"
+          ],
+          "note": "Use user-supplied exports as seed routes only; never couple core graph semantics to private AllTrails APIs."
+        },
+        {
+          "label": "Personal GPS archives",
+          "url": "file://local-user-supplied-routes",
+          "formats": [
+            "GPX",
+            "GeoJSON",
+            "KML",
+            "KMZ",
+            "CSV"
+          ],
+          "note": "Cache completed hikes under sources/seeds or import them directly so provenance and fingerprints are preserved."
+        }
       ],
       "search_terms": [
         "personal completed hike GPX",

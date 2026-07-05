@@ -1206,7 +1206,25 @@ fn shapefile_adapters_normalize_networks_and_overlays() {
 #[test]
 fn source_coverage_evaluates_recommendations_against_candidates() {
     let adapters = adapter_registry();
-    let recommendations = discovery_recommendations(None);
+    let recommendations = discovery_recommendations(Some(trailhead_bounds()));
+    let trail_recommendation = recommendations
+        .iter()
+        .find(|entry| entry.kind == SourceKind::TrailNetwork)
+        .expect("trail network recommendation");
+    assert_eq!(trail_recommendation.area, Some(trailhead_bounds()));
+    assert!(trail_recommendation.acquisition_hints.iter().any(|hint| {
+        hint.label.contains("NPS") && hint.formats.iter().any(|format| format == "GeoJSON")
+    }));
+    let elevation_recommendation = recommendations
+        .iter()
+        .find(|entry| entry.kind == SourceKind::Elevation)
+        .expect("elevation recommendation");
+    assert!(
+        elevation_recommendation
+            .acquisition_hints
+            .iter()
+            .any(|hint| { hint.url.contains("nationalmap.gov") || hint.url.contains("usgs.gov") })
+    );
     let candidates = vec![
         classify_path(std::path::Path::new("sources/network.geojson")).unwrap(),
         classify_path(std::path::Path::new("sources/dem.tif")).unwrap(),
@@ -1233,6 +1251,10 @@ fn source_coverage_evaluates_recommendations_against_candidates() {
         .expect("hydrology coverage");
     assert_eq!(hydrology.status, SourceCoverageStatus::Missing);
     assert!(hydrology.message.contains("sources/hydrology.geojson"));
+}
+
+const fn trailhead_bounds() -> trailgen_core::source::GeoBounds {
+    trailgen_core::source::GeoBounds::new(-105.02, 39.99, -104.98, 40.02)
 }
 
 fn write_network_shapefile(path: &std::path::Path) {

@@ -2489,6 +2489,11 @@ mod tests {
             manifest["source_manifest"]["recommendations"][0]["area"]["west"],
             -105.1
         );
+        assert!(
+            manifest["source_manifest"]["recommendations"][0]["acquisition_hints"]
+                .as_array()
+                .is_some_and(|hints| !hints.is_empty())
+        );
         assert_source_coverage_manifest(&manifest);
         let candidates = manifest["source_manifest"]["candidates"]
             .as_array()
