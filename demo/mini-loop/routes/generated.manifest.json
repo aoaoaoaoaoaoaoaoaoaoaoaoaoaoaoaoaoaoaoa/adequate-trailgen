@@ -76,6 +76,7 @@
       "keep": 12
     },
     "max_start_snap_m": 500.0,
+    "max_route_snap_m": 100.0,
     "solver": "auto",
     "planning_date": "2026-05-15"
   },
@@ -718,7 +719,10 @@
             "url": "https://support.alltrails.com/hc/en-us/sections/360006411352-Importing-and-exporting-files",
             "formats": [
               "GPX",
-              "KML"
+              "GeoJSON",
+              "KML",
+              "KMZ",
+              "CSV"
             ],
             "note": "Use user-supplied exports as seed routes only; never couple core graph semantics to private AllTrails APIs."
           },

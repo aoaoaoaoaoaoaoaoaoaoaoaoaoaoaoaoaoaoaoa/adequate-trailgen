@@ -1296,6 +1296,9 @@ fn seed_routes_snap_and_raise_edge_confidence() {
     .unwrap();
     let seed = SeedRoute::snap(&graph, "AllTrails Fixture", "fixture.gpx", "gpx", &line);
     assert!(seed.snapped_edges.len() >= 3);
+    assert_eq!(seed.snap.rejected_segment_count, 0);
+    assert_eq!(seed.snap.segment_count, 3);
+    assert!(seed.snap.max_snap_m <= 1.0);
     graph.apply_seed_hints(&seed);
     graph.apply_seed_hints(&seed);
     assert!(
@@ -1308,6 +1311,19 @@ fn seed_routes_snap_and_raise_edge_confidence() {
             .iter()
             .all(|edge| graph.edges[edge.0].attr.confidence >= 0.82)
     );
+}
+
+#[test]
+fn route_snap_stats_reject_remote_lines() {
+    let drafts = geojson::network_from_str(include_str!("fixtures/mini_network.geojson")).unwrap();
+    let graph = GraphBuilder::default().build(&drafts).unwrap();
+    let line = LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.0, 0.01)]).unwrap();
+    let snap = graph.snap_line_edges_within(&line, 100.0);
+    assert_eq!(snap.stats.segment_count, 1);
+    assert_eq!(snap.stats.snapped_segment_count, 0);
+    assert_eq!(snap.stats.rejected_segment_count, 1);
+    assert!(snap.stats.max_snap_m > 1_000_000.0);
+    assert!(snap.edges.is_empty());
 }
 
 #[test]

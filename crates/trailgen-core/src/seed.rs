@@ -1,6 +1,6 @@
 use crate::constraints::LoopConstraints;
 use crate::geo::LineString;
-use crate::model::{EdgeId, Provenance, TrailGraph, VertexId};
+use crate::model::{EdgeId, Provenance, RouteSnapStats, TrailGraph, VertexId};
 use crate::route::{Route, RouteMetrics};
 use serde::{Deserialize, Serialize};
 
@@ -13,6 +13,8 @@ pub struct SeedRoute {
     pub source_format: String,
     pub point_count: usize,
     pub snapped_edges: Vec<EdgeId>,
+    #[serde(default)]
+    pub snap: RouteSnapStats,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start: Option<VertexId>,
     pub closed_loop: bool,
@@ -29,7 +31,20 @@ impl SeedRoute {
         source_format: impl Into<String>,
         line: &LineString,
     ) -> Self {
-        let snapped_edges = graph.snap_line_edges(line);
+        Self::snap_with_limit(graph, name, source_path, source_format, line, f64::INFINITY)
+    }
+
+    #[must_use]
+    pub fn snap_with_limit(
+        graph: &TrailGraph,
+        name: impl Into<String>,
+        source_path: impl Into<String>,
+        source_format: impl Into<String>,
+        line: &LineString,
+        max_snap_m: f64,
+    ) -> Self {
+        let snap = graph.snap_line_edges_within(line, max_snap_m);
+        let snapped_edges = snap.edges;
         let candidate_start = graph.snapped_line_start(line, &snapped_edges);
         let finish =
             candidate_start.and_then(|v| graph.walk_edges(v, &snapped_edges).map(|f| (v, f)));
@@ -54,6 +69,7 @@ impl SeedRoute {
             source_format,
             point_count: line.points.len(),
             snapped_edges,
+            snap: snap.stats,
             start,
             closed_loop,
             metrics,

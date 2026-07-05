@@ -1,5 +1,5 @@
 use crate::difficulty::DifficultyBreakdown;
-use crate::geo::LineString;
+use crate::geo::{Coord, LineString};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
@@ -286,6 +286,21 @@ pub struct TrailGraph {
     pub adjacency: Vec<Vec<EdgeId>>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RouteSnapStats {
+    pub segment_count: usize,
+    pub snapped_segment_count: usize,
+    pub rejected_segment_count: usize,
+    pub max_snap_m: f64,
+    pub mean_snap_m: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LineSnap {
+    pub edges: Vec<EdgeId>,
+    pub stats: RouteSnapStats,
+}
+
 impl TrailGraph {
     #[must_use]
     pub fn new(vertices: Vec<Vertex>, edges: Vec<Edge>) -> Self {
@@ -334,27 +349,68 @@ impl TrailGraph {
 
     #[must_use]
     pub fn snap_line_edges(&self, line: &crate::geo::LineString) -> Vec<EdgeId> {
-        let mut snapped = Vec::new();
+        self.snap_line_edges_within(line, f64::INFINITY).edges
+    }
+
+    #[must_use]
+    pub fn snap_line_edges_within(
+        &self,
+        line: &crate::geo::LineString,
+        max_snap_m: f64,
+    ) -> LineSnap {
+        let mut edges = Vec::new();
+        let mut segment_count = 0usize;
+        let mut snapped_segment_count = 0usize;
+        let mut rejected_segment_count = 0usize;
+        let mut max_observed_m = 0.0f64;
+        let mut sum_observed_m = 0.0f64;
+        let mut observed_count = 0.0f64;
         for w in line.points.windows(2) {
+            segment_count += 1;
             let mid = w[0].lerp(w[1], 0.5);
-            let Some(edge_id) = self.nearest_edge(mid) else {
+            let Some((edge_id, snap_m)) = self.nearest_edge_with_distance(mid) else {
+                rejected_segment_count += 1;
                 continue;
             };
-            if snapped.last().copied() != Some(edge_id) {
-                snapped.push(edge_id);
+            max_observed_m = max_observed_m.max(snap_m);
+            sum_observed_m += snap_m;
+            observed_count += 1.0;
+            if snap_m > max_snap_m {
+                rejected_segment_count += 1;
+                continue;
+            }
+            snapped_segment_count += 1;
+            if edges.last().copied() != Some(edge_id) {
+                edges.push(edge_id);
             }
         }
-        snapped
+        LineSnap {
+            edges,
+            stats: RouteSnapStats {
+                segment_count,
+                snapped_segment_count,
+                rejected_segment_count,
+                max_snap_m: max_observed_m,
+                mean_snap_m: if observed_count <= f64::EPSILON {
+                    0.0
+                } else {
+                    sum_observed_m / observed_count
+                },
+            },
+        }
     }
 
     #[must_use]
     pub fn nearest_edge(&self, coord: crate::geo::Coord) -> Option<EdgeId> {
+        self.nearest_edge_with_distance(coord).map(|(edge, _)| edge)
+    }
+
+    #[must_use]
+    pub fn nearest_edge_with_distance(&self, coord: crate::geo::Coord) -> Option<(EdgeId, f64)> {
         self.edges
             .iter()
-            .min_by(|a, b| {
-                edge_midpoint_distance2(a, coord).total_cmp(&edge_midpoint_distance2(b, coord))
-            })
-            .map(|e| e.id)
+            .min_by(|a, b| edge_distance_m(a, coord).total_cmp(&edge_distance_m(b, coord)))
+            .map(|e| (e.id, edge_distance_m(e, coord)))
     }
 
     #[must_use]
@@ -397,11 +453,29 @@ impl TrailGraph {
     }
 }
 
-fn edge_midpoint_distance2(edge: &Edge, coord: crate::geo::Coord) -> f64 {
+fn edge_distance_m(edge: &Edge, coord: Coord) -> f64 {
     edge.geometry
         .points
         .windows(2)
-        .map(|w| w[0].lerp(w[1], 0.5).planar_distance2(coord))
+        .map(|w| segment_distance_m(w[0], w[1], coord))
         .min_by(f64::total_cmp)
         .unwrap_or(f64::INFINITY)
+}
+
+fn segment_distance_m(head: Coord, tail: Coord, point: Coord) -> f64 {
+    let latitude_scale = point.lat.to_radians().cos();
+    let meters_per_lon = 111_320.0 * latitude_scale;
+    let meters_per_lat = 110_540.0;
+    let head_x = (head.lon - point.lon) * meters_per_lon;
+    let head_y = (head.lat - point.lat) * meters_per_lat;
+    let tail_x = (tail.lon - point.lon) * meters_per_lon;
+    let tail_y = (tail.lat - point.lat) * meters_per_lat;
+    let span_x = tail_x - head_x;
+    let span_y = tail_y - head_y;
+    let span_len2 = span_x.mul_add(span_x, span_y * span_y);
+    if span_len2 <= f64::EPSILON {
+        return head_x.hypot(head_y);
+    }
+    let interpolation = (-(head_x * span_x + head_y * span_y) / span_len2).clamp(0.0, 1.0);
+    (head_x + span_x * interpolation).hypot(head_y + span_y * interpolation)
 }

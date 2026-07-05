@@ -29,7 +29,7 @@ pub use enrich::{
 pub use geo::{Coord, LineString};
 pub use model::{
     Access, CrossingEvidence, CrossingKind, Edge, EdgeAttr, EdgeId, EdgeTravel, GradeDistribution,
-    Provenance, Terrain, TrailGraph, Vertex, VertexId,
+    Provenance, RouteSnapStats, Terrain, TrailGraph, Vertex, VertexId,
 };
 pub use optimizer::{ExactLoopSolver, LoopHunter, RouteSolver, SearchParams, SolverKind};
 pub use overlay::{

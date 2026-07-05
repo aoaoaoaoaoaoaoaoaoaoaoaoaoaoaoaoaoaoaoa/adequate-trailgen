@@ -10,6 +10,13 @@
     0,
     3
   ],
+  "snap": {
+    "segment_count": 307,
+    "snapped_segment_count": 307,
+    "rejected_segment_count": 0,
+    "max_snap_m": 3.552713678800501e-15,
+    "mean_snap_m": 7.232735096258395e-16
+  },
   "start": 3,
   "closed_loop": true,
   "metrics": {
@@ -17,7 +24,7 @@
     "distance_m": 4712.831226933267,
     "ascent_m": 136.9999999999991,
     "descent_m": 136.9999999999991,
-    "difficulty": 14.068860812984102,
+    "difficulty": 1014.0688608129842,
     "difficulty_breakdown": {
       "distance": 4.712831226933266,
       "ascent": 1.6439999999999888,
@@ -28,18 +35,19 @@
       "technical": 3.1757314914698194,
       "navigation": 0.659565679411782,
       "confidence": 1.0800000000000003,
-      "access": 0.0
+      "access": 1000.0
     },
     "road_fraction": 0.013012237461292745,
     "low_confidence_fraction": 0.0,
-    "restricted_access_fraction": 0.0,
+    "restricted_access_fraction": 0.28312937564512086,
     "repeated_edge_fraction": 0.0,
     "crossings": {
       "road": 2,
       "water": 2
     },
     "access_m": {
-      "open": 4712.831226933267
+      "open": 3378.490264130822,
+      "closed": 1334.340962802445
     },
     "terrain_m": {
       "trail": 2044.149301328377,

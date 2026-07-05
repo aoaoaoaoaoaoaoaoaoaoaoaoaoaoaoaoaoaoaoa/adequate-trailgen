@@ -15,8 +15,8 @@ use trailgen_core::source::{
 use trailgen_core::{
     Access, AccessOverlay, ArcAsciiGrid, Coord, CrossingKind, DifficultyBreakdown,
     DifficultyWeights, EdgeId, EdgeTravel, EnrichmentConfig, GeoTiffDem, GraphBuilder, LineString,
-    LoopConstraints, PlanningDate, Provenance, Route, RouteMetrics, RouteShape, SearchParams,
-    SeedRoute, SegmentDraft, SolverKind, Terrain, TrailGraph, VertexId, VrtDem,
+    LoopConstraints, PlanningDate, Provenance, Route, RouteMetrics, RouteShape, RouteSnapStats,
+    SearchParams, SeedRoute, SegmentDraft, SolverKind, Terrain, TrailGraph, VertexId, VrtDem,
     apply_access_overlays, apply_context_overlays, apply_terrain_overlays, enrich_graph,
     rank_routes, slug,
 };
@@ -141,6 +141,8 @@ enum Cmd {
         project: PathBuf,
         #[arg(long)]
         route: PathBuf,
+        #[arg(long)]
+        max_route_snap_m: Option<f64>,
     },
     Rerate {
         project: PathBuf,
@@ -154,6 +156,8 @@ enum Cmd {
         #[arg(long, value_enum, default_value = "all")]
         family: CalibrationFamily,
         #[arg(long)]
+        max_route_snap_m: Option<f64>,
+        #[arg(long)]
         write: bool,
     },
     ImportSeed {
@@ -162,6 +166,8 @@ enum Cmd {
         route: PathBuf,
         #[arg(long)]
         name: Option<String>,
+        #[arg(long)]
+        max_route_snap_m: Option<f64>,
     },
     ApplyAccess {
         project: PathBuf,
@@ -207,6 +213,8 @@ struct ProjectConfig {
     search: SearchParams,
     #[serde(default = "default_max_start_snap_m")]
     max_start_snap_m: f64,
+    #[serde(default = "default_max_route_snap_m")]
+    max_route_snap_m: f64,
     #[serde(default)]
     solver: SolverKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -224,6 +232,7 @@ impl ProjectConfig {
             constraints: LoopConstraints::default(),
             search: SearchParams::default(),
             max_start_snap_m: default_max_start_snap_m(),
+            max_route_snap_m: default_max_route_snap_m(),
             solver: SolverKind::default(),
             planning_date: None,
         }
@@ -267,6 +276,10 @@ const fn default_snap_tolerance_m() -> f64 {
 
 const fn default_max_start_snap_m() -> f64 {
     500.0
+}
+
+const fn default_max_route_snap_m() -> f64 {
+    100.0
 }
 
 #[allow(
@@ -360,20 +373,33 @@ fn main() -> Result<()> {
             output,
         } => report_generated(&project, route.as_deref(), output.as_deref()),
         Cmd::Map { project, output } => map_html(&project, output.as_deref()),
-        Cmd::Rate { project, route } => rate(&project, &route),
+        Cmd::Rate {
+            project,
+            route,
+            max_route_snap_m,
+        } => rate(&project, &route, max_route_snap_m),
         Cmd::Rerate { project } => rerate(&project),
         Cmd::Calibrate {
             project,
             route,
             target_difficulty,
             family,
+            max_route_snap_m,
             write,
-        } => calibrate(&project, &route, target_difficulty, family, write),
+        } => calibrate(
+            &project,
+            &route,
+            target_difficulty,
+            family,
+            max_route_snap_m,
+            write,
+        ),
         Cmd::ImportSeed {
             project,
             route,
             name,
-        } => import_seed(&project, &route, name),
+            max_route_snap_m,
+        } => import_seed(&project, &route, name, max_route_snap_m),
         Cmd::ApplyAccess {
             project,
             source,
@@ -1034,10 +1060,16 @@ fn apply_generate_options(constraints: &mut LoopConstraints, options: &GenerateO
     }
 }
 
-fn rate(project: &Path, route: &Path) -> Result<()> {
+fn rate(project: &Path, route: &Path, max_route_snap_m: Option<f64>) -> Result<()> {
     let config = load_config(project)?;
     let graph = load_graph(project)?;
-    let route = snapped_route(&graph, route, &config.constraints, "rated-route")?;
+    let route = snapped_route(
+        &graph,
+        route,
+        &config.constraints,
+        "rated-route",
+        max_route_snap_m.unwrap_or(config.max_route_snap_m),
+    )?;
     println!(
         "{}",
         render_project_report(project, &graph, &[route], &config.constraints)?
@@ -1057,11 +1089,18 @@ fn calibrate(
     route_path: &Path,
     target_difficulty: f64,
     family: CalibrationFamily,
+    max_route_snap_m: Option<f64>,
     write: bool,
 ) -> Result<()> {
     let mut config = load_config(project)?;
     let graph = load_graph(project)?;
-    let route = snapped_route(&graph, route_path, &config.constraints, "calibration-route")?;
+    let route = snapped_route(
+        &graph,
+        route_path,
+        &config.constraints,
+        "calibration-route",
+        max_route_snap_m.unwrap_or(config.max_route_snap_m),
+    )?;
     let calibration = calibrate_weights(
         config.difficulty,
         route.metrics.difficulty_breakdown,
@@ -1088,16 +1127,38 @@ fn snapped_route(
     route_path: &Path,
     constraints: &LoopConstraints,
     name: &str,
+    max_route_snap_m: f64,
 ) -> Result<Route> {
     let line = load_route_line(route_path)?;
-    let edges = graph.snap_line_edges(&line);
-    if edges.is_empty() {
-        bail!("route did not snap to any graph edges");
-    }
+    let snap = graph.snap_line_edges_within(&line, max_route_snap_m);
+    ensure_route_snap_accepted(&snap.stats, max_route_snap_m, "route")?;
+    let edges = snap.edges;
     let start = graph
-        .nearest_vertex(line.start())
-        .with_context(|| "graph has no vertices")?;
+        .snapped_line_start(&line, &edges)
+        .with_context(|| "route snapped to edges but no traversable start vertex was found")?;
     Ok(Route::from_edges(name, graph, start, edges, constraints))
+}
+
+fn ensure_route_snap_accepted(
+    snap: &RouteSnapStats,
+    max_route_snap_m: f64,
+    noun: &str,
+) -> Result<()> {
+    if snap.snapped_segment_count == 0 {
+        bail!(
+            "{noun} did not snap to any graph edges within max_route_snap_m {max_route_snap_m:.0}"
+        );
+    }
+    if snap.rejected_segment_count > 0 {
+        bail!(
+            "{noun} has {} segment(s) farther than max_route_snap_m {:.0}; max observed snap {:.0} m, mean {:.0} m",
+            snap.rejected_segment_count,
+            max_route_snap_m,
+            snap.max_snap_m,
+            snap.mean_snap_m
+        );
+    }
+    Ok(())
 }
 
 fn calibrate_weights(
@@ -1674,7 +1735,12 @@ fn render_source_manifest_section(text: &mut String, manifest: Option<&SourceMan
     }
 }
 
-fn import_seed(project: &Path, route: &Path, name: Option<String>) -> Result<()> {
+fn import_seed(
+    project: &Path,
+    route: &Path,
+    name: Option<String>,
+    max_route_snap_m: Option<f64>,
+) -> Result<()> {
     let config = load_config(project)?;
     let mut graph = load_graph(project)?;
     let name = name.unwrap_or_else(|| {
@@ -1705,17 +1771,20 @@ fn import_seed(project: &Path, route: &Path, name: Option<String>) -> Result<()>
         .and_then(|x| x.to_str())
         .unwrap_or("unknown")
         .to_ascii_lowercase();
-    let mut seed = SeedRoute::snap(
+    let mut seed = SeedRoute::snap_with_limit(
         &graph,
         name,
         archived_route.display().to_string(),
         source_format,
         &line,
+        max_route_snap_m.unwrap_or(config.max_route_snap_m),
     );
     seed.original_source_path = Some(original_source_path);
-    if seed.snapped_edges.is_empty() {
-        bail!("seed route did not snap to any graph edges");
-    }
+    ensure_route_snap_accepted(
+        &seed.snap,
+        max_route_snap_m.unwrap_or(config.max_route_snap_m),
+        "seed route",
+    )?;
     graph.apply_seed_hints(&seed);
     for edge in &mut graph.edges {
         config.difficulty.apply_edge(edge);
@@ -1738,10 +1807,11 @@ fn import_seed(project: &Path, route: &Path, name: Option<String>) -> Result<()>
         unregister_source_candidate_path(project, &previous_source_path)?;
     }
     println!(
-        "imported seed {}: {} point(s), {} snapped edge(s), closed_loop={}",
+        "imported seed {}: {} point(s), {} snapped edge(s), max snap {:.0} m, closed_loop={}",
         seed.name,
         seed.point_count,
         seed.snapped_edges.len(),
+        seed.snap.max_snap_m,
         seed.closed_loop
     );
     Ok(())
@@ -3366,6 +3436,27 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn rating_rejects_remote_route_without_explicit_snap_override() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../trailgen-core/tests/fixtures/mini_network.geojson");
+        let route = project.join("remote.csv");
+
+        init(project, "Route Snap Test".to_owned(), None)?;
+        build(project, &fixture)?;
+        fs::write(
+            &route,
+            "longitude,latitude,elevation_m\n0.0000,0.0000,0\n0.0000,0.0100,0\n",
+        )?;
+
+        let error = rate(project, &route, None).expect_err("remote route should be rejected");
+        assert!(format!("{error:#}").contains("max_route_snap_m 100"));
+        rate(project, &route, Some(20_000_000.0))?;
+        Ok(())
+    }
+
     fn assert_effective_constraints_manifest(manifest: &Value) {
         let constraints = &manifest["effective_config"]["constraints"];
         assert_eq!(constraints["min_distance_m"], 3_000.0);
@@ -3648,14 +3739,28 @@ mod tests {
             &route_path,
             &before_config.constraints,
             "rated",
+            before_config.max_route_snap_m,
         )?;
         let target = before_route.metrics.difficulty * 1.25;
-        calibrate(project, &route_path, target, CalibrationFamily::All, true)?;
+        calibrate(
+            project,
+            &route_path,
+            target,
+            CalibrationFamily::All,
+            None,
+            true,
+        )?;
         let config = load_config(project)?;
         assert!(config.difficulty.distance_per_km > before_weight);
 
         let graph = load_graph(project)?;
-        let rated = snapped_route(&graph, &route_path, &config.constraints, "rated")?;
+        let rated = snapped_route(
+            &graph,
+            &route_path,
+            &config.constraints,
+            "rated",
+            config.max_route_snap_m,
+        )?;
         assert!(
             (rated.metrics.difficulty - target).abs() <= 1.0e-6,
             "rated {} target {}",
@@ -4115,6 +4220,7 @@ mod tests {
             project,
             &project.join("routes/candidate-1.gpx"),
             Some("Known Good Loop".to_owned()),
+            None,
         )?;
         generate(
             project,
