@@ -218,7 +218,7 @@ fn route_feature(graph: &TrailGraph, route: &Route) -> Value {
         "type": "Feature",
         "properties": {
             "name": route.name,
-            "score": route.score,
+            "score": route.computed_score(),
             "pareto_rank": route.pareto_rank,
             "constraint_penalty": route.verdict.penalty,
             "distance_m": route.metrics.distance_m,

@@ -586,7 +586,7 @@ fn route_geojson_exports_full_diagnostics() {
         .iter()
         .find(|edge| edge.attr.access == Access::Closed)
         .expect("fixture closure should touch an edge");
-    let route = Route::from_edges(
+    let mut route = Route::from_edges(
         "closed-segment",
         &graph,
         edge.a,
@@ -599,10 +599,18 @@ fn route_geojson_exports_full_diagnostics() {
             ..LoopConstraints::default()
         },
     );
+    let expected_score = route.computed_score();
+    route.score = 0.0;
 
-    let gj = geojson::routes_to_geojson(&graph, &[route]);
+    let gj = geojson::routes_to_geojson(&graph, &[route.clone()]);
     let properties = &gj["features"][0]["properties"];
 
+    assert!(
+        properties["score"]
+            .as_f64()
+            .is_some_and(|score| (score - expected_score).abs() <= 1.0e-9 && score > 0.0)
+    );
+    assert!(report::render(&graph, &[route]).contains(&format!("- score: {expected_score:.2}")));
     assert_eq!(properties["restricted_access_fraction"], 1.0);
     assert_eq!(properties["access_fraction"]["closed"], 1.0);
     assert!(properties["terrain_fraction"].is_object());
