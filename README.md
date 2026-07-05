@@ -47,4 +47,4 @@ Use `trailgen cache-source <project> --input URL_OR_PATH --output trails.geojson
 
 Use `trailgen verify-sources <project>` before reproduction-sensitive generation runs; it recomputes source byte counts and SHA-256 hashes from `sources/manifest.json` and fails on missing, unfingerprinted, or drifted inputs. Generated and selected route reports include the same source manifest summary for human review.
 
-See [docs/model.md](docs/model.md), [docs/data-sources.md](docs/data-sources.md), [docs/difficulty.md](docs/difficulty.md), [docs/optimizer.md](docs/optimizer.md), and [docs/alltrails.md](docs/alltrails.md).
+See [docs/installation.md](docs/installation.md), [docs/model.md](docs/model.md), [docs/data-sources.md](docs/data-sources.md), [docs/source-adapters.md](docs/source-adapters.md), [docs/difficulty.md](docs/difficulty.md), [docs/optimizer.md](docs/optimizer.md), [docs/alltrails.md](docs/alltrails.md), and [docs/limitations.md](docs/limitations.md).

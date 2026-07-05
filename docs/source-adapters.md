@@ -1,0 +1,32 @@
+# Source Adapters
+
+Source adapters live at the perimeter. Their job is to turn provider-native bytes into provider-neutral graph drafts, overlays, elevation samplers, or seed routes while preserving provenance and confidence. Provider quirks must not leak into `TrailGraph`, `Route`, `LoopConstraints`, or the optimizer.
+
+The current registry is `adapter_registry()` in `crates/trailgen-core/src/source.rs`. Add a new adapter there with:
+
+- stable `id`
+- `SourceKind`
+- implemented/planned status
+- consumed file extensions or protocol names
+- produced normalized artifacts
+- a terse note about scope and limitations
+
+If filenames can identify the source class, update `classify_path()` in the same module. If the adapter requires an explicit CLI command, add it in `crates/trailgen-cli/src/main.rs`, cache or copy source bytes under `project/sources/`, fingerprint the cached artifact with `SourceFingerprint`, then register a `SourceCandidate` in `sources/manifest.json`.
+
+Normalization targets:
+
+- trail networks become `SegmentDraft` values and are built by `GraphBuilder`
+- terrain/access/context layers become overlay structs in `overlay.rs`
+- elevation sources implement `ElevationSampler`
+- user routes become `LineString` or `SeedRoute`
+
+Adapter invariants:
+
+- never crown a provider as authoritative inside core types
+- keep source provenance on every derived edge attribute
+- attach confidence to inferred or transformed attributes
+- fail on unsupported shapes or ambiguous units instead of inventing precision
+- add fixture-backed tests that run without network access
+- update `docs/data-sources.md` and the demo if the adapter changes user workflow
+
+A good adapter test proves both parsing and downstream effect: for example, a closure overlay should set `Access::Closed`, record access provenance, lower confidence if appropriate, and change route constraint verdicts.
