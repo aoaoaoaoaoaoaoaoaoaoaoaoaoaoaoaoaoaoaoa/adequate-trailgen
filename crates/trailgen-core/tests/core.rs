@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use trailgen_core::alltrails::{
-    AllTrailsBridge, AllTrailsExchange, BridgeStatus, ManualAllTrailsBridge,
+    AllTrailsBridge, AllTrailsExchange, AllTrailsRequest, BridgeStatus, ManualAllTrailsBridge,
+    RouteExchangeFormat, TrailgenExchangeAction,
 };
 use trailgen_core::io::{csv, geojson, gpx, json_route, kml, kmz, report, shapefile as shp_io};
 use trailgen_core::source::{
@@ -1682,17 +1683,57 @@ fn alltrails_bridge_refuses_undocumented_write_api() {
     assert!(caps.iter().any(|cap| {
         cap.exchange == AllTrailsExchange::ManualUploadCustomRoute
             && cap.status == BridgeStatus::Manual
-            && cap.formats.iter().any(|fmt| fmt == "gpx")
+            && cap.formats.contains(&RouteExchangeFormat::Gpx)
     }));
     assert!(caps.iter().any(|cap| {
         cap.exchange == AllTrailsExchange::ManualUploadActivity
             && cap.status == BridgeStatus::Manual
-            && cap.formats.iter().any(|fmt| fmt == "csv")
+            && cap.formats.contains(&RouteExchangeFormat::Csv)
     }));
     assert!(caps.iter().any(|cap| {
         cap.exchange == AllTrailsExchange::DirectWriteApi
             && cap.status == BridgeStatus::Undocumented
     }));
+
+    let import_plan = ManualAllTrailsBridge.plan(AllTrailsRequest {
+        exchange: AllTrailsExchange::ImportUserExport,
+        format: RouteExchangeFormat::Geojson,
+    });
+    assert_eq!(import_plan.status, BridgeStatus::Supported);
+    assert_eq!(
+        import_plan.trailgen_action,
+        TrailgenExchangeAction::ImportSeed
+    );
+    assert!(
+        import_plan
+            .trailgen_template
+            .contains("trailgen import-seed <project> --route alltrails-export.geojson")
+    );
+
+    let upload_plan = ManualAllTrailsBridge.plan(AllTrailsRequest {
+        exchange: AllTrailsExchange::ManualUploadCustomRoute,
+        format: RouteExchangeFormat::Kmz,
+    });
+    assert_eq!(upload_plan.status, BridgeStatus::Manual);
+    assert_eq!(
+        upload_plan.trailgen_action,
+        TrailgenExchangeAction::ExportGeneratedRoute
+    );
+    assert!(
+        upload_plan
+            .trailgen_template
+            .contains("trailgen export <project> --route candidate-1 --format kmz")
+    );
+
+    let direct_write = ManualAllTrailsBridge.plan(AllTrailsRequest {
+        exchange: AllTrailsExchange::DirectWriteApi,
+        format: RouteExchangeFormat::Gpx,
+    });
+    assert_eq!(direct_write.status, BridgeStatus::Undocumented);
+    assert_eq!(
+        direct_write.trailgen_action,
+        TrailgenExchangeAction::Unsupported
+    );
 }
 
 #[test]

@@ -6,7 +6,10 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use trailgen_core::alltrails::{AllTrailsBridge, ManualAllTrailsBridge};
+use trailgen_core::alltrails::{
+    AllTrailsBridge, AllTrailsExchange, AllTrailsRequest, ManualAllTrailsBridge,
+    RouteExchangeFormat,
+};
 use trailgen_core::io::{csv, geojson, gpx, json_route, kml, kmz, report, shapefile as shp};
 use trailgen_core::source::{
     GeoBounds, SourceCandidate, SourceFingerprint, SourceKind, SourceManifest, adapter_registry,
@@ -418,13 +421,83 @@ fn main() -> Result<()> {
         Cmd::ApplyContext { project, source } => apply_context(&project, &source),
         Cmd::AlltrailsStatus => {
             println!("{}", include_str!("../../../docs/alltrails.md"));
+            let bridge = ManualAllTrailsBridge;
             println!(
                 "\nMachine-readable bridge capabilities:\n{}",
-                serde_json::to_string_pretty(&ManualAllTrailsBridge.capabilities())?
+                serde_json::to_string_pretty(&bridge.capabilities())?
+            );
+            println!(
+                "\nCanonical bridge plans:\n{}",
+                serde_json::to_string_pretty(&alltrails_plans(&bridge))?
             );
             Ok(())
         }
     }
+}
+
+fn alltrails_plans(bridge: &impl AllTrailsBridge) -> Vec<trailgen_core::alltrails::AllTrailsPlan> {
+    [
+        (
+            AllTrailsExchange::ImportUserExport,
+            RouteExchangeFormat::Gpx,
+        ),
+        (
+            AllTrailsExchange::ImportUserExport,
+            RouteExchangeFormat::Geojson,
+        ),
+        (
+            AllTrailsExchange::ImportUserExport,
+            RouteExchangeFormat::Json,
+        ),
+        (
+            AllTrailsExchange::ImportUserExport,
+            RouteExchangeFormat::Kml,
+        ),
+        (
+            AllTrailsExchange::ImportUserExport,
+            RouteExchangeFormat::Kmz,
+        ),
+        (
+            AllTrailsExchange::ImportUserExport,
+            RouteExchangeFormat::Csv,
+        ),
+        (
+            AllTrailsExchange::ManualUploadCustomRoute,
+            RouteExchangeFormat::Gpx,
+        ),
+        (
+            AllTrailsExchange::ManualUploadCustomRoute,
+            RouteExchangeFormat::Kml,
+        ),
+        (
+            AllTrailsExchange::ManualUploadCustomRoute,
+            RouteExchangeFormat::Kmz,
+        ),
+        (
+            AllTrailsExchange::ManualUploadCustomRoute,
+            RouteExchangeFormat::Csv,
+        ),
+        (
+            AllTrailsExchange::ManualUploadActivity,
+            RouteExchangeFormat::Gpx,
+        ),
+        (
+            AllTrailsExchange::ManualUploadActivity,
+            RouteExchangeFormat::Kml,
+        ),
+        (
+            AllTrailsExchange::ManualUploadActivity,
+            RouteExchangeFormat::Kmz,
+        ),
+        (
+            AllTrailsExchange::ManualUploadActivity,
+            RouteExchangeFormat::Csv,
+        ),
+        (AllTrailsExchange::DirectWriteApi, RouteExchangeFormat::Gpx),
+    ]
+    .into_iter()
+    .map(|(exchange, format)| bridge.plan(AllTrailsRequest { exchange, format }))
+    .collect()
 }
 
 fn init(project: &Path, name: String, area: Option<GeoBounds>) -> Result<()> {

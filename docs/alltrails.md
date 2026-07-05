@@ -5,9 +5,9 @@ Checked against official AllTrails support material on 2026-07-05. AllTrails is 
 Supported now:
 
 - import user-supplied AllTrails GPX exports via `trailgen import-seed --route file.gpx` or `trailgen rate --route file.gpx`
-- import user-supplied GeoJSON, KML, and CSV route/network files
+- import user-supplied GeoJSON, JSON, KML, KMZ, and CSV route/network files
 - export generated routes as GPX, GeoJSON, CSV, KML, and KMZ
-- expose `ManualAllTrailsBridge` capabilities for future connectors
+- expose `ManualAllTrailsBridge` capabilities and canonical exchange plans for future connectors
 
 Not implemented:
 
@@ -16,7 +16,9 @@ Not implemented:
 
 Official support pages describe sanctioned manual upload paths with a 20 MB file-size limit: upload an activity on the website, or create a custom route through Build custom route → Upload a route on the website, or Saved → Custom routes → Upload route in mobile apps. AllTrails lists GPX, KML, KMZ, CSV, and many other formats as uploadable. Official support also documents downloads from activities, custom routes, and trail pages, including GPX route/track, GeoJSON track, JSON track, KML, KMZ, and CSV.
 
-Current best workflow: export a generated `routes/candidate-N.gpx`, `routes/candidate-N.csv`, `routes/candidate-N.kml`, or `routes/candidate-N.kmz` file and use AllTrails’ manual upload path. If AllTrails publishes a documented route-create/import API, it should be added behind the `AllTrailsBridge` trait, leaving graph construction and optimization untouched.
+Current best workflow: export a generated `routes/candidate-N.gpx`, `routes/candidate-N.csv`, `routes/candidate-N.kml`, or `routes/candidate-N.kmz` file and use AllTrails’ manual upload path. `trailgen alltrails-status` prints this document plus machine-readable `ManualAllTrailsBridge` capabilities and canonical plans. Each plan binds an AllTrails exchange, route format, local `trailgen` command template, manual/supported/undocumented status, workflow note, and official source URL.
+
+The bridge is a typed seam, not a hidden API client. If AllTrails publishes a documented route-create/import API, add an implementation behind the `AllTrailsBridge` trait, leaving graph construction and optimization untouched. Unsupported combinations, including direct write API requests today, resolve to an `unsupported` local action.
 
 Official references:
 
