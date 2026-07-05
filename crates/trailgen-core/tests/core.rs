@@ -1318,6 +1318,7 @@ fn source_registry_classifies_local_inputs() {
     assert_eq!(gpx.kind, SourceKind::SeedRoute);
     let csv = classify_path(std::path::Path::new("sources/alltrails-export.csv")).unwrap();
     assert_eq!(csv.kind, SourceKind::SeedRoute);
+    assert_eq!(csv.adapter_id, "csv-route");
     let kmz = classify_path(std::path::Path::new("sources/alltrails-export.kmz")).unwrap();
     assert_eq!(kmz.kind, SourceKind::SeedRoute);
     let access = classify_path(std::path::Path::new("sources/seasonal-access.geojson")).unwrap();

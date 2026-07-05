@@ -496,6 +496,7 @@ fn route_adapter_id(source: &Path) -> &'static str {
     match source_ext(source).as_deref() {
         Some("kml" | "kmz") => "kml-route",
         Some("geojson" | "json") => "geojson-route",
+        Some("csv") => "csv-route",
         _ => "gpx-route",
     }
 }
@@ -2797,10 +2798,12 @@ fn is_generated_source_artifact(path: &Path) -> bool {
         Some(
             "manifest.json"
                 | "access-overlays.json"
+                | "access-baseline.json"
                 | "terrain-overlays.json"
                 | "context-overlays.json"
                 | "elevation-arc-ascii.json"
                 | "elevation-geotiff.json"
+                | "elevation-vrt.json"
                 | "elevation-raster.json"
         )
     )
@@ -3051,6 +3054,22 @@ mod tests {
     }
 
     #[test]
+    fn discovery_ignores_generated_source_metadata() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let sources = tmp.path().join("sources");
+        fs::create_dir_all(&sources)?;
+        fs::write(sources.join("access-baseline.json"), "{}")?;
+        fs::write(sources.join("access-overlays.json"), "{}")?;
+        fs::write(sources.join("elevation-vrt.json"), "{}")?;
+        fs::write(sources.join("trails.geojson"), "{}")?;
+
+        let files = source_files(&sources)?;
+        assert_eq!(files, vec![sources.join("trails.geojson")]);
+
+        Ok(())
+    }
+
+    #[test]
     fn generation_manifest_captures_reproducibility_contract() -> Result<()> {
         let tmp = tempfile::tempdir()?;
         let project = tmp.path();
@@ -3277,7 +3296,7 @@ mod tests {
             .find(|candidate| candidate["path"].as_str() == Some(route.to_str().unwrap()))
             .expect("route source candidate");
         assert_eq!(candidate["kind"], "seed-route");
-        assert_eq!(candidate["adapter_id"], "gpx-route");
+        assert_eq!(candidate["adapter_id"], "csv-route");
         assert!(
             manifest["coverage"]
                 .as_array()

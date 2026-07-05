@@ -281,9 +281,17 @@ fn route_adapters() -> Vec<SourceAdapter> {
             "gpx-route",
             SourceKind::SeedRoute,
             AdapterStatus::Implemented,
-            ["gpx", "csv"],
+            ["gpx"],
             ["LineString", "snapped route metrics"],
-            "GPX and CSV route import/export, including user-supplied app exports.",
+            "GPX route import/export, including user-supplied app exports.",
+        ),
+        adapter(
+            "csv-route",
+            SourceKind::SeedRoute,
+            AdapterStatus::Implemented,
+            ["csv"],
+            ["LineString", "snapped route metrics"],
+            "CSV lon/lat/elevation route import/export for manual app exchange.",
         ),
         adapter(
             "kml-route",
@@ -747,9 +755,10 @@ const RECOMMENDATION_SPECS: &[RecommendationSpec] = &[
     RecommendationSpec {
         kind: SourceKind::SeedRoute,
         priority: SourcePriority::Optional,
-        adapter_ids: &["gpx-route", "geojson-route", "kml-route"],
+        adapter_ids: &["gpx-route", "geojson-route", "csv-route", "kml-route"],
         suggested_paths: &[
             "sources/seeds/completed.gpx",
+            "sources/seeds/completed.csv",
             "sources/seeds/alltrails-export.gpx",
             "sources/seeds/reference.geojson",
         ],
@@ -769,7 +778,8 @@ pub fn classify_path(path: &Path) -> Option<SourceCandidate> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     let path_lc = path.display().to_string().to_ascii_lowercase();
     let (kind, adapter_id) = match ext.as_str() {
-        "gpx" | "csv" => (SourceKind::SeedRoute, "gpx-route"),
+        "gpx" => (SourceKind::SeedRoute, "gpx-route"),
+        "csv" => (SourceKind::SeedRoute, "csv-route"),
         "kml" | "kmz" => (SourceKind::SeedRoute, "kml-route"),
         "geojson" | "json" if path_lc.contains("closure") => {
             (SourceKind::Closure, "geojson-closure-overlay")

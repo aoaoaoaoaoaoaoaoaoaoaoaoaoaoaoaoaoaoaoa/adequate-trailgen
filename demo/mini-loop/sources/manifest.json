@@ -48,14 +48,26 @@
       "kind": "seed-route",
       "status": "implemented",
       "consumes": [
-        "gpx",
+        "gpx"
+      ],
+      "produces": [
+        "LineString",
+        "snapped route metrics"
+      ],
+      "note": "GPX route import/export, including user-supplied app exports."
+    },
+    {
+      "id": "csv-route",
+      "kind": "seed-route",
+      "status": "implemented",
+      "consumes": [
         "csv"
       ],
       "produces": [
         "LineString",
         "snapped route metrics"
       ],
-      "note": "GPX and CSV route import/export, including user-supplied app exports."
+      "note": "CSV lon/lat/elevation route import/export for manual app exchange."
     },
     {
       "id": "kml-route",
@@ -610,10 +622,12 @@
       "adapter_ids": [
         "gpx-route",
         "geojson-route",
+        "csv-route",
         "kml-route"
       ],
       "suggested_paths": [
         "sources/seeds/completed.gpx",
+        "sources/seeds/completed.csv",
         "sources/seeds/alltrails-export.gpx",
         "sources/seeds/reference.geojson"
       ],
