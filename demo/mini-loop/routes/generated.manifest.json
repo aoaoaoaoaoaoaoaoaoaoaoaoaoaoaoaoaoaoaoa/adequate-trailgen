@@ -933,6 +933,7 @@
       }
     ]
   },
+  "forbidden_areas": [],
   "graph": {
     "vertices": 5,
     "edges": 6,

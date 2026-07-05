@@ -13,7 +13,7 @@ use trailgen_core::source::{
     classify_path, discovery_recommendations, source_coverage,
 };
 use trailgen_core::{
-    Access, AccessOverlay, ArcAsciiGrid, Coord, CrossingKind, DifficultyBreakdown,
+    Access, AccessOverlay, AccessWindow, ArcAsciiGrid, Coord, CrossingKind, DifficultyBreakdown,
     DifficultyWeights, EdgeId, EdgeTravel, EnrichmentConfig, GeoTiffDem, GraphBuilder, LineString,
     LoopConstraints, PlanningDate, Provenance, Route, RouteMetrics, RouteShape, RouteSnapStats,
     SearchParams, SeedRoute, SegmentDraft, SolverKind, Terrain, TrailGraph, VertexId, VrtDem,
@@ -111,6 +111,8 @@ enum Cmd {
         max_repeated_edge_fraction: Option<f64>,
         #[arg(long = "forbid-terrain", value_parser = parse_terrain)]
         forbidden_terrain: Vec<Terrain>,
+        #[arg(long = "forbid-area")]
+        forbidden_area: Vec<PathBuf>,
         #[arg(long = "min-terrain", value_parser = parse_terrain_fraction)]
         min_terrain: Vec<TerrainFraction>,
         #[arg(long = "max-terrain", value_parser = parse_terrain_fraction)]
@@ -332,6 +334,7 @@ fn main() -> Result<()> {
             shape,
             max_repeated_edge_fraction,
             forbidden_terrain,
+            forbidden_area,
             min_terrain,
             max_terrain,
         } => generate(
@@ -357,6 +360,7 @@ fn main() -> Result<()> {
                 shape,
                 max_repeated_edge_fraction,
                 forbidden_terrain,
+                forbidden_area,
                 min_terrain,
                 max_terrain,
             },
@@ -771,6 +775,7 @@ struct GenerateOptions {
     shape: Vec<RouteShape>,
     max_repeated_edge_fraction: Option<f64>,
     forbidden_terrain: Vec<Terrain>,
+    forbidden_area: Vec<PathBuf>,
     min_terrain: Vec<TerrainFraction>,
     max_terrain: Vec<TerrainFraction>,
 }
@@ -788,9 +793,19 @@ struct GenerationManifest {
     start_snap_m: f64,
     effective_config: ProjectConfig,
     source_manifest: Option<SourceManifest>,
+    forbidden_areas: Vec<ForbiddenAreaManifest>,
     graph: GraphManifest,
     routes: Vec<RouteManifestEntry>,
     artifacts: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ForbiddenAreaManifest {
+    path: String,
+    adapter_id: String,
+    fingerprint: SourceFingerprint,
+    overlays: usize,
+    touched_edges: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -920,7 +935,9 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
         config.max_start_snap_m = max_start_snap_m;
     }
     apply_generate_options(&mut config.constraints, options);
-    let graph = materialize_effective_graph(project, &config)?;
+    let mut graph = materialize_effective_graph(project, &config)?;
+    let forbidden_areas =
+        apply_forbidden_area_sources(&mut graph, &options.forbidden_area, config.difficulty)?;
     let start_coord = parse_coord(&options.start)?;
     let start = snap_generation_start(&graph, start_coord, config.max_start_snap_m)?;
     let solver = config.solver.resolve(&graph);
@@ -950,7 +967,16 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
     write_json(project.join("routes/generated.routes.json"), &routes)?;
     write_json(
         project.join("routes/generated.manifest.json"),
-        &generation_manifest(project, options, &config, &graph, start, &routes, solver)?,
+        &generation_manifest(GenerationManifestInput {
+            project,
+            options,
+            config: &config,
+            forbidden_areas: &forbidden_areas,
+            graph: &graph,
+            start,
+            routes: &routes,
+            solver,
+        })?,
     )?;
     for route in &routes {
         fs::write(
@@ -1937,6 +1963,85 @@ fn materialize_effective_graph(project: &Path, config: &ProjectConfig) -> Result
     Ok(graph)
 }
 
+fn apply_forbidden_area_sources(
+    graph: &mut TrailGraph,
+    sources: &[PathBuf],
+    weights: DifficultyWeights,
+) -> Result<Vec<ForbiddenAreaManifest>> {
+    sources
+        .iter()
+        .map(|source| apply_forbidden_area_source(graph, source, weights))
+        .collect()
+}
+
+fn apply_forbidden_area_source(
+    graph: &mut TrailGraph,
+    source: &Path,
+    weights: DifficultyWeights,
+) -> Result<ForbiddenAreaManifest> {
+    let fingerprint = source_fingerprint(source)?;
+    let mut overlays = access_overlays(source)
+        .with_context(|| format!("load forbidden area overlay {}", source.display()))?;
+    if overlays.is_empty() {
+        bail!(
+            "forbidden area source {} contains no overlays",
+            source.display()
+        );
+    }
+    force_forbidden_area_overlays(source, &mut overlays);
+    let touched_edges = apply_access_overlays(graph, &overlays, None, weights);
+    if touched_edges == 0 {
+        bail!(
+            "forbidden area source {} touched no graph edges; check CRS, AOI, and overlay geometry",
+            source.display()
+        );
+    }
+    Ok(ForbiddenAreaManifest {
+        path: source.display().to_string(),
+        adapter_id: forbidden_area_adapter_id(source),
+        fingerprint,
+        overlays: overlays.len(),
+        touched_edges,
+    })
+}
+
+fn force_forbidden_area_overlays(source: &Path, overlays: &mut [AccessOverlay]) {
+    for overlay in overlays {
+        let name = overlay.name.clone();
+        overlay.access = Access::Closed;
+        overlay.active = AccessWindow::default();
+        overlay.confidence = overlay.confidence.max(0.95);
+        overlay.provenance = Provenance {
+            source: "forbidden-area".to_owned(),
+            layer: Some("generate-forbid-area".to_owned()),
+            source_id: Some(format!("{}#{name}", source.display())),
+            license: None,
+        };
+    }
+}
+
+fn forbidden_area_adapter_id(source: &Path) -> String {
+    classify_path(source).map_or_else(
+        || {
+            if source_ext(source).as_deref() == Some("shp") {
+                "shapefile-access-overlay".to_owned()
+            } else {
+                "geojson-access-overlay".to_owned()
+            }
+        },
+        |candidate| match candidate.kind {
+            SourceKind::Access | SourceKind::Closure => candidate.adapter_id,
+            _ => {
+                if source_ext(source).as_deref() == Some("shp") {
+                    "shapefile-access-overlay".to_owned()
+                } else {
+                    "geojson-access-overlay".to_owned()
+                }
+            }
+        },
+    )
+}
+
 fn graph_contains_access_overlays(graph: &TrailGraph, overlays: &[AccessOverlay]) -> bool {
     graph.edges.iter().any(|edge| {
         overlays.iter().any(|overlay| {
@@ -2780,15 +2885,29 @@ fn vrt_fingerprint_members(path: &Path) -> Result<Vec<PathBuf>> {
     Ok(members)
 }
 
-fn generation_manifest(
-    project: &Path,
-    options: &GenerateOptions,
-    config: &ProjectConfig,
-    graph: &TrailGraph,
+#[derive(Clone, Copy)]
+struct GenerationManifestInput<'a> {
+    project: &'a Path,
+    options: &'a GenerateOptions,
+    config: &'a ProjectConfig,
+    forbidden_areas: &'a [ForbiddenAreaManifest],
+    graph: &'a TrailGraph,
     start: StartSnap,
-    routes: &[Route],
+    routes: &'a [Route],
     solver: SolverKind,
-) -> Result<GenerationManifest> {
+}
+
+fn generation_manifest(input: GenerationManifestInput<'_>) -> Result<GenerationManifest> {
+    let GenerationManifestInput {
+        project,
+        options,
+        config,
+        forbidden_areas,
+        graph,
+        start,
+        routes,
+        solver,
+    } = input;
     Ok(GenerationManifest {
         schema_version: 1,
         app_version: env!("CARGO_PKG_VERSION"),
@@ -2801,6 +2920,7 @@ fn generation_manifest(
         start_snap_m: start.distance_m,
         effective_config: config.clone(),
         source_manifest: load_source_manifest(project)?,
+        forbidden_areas: forbidden_areas.to_vec(),
         graph: graph_manifest(graph),
         routes: routes.iter().map(route_manifest_entry).collect(),
         artifacts: generation_artifacts(routes),
@@ -3140,6 +3260,7 @@ mod tests {
                 shape: Vec::new(),
                 max_repeated_edge_fraction: None,
                 forbidden_terrain: vec![Terrain::Pavement, Terrain::Road],
+                forbidden_area: Vec::new(),
                 min_terrain: vec![TerrainFraction {
                     terrain: Terrain::Trail,
                     fraction: 0.65,
@@ -3323,6 +3444,7 @@ mod tests {
                 shape: Vec::new(),
                 max_repeated_edge_fraction: None,
                 forbidden_terrain: vec![Terrain::Road],
+                forbidden_area: Vec::new(),
                 min_terrain: vec![TerrainFraction {
                     terrain: Terrain::Trail,
                     fraction: 0.50,
@@ -3421,6 +3543,7 @@ mod tests {
             shape: Vec::new(),
             max_repeated_edge_fraction: None,
             forbidden_terrain: Vec::new(),
+            forbidden_area: Vec::new(),
             min_terrain: Vec::new(),
             max_terrain: Vec::new(),
         };
@@ -3441,6 +3564,103 @@ mod tests {
             manifest["start_snap_m"]
                 .as_f64()
                 .is_some_and(|meters| meters > 1_000_000.0)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn generation_forbid_area_mutates_only_effective_graph() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path();
+        let fixture_dir =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../trailgen-core/tests/fixtures");
+        let network = fixture_dir.join("mini_network.geojson");
+        let forbidden = fixture_dir.join("closure_overlay.geojson");
+
+        init(project, "Forbidden Area Test".to_owned(), None)?;
+        discover(project, None)?;
+        build(project, &network)?;
+        generate(
+            project,
+            &GenerateOptions {
+                start: "-105.0000,40.0000".to_owned(),
+                min_km: 3.0,
+                max_km: 8.0,
+                count: 2,
+                seed: 0,
+                max_start_snap_m: None,
+                solver: Some(SolverKind::Exact),
+                date: None,
+                min_difficulty: None,
+                max_difficulty: Some(10_000.0),
+                min_ascent_m: None,
+                max_ascent_m: None,
+                min_descent_m: None,
+                max_descent_m: None,
+                max_road_fraction: None,
+                max_low_confidence_fraction: None,
+                max_restricted_access_fraction: None,
+                shape: Vec::new(),
+                max_repeated_edge_fraction: None,
+                forbidden_terrain: Vec::new(),
+                forbidden_area: vec![forbidden.clone()],
+                min_terrain: Vec::new(),
+                max_terrain: Vec::new(),
+            },
+        )?;
+
+        let manifest: Value = serde_json::from_str(&fs::read_to_string(
+            project.join("routes/generated.manifest.json"),
+        )?)?;
+        assert_eq!(
+            manifest["forbidden_areas"][0]["path"],
+            forbidden.display().to_string()
+        );
+        assert_eq!(
+            manifest["forbidden_areas"][0]["adapter_id"],
+            "geojson-closure-overlay"
+        );
+        assert_eq!(manifest["forbidden_areas"][0]["overlays"], 1);
+        assert!(
+            manifest["forbidden_areas"][0]["touched_edges"]
+                .as_u64()
+                .is_some_and(|n| n > 0)
+        );
+        assert!(
+            manifest["forbidden_areas"][0]["fingerprint"]["sha256"]
+                .as_str()
+                .is_some_and(|hash| hash.len() == 64)
+        );
+
+        let cached = load_graph(project)?;
+        assert!(cached.edges.iter().all(|edge| {
+            edge.attr.access != Access::Closed
+                && edge
+                    .attr
+                    .access_provenance
+                    .iter()
+                    .all(|p| p.source != "forbidden-area")
+        }));
+
+        let generated = load_generated_graph(project)?;
+        assert!(generated.edges.iter().any(|edge| {
+            edge.attr.access == Access::Closed
+                && edge
+                    .attr
+                    .access_provenance
+                    .iter()
+                    .any(|p| p.source == "forbidden-area")
+        }));
+
+        let sources: Value =
+            serde_json::from_str(&fs::read_to_string(project.join("sources/manifest.json"))?)?;
+        assert!(
+            sources["candidates"]
+                .as_array()
+                .expect("source candidates")
+                .iter()
+                .all(|candidate| candidate["path"].as_str()
+                    != Some(forbidden.to_str().expect("fixture path must be UTF-8")))
         );
         Ok(())
     }
@@ -3523,6 +3743,7 @@ mod tests {
                 shape: Vec::new(),
                 max_repeated_edge_fraction: None,
                 forbidden_terrain: Vec::new(),
+                forbidden_area: Vec::new(),
                 min_terrain: Vec::new(),
                 max_terrain: Vec::new(),
             },
@@ -3684,6 +3905,7 @@ mod tests {
                 shape: Vec::new(),
                 max_repeated_edge_fraction: None,
                 forbidden_terrain: Vec::new(),
+                forbidden_area: Vec::new(),
                 min_terrain: Vec::new(),
                 max_terrain: Vec::new(),
             },
@@ -3741,6 +3963,7 @@ mod tests {
                 shape: Vec::new(),
                 max_repeated_edge_fraction: None,
                 forbidden_terrain: Vec::new(),
+                forbidden_area: Vec::new(),
                 min_terrain: Vec::new(),
                 max_terrain: Vec::new(),
             },
@@ -4228,6 +4451,7 @@ mod tests {
                 shape: Vec::new(),
                 max_repeated_edge_fraction: None,
                 forbidden_terrain: Vec::new(),
+                forbidden_area: Vec::new(),
                 min_terrain: Vec::new(),
                 max_terrain: Vec::new(),
             },
@@ -4261,6 +4485,7 @@ mod tests {
                 shape: Vec::new(),
                 max_repeated_edge_fraction: None,
                 forbidden_terrain: Vec::new(),
+                forbidden_area: Vec::new(),
                 min_terrain: Vec::new(),
                 max_terrain: Vec::new(),
             },
