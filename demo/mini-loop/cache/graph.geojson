@@ -455,6 +455,12 @@
         "from": 0,
         "grade_abs_max": 0.03992857735222904,
         "grade_abs_mean": 0.03992231502831948,
+        "grade_distribution": {
+          "flat_m": 1021.984821547996,
+          "rolling_m": 0.0,
+          "savage_m": 0.0,
+          "steep_m": 0.0
+        },
         "length_m": 1021.984821547996,
         "popularity": 1.0986122886681096,
         "provenance": [
@@ -910,6 +916,12 @@
         "from": 1,
         "grade_abs_max": 0.09007592763064971,
         "grade_abs_mean": 0.07209551582524712,
+        "grade_distribution": {
+          "flat_m": 0.0,
+          "rolling_m": 1334.340962802445,
+          "savage_m": 0.0,
+          "steep_m": 0.0
+        },
         "length_m": 1334.340962802445,
         "popularity": 1.0986122886681096,
         "provenance": [
@@ -1415,6 +1427,12 @@
         "from": 2,
         "grade_abs_max": 0.02347958716502997,
         "grade_abs_mean": 0.023479587165029903,
+        "grade_distribution": {
+          "flat_m": 1022.1644797803812,
+          "rolling_m": 0.0,
+          "savage_m": 0.0,
+          "steep_m": 0.0
+        },
         "length_m": 1022.1644797803812,
         "popularity": 1.0986122886681096,
         "provenance": [
@@ -1871,6 +1889,12 @@
         "from": 3,
         "grade_abs_max": 0.09007592763064971,
         "grade_abs_mean": 0.08468600091738947,
+        "grade_distribution": {
+          "flat_m": 0.0,
+          "rolling_m": 1334.340962802445,
+          "savage_m": 0.0,
+          "steep_m": 0.0
+        },
         "length_m": 1334.340962802445,
         "popularity": 1.0986122886681096,
         "provenance": [
@@ -2485,6 +2509,12 @@
         "from": 3,
         "grade_abs_max": 0.05711527963281148,
         "grade_abs_mean": 0.04295563070879966,
+        "grade_distribution": {
+          "flat_m": 980.7908188546152,
+          "rolling_m": 700.0132761765799,
+          "savage_m": 0.0,
+          "steep_m": 0.0
+        },
         "length_m": 1680.8040950311952,
         "popularity": 0.0,
         "provenance": [
@@ -2830,6 +2860,12 @@
         "from": 2,
         "grade_abs_max": 0.02347958716502997,
         "grade_abs_mean": 0.023479587165029875,
+        "grade_distribution": {
+          "flat_m": 681.4429865198515,
+          "rolling_m": 0.0,
+          "savage_m": 0.0,
+          "steep_m": 0.0
+        },
         "length_m": 681.4429865198515,
         "popularity": 0.0,
         "provenance": [

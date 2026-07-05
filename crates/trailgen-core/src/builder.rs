@@ -2,7 +2,8 @@ use crate::difficulty::DifficultyWeights;
 use crate::enrich::{EmbeddedElevation, EnrichmentConfig, enrich_graph};
 use crate::geo::{Coord, LineString};
 use crate::model::{
-    Access, Edge, EdgeAttr, EdgeId, Provenance, Terrain, TrailGraph, Vertex, VertexId,
+    Access, Edge, EdgeAttr, EdgeId, GradeDistribution, Provenance, Terrain, TrailGraph, Vertex,
+    VertexId,
 };
 use crate::{Result, TrailgenError};
 use serde::{Deserialize, Serialize};
@@ -197,6 +198,7 @@ fn edge_attr(
         grade_abs_mean,
         grade_abs_max: grade_abs_mean,
         sustained_steep_m: 0.0,
+        grade_distribution: GradeDistribution::default().add_segment(length_m, grade_abs_mean),
         terrain: draft.terrain,
         terrain_confidence: if draft.terrain == Terrain::Unknown {
             0.0

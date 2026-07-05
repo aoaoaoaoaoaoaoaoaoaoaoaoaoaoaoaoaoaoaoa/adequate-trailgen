@@ -196,15 +196,28 @@ fn render_dubious_edge(edge: &Edge, s: &mut String) {
     );
     let _ = writeln!(
         s,
-        "- edge {}: {:.0} m, {:?}, grade max {:.1}%, crossings {}, confidence {:.2}, seed count {}, provenance {prov}",
+        "- edge {}: {:.0} m, {:?}, grade max {:.1}%, grade bins {}, crossings {}, confidence {:.2}, seed count {}, provenance {prov}",
         edge.id.0,
         edge.attr.length_m,
         edge.attr.terrain,
         edge.attr.grade_abs_max * 100.0,
+        grade_bins(edge),
         edge.attr.crossings.iter().map(|x| x.count).sum::<u32>(),
         edge.attr.confidence,
         edge.attr.seed_count
     );
+}
+
+fn grade_bins(edge: &Edge) -> String {
+    let d = edge.attr.grade_distribution;
+    let total = d.total_m().max(1.0);
+    format!(
+        "flat {:.0}% / rolling {:.0}% / steep {:.0}% / savage {:.0}%",
+        d.flat_m / total * 100.0,
+        d.rolling_m / total * 100.0,
+        d.steep_m / total * 100.0,
+        d.savage_m / total * 100.0
+    )
 }
 
 fn render_evidence(graph: &TrailGraph, route: &Route, s: &mut String) {

@@ -133,6 +133,35 @@ pub struct CrossingEvidence {
     pub provenance: Provenance,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct GradeDistribution {
+    pub flat_m: f64,
+    pub rolling_m: f64,
+    pub steep_m: f64,
+    pub savage_m: f64,
+}
+
+impl GradeDistribution {
+    #[must_use]
+    pub fn add_segment(mut self, length_m: f64, abs_grade: f64) -> Self {
+        if abs_grade < 0.05 {
+            self.flat_m += length_m;
+        } else if abs_grade < 0.15 {
+            self.rolling_m += length_m;
+        } else if abs_grade < 0.30 {
+            self.steep_m += length_m;
+        } else {
+            self.savage_m += length_m;
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn total_m(self) -> f64 {
+        self.flat_m + self.rolling_m + self.steep_m + self.savage_m
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EdgeAttr {
     pub length_m: f64,
@@ -143,6 +172,8 @@ pub struct EdgeAttr {
     pub grade_abs_max: f64,
     #[serde(default)]
     pub sustained_steep_m: f64,
+    #[serde(default)]
+    pub grade_distribution: GradeDistribution,
     pub terrain: Terrain,
     #[serde(default)]
     pub terrain_confidence: f64,

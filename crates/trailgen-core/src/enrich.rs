@@ -1,6 +1,6 @@
 use crate::difficulty::DifficultyWeights;
 use crate::geo::{Coord, LineString};
-use crate::model::{Edge, Provenance, Terrain, TerrainEvidence, TrailGraph};
+use crate::model::{Edge, GradeDistribution, Provenance, Terrain, TerrainEvidence, TrailGraph};
 use crate::{Result, TrailgenError};
 use serde::{Deserialize, Serialize};
 
@@ -109,6 +109,7 @@ fn enrich_edge<S: ElevationSampler>(
     edge.attr.grade_abs_mean = profile.grade_abs_mean;
     edge.attr.grade_abs_max = profile.grade_abs_max;
     edge.attr.sustained_steep_m = profile.sustained_steep_m;
+    edge.attr.grade_distribution = profile.grade_distribution;
     edge.attr.elevation_provenance = elevation_provenance;
     if elevation_confidence > 0.0 {
         edge.attr.confidence = edge.attr.confidence.min(elevation_confidence);
@@ -173,6 +174,7 @@ struct GradeProfile {
     grade_abs_mean: f64,
     grade_abs_max: f64,
     sustained_steep_m: f64,
+    grade_distribution: GradeDistribution,
 }
 
 fn grade_profile(line: &LineString, steep_grade_threshold: f64) -> GradeProfile {
@@ -182,6 +184,7 @@ fn grade_profile(line: &LineString, steep_grade_threshold: f64) -> GradeProfile 
     let mut weighted_abs_grade = 0.0;
     let mut grade_abs_max = 0.0;
     let mut sustained_steep_m = 0.0;
+    let mut grade_distribution = GradeDistribution::default();
 
     for segment in line.points.windows(2) {
         let a = segment[0];
@@ -209,6 +212,7 @@ fn grade_profile(line: &LineString, steep_grade_threshold: f64) -> GradeProfile 
             if abs_grade >= steep_grade_threshold {
                 sustained_steep_m += distance;
             }
+            grade_distribution = grade_distribution.add_segment(distance, abs_grade);
         }
     }
 
@@ -218,6 +222,7 @@ fn grade_profile(line: &LineString, steep_grade_threshold: f64) -> GradeProfile 
         grade_abs_mean: weighted_abs_grade / length_m.max(1.0),
         grade_abs_max,
         sustained_steep_m,
+        grade_distribution,
     }
 }
 

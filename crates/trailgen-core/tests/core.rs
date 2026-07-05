@@ -541,6 +541,7 @@ fn report_explains_difficulty_decomposition() {
     assert!(rendered.contains("- ascent:"));
     assert!(rendered.contains("Largest difficulty contributors:"));
     assert!(rendered.contains("edge "));
+    assert!(rendered.contains("grade bins flat"));
 }
 
 #[test]
@@ -960,6 +961,8 @@ fn elevation_enrichment_densifies_rates_and_infers_terrain() {
     assert!(edge.attr.ascent_m > 390.0);
     assert!(edge.attr.grade_abs_max > 0.30);
     assert!(edge.attr.sustained_steep_m > 1_000.0);
+    assert!(edge.attr.grade_distribution.savage_m > 1_000.0);
+    assert!((edge.attr.grade_distribution.total_m() - edge.attr.length_m).abs() < 1.0);
     assert_eq!(edge.attr.terrain, Terrain::Scramble);
     assert!(
         edge.attr

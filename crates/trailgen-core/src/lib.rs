@@ -27,8 +27,8 @@ pub use enrich::{
 };
 pub use geo::{Coord, LineString};
 pub use model::{
-    Access, CrossingEvidence, CrossingKind, Edge, EdgeAttr, EdgeId, Provenance, Terrain,
-    TrailGraph, Vertex, VertexId,
+    Access, CrossingEvidence, CrossingKind, Edge, EdgeAttr, EdgeId, GradeDistribution, Provenance,
+    Terrain, TrailGraph, Vertex, VertexId,
 };
 pub use optimizer::{LoopHunter, RouteSolver, SearchParams};
 pub use overlay::{

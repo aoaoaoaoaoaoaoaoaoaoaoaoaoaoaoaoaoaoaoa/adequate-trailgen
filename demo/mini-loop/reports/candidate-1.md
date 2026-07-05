@@ -51,10 +51,10 @@ Largest difficulty contributors:
 - edge 2 distance: 1.02 (0.1% of route), Trail, 1022 m
 
 Most dubious segments:
-- edge 2: 1022 m, Trail, grade max 2.3%, crossings 1, confidence 0.82, seed count 2, provenance fixture:south
-- edge 1: 1334 m, Talus, grade max 9.0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:east
-- edge 0: 1022 m, Trail, grade max 4.0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:north
-- edge 3: 1334 m, Talus, grade max 9.0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:west
+- edge 2: 1022 m, Trail, grade max 2.3%, grade bins flat 100% / rolling 0% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:south
+- edge 1: 1334 m, Talus, grade max 9.0%, grade bins flat 0% / rolling 100% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:east
+- edge 0: 1022 m, Trail, grade max 4.0%, grade bins flat 100% / rolling 0% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:north
+- edge 3: 1334 m, Talus, grade max 9.0%, grade bins flat 0% / rolling 100% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:west
 
 Terrain/elevation evidence:
 - edge 2: Trail 90%: explicit source terrain tag; elevation source arc-ascii-grid

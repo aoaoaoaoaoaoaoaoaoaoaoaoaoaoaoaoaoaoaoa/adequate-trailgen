@@ -465,6 +465,12 @@
         "grade_abs_mean": 0.03992231502831948,
         "grade_abs_max": 0.03992857735222904,
         "sustained_steep_m": 0.0,
+        "grade_distribution": {
+          "flat_m": 1021.984821547996,
+          "rolling_m": 0.0,
+          "steep_m": 0.0,
+          "savage_m": 0.0
+        },
         "terrain": "trail",
         "terrain_confidence": 0.9,
         "terrain_evidence": [
@@ -916,6 +922,12 @@
         "grade_abs_mean": 0.07209551582524712,
         "grade_abs_max": 0.09007592763064971,
         "sustained_steep_m": 0.0,
+        "grade_distribution": {
+          "flat_m": 0.0,
+          "rolling_m": 1334.340962802445,
+          "steep_m": 0.0,
+          "savage_m": 0.0
+        },
         "terrain": "talus",
         "terrain_confidence": 0.9,
         "terrain_evidence": [
@@ -1417,6 +1429,12 @@
         "grade_abs_mean": 0.023479587165029903,
         "grade_abs_max": 0.02347958716502997,
         "sustained_steep_m": 0.0,
+        "grade_distribution": {
+          "flat_m": 1022.1644797803812,
+          "rolling_m": 0.0,
+          "steep_m": 0.0,
+          "savage_m": 0.0
+        },
         "terrain": "trail",
         "terrain_confidence": 0.9,
         "terrain_evidence": [
@@ -1863,6 +1881,12 @@
         "grade_abs_mean": 0.08468600091738947,
         "grade_abs_max": 0.09007592763064971,
         "sustained_steep_m": 0.0,
+        "grade_distribution": {
+          "flat_m": 0.0,
+          "rolling_m": 1334.340962802445,
+          "steep_m": 0.0,
+          "savage_m": 0.0
+        },
         "terrain": "talus",
         "terrain_confidence": 0.9,
         "terrain_evidence": [
@@ -2465,6 +2489,12 @@
         "grade_abs_mean": 0.04295563070879966,
         "grade_abs_max": 0.05711527963281148,
         "sustained_steep_m": 0.0,
+        "grade_distribution": {
+          "flat_m": 980.7908188546152,
+          "rolling_m": 700.0132761765799,
+          "steep_m": 0.0,
+          "savage_m": 0.0
+        },
         "terrain": "alpine",
         "terrain_confidence": 0.9,
         "terrain_evidence": [
@@ -2829,6 +2859,12 @@
         "grade_abs_mean": 0.023479587165029875,
         "grade_abs_max": 0.02347958716502997,
         "sustained_steep_m": 0.0,
+        "grade_distribution": {
+          "flat_m": 681.4429865198515,
+          "rolling_m": 0.0,
+          "steep_m": 0.0,
+          "savage_m": 0.0
+        },
         "terrain": "road",
         "terrain_confidence": 0.9,
         "terrain_evidence": [

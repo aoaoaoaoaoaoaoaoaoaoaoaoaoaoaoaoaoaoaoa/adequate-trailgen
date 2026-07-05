@@ -161,6 +161,7 @@ pub fn graph_to_geojson(graph: &TrailGraph) -> Value {
                     "grade_abs_mean": edge.attr.grade_abs_mean,
                     "grade_abs_max": edge.attr.grade_abs_max,
                     "sustained_steep_m": edge.attr.sustained_steep_m,
+                    "grade_distribution": edge.attr.grade_distribution,
                     "difficulty": edge.attr.difficulty,
                     "difficulty_breakdown": edge.attr.difficulty_breakdown,
                     "terrain": edge.attr.terrain,
