@@ -18,7 +18,7 @@ The AOI is not a routing constraint. It is a discovery/reproducibility contract:
 
 `[difficulty]` controls additive edge rating. The supported weights are `distance_per_km`, `ascent_per_m`, `descent_per_m`, `grade_per_abs_fraction`, `road_penalty`, `low_confidence_penalty`, and `closed_access_penalty`. `[difficulty.terrain_multipliers]` overrides the per-terrain distance multiplier table for `unknown`, `trail`, `forest`, `alpine`, `talus`, `scramble`, `pavement`, `road`, and `water`; omitted buckets use defaults. See [difficulty.md](difficulty.md) for the factor formula and calibration workflow.
 
-Distance and elevation constraints are stored in meters. CLI `generate --min-km --max-km` overrides the distance window for that run. `generate` can also override scalar difficulty, ascent/descent, road exposure, low-confidence limits, and terrain mix with `--min-difficulty`, `--max-difficulty`, `--min-ascent-m`, `--max-ascent-m`, `--min-descent-m`, `--max-descent-m`, `--max-road-fraction`, `--max-low-confidence-fraction`, `--forbid-terrain`, `--min-terrain terrain:fraction`, and `--max-terrain terrain:fraction`. Confidence is a scalar in `[0,1]`; low-confidence route fraction is measured by distance over edges below `0.6`.
+Distance and elevation constraints are stored in meters. CLI `generate --min-km --max-km` overrides the distance window for that run. `generate` can also override scalar difficulty, ascent/descent, road exposure, access restriction exposure, low-confidence limits, and terrain mix with `--min-difficulty`, `--max-difficulty`, `--min-ascent-m`, `--max-ascent-m`, `--min-descent-m`, `--max-descent-m`, `--max-road-fraction`, `--max-restricted-access-fraction`, `--max-low-confidence-fraction`, `--forbid-terrain`, `--min-terrain terrain:fraction`, and `--max-terrain terrain:fraction`. Confidence is a scalar in `[0,1]`; low-confidence route fraction is measured by distance over edges below `0.6`.
 
 Elevation constraints in `[constraints]`:
 
@@ -32,6 +32,8 @@ Terrain mix constraints are part of `[constraints]`:
 - `max_terrain_fraction`: per-terrain upper bounds in `[0,1]`
 
 Recognized terrain names are `unknown`, `trail`, `forest`, `alpine`, `talus`, `scramble`, `pavement`, `road`, and `water`. Repeated CLI terrain flags are allowed: `--forbid-terrain pavement --forbid-terrain road --min-terrain trail:0.60 --max-terrain talus=0.10`.
+
+Access restrictions use `[constraints].max_restricted_access_fraction`, defaulting to `0.0`. The measured restricted fraction is distance over `restricted`, `closed`, or `private` edges divided by route distance; `unknown` access is handled by confidence/provenance rather than treated as a legal ban. Set `--max-restricted-access-fraction 0.05` only when restricted access is explicitly acceptable.
 
 Shape constraints are also stored in `[constraints]`:
 

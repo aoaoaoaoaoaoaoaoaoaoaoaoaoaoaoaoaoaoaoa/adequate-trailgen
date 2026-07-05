@@ -95,6 +95,8 @@ enum Cmd {
         max_road_fraction: Option<f64>,
         #[arg(long)]
         max_low_confidence_fraction: Option<f64>,
+        #[arg(long)]
+        max_restricted_access_fraction: Option<f64>,
         #[arg(long = "shape", value_parser = parse_shape)]
         shape: Vec<RouteShape>,
         #[arg(long)]
@@ -208,6 +210,10 @@ const fn default_snap_tolerance_m() -> f64 {
     8.0
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "Clap command dispatch is a single declarative cold path; splitting it would scatter the command algebra."
+)]
 fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Init {
@@ -247,6 +253,7 @@ fn main() -> Result<()> {
             max_descent_m,
             max_road_fraction,
             max_low_confidence_fraction,
+            max_restricted_access_fraction,
             shape,
             max_repeated_edge_fraction,
             forbidden_terrain,
@@ -268,6 +275,7 @@ fn main() -> Result<()> {
                 max_descent_m,
                 max_road_fraction,
                 max_low_confidence_fraction,
+                max_restricted_access_fraction,
                 shape,
                 max_repeated_edge_fraction,
                 forbidden_terrain,
@@ -461,6 +469,7 @@ struct GenerateOptions {
     max_descent_m: Option<f64>,
     max_road_fraction: Option<f64>,
     max_low_confidence_fraction: Option<f64>,
+    max_restricted_access_fraction: Option<f64>,
     shape: Vec<RouteShape>,
     max_repeated_edge_fraction: Option<f64>,
     forbidden_terrain: Vec<Terrain>,
@@ -598,6 +607,9 @@ fn apply_generate_options(constraints: &mut LoopConstraints, options: &GenerateO
     if let Some(max_low_confidence_fraction) = options.max_low_confidence_fraction {
         constraints.max_low_confidence_fraction = max_low_confidence_fraction;
     }
+    if let Some(max_restricted_access_fraction) = options.max_restricted_access_fraction {
+        constraints.max_restricted_access_fraction = max_restricted_access_fraction;
+    }
     if !options.shape.is_empty() {
         constraints.allowed_shapes.clone_from(&options.shape);
     }
@@ -727,6 +739,11 @@ fn render_constraints_section(text: &mut String, constraints: &LoopConstraints) 
         text,
         "- max low-confidence fraction: {:.1}%",
         constraints.max_low_confidence_fraction * 100.0
+    );
+    let _ = writeln!(
+        text,
+        "- max restricted-access fraction: {:.1}%",
+        constraints.max_restricted_access_fraction * 100.0
     );
     let _ = writeln!(
         text,
@@ -1581,6 +1598,7 @@ mod tests {
                 max_descent_m: None,
                 max_road_fraction: None,
                 max_low_confidence_fraction: None,
+                max_restricted_access_fraction: Some(0.25),
                 shape: Vec::new(),
                 max_repeated_edge_fraction: None,
                 forbidden_terrain: vec![Terrain::Pavement, Terrain::Road],
@@ -1607,6 +1625,7 @@ mod tests {
             constraints.max_terrain_fraction.get(&Terrain::Talus),
             Some(&0.10)
         );
+        assert!((constraints.max_restricted_access_fraction - 0.25).abs() <= f64::EPSILON);
         assert_eq!(
             parse_terrain_fraction("scramble=0.25").unwrap(),
             TerrainFraction {
@@ -1647,6 +1666,7 @@ mod tests {
                 max_descent_m: None,
                 max_road_fraction: None,
                 max_low_confidence_fraction: None,
+                max_restricted_access_fraction: None,
                 shape: Vec::new(),
                 max_repeated_edge_fraction: None,
                 forbidden_terrain: vec![Terrain::Road],
@@ -1681,6 +1701,10 @@ mod tests {
         assert_eq!(
             manifest["effective_config"]["constraints"]["max_terrain_fraction"]["pavement"],
             0.05
+        );
+        assert_eq!(
+            manifest["effective_config"]["constraints"]["max_restricted_access_fraction"],
+            0.0
         );
         assert!(manifest["source_manifest"]["adapters"].as_array().is_some());
         assert_eq!(
@@ -1744,6 +1768,7 @@ mod tests {
                 max_descent_m: None,
                 max_road_fraction: None,
                 max_low_confidence_fraction: None,
+                max_restricted_access_fraction: None,
                 shape: Vec::new(),
                 max_repeated_edge_fraction: None,
                 forbidden_terrain: Vec::new(),
@@ -1770,6 +1795,8 @@ mod tests {
         assert!(report.contains("distance: 3.00–8.00 km"));
         assert!(report.contains("scalar difficulty: 0.00–90.00"));
         assert!(report.contains("Difficulty decomposition"));
+        assert!(report.contains("Access mix"));
+        assert!(report.contains("restricted-access fraction"));
         assert!(report.contains("## Source Manifest"));
         assert!(report.contains("sha256 "));
 
@@ -1877,6 +1904,7 @@ mod tests {
                 max_descent_m: None,
                 max_road_fraction: None,
                 max_low_confidence_fraction: None,
+                max_restricted_access_fraction: None,
                 shape: Vec::new(),
                 max_repeated_edge_fraction: None,
                 forbidden_terrain: Vec::new(),
@@ -1905,6 +1933,7 @@ mod tests {
                 max_descent_m: None,
                 max_road_fraction: None,
                 max_low_confidence_fraction: None,
+                max_restricted_access_fraction: None,
                 shape: Vec::new(),
                 max_repeated_edge_fraction: None,
                 forbidden_terrain: Vec::new(),

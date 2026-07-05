@@ -1,7 +1,7 @@
 use crate::constraints::{ConstraintVerdict, LoopConstraints};
 use crate::difficulty::DifficultyBreakdown;
 use crate::geo::LineString;
-use crate::model::{CrossingKind, EdgeId, Terrain, TrailGraph, VertexId};
+use crate::model::{Access, CrossingKind, EdgeId, Terrain, TrailGraph, VertexId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -125,6 +125,7 @@ struct ParetoPoint {
     difficulty: f64,
     road_fraction: f64,
     low_confidence_fraction: f64,
+    restricted_access_fraction: f64,
     repeated_edge_fraction: f64,
 }
 
@@ -151,6 +152,7 @@ impl ParetoPoint {
             difficulty: m.difficulty,
             road_fraction: m.road_fraction,
             low_confidence_fraction: m.low_confidence_fraction,
+            restricted_access_fraction: m.restricted_access_fraction,
             repeated_edge_fraction: m.repeated_edge_fraction,
         }
     }
@@ -167,7 +169,7 @@ impl ParetoPoint {
                 .any(|(a, b)| a < b)
     }
 
-    const fn objectives(self) -> [f64; 8] {
+    const fn objectives(self) -> [f64; 9] {
         [
             self.constraint_penalty,
             self.distance_deviation_m,
@@ -176,6 +178,7 @@ impl ParetoPoint {
             self.difficulty,
             self.road_fraction,
             self.low_confidence_fraction,
+            self.restricted_access_fraction,
             self.repeated_edge_fraction,
         ]
     }
@@ -203,9 +206,13 @@ pub struct RouteMetrics {
     pub difficulty_breakdown: DifficultyBreakdown,
     pub road_fraction: f64,
     pub low_confidence_fraction: f64,
+    #[serde(default)]
+    pub restricted_access_fraction: f64,
     pub repeated_edge_fraction: f64,
     #[serde(default)]
     pub crossings: BTreeMap<CrossingKind, u32>,
+    #[serde(default)]
+    pub access_m: BTreeMap<Access, f64>,
     pub terrain_m: BTreeMap<Terrain, f64>,
 }
 
@@ -218,6 +225,7 @@ impl RouteMetrics {
         let mut at = start;
         let mut road_m = 0.0;
         let mut low_conf_m = 0.0;
+        let mut restricted_access_m = 0.0;
         let mut repeated_edges = 0.0;
         let mut total_edges = 0.0;
         for edge_id in edges {
@@ -241,9 +249,13 @@ impl RouteMetrics {
             if a.confidence < 0.6 {
                 low_conf_m += a.length_m;
             }
+            if is_restricted_access(a.access) {
+                restricted_access_m += a.length_m;
+            }
             for crossing in &a.crossings {
                 *m.crossings.entry(crossing.kind).or_default() += crossing.count;
             }
+            *m.access_m.entry(a.access).or_default() += a.length_m;
             *m.terrain_m.entry(a.terrain).or_default() += a.length_m;
             let n = seen.entry(*edge_id).or_default();
             if *n > 0 {
@@ -254,6 +266,7 @@ impl RouteMetrics {
         if m.distance_m > 0.0 {
             m.road_fraction = road_m / m.distance_m;
             m.low_confidence_fraction = low_conf_m / m.distance_m;
+            m.restricted_access_fraction = restricted_access_m / m.distance_m;
         }
         if total_edges > 0.0 {
             m.repeated_edge_fraction = repeated_edges / total_edges;
@@ -269,6 +282,21 @@ impl RouteMetrics {
             .map(|(terrain, meters)| (*terrain, meters / self.distance_m.max(1.0)))
             .collect()
     }
+
+    #[must_use]
+    pub fn access_percentages(&self) -> BTreeMap<Access, f64> {
+        self.access_m
+            .iter()
+            .map(|(access, meters)| (*access, meters / self.distance_m.max(1.0)))
+            .collect()
+    }
+}
+
+const fn is_restricted_access(access: Access) -> bool {
+    matches!(
+        access,
+        Access::Restricted | Access::Closed | Access::Private
+    )
 }
 
 fn classify_shape(

@@ -2,62 +2,7 @@
 
 ## candidate-1
 
-- score: 1070.35
-- pareto rank: 1
-- shape: Loop
-- distance: 4.04 km
-- ascent/descent: 96 m / 96 m
-- scalar difficulty: 1007.95
-- road exposure: 2.0%
-- low-confidence fraction: 0.0%
-- repeated-edge fraction: 0.0%
-- constraint verdict: violated
-
-Violations:
-- difficulty 1007.95 above maximum 90.00
-
-Difficulty decomposition:
-- access: 1000.00 (99.2%)
-- distance: 4.04 (0.4%)
-- terrain: 1.17 (0.1%)
-- ascent: 1.15 (0.1%)
-- confidence: 0.81 (0.1%)
-- grade: 0.33 (0.0%)
-- descent: 0.29 (0.0%)
-- road: 0.16 (0.0%)
-
-Access warnings:
-- edge 4: Closed, confidence 93%, provenance fixture-closure:diagonal-closure
-
-Crossings:
-- Road: 2
-- Water: 2
-
-Terrain mix:
-- Trail: 25.3%
-- Alpine: 41.6%
-- Talus: 33.1%
-
-Largest difficulty contributors:
-- edge 4 access: 1000.00 (99.2% of route), Alpine, 1681 m
-- edge 4 distance: 1.68 (0.2% of route), Alpine, 1681 m
-- edge 1 distance: 1.33 (0.1% of route), Talus, 1334 m
-- edge 2 distance: 1.02 (0.1% of route), Trail, 1022 m
-- edge 1 terrain: 0.87 (0.1% of route), Talus, 1334 m
-
-Most dubious segments:
-- edge 2: 1022 m, Trail, grade max 2.3%, crossings 1, confidence 0.82, seed count 2, provenance fixture:south
-- edge 1: 1334 m, Talus, grade max 9.0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:east
-- edge 4: 1681 m, Alpine, grade max 5.7%, crossings 2, confidence 0.82, seed count 2, provenance fixture:diagonal
-
-Terrain/elevation evidence:
-- edge 2: Trail 90%: explicit source terrain tag; elevation source arc-ascii-grid
-- edge 1: Forest 90%: explicit source terrain tag; elevation source arc-ascii-grid
-- edge 4: Alpine 90%: explicit source terrain tag; elevation source arc-ascii-grid
-
-## candidate-2
-
-- score: 1073.22
+- score: 3904.51
 - pareto rank: 1
 - shape: Loop
 - distance: 4.71 km
@@ -65,11 +10,13 @@ Terrain/elevation evidence:
 - scalar difficulty: 1010.43
 - road exposure: 1.3%
 - low-confidence fraction: 0.0%
+- restricted-access fraction: 28.3%
 - repeated-edge fraction: 0.0%
 - constraint verdict: violated
 
 Violations:
 - difficulty 1010.43 above maximum 90.00
+- restricted-access fraction 28.3% above maximum 0.0%
 
 Difficulty decomposition:
 - access: 1000.00 (99.0%)
@@ -80,6 +27,10 @@ Difficulty decomposition:
 - grade: 0.53 (0.1%)
 - descent: 0.41 (0.0%)
 - road: 0.12 (0.0%)
+
+Access mix:
+- Open: 71.7%
+- Closed: 28.3%
 
 Access warnings:
 - edge 3: Closed, confidence 93%, provenance fixture-closure:diagonal-closure
@@ -111,21 +62,23 @@ Terrain/elevation evidence:
 - edge 0: Trail 90%: explicit source terrain tag; elevation source arc-ascii-grid
 - edge 3: Talus 90%: explicit source terrain tag; elevation source arc-ascii-grid
 
-## candidate-3
+## candidate-2
 
-- score: 1070.35
-- pareto rank: 2
+- score: 5233.53
+- pareto rank: 1
 - shape: Loop
 - distance: 4.04 km
 - ascent/descent: 96 m / 96 m
 - scalar difficulty: 1007.95
 - road exposure: 2.0%
 - low-confidence fraction: 0.0%
+- restricted-access fraction: 41.6%
 - repeated-edge fraction: 0.0%
 - constraint verdict: violated
 
 Violations:
 - difficulty 1007.95 above maximum 90.00
+- restricted-access fraction 41.6% above maximum 0.0%
 
 Difficulty decomposition:
 - access: 1000.00 (99.2%)
@@ -136,6 +89,10 @@ Difficulty decomposition:
 - grade: 0.33 (0.0%)
 - descent: 0.29 (0.0%)
 - road: 0.16 (0.0%)
+
+Access mix:
+- Open: 58.4%
+- Closed: 41.6%
 
 Access warnings:
 - edge 4: Closed, confidence 93%, provenance fixture-closure:diagonal-closure
@@ -157,68 +114,135 @@ Largest difficulty contributors:
 - edge 1 terrain: 0.87 (0.1% of route), Talus, 1334 m
 
 Most dubious segments:
+- edge 2: 1022 m, Trail, grade max 2.3%, crossings 1, confidence 0.82, seed count 2, provenance fixture:south
+- edge 1: 1334 m, Talus, grade max 9.0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:east
 - edge 4: 1681 m, Alpine, grade max 5.7%, crossings 2, confidence 0.82, seed count 2, provenance fixture:diagonal
+
+Terrain/elevation evidence:
+- edge 2: Trail 90%: explicit source terrain tag; elevation source arc-ascii-grid
+- edge 1: Forest 90%: explicit source terrain tag; elevation source arc-ascii-grid
+- edge 4: Alpine 90%: explicit source terrain tag; elevation source arc-ascii-grid
+
+## candidate-3
+
+- score: 3904.51
+- pareto rank: 2
+- shape: Loop
+- distance: 4.71 km
+- ascent/descent: 137 m / 137 m
+- scalar difficulty: 1010.43
+- road exposure: 1.3%
+- low-confidence fraction: 0.0%
+- restricted-access fraction: 28.3%
+- repeated-edge fraction: 0.0%
+- constraint verdict: violated
+
+Violations:
+- difficulty 1010.43 above maximum 90.00
+- restricted-access fraction 28.3% above maximum 0.0%
+
+Difficulty decomposition:
+- access: 1000.00 (99.0%)
+- distance: 4.71 (0.5%)
+- terrain: 1.73 (0.2%)
+- ascent: 1.64 (0.2%)
+- confidence: 1.28 (0.1%)
+- grade: 0.53 (0.1%)
+- descent: 0.41 (0.0%)
+- road: 0.12 (0.0%)
+
+Access mix:
+- Open: 71.7%
+- Closed: 28.3%
+
+Access warnings:
+- edge 3: Closed, confidence 93%, provenance fixture-closure:diagonal-closure
+
+Crossings:
+- Road: 2
+- Water: 2
+
+Terrain mix:
+- Trail: 43.4%
+- Talus: 56.6%
+
+Largest difficulty contributors:
+- edge 3 access: 1000.00 (99.0% of route), Talus, 1334 m
+- edge 3 ascent: 1.36 (0.1% of route), Talus, 1334 m
+- edge 3 distance: 1.33 (0.1% of route), Talus, 1334 m
+- edge 1 distance: 1.33 (0.1% of route), Talus, 1334 m
+- edge 2 distance: 1.02 (0.1% of route), Trail, 1022 m
+
+Most dubious segments:
+- edge 3: 1334 m, Talus, grade max 9.0%, crossings 1, confidence 0.70, seed count 0, provenance fixture:west
+- edge 0: 1022 m, Trail, grade max 4.0%, crossings 1, confidence 0.81, seed count 0, provenance fixture:north
 - edge 1: 1334 m, Talus, grade max 9.0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:east
 - edge 2: 1022 m, Trail, grade max 2.3%, crossings 1, confidence 0.82, seed count 2, provenance fixture:south
 
 Terrain/elevation evidence:
-- edge 4: Alpine 90%: explicit source terrain tag; elevation source arc-ascii-grid
+- edge 3: Talus 90%: explicit source terrain tag; elevation source arc-ascii-grid
+- edge 0: Trail 90%: explicit source terrain tag; elevation source arc-ascii-grid
 - edge 1: Forest 90%: explicit source terrain tag; elevation source arc-ascii-grid
 - edge 2: Trail 90%: explicit source terrain tag; elevation source arc-ascii-grid
 
 ## candidate-4
 
-- score: 1073.22
+- score: 5233.53
 - pareto rank: 2
 - shape: Loop
-- distance: 4.71 km
-- ascent/descent: 137 m / 137 m
-- scalar difficulty: 1010.43
-- road exposure: 1.3%
+- distance: 4.04 km
+- ascent/descent: 96 m / 96 m
+- scalar difficulty: 1007.95
+- road exposure: 2.0%
 - low-confidence fraction: 0.0%
+- restricted-access fraction: 41.6%
 - repeated-edge fraction: 0.0%
 - constraint verdict: violated
 
 Violations:
-- difficulty 1010.43 above maximum 90.00
+- difficulty 1007.95 above maximum 90.00
+- restricted-access fraction 41.6% above maximum 0.0%
 
 Difficulty decomposition:
-- access: 1000.00 (99.0%)
-- distance: 4.71 (0.5%)
-- terrain: 1.73 (0.2%)
-- ascent: 1.64 (0.2%)
-- confidence: 1.28 (0.1%)
-- grade: 0.53 (0.1%)
-- descent: 0.41 (0.0%)
-- road: 0.12 (0.0%)
+- access: 1000.00 (99.2%)
+- distance: 4.04 (0.4%)
+- terrain: 1.17 (0.1%)
+- ascent: 1.15 (0.1%)
+- confidence: 0.81 (0.1%)
+- grade: 0.33 (0.0%)
+- descent: 0.29 (0.0%)
+- road: 0.16 (0.0%)
+
+Access mix:
+- Open: 58.4%
+- Closed: 41.6%
 
 Access warnings:
-- edge 3: Closed, confidence 93%, provenance fixture-closure:diagonal-closure
+- edge 4: Closed, confidence 93%, provenance fixture-closure:diagonal-closure
 
 Crossings:
 - Road: 2
 - Water: 2
 
 Terrain mix:
-- Trail: 43.4%
-- Talus: 56.6%
+- Trail: 25.3%
+- Alpine: 41.6%
+- Talus: 33.1%
 
 Largest difficulty contributors:
-- edge 3 access: 1000.00 (99.0% of route), Talus, 1334 m
-- edge 3 ascent: 1.36 (0.1% of route), Talus, 1334 m
-- edge 3 distance: 1.33 (0.1% of route), Talus, 1334 m
+- edge 4 access: 1000.00 (99.2% of route), Alpine, 1681 m
+- edge 4 distance: 1.68 (0.2% of route), Alpine, 1681 m
 - edge 1 distance: 1.33 (0.1% of route), Talus, 1334 m
 - edge 2 distance: 1.02 (0.1% of route), Trail, 1022 m
+- edge 1 terrain: 0.87 (0.1% of route), Talus, 1334 m
 
 Most dubious segments:
-- edge 3: 1334 m, Talus, grade max 9.0%, crossings 1, confidence 0.70, seed count 0, provenance fixture:west
-- edge 0: 1022 m, Trail, grade max 4.0%, crossings 1, confidence 0.81, seed count 0, provenance fixture:north
+- edge 4: 1681 m, Alpine, grade max 5.7%, crossings 2, confidence 0.82, seed count 2, provenance fixture:diagonal
 - edge 1: 1334 m, Talus, grade max 9.0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:east
 - edge 2: 1022 m, Trail, grade max 2.3%, crossings 1, confidence 0.82, seed count 2, provenance fixture:south
 
 Terrain/elevation evidence:
-- edge 3: Talus 90%: explicit source terrain tag; elevation source arc-ascii-grid
-- edge 0: Trail 90%: explicit source terrain tag; elevation source arc-ascii-grid
+- edge 4: Alpine 90%: explicit source terrain tag; elevation source arc-ascii-grid
 - edge 1: Forest 90%: explicit source terrain tag; elevation source arc-ascii-grid
 - edge 2: Trail 90%: explicit source terrain tag; elevation source arc-ascii-grid
 
@@ -230,6 +254,7 @@ Terrain/elevation evidence:
 - descent: 0–3000 m
 - max road exposure: 12.0%
 - max low-confidence fraction: 20.0%
+- max restricted-access fraction: 0.0%
 - max repeated-edge fraction: 0.0%
 - allowed shapes: [Loop]
 

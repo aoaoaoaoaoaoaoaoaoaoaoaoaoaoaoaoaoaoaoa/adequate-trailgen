@@ -20,7 +20,7 @@ fn render_route(graph: &TrailGraph, route: &Route, s: &mut String) {
     let _ = write!(s, "## {}\n\n", route.name);
     let _ = write!(
         s,
-        "- score: {:.2}\n- pareto rank: {}\n- shape: {:?}\n- distance: {:.2} km\n- ascent/descent: {:.0} m / {:.0} m\n- scalar difficulty: {:.2}\n- road exposure: {:.1}%\n- low-confidence fraction: {:.1}%\n- repeated-edge fraction: {:.1}%\n- constraint verdict: {}\n",
+        "- score: {:.2}\n- pareto rank: {}\n- shape: {:?}\n- distance: {:.2} km\n- ascent/descent: {:.0} m / {:.0} m\n- scalar difficulty: {:.2}\n- road exposure: {:.1}%\n- low-confidence fraction: {:.1}%\n- restricted-access fraction: {:.1}%\n- repeated-edge fraction: {:.1}%\n- constraint verdict: {}\n",
         route.score,
         route.pareto_rank,
         route.metrics.shape,
@@ -30,6 +30,7 @@ fn render_route(graph: &TrailGraph, route: &Route, s: &mut String) {
         route.metrics.difficulty,
         route.metrics.road_fraction * 100.0,
         route.metrics.low_confidence_fraction * 100.0,
+        route.metrics.restricted_access_fraction * 100.0,
         route.metrics.repeated_edge_fraction * 100.0,
         if route.verdict.satisfied {
             "satisfied"
@@ -39,6 +40,7 @@ fn render_route(graph: &TrailGraph, route: &Route, s: &mut String) {
     );
     render_violations(route, s);
     render_difficulty(route, s);
+    render_access_mix(route, s);
     render_access_warnings(graph, route, s);
     render_crossings(route, s);
     render_terrain_mix(route, s);
@@ -90,6 +92,13 @@ fn render_violations(route: &Route, s: &mut String) {
     s.push_str("\nViolations:\n");
     for violation in &route.verdict.violations {
         let _ = writeln!(s, "- {violation}");
+    }
+}
+
+fn render_access_mix(route: &Route, s: &mut String) {
+    s.push_str("\nAccess mix:\n");
+    for (access, fraction) in route.metrics.access_percentages() {
+        let _ = writeln!(s, "- {access:?}: {:.1}%", fraction * 100.0);
     }
 }
 

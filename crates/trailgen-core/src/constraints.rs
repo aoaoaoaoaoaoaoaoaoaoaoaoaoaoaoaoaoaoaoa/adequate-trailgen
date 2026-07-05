@@ -26,6 +26,8 @@ pub struct LoopConstraints {
     #[serde(default = "default_max_low_confidence_fraction")]
     pub max_low_confidence_fraction: f64,
     #[serde(default)]
+    pub max_restricted_access_fraction: f64,
+    #[serde(default)]
     pub max_repeated_edge_fraction: f64,
     #[serde(default = "default_allowed_shapes")]
     pub allowed_shapes: Vec<RouteShape>,
@@ -50,6 +52,7 @@ impl Default for LoopConstraints {
             max_descent_m: 3_000.0,
             max_road_fraction: 0.12,
             max_low_confidence_fraction: 0.20,
+            max_restricted_access_fraction: 0.0,
             max_repeated_edge_fraction: 0.0,
             allowed_shapes: default_allowed_shapes(),
             forbidden_terrain: Vec::new(),
@@ -179,6 +182,15 @@ impl LoopConstraints {
                 self.max_repeated_edge_fraction * 100.0
             ),
         );
+        push_violation(
+            violations,
+            metrics.restricted_access_fraction > self.max_restricted_access_fraction,
+            format!(
+                "restricted-access fraction {:.1}% above maximum {:.1}%",
+                metrics.restricted_access_fraction * 100.0,
+                self.max_restricted_access_fraction * 100.0
+            ),
+        );
     }
 
     fn append_shape_violations(&self, metrics: &RouteMetrics, violations: &mut Vec<String>) {
@@ -258,6 +270,10 @@ impl LoopConstraints {
         let low_conf_over = ((m.low_confidence_fraction - self.max_low_confidence_fraction)
             / self.max_low_confidence_fraction.max(0.01))
         .max(0.0);
+        let restricted_access_over = ((m.restricted_access_fraction
+            - self.max_restricted_access_fraction)
+            / self.max_restricted_access_fraction.max(0.01))
+        .max(0.0);
         let repeated_over = ((m.repeated_edge_fraction - self.max_repeated_edge_fraction)
             / self.max_repeated_edge_fraction.max(0.01))
         .max(0.0);
@@ -297,6 +313,7 @@ impl LoopConstraints {
                 + descent_over
                 + road_over
                 + low_conf_over
+                + restricted_access_over
                 + repeated_over
                 + shape
                 + forbidden

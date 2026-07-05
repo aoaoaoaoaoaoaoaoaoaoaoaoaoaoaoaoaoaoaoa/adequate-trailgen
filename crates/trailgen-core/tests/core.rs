@@ -263,6 +263,51 @@ fn closure_overlay_closes_edges_and_records_provenance() {
 }
 
 #[test]
+fn access_restrictions_are_hard_route_constraints() {
+    let drafts = geojson::network_from_str(include_str!("fixtures/mini_network.geojson")).unwrap();
+    let mut graph = GraphBuilder::default().build(&drafts).unwrap();
+    let overlays =
+        geojson::access_overlays_from_str(include_str!("fixtures/closure_overlay.geojson"))
+            .unwrap();
+    apply_access_overlays(&mut graph, &overlays, DifficultyWeights::default());
+    let edge = graph
+        .edges
+        .iter()
+        .find(|edge| edge.attr.access == Access::Closed)
+        .expect("fixture closure should touch an edge");
+    let route = Route::from_edges(
+        "closed-segment",
+        &graph,
+        edge.a,
+        vec![edge.id],
+        &LoopConstraints {
+            min_distance_m: 0.0,
+            max_distance_m: 10_000.0,
+            max_difficulty: 10_000.0,
+            allowed_shapes: vec![RouteShape::Open],
+            ..LoopConstraints::default()
+        },
+    );
+
+    assert!((route.metrics.restricted_access_fraction - 1.0).abs() <= f64::EPSILON);
+    assert!(
+        route
+            .metrics
+            .access_percentages()
+            .get(&Access::Closed)
+            .is_some_and(|fraction| (*fraction - 1.0).abs() <= f64::EPSILON)
+    );
+    assert!(!route.verdict.satisfied);
+    assert!(
+        route
+            .verdict
+            .violations
+            .iter()
+            .any(|v| v == "restricted-access fraction 100.0% above maximum 0.0%")
+    );
+}
+
+#[test]
 fn context_overlays_infer_road_and_water_crossings() {
     let drafts = geojson::network_from_str(include_str!("fixtures/mini_network.geojson")).unwrap();
     let mut graph = GraphBuilder::default().build(&drafts).unwrap();
