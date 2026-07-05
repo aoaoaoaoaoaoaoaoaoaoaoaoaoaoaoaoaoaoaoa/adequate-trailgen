@@ -15,9 +15,9 @@ use trailgen_core::{
 };
 use trailgen_core::{
     Coord, DifficultyWeights, EnrichmentConfig, GraphBuilder, LineString, LoopConstraints,
-    LoopHunter, PlaneElevation, Provenance, SeedRoute, SegmentDraft, Terrain, TerrainMultipliers,
-    apply_access_overlays, apply_context_overlays, apply_terrain_overlays, enrich_graph,
-    rank_routes,
+    LoopHunter, OverlayGeometry, PlaneElevation, Provenance, SeedRoute, SegmentDraft, Terrain,
+    TerrainMultipliers, apply_access_overlays, apply_context_overlays, apply_terrain_overlays,
+    enrich_graph, rank_routes,
 };
 
 const WGS84_PRJ: &str = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["Degree",0.0174532925199433]]"#;
@@ -474,6 +474,61 @@ fn dated_access_overlay_only_bites_inside_active_window() {
 }
 
 #[test]
+fn multiline_access_overlay_hits_each_line_without_flattening() {
+    let mut graph = GraphBuilder::default()
+        .build(&[
+            SegmentDraft {
+                geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)])
+                    .unwrap(),
+                terrain: Terrain::Trail,
+                surface: None,
+                access: Access::Open,
+                travel: EdgeTravel::Both,
+                road_exposure: 0.0,
+                confidence: 1.0,
+                provenance: Provenance::fixture("lower"),
+            },
+            SegmentDraft {
+                geometry: LineString::new(vec![Coord::new(0.0, 0.01), Coord::new(0.01, 0.01)])
+                    .unwrap(),
+                terrain: Terrain::Trail,
+                surface: None,
+                access: Access::Open,
+                travel: EdgeTravel::Both,
+                road_exposure: 0.0,
+                confidence: 1.0,
+                provenance: Provenance::fixture("upper"),
+            },
+        ])
+        .unwrap();
+    let overlays = geojson::access_overlays_from_str(
+        r#"{"type":"FeatureCollection","features":[{
+            "type":"Feature",
+            "properties":{"status":"closed","name":"two-corridors","confidence":0.7},
+            "geometry":{"type":"MultiLineString","coordinates":[
+                [[0.005,-0.001],[0.005,0.001]],
+                [[0.005,0.009],[0.005,0.011]]
+            ]}
+        }]}"#,
+    )
+    .unwrap();
+
+    assert!(matches!(
+        &overlays[0].geometry,
+        OverlayGeometry::MultiLine(lines) if lines.len() == 2
+    ));
+    let touched = apply_access_overlays(&mut graph, &overlays, None, DifficultyWeights::default());
+
+    assert_eq!(touched, 2);
+    assert!(
+        graph
+            .edges
+            .iter()
+            .all(|edge| edge.attr.access == Access::Closed)
+    );
+}
+
+#[test]
 fn access_restrictions_are_hard_route_constraints() {
     let drafts = geojson::network_from_str(include_str!("fixtures/mini_network.geojson")).unwrap();
     let mut graph = GraphBuilder::default().build(&drafts).unwrap();
@@ -649,6 +704,39 @@ fn context_overlays_infer_road_and_water_crossings() {
     assert!(rendered.contains("Crossings:"));
     assert!(rendered.contains("Road:"));
     assert!(rendered.contains("Water:"));
+}
+
+#[test]
+fn multiline_context_overlay_does_not_invent_joiner_crossings() {
+    let mut graph = GraphBuilder::default()
+        .build(&[SegmentDraft {
+            geometry: LineString::new(vec![Coord::new(0.5, 0.4), Coord::new(0.5, 0.6)]).unwrap(),
+            terrain: Terrain::Trail,
+            surface: None,
+            access: Access::Open,
+            travel: EdgeTravel::Both,
+            road_exposure: 0.0,
+            confidence: 1.0,
+            provenance: Provenance::fixture("trail"),
+        }])
+        .unwrap();
+    let overlays = geojson::context_overlays_from_str(
+        r#"{"type":"FeatureCollection","features":[{
+            "type":"Feature",
+            "properties":{"kind":"road","name":"disconnected-roads"},
+            "geometry":{"type":"MultiLineString","coordinates":[
+                [[0.0,0.0],[0.4,0.0]],
+                [[0.6,1.0],[1.0,1.0]]
+            ]}
+        }]}"#,
+    )
+    .unwrap();
+
+    assert_eq!(overlays.len(), 2);
+    let crossings = apply_context_overlays(&mut graph, &overlays, DifficultyWeights::default());
+
+    assert_eq!(crossings, 0);
+    assert!(graph.edges[0].attr.crossings.is_empty());
 }
 
 #[test]

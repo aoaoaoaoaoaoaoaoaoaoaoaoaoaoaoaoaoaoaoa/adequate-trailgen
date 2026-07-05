@@ -572,6 +572,16 @@ fn overlay_geometry(geometry: &Value) -> Result<OverlayGeometry> {
             .next()
             .map(OverlayGeometry::Line)
             .ok_or_else(|| TrailgenError::InvalidGeometry("empty LineString".to_owned())),
+        Some("MultiLineString") => {
+            let lines = lines_from_geometry(geometry)?;
+            if lines.is_empty() {
+                Err(TrailgenError::InvalidGeometry(
+                    "empty MultiLineString".to_owned(),
+                ))
+            } else {
+                Ok(OverlayGeometry::MultiLine(lines))
+            }
+        }
         Some(other) => Err(TrailgenError::UnsupportedFormat(format!(
             "GeoJSON overlay geometry {other}"
         ))),
@@ -581,7 +591,7 @@ fn overlay_geometry(geometry: &Value) -> Result<OverlayGeometry> {
     }
 }
 
-fn context_from_feature(feature: &Value, i: usize) -> Result<Option<ContextOverlay>> {
+fn context_from_feature(feature: &Value, i: usize) -> Result<Vec<ContextOverlay>> {
     let properties = feature
         .get("properties")
         .and_then(Value::as_object)
@@ -592,7 +602,7 @@ fn context_from_feature(feature: &Value, i: usize) -> Result<Option<ContextOverl
         .or_else(|| prop_str(&properties, "type"))
         .and_then(CrossingKind::from_tag)
     else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
     let name = prop_str(&properties, "name")
         .or_else(|| prop_str(&properties, "id"))
@@ -613,21 +623,25 @@ fn context_from_feature(feature: &Value, i: usize) -> Result<Option<ContextOverl
         TrailgenError::InvalidData("GeoJSON context feature has no geometry".to_owned())
     })?;
     let lines = lines_from_geometry(geometry)?;
-    let line = LineString::new(
-        lines
-            .into_iter()
-            .flat_map(|line| line.points)
-            .collect::<Vec<_>>(),
-    )?;
-    Ok(Some(ContextOverlay {
-        name,
-        kind,
-        confidence: prop_f64(&properties, "confidence")
-            .unwrap_or(0.8)
-            .clamp(0.0, 1.0),
-        provenance,
-        geometry: line,
-    }))
+    let multi = lines.len() > 1;
+    let confidence = prop_f64(&properties, "confidence")
+        .unwrap_or(0.8)
+        .clamp(0.0, 1.0);
+    Ok(lines
+        .into_iter()
+        .enumerate()
+        .map(|(j, geometry)| ContextOverlay {
+            name: if multi {
+                format!("{name}#{j}")
+            } else {
+                name.clone()
+            },
+            kind,
+            confidence,
+            provenance: provenance.clone(),
+            geometry,
+        })
+        .collect())
 }
 
 fn coords(value: &Value) -> Result<Vec<Coord>> {

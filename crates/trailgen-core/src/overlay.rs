@@ -158,6 +158,7 @@ pub enum OverlayGeometry {
     Polygon(Vec<Coord>),
     MultiPolygon(Vec<Vec<Coord>>),
     Line(LineString),
+    MultiLine(Vec<LineString>),
 }
 
 impl OverlayGeometry {
@@ -168,6 +169,9 @@ impl OverlayGeometry {
             Self::Polygon(ring) => point_in_ring(midpoint, ring),
             Self::MultiPolygon(rings) => rings.iter().any(|ring| point_in_ring(midpoint, ring)),
             Self::Line(line) => point_line_distance_m(midpoint, line) <= tolerance_m,
+            Self::MultiLine(lines) => lines
+                .iter()
+                .any(|line| point_line_distance_m(midpoint, line) <= tolerance_m),
         }
     }
 }
