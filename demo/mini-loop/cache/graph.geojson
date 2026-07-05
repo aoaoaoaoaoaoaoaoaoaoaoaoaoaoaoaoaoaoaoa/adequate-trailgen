@@ -433,7 +433,7 @@
           }
         ],
         "descent_m": 40.799999999999955,
-        "difficulty": 1.5715174669088423,
+        "difficulty": 1.645100374060298,
         "difficulty_breakdown": {
           "access": 0.0,
           "ascent": 0.0,
@@ -441,7 +441,9 @@
           "descent": 0.12239999999999987,
           "distance": 1.021984821547996,
           "grade": 0.09581355606796675,
+          "navigation": 0.07358290715145571,
           "road": 0.06131908929287976,
+          "technical": 0.0,
           "terrain": 0.0
         },
         "edge_id": 0,
@@ -894,7 +896,7 @@
           }
         ],
         "descent_m": 96.19999999999914,
-        "difficulty": 2.933291826604625,
+        "difficulty": 4.777351037197604,
         "difficulty_breakdown": {
           "access": 0.0,
           "ascent": 0.0,
@@ -902,7 +904,9 @@
           "descent": 0.2885999999999974,
           "distance": 1.334340962802445,
           "grade": 0.17302923798059308,
+          "navigation": 0.25619346485806943,
           "road": 0.0,
+          "technical": 1.5878657457349095,
           "terrain": 0.8673216258215891
         },
         "edge_id": 1,
@@ -1405,7 +1409,7 @@
           }
         ],
         "descent_m": 0.0,
-        "difficulty": 1.6978453577632866,
+        "difficulty": 1.771441200307474,
         "difficulty_breakdown": {
           "access": 0.0,
           "ascent": 0.2880000000000109,
@@ -1413,7 +1417,9 @@
           "descent": 0.0,
           "distance": 1.022164479780381,
           "grade": 0.056351009196071764,
+          "navigation": 0.07359584254418743,
           "road": 0.06132986878682286,
+          "technical": 0.0,
           "terrain": 0.0
         },
         "edge_id": 2,
@@ -1867,7 +1873,7 @@
           }
         ],
         "descent_m": 0.0,
-        "difficulty": 1004.0309089908258,
+        "difficulty": 1005.8749682014187,
         "difficulty_breakdown": {
           "access": 1000.0,
           "ascent": 1.3559999999999781,
@@ -1875,7 +1881,9 @@
           "descent": 0.0,
           "distance": 1.334340962802445,
           "grade": 0.2032464022017347,
+          "navigation": 0.25619346485806943,
           "road": 0.0,
+          "technical": 1.5878657457349095,
           "terrain": 0.8673216258215891
         },
         "edge_id": 3,
@@ -2487,7 +2495,7 @@
           }
         ],
         "descent_m": 0.0,
-        "difficulty": 1003.3386905915398,
+        "difficulty": 1004.3169185748479,
         "difficulty_breakdown": {
           "access": 1000.0,
           "ascent": 0.8663999999999787,
@@ -2495,7 +2503,9 @@
           "descent": 0.0,
           "distance": 1.680804095031195,
           "grade": 0.10309351370111917,
+          "navigation": 0.3899465500472372,
           "road": 0.1008482457018717,
+          "technical": 0.5882814332609182,
           "terrain": 0.302544737105615
         },
         "edge_id": 4,
@@ -2838,7 +2848,7 @@
         "confidence": 0.65,
         "crossings": [],
         "descent_m": 15.999999999991132,
-        "difficulty": 2.6055356701036145,
+        "difficulty": 2.62734184567225,
         "difficulty_breakdown": {
           "access": 0.0,
           "ascent": 0.0,
@@ -2846,7 +2856,9 @@
           "descent": 0.0479999999999734,
           "distance": 0.6814429865198515,
           "grade": 0.056351009196071694,
+          "navigation": 0.021806175568635244,
           "road": 1.362885973039703,
+          "technical": 0.0,
           "terrain": -0.06814429865198514
         },
         "edge_id": 5,

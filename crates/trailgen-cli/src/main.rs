@@ -225,6 +225,8 @@ enum CalibrationFamily {
     Grade,
     Terrain,
     Road,
+    Technical,
+    Navigation,
     Confidence,
     Access,
 }
@@ -815,6 +817,8 @@ impl CalibrationFamily {
             Self::Grade => breakdown.grade,
             Self::Terrain => breakdown.terrain,
             Self::Road => breakdown.road,
+            Self::Technical => breakdown.technical,
+            Self::Navigation => breakdown.navigation,
             Self::Confidence => breakdown.confidence,
             Self::Access => breakdown.access,
         }
@@ -835,6 +839,8 @@ impl CalibrationFamily {
             Self::Grade => weights.grade_per_abs_fraction *= multiplier,
             Self::Terrain => scale_terrain_offsets(weights, multiplier),
             Self::Road => weights.road_penalty *= multiplier,
+            Self::Technical => weights.technical_penalty *= multiplier,
+            Self::Navigation => weights.navigation_penalty *= multiplier,
             Self::Confidence => weights.low_confidence_penalty *= multiplier,
             Self::Access => weights.closed_access_penalty *= multiplier,
         }
@@ -876,6 +882,8 @@ fn ensure_valid_difficulty_weights(weights: DifficultyWeights) -> Result<()> {
         ("descent_per_m", weights.descent_per_m),
         ("grade_per_abs_fraction", weights.grade_per_abs_fraction),
         ("road_penalty", weights.road_penalty),
+        ("technical_penalty", weights.technical_penalty),
+        ("navigation_penalty", weights.navigation_penalty),
         ("low_confidence_penalty", weights.low_confidence_penalty),
         ("closed_access_penalty", weights.closed_access_penalty),
         (

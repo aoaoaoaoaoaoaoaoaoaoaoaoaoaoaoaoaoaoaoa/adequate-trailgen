@@ -2,12 +2,12 @@
 
 ## candidate-1
 
-- score: 3904.29
+- score: 3908.74
 - pareto rank: 1
 - shape: Loop
 - distance: 4.71 km
 - ascent/descent: 137 m / 137 m
-- scalar difficulty: 1010.23
+- scalar difficulty: 1014.07
 - road/pavement exposure: 1.3%
 - low-confidence fraction: 0.0%
 - restricted-access fraction: 28.3%
@@ -15,15 +15,17 @@
 - constraint verdict: violated
 
 Violations:
-- difficulty 1010.23 above maximum 90.00
+- difficulty 1014.07 above maximum 90.00
 - restricted-access fraction 28.3% above maximum 0.0%
 
 Difficulty decomposition:
-- access: 1000.00 (99.0%)
+- access: 1000.00 (98.6%)
 - distance: 4.71 (0.5%)
+- technical: 3.18 (0.3%)
 - terrain: 1.73 (0.2%)
 - ascent: 1.64 (0.2%)
 - confidence: 1.08 (0.1%)
+- navigation: 0.66 (0.1%)
 - grade: 0.53 (0.1%)
 - descent: 0.41 (0.0%)
 - road: 0.12 (0.0%)
@@ -44,11 +46,11 @@ Terrain mix:
 - Talus: 56.6%
 
 Largest difficulty contributors:
-- edge 3 access: 1000.00 (99.0% of route), Talus, 1334 m
+- edge 3 access: 1000.00 (98.6% of route), Talus, 1334 m
+- edge 1 technical: 1.59 (0.2% of route), Talus, 1334 m
+- edge 3 technical: 1.59 (0.2% of route), Talus, 1334 m
 - edge 3 ascent: 1.36 (0.1% of route), Talus, 1334 m
 - edge 1 distance: 1.33 (0.1% of route), Talus, 1334 m
-- edge 3 distance: 1.33 (0.1% of route), Talus, 1334 m
-- edge 2 distance: 1.02 (0.1% of route), Trail, 1022 m
 
 Most dubious segments:
 - edge 2: 1022 m, Trail, grade max 2.3%, grade bins flat 100% / rolling 0% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:south
@@ -64,12 +66,12 @@ Terrain/elevation evidence:
 
 ## candidate-2
 
-- score: 5233.54
+- score: 5236.91
 - pareto rank: 1
 - shape: Loop
 - distance: 4.04 km
 - ascent/descent: 96 m / 96 m
-- scalar difficulty: 1007.97
+- scalar difficulty: 1010.87
 - road/pavement exposure: 2.0%
 - low-confidence fraction: 0.0%
 - restricted-access fraction: 41.6%
@@ -77,15 +79,17 @@ Terrain/elevation evidence:
 - constraint verdict: violated
 
 Violations:
-- difficulty 1007.97 above maximum 90.00
+- difficulty 1010.87 above maximum 90.00
 - restricted-access fraction 41.6% above maximum 0.0%
 
 Difficulty decomposition:
-- access: 1000.00 (99.2%)
+- access: 1000.00 (98.9%)
 - distance: 4.04 (0.4%)
+- technical: 2.18 (0.2%)
 - terrain: 1.17 (0.1%)
 - ascent: 1.15 (0.1%)
 - confidence: 0.83 (0.1%)
+- navigation: 0.72 (0.1%)
 - grade: 0.33 (0.0%)
 - descent: 0.29 (0.0%)
 - road: 0.16 (0.0%)
@@ -107,11 +111,11 @@ Terrain mix:
 - Talus: 33.1%
 
 Largest difficulty contributors:
-- edge 4 access: 1000.00 (99.2% of route), Alpine, 1681 m
+- edge 4 access: 1000.00 (98.9% of route), Alpine, 1681 m
 - edge 4 distance: 1.68 (0.2% of route), Alpine, 1681 m
+- edge 1 technical: 1.59 (0.2% of route), Talus, 1334 m
 - edge 1 distance: 1.33 (0.1% of route), Talus, 1334 m
 - edge 2 distance: 1.02 (0.1% of route), Trail, 1022 m
-- edge 1 terrain: 0.87 (0.1% of route), Talus, 1334 m
 
 Most dubious segments:
 - edge 4: 1681 m, Alpine, grade max 5.7%, grade bins flat 58% / rolling 42% / steep 0% / savage 0%, crossings 2, confidence 0.81, seed count 0, provenance fixture:diagonal
@@ -125,12 +129,12 @@ Terrain/elevation evidence:
 
 ## candidate-3
 
-- score: 3904.29
+- score: 3908.74
 - pareto rank: 2
 - shape: Loop
 - distance: 4.71 km
 - ascent/descent: 137 m / 137 m
-- scalar difficulty: 1010.23
+- scalar difficulty: 1014.07
 - road/pavement exposure: 1.3%
 - low-confidence fraction: 0.0%
 - restricted-access fraction: 28.3%
@@ -138,15 +142,17 @@ Terrain/elevation evidence:
 - constraint verdict: violated
 
 Violations:
-- difficulty 1010.23 above maximum 90.00
+- difficulty 1014.07 above maximum 90.00
 - restricted-access fraction 28.3% above maximum 0.0%
 
 Difficulty decomposition:
-- access: 1000.00 (99.0%)
+- access: 1000.00 (98.6%)
 - distance: 4.71 (0.5%)
+- technical: 3.18 (0.3%)
 - terrain: 1.73 (0.2%)
 - ascent: 1.64 (0.2%)
 - confidence: 1.08 (0.1%)
+- navigation: 0.66 (0.1%)
 - grade: 0.53 (0.1%)
 - descent: 0.41 (0.0%)
 - road: 0.12 (0.0%)
@@ -167,11 +173,11 @@ Terrain mix:
 - Talus: 56.6%
 
 Largest difficulty contributors:
-- edge 3 access: 1000.00 (99.0% of route), Talus, 1334 m
+- edge 3 access: 1000.00 (98.6% of route), Talus, 1334 m
+- edge 3 technical: 1.59 (0.2% of route), Talus, 1334 m
+- edge 1 technical: 1.59 (0.2% of route), Talus, 1334 m
 - edge 3 ascent: 1.36 (0.1% of route), Talus, 1334 m
 - edge 3 distance: 1.33 (0.1% of route), Talus, 1334 m
-- edge 1 distance: 1.33 (0.1% of route), Talus, 1334 m
-- edge 2 distance: 1.02 (0.1% of route), Trail, 1022 m
 
 Most dubious segments:
 - edge 3: 1334 m, Talus, grade max 9.0%, grade bins flat 0% / rolling 100% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:west
@@ -187,12 +193,12 @@ Terrain/elevation evidence:
 
 ## candidate-4
 
-- score: 5233.54
+- score: 5236.91
 - pareto rank: 2
 - shape: Loop
 - distance: 4.04 km
 - ascent/descent: 96 m / 96 m
-- scalar difficulty: 1007.97
+- scalar difficulty: 1010.87
 - road/pavement exposure: 2.0%
 - low-confidence fraction: 0.0%
 - restricted-access fraction: 41.6%
@@ -200,15 +206,17 @@ Terrain/elevation evidence:
 - constraint verdict: violated
 
 Violations:
-- difficulty 1007.97 above maximum 90.00
+- difficulty 1010.87 above maximum 90.00
 - restricted-access fraction 41.6% above maximum 0.0%
 
 Difficulty decomposition:
-- access: 1000.00 (99.2%)
+- access: 1000.00 (98.9%)
 - distance: 4.04 (0.4%)
+- technical: 2.18 (0.2%)
 - terrain: 1.17 (0.1%)
 - ascent: 1.15 (0.1%)
 - confidence: 0.82 (0.1%)
+- navigation: 0.72 (0.1%)
 - grade: 0.33 (0.0%)
 - descent: 0.29 (0.0%)
 - road: 0.16 (0.0%)
@@ -230,11 +238,11 @@ Terrain mix:
 - Talus: 33.1%
 
 Largest difficulty contributors:
-- edge 4 access: 1000.00 (99.2% of route), Alpine, 1681 m
+- edge 4 access: 1000.00 (98.9% of route), Alpine, 1681 m
 - edge 4 distance: 1.68 (0.2% of route), Alpine, 1681 m
+- edge 1 technical: 1.59 (0.2% of route), Talus, 1334 m
 - edge 1 distance: 1.33 (0.1% of route), Talus, 1334 m
 - edge 2 distance: 1.02 (0.1% of route), Trail, 1022 m
-- edge 1 terrain: 0.87 (0.1% of route), Talus, 1334 m
 
 Most dubious segments:
 - edge 4: 1681 m, Alpine, grade max 5.7%, grade bins flat 58% / rolling 42% / steep 0% / savage 0%, crossings 2, confidence 0.81, seed count 0, provenance fixture:diagonal

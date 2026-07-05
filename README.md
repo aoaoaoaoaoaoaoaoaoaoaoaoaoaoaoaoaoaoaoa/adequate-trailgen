@@ -43,7 +43,7 @@ Generated artifacts land in the project directory:
 
 Use `trailgen export <project> --route candidate-1 --format gpx|geojson|kml|kmz --output file` to re-export a selected generated route after the search run. Use `trailgen report <project> [--route candidate-1] [--output file.md]` to render either all generated routes or one named route, including the constraint envelope used for that generation run.
 
-Use `trailgen rate <project> --route completed.gpx` to score a completed hike against the current graph. Use `trailgen calibrate <project> --route completed.gpx --target-difficulty N --family elevation` to dry-run a difficulty-weight patch from that hike; add `--write` to update `trailgen.toml` and rerate cached edge costs. `trailgen rerate <project>` reapplies hand-edited `[difficulty]` weights to `cache/graph.json` and `cache/graph.geojson`.
+Use `trailgen rate <project> --route completed.gpx` to score a completed hike against the current graph. Use `trailgen calibrate <project> --route completed.gpx --target-difficulty N --family elevation|technical|navigation` to dry-run a difficulty-weight patch from that hike; add `--write` to update `trailgen.toml` and rerate cached edge costs. `trailgen rerate <project>` reapplies hand-edited `[difficulty]` weights to `cache/graph.json` and `cache/graph.geojson`.
 
 Use `trailgen cache-source <project> --input URL_OR_PATH --output trails.geojson` to copy or download a provider-neutral artifact into `sources/`, record its origin, fingerprint it, and add it to the source manifest. Add `--kind` and `--adapter` when filenames do not identify the source class.
 

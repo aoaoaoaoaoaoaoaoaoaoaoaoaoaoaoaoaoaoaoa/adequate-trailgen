@@ -506,10 +506,12 @@
           "grade": 0.09581355606796675,
           "terrain": 0.0,
           "road": 0.06131908929287976,
+          "technical": 0.0,
+          "navigation": 0.07358290715145571,
           "confidence": 0.2700000000000001,
           "access": 0.0
         },
-        "difficulty": 1.5715174669088423,
+        "difficulty": 1.645100374060298,
         "seed_count": 2,
         "popularity": 1.0986122886681096,
         "seed_provenance": [
@@ -973,10 +975,12 @@
           "grade": 0.17302923798059308,
           "terrain": 0.8673216258215891,
           "road": 0.0,
+          "technical": 1.5878657457349095,
+          "navigation": 0.25619346485806943,
           "confidence": 0.2700000000000001,
           "access": 0.0
         },
-        "difficulty": 2.933291826604625,
+        "difficulty": 4.777351037197604,
         "seed_count": 2,
         "popularity": 1.0986122886681096,
         "seed_provenance": [
@@ -1470,10 +1474,12 @@
           "grade": 0.056351009196071764,
           "terrain": 0.0,
           "road": 0.06132986878682286,
+          "technical": 0.0,
+          "navigation": 0.07359584254418743,
           "confidence": 0.2700000000000001,
           "access": 0.0
         },
-        "difficulty": 1.6978453577632866,
+        "difficulty": 1.771441200307474,
         "seed_count": 2,
         "popularity": 1.0986122886681096,
         "seed_provenance": [
@@ -1928,10 +1934,12 @@
           "grade": 0.2032464022017347,
           "terrain": 0.8673216258215891,
           "road": 0.0,
+          "technical": 1.5878657457349095,
+          "navigation": 0.25619346485806943,
           "confidence": 0.2700000000000001,
           "access": 1000.0
         },
-        "difficulty": 1004.0309089908258,
+        "difficulty": 1005.8749682014187,
         "seed_count": 2,
         "popularity": 1.0986122886681096,
         "seed_provenance": [
@@ -2544,10 +2552,12 @@
           "grade": 0.10309351370111917,
           "terrain": 0.302544737105615,
           "road": 0.1008482457018717,
+          "technical": 0.5882814332609182,
+          "navigation": 0.3899465500472372,
           "confidence": 0.2849999999999999,
           "access": 1000.0
         },
-        "difficulty": 1003.3386905915398,
+        "difficulty": 1004.3169185748479,
         "seed_count": 0,
         "popularity": 0.0,
         "seed_provenance": [],
@@ -2891,10 +2901,12 @@
           "grade": 0.056351009196071694,
           "terrain": -0.06814429865198514,
           "road": 1.362885973039703,
+          "technical": 0.0,
+          "navigation": 0.021806175568635244,
           "confidence": 0.5249999999999999,
           "access": 0.0
         },
-        "difficulty": 2.6055356701036145,
+        "difficulty": 2.62734184567225,
         "seed_count": 0,
         "popularity": 0.0,
         "seed_provenance": [],

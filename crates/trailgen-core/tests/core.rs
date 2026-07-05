@@ -140,17 +140,34 @@ fn difficulty_penalizes_rough_uncertain_closed_edges() {
         provenance: Provenance::fixture("savage"),
         ..smooth.clone()
     };
+    let uncertain = SegmentDraft {
+        terrain: Terrain::Unknown,
+        access: Access::Open,
+        confidence: 0.9,
+        provenance: Provenance::fixture("uncertain"),
+        ..smooth.clone()
+    };
     let graph = GraphBuilder {
         weights: DifficultyWeights::default(),
         ..GraphBuilder::default()
     }
-    .build(&[smooth, savage])
+    .build(&[smooth, savage, uncertain])
     .unwrap();
     assert!(graph.edges[1].attr.difficulty > graph.edges[0].attr.difficulty + 100.0);
     assert!(graph.edges.iter().all(|edge| {
         (edge.attr.difficulty - edge.attr.difficulty_breakdown.total()).abs() <= 1.0e-9
     }));
     assert!(graph.edges[1].attr.difficulty_breakdown.access > 900.0);
+    assert!(graph.edges[1].attr.difficulty_breakdown.technical > 0.0);
+    assert!(
+        graph.edges[1].attr.difficulty_breakdown.technical
+            > graph.edges[0].attr.difficulty_breakdown.technical
+    );
+    assert!(graph.edges[2].attr.difficulty_breakdown.navigation > 0.0);
+    assert!(
+        graph.edges[2].attr.difficulty_breakdown.navigation
+            > graph.edges[0].attr.difficulty_breakdown.navigation
+    );
 }
 
 #[test]

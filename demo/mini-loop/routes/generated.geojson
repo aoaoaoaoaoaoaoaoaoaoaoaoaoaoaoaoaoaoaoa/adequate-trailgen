@@ -1553,7 +1553,7 @@
           "water": 2
         },
         "descent_m": 136.9999999999991,
-        "difficulty": 1010.2335636421025,
+        "difficulty": 1014.0688608129842,
         "difficulty_breakdown": {
           "access": 1000.0,
           "ascent": 1.6439999999999888,
@@ -1561,7 +1561,9 @@
           "descent": 0.4109999999999973,
           "distance": 4.712831226933266,
           "grade": 0.5284402054463663,
+          "navigation": 0.659565679411782,
           "road": 0.12264895807970262,
+          "technical": 3.1757314914698194,
           "terrain": 1.7346432516431782
         },
         "distance_m": 4712.831226933267,
@@ -1577,10 +1579,10 @@
         "repeated_edge_fraction": 0.0,
         "road_fraction": 0.013012237461292745,
         "satisfied": false,
-        "score": 3904.287172013428,
+        "score": 3908.7403781729513,
         "shape": "loop",
         "violations": [
-          "difficulty 1010.23 above maximum 90.00",
+          "difficulty 1014.07 above maximum 90.00",
           "restricted-access fraction 28.3% above maximum 0.0%"
         ]
       },
@@ -2884,7 +2886,7 @@
           "water": 2
         },
         "descent_m": 96.19999999999914,
-        "difficulty": 1007.9698277759078,
+        "difficulty": 1010.8657108123531,
         "difficulty_breakdown": {
           "access": 1000.0,
           "ascent": 1.1543999999999897,
@@ -2892,7 +2894,9 @@
           "descent": 0.2885999999999974,
           "distance": 4.037309537614021,
           "grade": 0.332473760877784,
+          "navigation": 0.7197358574494941,
           "road": 0.16217811448869457,
+          "technical": 2.1761471789958278,
           "terrain": 1.1698663629272041
         },
         "distance_m": 4037.3095376140213,
@@ -2907,10 +2911,10 @@
         "repeated_edge_fraction": 0.0,
         "road_fraction": 0.020084924499564005,
         "satisfied": false,
-        "score": 5233.543636479794,
+        "score": 5236.90607844989,
         "shape": "loop",
         "violations": [
-          "difficulty 1007.97 above maximum 90.00",
+          "difficulty 1010.87 above maximum 90.00",
           "restricted-access fraction 41.6% above maximum 0.0%"
         ]
       },
@@ -4469,7 +4473,7 @@
           "water": 2
         },
         "descent_m": 136.9999999999991,
-        "difficulty": 1010.2335636421026,
+        "difficulty": 1014.0688608129842,
         "difficulty_breakdown": {
           "access": 1000.0,
           "ascent": 1.6439999999999888,
@@ -4477,7 +4481,9 @@
           "descent": 0.4109999999999973,
           "distance": 4.712831226933267,
           "grade": 0.5284402054463663,
+          "navigation": 0.6595656794117819,
           "road": 0.12264895807970262,
+          "technical": 3.1757314914698194,
           "terrain": 1.7346432516431782
         },
         "distance_m": 4712.831226933266,
@@ -4493,10 +4499,10 @@
         "repeated_edge_fraction": 0.0,
         "road_fraction": 0.013012237461292748,
         "satisfied": false,
-        "score": 3904.287172013428,
+        "score": 3908.740378172952,
         "shape": "loop",
         "violations": [
-          "difficulty 1010.23 above maximum 90.00",
+          "difficulty 1014.07 above maximum 90.00",
           "restricted-access fraction 28.3% above maximum 0.0%"
         ]
       },
@@ -5800,7 +5806,7 @@
           "water": 2
         },
         "descent_m": 96.19999999999914,
-        "difficulty": 1007.9698277759078,
+        "difficulty": 1010.8657108123531,
         "difficulty_breakdown": {
           "access": 1000.0,
           "ascent": 1.1543999999999897,
@@ -5808,7 +5814,9 @@
           "descent": 0.2885999999999974,
           "distance": 4.037309537614021,
           "grade": 0.332473760877784,
+          "navigation": 0.7197358574494941,
           "road": 0.16217811448869457,
+          "technical": 2.1761471789958278,
           "terrain": 1.1698663629272041
         },
         "distance_m": 4037.309537614021,
@@ -5823,10 +5831,10 @@
         "repeated_edge_fraction": 0.0,
         "road_fraction": 0.02008492449956401,
         "satisfied": false,
-        "score": 5233.543636479794,
+        "score": 5236.90607844989,
         "shape": "loop",
         "violations": [
-          "difficulty 1007.97 above maximum 90.00",
+          "difficulty 1010.87 above maximum 90.00",
           "restricted-access fraction 41.6% above maximum 0.0%"
         ]
       },

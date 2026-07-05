@@ -38,6 +38,8 @@
         "water": 2.5
       },
       "road_penalty": 2.0,
+      "technical_penalty": 1.4,
+      "navigation_penalty": 0.8,
       "low_confidence_penalty": 1.5,
       "closed_access_penalty": 1000.0
     },
@@ -640,13 +642,13 @@
         0,
         3
       ],
-      "score": 3904.287172013428,
+      "score": 3908.7403781729513,
       "metrics": {
         "shape": "loop",
         "distance_m": 4712.831226933267,
         "ascent_m": 136.9999999999991,
         "descent_m": 136.9999999999991,
-        "difficulty": 1010.2335636421025,
+        "difficulty": 1014.0688608129842,
         "difficulty_breakdown": {
           "distance": 4.712831226933266,
           "ascent": 1.6439999999999888,
@@ -654,6 +656,8 @@
           "grade": 0.5284402054463663,
           "terrain": 1.7346432516431782,
           "road": 0.12264895807970262,
+          "technical": 3.1757314914698194,
+          "navigation": 0.659565679411782,
           "confidence": 1.0800000000000003,
           "access": 1000.0
         },
@@ -676,7 +680,7 @@
       },
       "satisfied": false,
       "violations": [
-        "difficulty 1010.23 above maximum 90.00",
+        "difficulty 1014.07 above maximum 90.00",
         "restricted-access fraction 28.3% above maximum 0.0%"
       ],
       "rank": 1
@@ -689,13 +693,13 @@
         1,
         4
       ],
-      "score": 5233.543636479794,
+      "score": 5236.90607844989,
       "metrics": {
         "shape": "loop",
         "distance_m": 4037.3095376140213,
         "ascent_m": 96.19999999999914,
         "descent_m": 96.19999999999914,
-        "difficulty": 1007.9698277759078,
+        "difficulty": 1010.8657108123531,
         "difficulty_breakdown": {
           "distance": 4.037309537614021,
           "ascent": 1.1543999999999897,
@@ -703,6 +707,8 @@
           "grade": 0.332473760877784,
           "terrain": 1.1698663629272041,
           "road": 0.16217811448869457,
+          "technical": 2.1761471789958278,
+          "navigation": 0.7197358574494941,
           "confidence": 0.8250000000000001,
           "access": 1000.0
         },
@@ -726,7 +732,7 @@
       },
       "satisfied": false,
       "violations": [
-        "difficulty 1007.97 above maximum 90.00",
+        "difficulty 1010.87 above maximum 90.00",
         "restricted-access fraction 41.6% above maximum 0.0%"
       ],
       "rank": 1
@@ -740,13 +746,13 @@
         1,
         2
       ],
-      "score": 3904.287172013428,
+      "score": 3908.740378172952,
       "metrics": {
         "shape": "loop",
         "distance_m": 4712.831226933266,
         "ascent_m": 136.9999999999991,
         "descent_m": 136.9999999999991,
-        "difficulty": 1010.2335636421026,
+        "difficulty": 1014.0688608129842,
         "difficulty_breakdown": {
           "distance": 4.712831226933267,
           "ascent": 1.6439999999999888,
@@ -754,6 +760,8 @@
           "grade": 0.5284402054463663,
           "terrain": 1.7346432516431782,
           "road": 0.12264895807970262,
+          "technical": 3.1757314914698194,
+          "navigation": 0.6595656794117819,
           "confidence": 1.0800000000000003,
           "access": 1000.0
         },
@@ -776,7 +784,7 @@
       },
       "satisfied": false,
       "violations": [
-        "difficulty 1010.23 above maximum 90.00",
+        "difficulty 1014.07 above maximum 90.00",
         "restricted-access fraction 28.3% above maximum 0.0%"
       ],
       "rank": 2
@@ -789,13 +797,13 @@
         1,
         2
       ],
-      "score": 5233.543636479794,
+      "score": 5236.90607844989,
       "metrics": {
         "shape": "loop",
         "distance_m": 4037.309537614021,
         "ascent_m": 96.19999999999914,
         "descent_m": 96.19999999999914,
-        "difficulty": 1007.9698277759078,
+        "difficulty": 1010.8657108123531,
         "difficulty_breakdown": {
           "distance": 4.037309537614021,
           "ascent": 1.1543999999999897,
@@ -803,6 +811,8 @@
           "grade": 0.332473760877784,
           "terrain": 1.1698663629272041,
           "road": 0.16217811448869457,
+          "technical": 2.1761471789958278,
+          "navigation": 0.7197358574494941,
           "confidence": 0.825,
           "access": 1000.0
         },
@@ -826,7 +836,7 @@
       },
       "satisfied": false,
       "violations": [
-        "difficulty 1007.97 above maximum 90.00",
+        "difficulty 1010.87 above maximum 90.00",
         "restricted-access fraction 41.6% above maximum 0.0%"
       ],
       "rank": 2

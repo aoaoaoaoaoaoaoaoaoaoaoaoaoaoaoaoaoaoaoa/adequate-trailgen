@@ -13,6 +13,8 @@ ascent_per_m = 0.012
 descent_per_m = 0.003
 grade_per_abs_fraction = 2.4
 road_penalty = 2.0
+technical_penalty = 1.4
+navigation_penalty = 0.8
 low_confidence_penalty = 1.5
 closed_access_penalty = 1000.0
 

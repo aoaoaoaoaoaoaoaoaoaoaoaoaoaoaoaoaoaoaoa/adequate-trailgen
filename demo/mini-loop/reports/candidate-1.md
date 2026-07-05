@@ -2,12 +2,12 @@
 
 ## candidate-1
 
-- score: 3904.29
+- score: 3908.74
 - pareto rank: 1
 - shape: Loop
 - distance: 4.71 km
 - ascent/descent: 137 m / 137 m
-- scalar difficulty: 1010.23
+- scalar difficulty: 1014.07
 - road/pavement exposure: 1.3%
 - low-confidence fraction: 0.0%
 - restricted-access fraction: 28.3%
@@ -15,15 +15,17 @@
 - constraint verdict: violated
 
 Violations:
-- difficulty 1010.23 above maximum 90.00
+- difficulty 1014.07 above maximum 90.00
 - restricted-access fraction 28.3% above maximum 0.0%
 
 Difficulty decomposition:
-- access: 1000.00 (99.0%)
+- access: 1000.00 (98.6%)
 - distance: 4.71 (0.5%)
+- technical: 3.18 (0.3%)
 - terrain: 1.73 (0.2%)
 - ascent: 1.64 (0.2%)
 - confidence: 1.08 (0.1%)
+- navigation: 0.66 (0.1%)
 - grade: 0.53 (0.1%)
 - descent: 0.41 (0.0%)
 - road: 0.12 (0.0%)
@@ -44,11 +46,11 @@ Terrain mix:
 - Talus: 56.6%
 
 Largest difficulty contributors:
-- edge 3 access: 1000.00 (99.0% of route), Talus, 1334 m
+- edge 3 access: 1000.00 (98.6% of route), Talus, 1334 m
+- edge 1 technical: 1.59 (0.2% of route), Talus, 1334 m
+- edge 3 technical: 1.59 (0.2% of route), Talus, 1334 m
 - edge 3 ascent: 1.36 (0.1% of route), Talus, 1334 m
 - edge 1 distance: 1.33 (0.1% of route), Talus, 1334 m
-- edge 3 distance: 1.33 (0.1% of route), Talus, 1334 m
-- edge 2 distance: 1.02 (0.1% of route), Trail, 1022 m
 
 Most dubious segments:
 - edge 2: 1022 m, Trail, grade max 2.3%, grade bins flat 100% / rolling 0% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:south
