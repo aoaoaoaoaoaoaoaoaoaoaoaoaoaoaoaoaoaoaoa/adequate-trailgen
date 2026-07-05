@@ -32,8 +32,8 @@ pub use model::{
 };
 pub use optimizer::{ExactLoopSolver, LoopHunter, RouteSolver, SearchParams, SolverKind};
 pub use overlay::{
-    AccessOverlay, ContextOverlay, OverlayGeometry, TerrainOverlay, apply_access_overlays,
-    apply_context_overlays, apply_terrain_overlays,
+    AccessOverlay, AccessWindow, ContextOverlay, OverlayGeometry, PlanningDate, TerrainOverlay,
+    apply_access_overlays, apply_context_overlays, apply_terrain_overlays,
 };
 pub use raster::{ArcAsciiGrid, GeoTiffDem, VrtDem};
 pub use route::{Route, RouteMetrics, RouteShape, rank_routes};

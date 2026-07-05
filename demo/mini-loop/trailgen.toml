@@ -1,6 +1,7 @@
 name = "Mini Loop"
 snap_tolerance_m = 8.0
 solver = "auto"
+planning_date = "2026-05-15"
 
 [area]
 west = -105.02

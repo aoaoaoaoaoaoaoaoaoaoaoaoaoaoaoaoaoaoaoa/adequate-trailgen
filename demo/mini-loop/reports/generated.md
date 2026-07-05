@@ -279,7 +279,7 @@ Coverage:
 - SeedRoute (Optional): Satisfied; candidates: demo/mini-loop/seeds/imports/known-good-kmz-loop.kmz, demo/mini-loop/seeds/imports/known-good-loop.gpx; SeedRoute source requirement has implemented candidate(s).
 
 Candidates:
-- crates/trailgen-core/tests/fixtures/closure_overlay.geojson: Closure via geojson-closure-overlay; 538 bytes, sha256 d6cd44ab43fbbee3fc58581bd8a8b9a97c413eb283d17dfc37ff3c1984397d2d
+- crates/trailgen-core/tests/fixtures/closure_overlay.geojson: Closure via geojson-closure-overlay; 610 bytes, sha256 75032f041c59c46efb0f01802a4cc234b6756a5e7eed2dd79ba1e69fa355aa02
 - crates/trailgen-core/tests/fixtures/context_overlay.geojson: Road via geojson-road-context; 694 bytes, sha256 5aace6064e9fb87161fc95d71183e5d639f8eee46b86c3b3c084eba09f0171bd
 - crates/trailgen-core/tests/fixtures/context_overlay.geojson: Hydrology via geojson-hydrology-context; 694 bytes, sha256 5aace6064e9fb87161fc95d71183e5d639f8eee46b86c3b3c084eba09f0171bd
 - crates/trailgen-core/tests/fixtures/mini_dem.asc: Elevation via arc-ascii-elevation; 169 bytes, sha256 8200f8e889b76ecff72d845148d2476a5b4f75edbf782e6082a5e300a54e0859

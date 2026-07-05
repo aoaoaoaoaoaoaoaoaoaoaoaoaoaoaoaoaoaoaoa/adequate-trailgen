@@ -16,6 +16,8 @@ The AOI is not a routing constraint. It is a discovery/reproducibility contract:
 
 `snap_tolerance_m` controls cautious graph-construction snapping. Exact segment intersections are always split. In addition, a dangling source-geometry endpoint may be projected onto another source segment when the projected point lies inside that segment and within `snap_tolerance_m`; snapped edges receive `graph-builder` / `near-miss-snap` provenance and capped confidence so reports expose the uncertainty instead of pretending the junction was source-authored.
 
+`planning_date = "YYYY-MM-DD"` is the civil date used when applying dated access or closure overlays. `trailgen generate --date YYYY-MM-DD` records a one-run override in the effective config; `trailgen apply-access --date YYYY-MM-DD` filters overlays while mutating the cached graph. Dated overlays without a planning date are treated as active, a conservative default that avoids silently routing through unknown closures.
+
 `solver` selects the generation backend:
 
 - `auto`: use the bounded exact enumerator on small graphs and the sparse-graph heuristic elsewhere
@@ -43,7 +45,7 @@ Terrain mix constraints are part of `[constraints]`:
 
 Recognized terrain names are `unknown`, `trail`, `forest`, `alpine`, `talus`, `scramble`, `pavement`, `road`, and `water`. Repeated CLI terrain flags are allowed: `--forbid-terrain pavement --forbid-terrain road --min-terrain trail:0.60 --max-terrain talus=0.10`.
 
-Access restrictions use `[constraints].max_restricted_access_fraction`, defaulting to `0.0`. The measured restricted fraction is distance over `restricted`, `closed`, or `private` edges divided by route distance; `unknown` access is handled by confidence/provenance rather than treated as a legal ban. Set `--max-restricted-access-fraction 0.05` only when restricted access is explicitly acceptable.
+Access restrictions use `[constraints].max_restricted_access_fraction`, defaulting to `0.0`. The measured restricted fraction is distance over `restricted`, `closed`, or `private` edges divided by route distance; `unknown` access is handled by confidence/provenance rather than treated as a legal ban. Access overlays may carry `active_from`/`active_to` dates, `start_date`/`end_date`, or equivalent DBF fields; only overlays active on the planning date are applied. Set `--max-restricted-access-fraction 0.05` only when restricted access is explicitly acceptable.
 
 Shape constraints are also stored in `[constraints]`:
 

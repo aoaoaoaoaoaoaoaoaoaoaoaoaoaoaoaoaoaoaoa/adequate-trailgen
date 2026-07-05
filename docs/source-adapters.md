@@ -32,4 +32,4 @@ Adapter invariants:
 - add fixture-backed tests that run without network access
 - update `docs/data-sources.md` and the demo if the adapter changes user workflow
 
-A good adapter test proves both parsing and downstream effect: for example, a closure overlay should set `Access::Closed`, record access provenance, lower confidence if appropriate, and change route constraint verdicts.
+A good adapter test proves both parsing and downstream effect: for example, a closure overlay should parse active dates, set `Access::Closed` only on the planning date it covers, record access provenance, lower confidence if appropriate, and change route constraint verdicts.

@@ -15,9 +15,9 @@ use trailgen_core::source::{
 use trailgen_core::{
     Access, ArcAsciiGrid, Coord, CrossingKind, DifficultyBreakdown, DifficultyWeights, EdgeId,
     EdgeTravel, EnrichmentConfig, GeoTiffDem, GraphBuilder, LineString, LoopConstraints,
-    Provenance, Route, RouteMetrics, RouteShape, SearchParams, SeedRoute, SegmentDraft, SolverKind,
-    Terrain, TrailGraph, VertexId, VrtDem, apply_access_overlays, apply_context_overlays,
-    apply_terrain_overlays, enrich_graph, rank_routes, slug,
+    PlanningDate, Provenance, Route, RouteMetrics, RouteShape, SearchParams, SeedRoute,
+    SegmentDraft, SolverKind, Terrain, TrailGraph, VertexId, VrtDem, apply_access_overlays,
+    apply_context_overlays, apply_terrain_overlays, enrich_graph, rank_routes, slug,
 };
 
 #[derive(Parser)]
@@ -82,6 +82,8 @@ enum Cmd {
         seed: u64,
         #[arg(long, value_parser = parse_solver_kind)]
         solver: Option<SolverKind>,
+        #[arg(long, value_parser = parse_planning_date)]
+        date: Option<PlanningDate>,
         #[arg(long)]
         min_difficulty: Option<f64>,
         #[arg(long)]
@@ -162,6 +164,8 @@ enum Cmd {
         project: PathBuf,
         #[arg(long)]
         source: PathBuf,
+        #[arg(long, value_parser = parse_planning_date)]
+        date: Option<PlanningDate>,
     },
     ApplyTerrain {
         project: PathBuf,
@@ -200,6 +204,8 @@ struct ProjectConfig {
     search: SearchParams,
     #[serde(default)]
     solver: SolverKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    planning_date: Option<PlanningDate>,
 }
 
 impl ProjectConfig {
@@ -213,6 +219,7 @@ impl ProjectConfig {
             constraints: LoopConstraints::default(),
             search: SearchParams::default(),
             solver: SolverKind::default(),
+            planning_date: None,
         }
     }
 }
@@ -287,6 +294,7 @@ fn main() -> Result<()> {
             count,
             seed,
             solver,
+            date,
             min_difficulty,
             max_difficulty,
             min_ascent_m,
@@ -310,6 +318,7 @@ fn main() -> Result<()> {
                 count,
                 seed,
                 solver,
+                date,
                 min_difficulty,
                 max_difficulty,
                 min_ascent_m,
@@ -352,7 +361,11 @@ fn main() -> Result<()> {
             route,
             name,
         } => import_seed(&project, &route, name),
-        Cmd::ApplyAccess { project, source } => apply_access(&project, &source),
+        Cmd::ApplyAccess {
+            project,
+            source,
+            date,
+        } => apply_access(&project, &source, date),
         Cmd::ApplyTerrain { project, source } => apply_terrain(&project, &source),
         Cmd::ApplyElevation {
             project,
@@ -703,6 +716,7 @@ struct GenerateOptions {
     count: usize,
     seed: u64,
     solver: Option<SolverKind>,
+    date: Option<PlanningDate>,
     min_difficulty: Option<f64>,
     max_difficulty: Option<f64>,
     min_ascent_m: Option<f64>,
@@ -790,6 +804,9 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
     let graph = load_graph(project)?;
     if let Some(solver) = options.solver {
         config.solver = solver;
+    }
+    if let Some(date) = options.date {
+        config.planning_date = Some(date);
     }
     apply_generate_options(&mut config.constraints, options);
     let start_coord = parse_coord(&options.start)?;
@@ -1578,11 +1595,19 @@ fn archive_seed_route(project: &Path, route: &Path, name: &str) -> Result<PathBu
     Ok(archived_route)
 }
 
-fn apply_access(project: &Path, source: &Path) -> Result<()> {
-    let config = load_config(project)?;
+fn apply_access(project: &Path, source: &Path, date: Option<PlanningDate>) -> Result<()> {
+    let mut config = load_config(project)?;
+    if let Some(date) = date {
+        config.planning_date = Some(date);
+    }
     let mut graph = load_graph(project)?;
     let overlays = access_overlays(source)?;
-    let touched = apply_access_overlays(&mut graph, &overlays, config.difficulty);
+    let touched = apply_access_overlays(
+        &mut graph,
+        &overlays,
+        config.planning_date,
+        config.difficulty,
+    );
     write_json(project.join("cache/graph.json"), &graph)?;
     write_json(
         project.join("cache/graph.geojson"),
@@ -2528,6 +2553,10 @@ fn parse_solver_kind(raw: &str) -> Result<SolverKind, String> {
     }
 }
 
+fn parse_planning_date(raw: &str) -> Result<PlanningDate, String> {
+    raw.parse()
+}
+
 fn parse_terrain(raw: &str) -> Result<Terrain, String> {
     let terrain = Terrain::from_tag(raw);
     if terrain == Terrain::Unknown && !raw.trim().eq_ignore_ascii_case("unknown") {
@@ -2589,6 +2618,7 @@ mod tests {
                 count: 2,
                 seed: 0,
                 solver: None,
+                date: None,
                 min_difficulty: None,
                 max_difficulty: None,
                 min_ascent_m: None,
@@ -2703,6 +2733,7 @@ mod tests {
                 count: 2,
                 seed: 77,
                 solver: Some(SolverKind::Exact),
+                date: Some("2026-05-15".parse().unwrap()),
                 min_difficulty: None,
                 max_difficulty: None,
                 min_ascent_m: None,
@@ -2732,6 +2763,7 @@ mod tests {
         assert_eq!(manifest["solver"], "exact-enumerator");
         assert_eq!(manifest["requested_solver"], "exact");
         assert_eq!(manifest["random_seed"], 77);
+        assert_eq!(manifest["effective_config"]["planning_date"], "2026-05-15");
         assert_effective_constraints_manifest(&manifest);
         assert!(manifest["source_manifest"]["adapters"].as_array().is_some());
         assert_eq!(
@@ -2818,6 +2850,7 @@ mod tests {
                 count: 2,
                 seed: 0,
                 solver: None,
+                date: None,
                 min_difficulty: None,
                 max_difficulty: None,
                 min_ascent_m: None,
@@ -2952,6 +2985,7 @@ mod tests {
                 count: 1,
                 seed: 0,
                 solver: None,
+                date: None,
                 min_difficulty: None,
                 max_difficulty: Some(10_000.0),
                 min_ascent_m: None,
@@ -3222,7 +3256,7 @@ mod tests {
 
         init(&project, "Shapefile Apply Test".to_owned(), None)?;
         build(&project, &fixture)?;
-        apply_access(&project, &closure)?;
+        apply_access(&project, &closure, None)?;
         apply_terrain(&project, &terrain)?;
         apply_context(&project, &roads)?;
 
@@ -3382,6 +3416,7 @@ mod tests {
                 count: 2,
                 seed: 0,
                 solver: None,
+                date: None,
                 min_difficulty: None,
                 max_difficulty: None,
                 min_ascent_m: None,
@@ -3412,6 +3447,7 @@ mod tests {
                 count: 2,
                 seed: 0,
                 solver: None,
+                date: None,
                 min_difficulty: None,
                 max_difficulty: None,
                 min_ascent_m: None,

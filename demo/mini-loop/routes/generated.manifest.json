@@ -69,7 +69,8 @@
       "max_frontier": 200000,
       "keep": 12
     },
-    "solver": "auto"
+    "solver": "auto",
+    "planning_date": "2026-05-15"
   },
   "source_manifest": {
     "adapters": [
@@ -838,8 +839,8 @@
         "kind": "closure",
         "adapter_id": "geojson-closure-overlay",
         "fingerprint": {
-          "bytes": 538,
-          "sha256": "d6cd44ab43fbbee3fc58581bd8a8b9a97c413eb283d17dfc37ff3c1984397d2d"
+          "bytes": 610,
+          "sha256": "75032f041c59c46efb0f01802a4cc234b6756a5e7eed2dd79ba1e69fa355aa02"
         }
       },
       {

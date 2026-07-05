@@ -5,7 +5,7 @@ The app is useful today as a local-first route generator over normalized project
 - Discovery recommends source classes and caches explicit URLs or files; it does not yet crawl every regional GIS portal automatically.
 - Projected GeoTIFFs and rotated/sheared raster DEMs are planned seams, not implemented adapters. Current elevation sampling supports Arc/Info ASCII Grid, north-up geographic single-band GeoTIFF DEMs, and simple GDAL VRT wrappers around those GeoTIFF DEMs. Shapefile vector support exists for trail-network polylines, terrain overlays, access/closure overlays, and road/hydrology context linework.
 - Input geometries are assumed to be geographic lon/lat decimal degrees. There is no CRS detection or reprojection layer yet.
-- Turn restrictions and time/seasonal direction rules are not represented. Edges are bidirectional by default, with one-way travel preserved only when GeoJSON or shapefile source attributes prove it.
+- Dated access/closure overlays are represented with `active_from`/`active_to` windows and a project planning date. Turn restrictions, hourly rules, recurring seasonal direction rules, and timed reservation systems are not represented. Edges are bidirectional by default, with one-way travel preserved only when GeoJSON or shapefile source attributes prove it.
 - The exact backend is a bounded edge-simple enumerator for small graphs, not a MILP/CP-SAT formulation and not a stochastic annealer. Large graphs still rely on the deterministic `LoopHunter` heuristic.
 - The map UI is a static offline SVG/HTML diagnostic, not an interactive tile-backed planner or editor.
 - AllTrails write-back uses only manual-compatible exports. The core deliberately avoids brittle private APIs.

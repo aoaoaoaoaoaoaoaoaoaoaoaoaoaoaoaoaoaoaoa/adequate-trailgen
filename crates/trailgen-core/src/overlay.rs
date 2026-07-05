@@ -4,12 +4,127 @@ use crate::model::{
     Access, CrossingEvidence, CrossingKind, Edge, Provenance, Terrain, TerrainEvidence, TrailGraph,
 };
 use crate::{Result, TrailgenError};
+use serde::de::Visitor;
 use serde::{Deserialize, Serialize};
+use std::fmt::{Display, Formatter};
+use std::str::FromStr;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct PlanningDate {
+    pub year: u16,
+    pub month: u8,
+    pub day: u8,
+}
+
+impl PlanningDate {
+    #[must_use]
+    pub const fn new(year: u16, month: u8, day: u8) -> Option<Self> {
+        if year >= 1 && month >= 1 && month <= 12 && day >= 1 && day <= days_in_month(year, month) {
+            Some(Self { year, month, day })
+        } else {
+            None
+        }
+    }
+}
+
+impl Display for PlanningDate {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:04}-{:02}-{:02}", self.year, self.month, self.day)
+    }
+}
+
+impl FromStr for PlanningDate {
+    type Err = String;
+
+    fn from_str(raw: &str) -> std::result::Result<Self, Self::Err> {
+        let mut parts = raw.trim().split('-');
+        let year = parts
+            .next()
+            .ok_or_else(|| "date must be YYYY-MM-DD".to_owned())?
+            .parse::<u16>()
+            .map_err(|error| error.to_string())?;
+        let month = parts
+            .next()
+            .ok_or_else(|| "date must be YYYY-MM-DD".to_owned())?
+            .parse::<u8>()
+            .map_err(|error| error.to_string())?;
+        let day = parts
+            .next()
+            .ok_or_else(|| "date must be YYYY-MM-DD".to_owned())?
+            .parse::<u8>()
+            .map_err(|error| error.to_string())?;
+        if parts.next().is_some() {
+            return Err("date must be YYYY-MM-DD".to_owned());
+        }
+        Self::new(year, month, day).ok_or_else(|| "invalid civil date".to_owned())
+    }
+}
+
+impl Serialize for PlanningDate {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for PlanningDate {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct DateVisitor;
+
+        impl Visitor<'_> for DateVisitor {
+            type Value = PlanningDate;
+
+            fn expecting(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a YYYY-MM-DD civil date")
+            }
+
+            fn visit_str<E>(self, v: &str) -> std::result::Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                v.parse::<PlanningDate>().map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_str(DateVisitor)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct AccessWindow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<PlanningDate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<PlanningDate>,
+}
+
+impl AccessWindow {
+    #[must_use]
+    pub const fn is_always(&self) -> bool {
+        self.from.is_none() && self.to.is_none()
+    }
+
+    #[must_use]
+    pub fn contains(self, date: Option<PlanningDate>) -> bool {
+        let Some(date) = date else {
+            return true;
+        };
+        self.from.is_none_or(|from| from <= date) && self.to.is_none_or(|to| date <= to)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AccessOverlay {
     pub name: String,
     pub access: Access,
+    #[serde(default, skip_serializing_if = "AccessWindow::is_always")]
+    pub active: AccessWindow,
     pub confidence: f64,
     pub tolerance_m: f64,
     pub provenance: Provenance,
@@ -62,6 +177,11 @@ impl AccessOverlay {
     pub fn affects(&self, edge: &Edge) -> bool {
         self.geometry.affects(edge, self.tolerance_m)
     }
+
+    #[must_use]
+    pub fn active_on(&self, date: Option<PlanningDate>) -> bool {
+        self.active.contains(date)
+    }
 }
 
 impl TerrainOverlay {
@@ -74,12 +194,13 @@ impl TerrainOverlay {
 pub fn apply_access_overlays(
     graph: &mut TrailGraph,
     overlays: &[AccessOverlay],
+    planning_date: Option<PlanningDate>,
     weights: DifficultyWeights,
 ) -> usize {
     let mut touched = 0usize;
     for edge in &mut graph.edges {
         for overlay in overlays {
-            if !overlay.affects(edge) {
+            if !overlay.active_on(planning_date) || !overlay.affects(edge) {
                 continue;
             }
             touched += 1;
@@ -122,6 +243,20 @@ pub fn apply_terrain_overlays(
         }
     }
     touched
+}
+
+const fn days_in_month(year: u16, month: u8) -> u8 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+const fn is_leap_year(year: u16) -> bool {
+    year.is_multiple_of(4) && !year.is_multiple_of(100) || year.is_multiple_of(400)
 }
 
 pub fn apply_context_overlays(

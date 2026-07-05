@@ -9,7 +9,8 @@ use trailgen_core::source::{
 };
 use trailgen_core::{
     Access, ArcAsciiGrid, CrossingKind, EdgeId, EdgeTravel, ElevationSampler, ExactLoopSolver,
-    GeoTiffDem, Route, RouteMetrics, RouteShape, SearchParams, SolverKind, VertexId, VrtDem,
+    GeoTiffDem, PlanningDate, Route, RouteMetrics, RouteShape, SearchParams, SolverKind, VertexId,
+    VrtDem,
 };
 use trailgen_core::{
     Coord, DifficultyWeights, EnrichmentConfig, GraphBuilder, LineString, LoopConstraints,
@@ -390,7 +391,7 @@ fn closure_overlay_closes_edges_and_records_provenance() {
     let overlays =
         geojson::access_overlays_from_str(include_str!("fixtures/closure_overlay.geojson"))
             .unwrap();
-    let touched = apply_access_overlays(&mut graph, &overlays, DifficultyWeights::default());
+    let touched = apply_access_overlays(&mut graph, &overlays, None, DifficultyWeights::default());
     assert!(touched > 0);
     let closed = graph
         .edges
@@ -408,13 +409,74 @@ fn closure_overlay_closes_edges_and_records_provenance() {
 }
 
 #[test]
+fn dated_access_overlay_only_bites_inside_active_window() {
+    let drafts = geojson::network_from_str(include_str!("fixtures/mini_network.geojson")).unwrap();
+    let overlays = geojson::access_overlays_from_str(
+        r#"{
+          "type": "FeatureCollection",
+          "features": [{
+            "type": "Feature",
+            "properties": {
+              "id": "nesting-closure",
+              "source": "fixture-closure",
+              "access": "closed",
+              "active_from": "2026-03-01",
+              "active_to": "2026-06-30"
+            },
+            "geometry": {
+              "type": "Polygon",
+              "coordinates": [[
+                [-105.0000, 40.0020],
+                [-104.9900, 40.0020],
+                [-104.9900, 40.0100],
+                [-105.0000, 40.0100],
+                [-105.0000, 40.0020]
+              ]]
+            }
+          }]
+        }"#,
+    )
+    .unwrap();
+
+    let mut spring = GraphBuilder::default().build(&drafts).unwrap();
+    let mut summer = GraphBuilder::default().build(&drafts).unwrap();
+    let spring_hits = apply_access_overlays(
+        &mut spring,
+        &overlays,
+        Some(PlanningDate::new(2026, 5, 1).unwrap()),
+        DifficultyWeights::default(),
+    );
+    let summer_hits = apply_access_overlays(
+        &mut summer,
+        &overlays,
+        Some(PlanningDate::new(2026, 7, 1).unwrap()),
+        DifficultyWeights::default(),
+    );
+
+    assert!(spring_hits > 0);
+    assert_eq!(summer_hits, 0);
+    assert!(
+        spring
+            .edges
+            .iter()
+            .any(|edge| edge.attr.access == Access::Closed)
+    );
+    assert!(
+        !summer
+            .edges
+            .iter()
+            .any(|edge| edge.attr.access == Access::Closed)
+    );
+}
+
+#[test]
 fn access_restrictions_are_hard_route_constraints() {
     let drafts = geojson::network_from_str(include_str!("fixtures/mini_network.geojson")).unwrap();
     let mut graph = GraphBuilder::default().build(&drafts).unwrap();
     let overlays =
         geojson::access_overlays_from_str(include_str!("fixtures/closure_overlay.geojson"))
             .unwrap();
-    apply_access_overlays(&mut graph, &overlays, DifficultyWeights::default());
+    apply_access_overlays(&mut graph, &overlays, None, DifficultyWeights::default());
     let edge = graph
         .edges
         .iter()

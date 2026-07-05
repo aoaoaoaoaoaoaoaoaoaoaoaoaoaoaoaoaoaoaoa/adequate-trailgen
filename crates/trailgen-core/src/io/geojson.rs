@@ -1,7 +1,10 @@
 use crate::builder::SegmentDraft;
 use crate::geo::{Coord, LineString};
 use crate::model::{Access, CrossingKind, EdgeTravel, Provenance, Terrain, TrailGraph};
-use crate::overlay::{AccessOverlay, ContextOverlay, OverlayGeometry, TerrainOverlay, polygon};
+use crate::overlay::{
+    AccessOverlay, AccessWindow, ContextOverlay, OverlayGeometry, PlanningDate, TerrainOverlay,
+    polygon,
+};
 use crate::route::Route;
 use crate::{Result, TrailgenError};
 use serde_json::{Map, Value, json};
@@ -270,6 +273,7 @@ fn overlay_from_feature(feature: &Value, i: usize) -> Result<AccessOverlay> {
     Ok(AccessOverlay {
         name,
         access,
+        active: access_window_from_properties(&properties)?,
         confidence: prop_f64(&properties, "confidence")
             .unwrap_or(0.9)
             .clamp(0.0, 1.0),
@@ -280,6 +284,16 @@ fn overlay_from_feature(feature: &Value, i: usize) -> Result<AccessOverlay> {
         geometry: overlay_geometry(feature.get("geometry").ok_or_else(|| {
             TrailgenError::InvalidData("GeoJSON overlay feature has no geometry".to_owned())
         })?)?,
+    })
+}
+
+fn access_window_from_properties(properties: &Map<String, Value>) -> Result<AccessWindow> {
+    Ok(AccessWindow {
+        from: prop_date(
+            properties,
+            &["active_from", "start_date", "starts_on", "from"],
+        )?,
+        to: prop_date(properties, &["active_to", "end_date", "ends_on", "to"])?,
     })
 }
 
@@ -468,6 +482,14 @@ fn prop_f64(props: &Map<String, Value>, key: &str) -> Option<f64> {
 
 fn prop_bool(props: &Map<String, Value>, key: &str) -> Option<bool> {
     props.get(key).and_then(Value::as_bool)
+}
+
+fn prop_date(props: &Map<String, Value>, keys: &[&str]) -> Result<Option<PlanningDate>> {
+    keys.iter()
+        .find_map(|key| prop_str(props, key))
+        .map(str::parse::<PlanningDate>)
+        .transpose()
+        .map_err(TrailgenError::InvalidData)
 }
 
 fn travel_from_properties(props: &Map<String, Value>) -> EdgeTravel {

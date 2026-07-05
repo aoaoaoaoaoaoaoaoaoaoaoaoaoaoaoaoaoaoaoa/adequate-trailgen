@@ -8,6 +8,8 @@
         "source": "fixture-closure",
         "layer": "seasonal-closures",
         "access": "closed",
+        "active_from": "2026-03-01",
+        "active_to": "2026-06-30",
         "confidence": 0.93
       },
       "geometry": {

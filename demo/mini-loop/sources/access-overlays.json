@@ -2,6 +2,10 @@
   {
     "name": "diagonal-closure",
     "access": "closed",
+    "active": {
+      "from": "2026-03-01",
+      "to": "2026-06-30"
+    },
     "confidence": 0.93,
     "tolerance_m": 20.0,
     "provenance": {

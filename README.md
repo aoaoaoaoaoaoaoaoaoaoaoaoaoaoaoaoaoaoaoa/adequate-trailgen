@@ -15,7 +15,7 @@ cargo run -p trailgen -- build demo/mini-loop --source crates/trailgen-core/test
 cargo run -p trailgen -- apply-elevation demo/mini-loop --source crates/trailgen-core/tests/fixtures/mini_dem.asc --confidence 0.81
 cargo run -p trailgen -- apply-terrain demo/mini-loop --source crates/trailgen-core/tests/fixtures/terrain_overlay.geojson
 cargo run -p trailgen -- apply-context demo/mini-loop --source crates/trailgen-core/tests/fixtures/context_overlay.geojson
-cargo run -p trailgen -- apply-access demo/mini-loop --source crates/trailgen-core/tests/fixtures/closure_overlay.geojson
+cargo run -p trailgen -- apply-access demo/mini-loop --source crates/trailgen-core/tests/fixtures/closure_overlay.geojson --date 2026-05-15
 cargo run -p trailgen -- import-seed demo/mini-loop --route demo/mini-loop/routes/candidate-1.gpx --name "Known Good Loop"
 cargo run -p trailgen -- verify-sources demo/mini-loop
 cargo run -p trailgen -- stats demo/mini-loop
@@ -25,7 +25,7 @@ cargo run -p trailgen -- report demo/mini-loop --route candidate-1 --output /tmp
 cargo run -p trailgen -- map demo/mini-loop --output /tmp/mini-loop-map.html
 ```
 
-For an exact small-graph search, add `--solver exact`; `--solver auto` uses the exact enumerator on small graphs and the sparse heuristic elsewhere. For an out-and-back search, run `generate` with `--shape out-and-back --max-repeated-edge-fraction 1`. For a tighter climbing window, add flags such as `--min-ascent-m 500 --max-ascent-m 1800 --max-descent-m 1800`. For terrain steering, use repeated flags such as `--forbid-terrain pavement --min-terrain trail:0.60 --max-terrain talus=0.10`. `--max-road-fraction` covers explicit road exposure plus terrain tagged `road` or `pavement`. Access restrictions are hard by default: `restricted`, `closed`, and `private` edges violate the route unless `--max-restricted-access-fraction` allows them.
+For an exact small-graph search, add `--solver exact`; `--solver auto` uses the exact enumerator on small graphs and the sparse heuristic elsewhere. Use `--date YYYY-MM-DD` to record the planning date used with dated access/closure overlays. For an out-and-back search, run `generate` with `--shape out-and-back --max-repeated-edge-fraction 1`. For a tighter climbing window, add flags such as `--min-ascent-m 500 --max-ascent-m 1800 --max-descent-m 1800`. For terrain steering, use repeated flags such as `--forbid-terrain pavement --min-terrain trail:0.60 --max-terrain talus=0.10`. `--max-road-fraction` covers explicit road exposure plus terrain tagged `road` or `pavement`. Access restrictions are hard by default: `restricted`, `closed`, and `private` edges violate the route unless `--max-restricted-access-fraction` allows them.
 
 Generated artifacts land in the project directory:
 

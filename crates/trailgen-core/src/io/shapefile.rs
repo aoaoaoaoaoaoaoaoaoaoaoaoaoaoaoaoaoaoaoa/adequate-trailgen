@@ -1,7 +1,9 @@
 use crate::builder::SegmentDraft;
 use crate::geo::{Coord, LineString};
 use crate::model::{Access, CrossingKind, EdgeTravel, Provenance, Terrain};
-use crate::overlay::{AccessOverlay, ContextOverlay, OverlayGeometry, TerrainOverlay};
+use crate::overlay::{
+    AccessOverlay, AccessWindow, ContextOverlay, OverlayGeometry, PlanningDate, TerrainOverlay,
+};
 use crate::{Result, TrailgenError};
 use ::shapefile::dbase::{FieldValue, Record};
 use ::shapefile::{Point, PointM, PointZ, PolygonRing, Shape};
@@ -82,6 +84,7 @@ pub fn access_overlays_from_path(path: &Path) -> Result<Vec<AccessOverlay>> {
             overlays.push(AccessOverlay {
                 name: name.clone(),
                 access,
+                active: access_window_from_props(&props)?,
                 confidence: props.f64("confidence").unwrap_or(0.86).clamp(0.0, 1.0),
                 tolerance_m: props.f64("tolerance_m").unwrap_or(20.0).max(0.0),
                 provenance: provenance.clone(),
@@ -90,6 +93,13 @@ pub fn access_overlays_from_path(path: &Path) -> Result<Vec<AccessOverlay>> {
         }
     }
     Ok(overlays)
+}
+
+fn access_window_from_props(props: &ShpProps<'_>) -> Result<AccessWindow> {
+    Ok(AccessWindow {
+        from: props.date(&["active_from", "start_date", "starts_on", "from"])?,
+        to: props.date(&["active_to", "end_date", "ends_on", "to"])?,
+    })
 }
 
 pub fn terrain_overlays_from_path(path: &Path) -> Result<Vec<TerrainOverlay>> {
@@ -341,6 +351,14 @@ impl<'a> ShpProps<'a> {
             FieldValue::Character(Some(value)) => value.trim().parse().ok(),
             _ => None,
         }
+    }
+
+    fn date(&self, keys: &[&str]) -> Result<Option<PlanningDate>> {
+        keys.iter()
+            .find_map(|key| self.str(key))
+            .map(str::parse::<PlanningDate>)
+            .transpose()
+            .map_err(TrailgenError::InvalidData)
     }
 
     fn bool(&self, key: &str) -> Option<bool> {
