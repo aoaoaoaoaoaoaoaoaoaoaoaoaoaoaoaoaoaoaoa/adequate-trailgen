@@ -317,10 +317,10 @@ fn elevation_adapters() -> Vec<SourceAdapter> {
         adapter(
             "vrt-elevation",
             SourceKind::Elevation,
-            AdapterStatus::Planned,
+            AdapterStatus::Implemented,
             ["vrt"],
             ["sampled elevation profile", "edge ascent/descent"],
-            "GDAL VRT elevation raster seam.",
+            "GDAL VRT SimpleSource wrapper around a north-up geographic GeoTIFF DEM.",
         ),
     ]
 }

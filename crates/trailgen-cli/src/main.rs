@@ -16,7 +16,7 @@ use trailgen_core::{
     Access, ArcAsciiGrid, Coord, CrossingKind, DifficultyBreakdown, DifficultyWeights, EdgeId,
     EdgeTravel, EnrichmentConfig, GeoTiffDem, GraphBuilder, LineString, LoopConstraints,
     LoopHunter, Provenance, Route, RouteMetrics, RouteShape, SearchParams, SeedRoute, SegmentDraft,
-    Terrain, TrailGraph, VertexId, apply_access_overlays, apply_context_overlays,
+    Terrain, TrailGraph, VertexId, VrtDem, apply_access_overlays, apply_context_overlays,
     apply_terrain_overlays, enrich_graph, rank_routes, slug,
 };
 
@@ -1494,6 +1494,7 @@ impl AppliedElevation {
             ElevationMetadata::GeoTiff(raster) => {
                 write_json(project.join(self.metadata_path), raster)
             }
+            ElevationMetadata::Vrt(raster) => write_json(project.join(self.metadata_path), raster),
         }
     }
 }
@@ -1501,6 +1502,7 @@ impl AppliedElevation {
 enum ElevationMetadata {
     ArcAscii(ArcAsciiGrid),
     GeoTiff(GeoTiffDem),
+    Vrt(VrtDem),
 }
 
 fn apply_elevation_source(
@@ -1512,10 +1514,10 @@ fn apply_elevation_source(
     match source_ext(source).as_deref() {
         Some("asc") => apply_arc_ascii_elevation(graph, source, confidence, config),
         Some("tif" | "tiff") => apply_geotiff_elevation(graph, source, confidence, config),
-        Some("vrt") => bail!(
-            "VRT elevation rasters are still a planned adapter; use GeoTIFF or Arc/Info ASCII Grid"
-        ),
-        Some(ext) => bail!("unsupported elevation extension {ext:?}; expected asc, tif, or tiff"),
+        Some("vrt") => apply_vrt_elevation(graph, source, confidence, config),
+        Some(ext) => {
+            bail!("unsupported elevation extension {ext:?}; expected asc, tif, tiff, or vrt")
+        }
         None => bail!("elevation source has no file extension"),
     }
 }
@@ -1586,6 +1588,42 @@ fn apply_geotiff_elevation(
         metadata: ElevationMetadata::GeoTiff(raster),
         message: format!(
             "applied GeoTIFF elevation grid {}x{} from {}",
+            width,
+            height,
+            source.display()
+        ),
+    })
+}
+
+fn apply_vrt_elevation(
+    graph: &mut TrailGraph,
+    source: &Path,
+    confidence: f64,
+    config: &ProjectConfig,
+) -> Result<AppliedElevation> {
+    let raster = VrtDem::from_path(
+        source,
+        Provenance {
+            source: "vrt-dem".to_owned(),
+            layer: Some("vrt".to_owned()),
+            source_id: source
+                .file_name()
+                .and_then(|x| x.to_str())
+                .map(str::to_owned),
+            license: None,
+        },
+        confidence,
+    )
+    .with_context(|| "parse VRT elevation raster")?;
+    enrich_graph(graph, &raster, config.enrichment, config.difficulty)
+        .with_context(|| "apply VRT elevation raster")?;
+    let (width, height) = (raster.width, raster.height);
+    Ok(AppliedElevation {
+        adapter_id: "vrt-elevation",
+        metadata_path: "sources/elevation-vrt.json",
+        metadata: ElevationMetadata::Vrt(raster),
+        message: format!(
+            "applied VRT elevation grid {}x{} from {}",
             width,
             height,
             source.display()
@@ -1998,9 +2036,14 @@ fn source_fingerprint(path: &Path) -> Result<SourceFingerprint> {
 }
 
 fn fingerprint_members(path: &Path) -> Result<Vec<PathBuf>> {
-    if source_ext(path).as_deref() != Some("shp") {
-        return Ok(vec![path.to_path_buf()]);
+    match source_ext(path).as_deref() {
+        Some("shp") => shapefile_fingerprint_members(path),
+        Some("vrt") => vrt_fingerprint_members(path),
+        _ => Ok(vec![path.to_path_buf()]),
     }
+}
+
+fn shapefile_fingerprint_members(path: &Path) -> Result<Vec<PathBuf>> {
     let dbf = path.with_extension("dbf");
     if !dbf.exists() {
         bail!(
@@ -2014,6 +2057,13 @@ fn fingerprint_members(path: &Path) -> Result<Vec<PathBuf>> {
     if shx.exists() {
         members.push(shx);
     }
+    members.sort();
+    Ok(members)
+}
+
+fn vrt_fingerprint_members(path: &Path) -> Result<Vec<PathBuf>> {
+    let mut members = vec![path.to_path_buf()];
+    members.extend(VrtDem::referenced_sources(path)?);
     members.sort();
     Ok(members)
 }
@@ -2896,6 +2946,60 @@ mod tests {
     }
 
     #[test]
+    fn vrt_elevation_application_hashes_referenced_source() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path().join("project");
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../trailgen-core/tests/fixtures/mini_network.geojson");
+        let dem = tmp.path().join("dem.tif");
+        let vrt = tmp.path().join("dem.vrt");
+        write_cli_geotiff_dem(&dem);
+        write_cli_vrt_dem(&vrt, "dem.tif");
+
+        init(&project, "VRT Elevation Test".to_owned(), None)?;
+        build(&project, &fixture)?;
+        apply_elevation(&project, &vrt, 0.82)?;
+
+        let metadata: Value = serde_json::from_str(&fs::read_to_string(
+            project.join("sources/elevation-vrt.json"),
+        )?)?;
+        assert_eq!(metadata["width"], 3);
+        assert_eq!(metadata["height"], 3);
+        assert_eq!(metadata["confidence"], 0.82);
+        assert!(
+            metadata["source_filename"]
+                .as_str()
+                .is_some_and(|source| source.ends_with("dem.tif"))
+        );
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(project.join("sources/manifest.json"))?)?;
+        let candidate = manifest["candidates"]
+            .as_array()
+            .expect("candidates")
+            .iter()
+            .find(|candidate| candidate["adapter_id"] == "vrt-elevation")
+            .expect("VRT elevation candidate");
+        assert_eq!(candidate["kind"], "elevation");
+        assert!(
+            candidate["fingerprint"]["bytes"]
+                .as_u64()
+                .is_some_and(|bytes| bytes > fs::metadata(&vrt).unwrap().len())
+        );
+        verify_sources(&project)?;
+        write_cli_geotiff_dem(&dem);
+        fs::write(
+            &dem,
+            fs::read(&dem)?
+                .into_iter()
+                .chain([0_u8])
+                .collect::<Vec<_>>(),
+        )?;
+        let error = verify_sources(&project).expect_err("VRT source drift should fail");
+        assert!(format!("{error:#}").contains("drifted"));
+        Ok(())
+    }
+
+    #[test]
     fn shapefile_apply_commands_register_true_adapter_ids() -> Result<()> {
         let tmp = tempfile::tempdir()?;
         let project = tmp.path().join("project");
@@ -2976,6 +3080,27 @@ mod tests {
                 1_500_i16, 1_510, 1_520, 1_590, 1_600, 1_610, 1_700, 1_710, 1_720,
             ])
             .unwrap();
+    }
+
+    fn write_cli_vrt_dem(path: &Path, source: &str) {
+        fs::write(
+            path,
+            format!(
+                r#"<VRTDataset rasterXSize="3" rasterYSize="3">
+  <GeoTransform>-105.01, 0.01, 0.0, 40.02, 0.0, -0.01</GeoTransform>
+  <VRTRasterBand dataType="Int16" band="1">
+    <NoDataValue>-32768</NoDataValue>
+    <SimpleSource>
+      <SourceFilename relativeToVRT="1">{source}</SourceFilename>
+      <SourceBand>1</SourceBand>
+      <SrcRect xOff="0" yOff="0" xSize="3" ySize="3"/>
+      <DstRect xOff="0" yOff="0" xSize="3" ySize="3"/>
+    </SimpleSource>
+  </VRTRasterBand>
+</VRTDataset>"#
+            ),
+        )
+        .unwrap();
     }
 
     fn write_status_polygon_shapefile(path: &Path, status: &str) {

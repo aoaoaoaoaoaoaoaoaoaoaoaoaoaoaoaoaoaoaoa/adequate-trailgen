@@ -101,7 +101,7 @@
     {
       "id": "vrt-elevation",
       "kind": "elevation",
-      "status": "planned",
+      "status": "implemented",
       "consumes": [
         "vrt"
       ],
@@ -109,7 +109,7 @@
         "sampled elevation profile",
         "edge ascent/descent"
       ],
-      "note": "GDAL VRT elevation raster seam."
+      "note": "GDAL VRT SimpleSource wrapper around a north-up geographic GeoTIFF DEM."
     },
     {
       "id": "geojson-terrain-overlay",

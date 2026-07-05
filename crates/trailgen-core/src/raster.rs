@@ -5,7 +5,7 @@ use crate::{Result, TrailgenError};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::iter::Peekable;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use tiff::decoder::{Decoder, DecodingResult};
 use tiff::tags::Tag;
@@ -34,6 +34,22 @@ pub struct GeoTiffDem {
     pub pixel_height_deg: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nodata_value: Option<f64>,
+    pub confidence: f64,
+    pub provenance: Provenance,
+    values: Vec<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VrtDem {
+    pub width: usize,
+    pub height: usize,
+    pub origin_lon: f64,
+    pub origin_lat: f64,
+    pub pixel_width_deg: f64,
+    pub pixel_height_deg: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nodata_value: Option<f64>,
+    pub source_filename: String,
     pub confidence: f64,
     pub provenance: Provenance,
     values: Vec<f64>,
@@ -244,6 +260,101 @@ impl GeoTiffDem {
     }
 }
 
+impl VrtDem {
+    pub fn from_path(path: &Path, provenance: Provenance, confidence: f64) -> Result<Self> {
+        let raw = std::fs::read_to_string(path)
+            .map_err(|error| TrailgenError::InvalidData(format!("read VRT: {error}")))?;
+        let spec = VrtSpec::parse(path, &raw)?;
+        let source = GeoTiffDem::from_path(
+            &spec.source_path,
+            Provenance {
+                source: "vrt-source-geotiff".to_owned(),
+                layer: Some("vrt-source".to_owned()),
+                source_id: spec
+                    .source_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(str::to_owned),
+                license: None,
+            },
+            confidence,
+        )?;
+        if source.width != spec.width || source.height != spec.height {
+            return Err(TrailgenError::UnsupportedFormat(format!(
+                "VRT source raster dimensions {}x{} do not match VRT {}x{}",
+                source.width, source.height, spec.width, spec.height
+            )));
+        }
+        Ok(Self {
+            width: spec.width,
+            height: spec.height,
+            origin_lon: spec.origin_lon,
+            origin_lat: spec.origin_lat,
+            pixel_width_deg: spec.pixel_width_deg,
+            pixel_height_deg: spec.pixel_height_deg,
+            nodata_value: spec.nodata_value.or(source.nodata_value),
+            source_filename: spec.source_path.display().to_string(),
+            confidence: confidence.clamp(0.0, 1.0),
+            provenance,
+            values: source.values,
+        })
+    }
+
+    pub fn referenced_sources(path: &Path) -> Result<Vec<PathBuf>> {
+        let raw = std::fs::read_to_string(path)
+            .map_err(|error| TrailgenError::InvalidData(format!("read VRT: {error}")))?;
+        Ok(vec![VrtSpec::parse(path, &raw)?.source_path])
+    }
+
+    #[must_use]
+    pub fn contains(&self, coord: Coord) -> bool {
+        let east = self
+            .pixel_width_deg
+            .mul_add(usize_to_f64(self.width), self.origin_lon);
+        let south = self
+            .pixel_height_deg
+            .mul_add(-usize_to_f64(self.height), self.origin_lat);
+        (self.origin_lon..=east).contains(&coord.lon)
+            && (south..=self.origin_lat).contains(&coord.lat)
+    }
+
+    fn interpolated_elevation_m(&self, coord: Coord) -> Option<f64> {
+        if !self.contains(coord) {
+            return None;
+        }
+        let col = ((coord.lon - self.origin_lon) / self.pixel_width_deg - 0.5)
+            .clamp(0.0, usize_to_f64(self.width.saturating_sub(1)));
+        let row = ((self.origin_lat - coord.lat) / self.pixel_height_deg - 0.5)
+            .clamp(0.0, usize_to_f64(self.height.saturating_sub(1)));
+        let col0 = f64_to_index(col.floor(), self.width)?;
+        let col1 = f64_to_index(col.ceil(), self.width)?;
+        let row0 = f64_to_index(row.floor(), self.height)?;
+        let row1 = f64_to_index(row.ceil(), self.height)?;
+        let tx = col - usize_to_f64(col0);
+        let ty = row - usize_to_f64(row0);
+        let z00 = self.cell(row0, col0)?;
+        let z01 = self.cell(row0, col1)?;
+        let z10 = self.cell(row1, col0)?;
+        let z11 = self.cell(row1, col1)?;
+        let top = tx.mul_add(z01 - z00, z00);
+        let bottom = tx.mul_add(z11 - z10, z10);
+        Some(ty.mul_add(bottom - top, top))
+    }
+
+    fn cell(&self, row: usize, col: usize) -> Option<f64> {
+        let value = *self
+            .values
+            .get(row.checked_mul(self.width)?.checked_add(col)?)?;
+        if self
+            .nodata_value
+            .is_some_and(|nodata| (value - nodata).abs() <= f64::EPSILON)
+        {
+            return None;
+        }
+        value.is_finite().then_some(value)
+    }
+}
+
 impl ElevationSampler for ArcAsciiGrid {
     fn sample(&self, coord: Coord) -> Option<ElevationSample> {
         let value = self.interpolated_elevation_m(coord)?;
@@ -263,6 +374,183 @@ impl ElevationSampler for GeoTiffDem {
             confidence: self.confidence,
             provenance: self.provenance.clone(),
         })
+    }
+}
+
+impl ElevationSampler for VrtDem {
+    fn sample(&self, coord: Coord) -> Option<ElevationSample> {
+        let value = self.interpolated_elevation_m(coord)?;
+        Some(ElevationSample {
+            ele_m: value,
+            confidence: self.confidence,
+            provenance: self.provenance.clone(),
+        })
+    }
+}
+
+struct VrtSpec {
+    width: usize,
+    height: usize,
+    origin_lon: f64,
+    origin_lat: f64,
+    pixel_width_deg: f64,
+    pixel_height_deg: f64,
+    nodata_value: Option<f64>,
+    source_path: PathBuf,
+}
+
+impl VrtSpec {
+    fn parse(path: &Path, raw: &str) -> Result<Self> {
+        let doc = roxmltree::Document::parse(raw)
+            .map_err(|error| TrailgenError::InvalidData(format!("parse VRT XML: {error}")))?;
+        let root = doc.root_element();
+        if root.tag_name().name() != "VRTDataset" {
+            return Err(TrailgenError::UnsupportedFormat(
+                "raster VRT must have <VRTDataset> root".to_owned(),
+            ));
+        }
+        let width = required_attr::<usize>(root, "rasterXSize")?;
+        let height = required_attr::<usize>(root, "rasterYSize")?;
+        if width == 0 || height == 0 {
+            return Err(TrailgenError::InvalidData(
+                "VRT raster dimensions must be nonzero".to_owned(),
+            ));
+        }
+        let geotransform = child_text(root, "GeoTransform")
+            .ok_or_else(|| TrailgenError::InvalidData("VRT missing GeoTransform".to_owned()))?
+            .split(',')
+            .map(str::trim)
+            .map(str::parse::<f64>)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|error| {
+                TrailgenError::InvalidData(format!("invalid VRT GeoTransform: {error}"))
+            })?;
+        if geotransform.len() != 6 {
+            return Err(TrailgenError::InvalidData(
+                "VRT GeoTransform must contain six numbers".to_owned(),
+            ));
+        }
+        let origin_lon = geotransform[0];
+        let pixel_width_deg = geotransform[1];
+        let x_skew = geotransform[2];
+        let origin_lat = geotransform[3];
+        let y_skew = geotransform[4];
+        let pixel_height_signed = geotransform[5];
+        if x_skew != 0.0 || y_skew != 0.0 || pixel_width_deg <= 0.0 || pixel_height_signed >= 0.0 {
+            return Err(TrailgenError::UnsupportedFormat(
+                "VRT DEM must be north-up geographic with positive x scale and negative y scale"
+                    .to_owned(),
+            ));
+        }
+        let band = root
+            .children()
+            .find(|node| node.has_tag_name("VRTRasterBand"))
+            .ok_or_else(|| TrailgenError::InvalidData("VRT missing VRTRasterBand".to_owned()))?;
+        let simple = band
+            .children()
+            .find(|node| node.has_tag_name("SimpleSource"))
+            .ok_or_else(|| {
+                TrailgenError::UnsupportedFormat("VRT DEM requires SimpleSource".to_owned())
+            })?;
+        ensure_identity_rect(simple, "SrcRect", width, height)?;
+        ensure_identity_rect(simple, "DstRect", width, height)?;
+        let source_filename = simple
+            .children()
+            .find(|node| node.has_tag_name("SourceFilename"))
+            .ok_or_else(|| {
+                TrailgenError::InvalidData("VRT SimpleSource missing SourceFilename".to_owned())
+            })?;
+        let source_text = source_filename
+            .text()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .ok_or_else(|| TrailgenError::InvalidData("VRT SourceFilename is empty".to_owned()))?;
+        let source_path = resolve_vrt_source(path, source_filename, source_text);
+        let source_band = child_text(simple, "SourceBand").unwrap_or("1").trim();
+        if source_band != "1" {
+            return Err(TrailgenError::UnsupportedFormat(
+                "VRT DEM only supports SourceBand 1".to_owned(),
+            ));
+        }
+        let nodata_value = child_text(band, "NoDataValue")
+            .or_else(|| child_text(root, "NoDataValue"))
+            .map(str::trim)
+            .map(str::parse::<f64>)
+            .transpose()
+            .map_err(|error| {
+                TrailgenError::InvalidData(format!("invalid VRT NoDataValue: {error}"))
+            })?;
+        Ok(Self {
+            width,
+            height,
+            origin_lon,
+            origin_lat,
+            pixel_width_deg,
+            pixel_height_deg: pixel_height_signed.abs(),
+            nodata_value,
+            source_path,
+        })
+    }
+}
+
+fn required_attr<T>(node: roxmltree::Node<'_, '_>, key: &str) -> Result<T>
+where
+    T::Err: std::fmt::Display,
+    T: FromStr,
+{
+    node.attribute(key)
+        .ok_or_else(|| TrailgenError::InvalidData(format!("VRT missing {key} attribute")))?
+        .parse()
+        .map_err(|error| TrailgenError::InvalidData(format!("invalid VRT {key}: {error}")))
+}
+
+fn child_text<'a>(node: roxmltree::Node<'a, 'a>, tag: &str) -> Option<&'a str> {
+    node.children()
+        .find(|child| child.has_tag_name(tag))
+        .and_then(|child| child.text())
+}
+
+fn ensure_identity_rect(
+    simple: roxmltree::Node<'_, '_>,
+    tag: &str,
+    width: usize,
+    height: usize,
+) -> Result<()> {
+    let Some(rect) = simple.children().find(|node| node.has_tag_name(tag)) else {
+        return Ok(());
+    };
+    let x_off = required_attr::<usize>(rect, "xOff")?;
+    let y_off = required_attr::<usize>(rect, "yOff")?;
+    let x_size = required_attr::<usize>(rect, "xSize")?;
+    let y_size = required_attr::<usize>(rect, "ySize")?;
+    if x_off == 0 && y_off == 0 && x_size == width && y_size == height {
+        Ok(())
+    } else {
+        Err(TrailgenError::UnsupportedFormat(format!(
+            "VRT DEM only supports full-raster identity {tag}"
+        )))
+    }
+}
+
+fn resolve_vrt_source(
+    vrt_path: &Path,
+    source_filename: roxmltree::Node<'_, '_>,
+    source_text: &str,
+) -> PathBuf {
+    let path = PathBuf::from(source_text);
+    if path.is_absolute() {
+        return path;
+    }
+    let relative = source_filename
+        .attribute("relativeToVRT")
+        .is_some_and(|value| matches!(value, "1" | "true" | "TRUE" | "True"));
+    if relative || vrt_path.parent().is_some() {
+        vrt_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(path)
+    } else {
+        path
     }
 }
 

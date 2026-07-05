@@ -9,7 +9,7 @@ use trailgen_core::source::{
 };
 use trailgen_core::{
     Access, ArcAsciiGrid, CrossingKind, EdgeId, EdgeTravel, ElevationSampler, GeoTiffDem, Route,
-    RouteMetrics, RouteShape, SearchParams, VertexId,
+    RouteMetrics, RouteShape, SearchParams, VertexId, VrtDem,
 };
 use trailgen_core::{
     Coord, DifficultyWeights, EnrichmentConfig, GraphBuilder, LineString, LoopConstraints,
@@ -1486,6 +1486,35 @@ fn geotiff_dem_samples_and_reenriches_graph() {
     assert!(graph.edges.iter().any(|edge| edge.attr.grade_abs_max > 0.0));
 }
 
+#[test]
+fn vrt_dem_wraps_geotiff_source_and_samples() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tif = tmp.path().join("mini_dem.tif");
+    let vrt = tmp.path().join("mini_dem.vrt");
+    write_geotiff_dem(&tif);
+    write_vrt_dem(&vrt, "mini_dem.tif");
+
+    let raster = VrtDem::from_path(
+        &vrt,
+        Provenance {
+            source: "fixture-vrt-dem".to_owned(),
+            layer: Some("vrt".to_owned()),
+            source_id: Some("mini_dem.vrt".to_owned()),
+            license: None,
+        },
+        0.76,
+    )
+    .unwrap();
+
+    assert_eq!(raster.width, 3);
+    assert_eq!(raster.height, 3);
+    assert!(raster.source_filename.ends_with("mini_dem.tif"));
+    assert!(raster.sample(Coord::new(-105.0, 40.01)).is_some_and(
+        |sample| sample.ele_m > 1_500.0 && (sample.confidence - 0.76).abs() <= f64::EPSILON
+    ));
+    assert_eq!(VrtDem::referenced_sources(&vrt).unwrap(), vec![tif]);
+}
+
 fn write_geotiff_dem(path: &std::path::Path) {
     use tiff::encoder::{TiffEncoder, colortype};
     use tiff::tags::Tag;
@@ -1522,6 +1551,27 @@ fn write_geotiff_dem(path: &std::path::Path) {
             1_500_i16, 1_510, 1_520, 1_590, 1_600, 1_610, 1_700, 1_710, 1_720,
         ])
         .unwrap();
+}
+
+fn write_vrt_dem(path: &std::path::Path, source: &str) {
+    std::fs::write(
+        path,
+        format!(
+            r#"<VRTDataset rasterXSize="3" rasterYSize="3">
+  <GeoTransform>-105.01, 0.01, 0.0, 40.02, 0.0, -0.01</GeoTransform>
+  <VRTRasterBand dataType="Int16" band="1">
+    <NoDataValue>-32768</NoDataValue>
+    <SimpleSource>
+      <SourceFilename relativeToVRT="1">{source}</SourceFilename>
+      <SourceBand>1</SourceBand>
+      <SrcRect xOff="0" yOff="0" xSize="3" ySize="3"/>
+      <DstRect xOff="0" yOff="0" xSize="3" ySize="3"/>
+    </SimpleSource>
+  </VRTRasterBand>
+</VRTDataset>"#
+        ),
+    )
+    .unwrap();
 }
 
 fn simple_path_draft() -> SegmentDraft {

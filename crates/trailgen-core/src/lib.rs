@@ -35,7 +35,7 @@ pub use overlay::{
     AccessOverlay, ContextOverlay, OverlayGeometry, TerrainOverlay, apply_access_overlays,
     apply_context_overlays, apply_terrain_overlays,
 };
-pub use raster::{ArcAsciiGrid, GeoTiffDem};
+pub use raster::{ArcAsciiGrid, GeoTiffDem, VrtDem};
 pub use route::{Route, RouteMetrics, RouteShape, rank_routes};
 pub use seed::{SeedRoute, slug};
 

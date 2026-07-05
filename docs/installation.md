@@ -17,4 +17,4 @@ cargo clippy --workspace --all-targets
 
 Runtime inputs are ordinary local project files. `cache-source` can download `http://` or `https://` URLs through `reqwest` with rustls TLS, so network access is needed only when acquiring remote source artifacts. GPX, GeoJSON, KML, KMZ, CSV, shapefile vector layers, Arc/Info ASCII Grid, and north-up geographic GeoTIFF DEM support are implemented in Rust crates; no GDAL install is required for those paths.
 
-Future adapters for VRT, projected/rotated rasters, OSM extracts, or agency APIs may introduce optional system dependencies. If that happens, keep them behind an adapter seam or feature flag and document the command that materializes normalized project artifacts under `sources/` or `cache/`.
+Future adapters for projected/rotated rasters, OSM extracts, or agency APIs may introduce optional system dependencies. If that happens, keep them behind an adapter seam or feature flag and document the command that materializes normalized project artifacts under `sources/` or `cache/`. The current VRT DEM adapter is pure Rust and supports simple local GDAL VRT wrappers around north-up geographic GeoTIFFs.
