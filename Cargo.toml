@@ -5,7 +5,6 @@ resolver = "2"
 [workspace.package]
 edition = "2024"
 license = "MIT OR Apache-2.0"
-repository = "https://example.invalid/adequate-trailgen"
 rust-version = "1.88"
 
 [workspace.dependencies]
