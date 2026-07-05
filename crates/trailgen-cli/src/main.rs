@@ -1343,6 +1343,12 @@ h1, h2, h3 {{ margin: 0 0 12px; }}
 .legend {{ display: grid; grid-template-columns: 18px 1fr; gap: 6px 8px; font-size: 13px; margin: 12px 0 18px; }}
 .swatch {{ width: 18px; height: 12px; border-radius: 3px; align-self: center; }}
 .route-card {{ border: 1px solid #2d3748; border-radius: 8px; padding: 10px; margin: 10px 0; background: #101318; }}
+.diag {{ display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; margin: 8px 0; font-size: 13px; }}
+.diag dt {{ color: #a0aec0; }}
+.diag dd {{ margin: 0; font-variant-numeric: tabular-nums; }}
+.meter {{ height: 8px; border-radius: 999px; background: #2d3748; overflow: hidden; margin: 4px 0 10px; }}
+.meter > span {{ display: block; height: 100%; background: #63b3ed; }}
+.raw {{ max-height: 320px; overflow: auto; border: 1px solid #2d3748; border-radius: 8px; padding: 8px; background: #0b0f14; }}
 .ok {{ color: #68d391; }}
 .bad {{ color: #fc8181; }}
 code {{ color: #f6ad55; }}
@@ -1358,10 +1364,17 @@ small {{ color: #a0aec0; }}
 <p><small>Offline diagnostic map. Graph edges are colored by terrain and faded by confidence; generated routes are drawn thick above the graph.</small></p>
 <h2>Terrain</h2>
 <div class="legend" id="legend"></div>
+<h2>Encoding</h2>
+<div class="diag">
+<dt>edge color</dt><dd>terrain bucket</dd>
+<dt>edge width</dt><dd>scalar difficulty</dd>
+<dt>edge opacity</dt><dd>confidence</dd>
+<dt>dashed edge</dt><dd>closed access</dd>
+</div>
 <h2>Routes</h2>
 <div id="routes"></div>
 <h2>Selected</h2>
-<pre id="details">Click a route or edge.</pre>
+<div id="details"><small>Click a route or edge.</small></div>
 </aside>
 <script>
 const graph = {graph_json};
@@ -1373,6 +1386,7 @@ const terrainColors = {{
 const routeColors = ['#f56565', '#f6ad55', '#faf089', '#68d391', '#63b3ed', '#b794f4', '#f687b3'];
 const svg = document.getElementById('map');
 const details = document.getElementById('details');
+const edgeById = Object.fromEntries(graph.features.map(f => [f.properties.edge_id, f.properties]));
 function coords(feature) {{ return feature.geometry && feature.geometry.coordinates || []; }}
 function allPoints() {{
   return graph.features.concat(routes.features).flatMap(f => coords(f).map(c => [c[0], c[1]]));
@@ -1397,10 +1411,71 @@ function el(name, attrs) {{
 }}
 function pct(x) {{ return `${{(100 * (x || 0)).toFixed(1)}}%`; }}
 function km(x) {{ return `${{((x || 0) / 1000).toFixed(2)}} km`; }}
+function scalar(x, digits = 1) {{ return Number(x || 0).toFixed(digits); }}
+function topEntries(obj, n = 4) {{
+  return Object.entries(obj || {{}}).filter(([, v]) => Number(v) > 0).sort((a, b) => Number(b[1]) - Number(a[1])).slice(0, n);
+}}
+function difficultyText(breakdown) {{
+  const xs = topEntries(breakdown, 5);
+  return xs.length ? xs.map(([k, v]) => `${{k}} ${{scalar(v)}}`).join(', ') : 'none';
+}}
 function routeText(p) {{
   return `${{p.name}} | rank ${{p.pareto_rank}} | ${{km(p.distance_m)}} | ascent ${{(p.ascent_m || 0).toFixed(0)}} m | difficulty ${{(p.difficulty || 0).toFixed(1)}} | road ${{pct(p.road_fraction)}} | low confidence ${{pct(p.low_confidence_fraction)}}`;
 }}
-function show(kind, p) {{ details.textContent = JSON.stringify({{kind, ...p}}, null, 2); }}
+function escapeHtml(x) {{
+  return String(x).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+}}
+function rawBlock(kind, p) {{
+  return `<h3>Raw ${{kind}} properties</h3><pre class="raw">${{escapeHtml(JSON.stringify({{kind, ...p}}, null, 2))}}</pre>`;
+}}
+function metricRow(k, v) {{ return `<dt>${{escapeHtml(k)}}</dt><dd>${{escapeHtml(v)}}</dd>`; }}
+function confidenceMeter(x) {{
+  const pctValue = Math.max(0, Math.min(100, 100 * Number(x || 0)));
+  return `<div class="meter"><span style="width:${{pctValue.toFixed(0)}}%"></span></div>`;
+}}
+function edgeSummary(p) {{
+  return `<h3>Edge ${{p.edge_id}}</h3><dl class="diag">
+    ${{metricRow('terrain', p.terrain || 'unknown')}}
+    ${{metricRow('surface', p.surface || 'unknown')}}
+    ${{metricRow('access', p.access || 'unknown')}}
+    ${{metricRow('length', km(p.length_m))}}
+    ${{metricRow('ascent/descent', `${{scalar(p.ascent_m, 0)}} m / ${{scalar(p.descent_m, 0)}} m`)}}
+    ${{metricRow('max grade', pct(p.grade_abs_max))}}
+    ${{metricRow('difficulty', scalar(p.difficulty))}}
+    ${{metricRow('confidence', pct(p.confidence))}}
+    ${{metricRow('terrain evidence', (p.terrain_evidence || []).slice(0, 2).map(e => `${{e.terrain}} ${{pct(e.confidence)}}: ${{e.rationale}}`).join(' | ') || 'none')}}
+    ${{metricRow('difficulty factors', difficultyText(p.difficulty_breakdown))}}
+  </dl>${{confidenceMeter(p.confidence)}}${{rawBlock('edge', p)}}`;
+}}
+function routeDiagnostics(p) {{
+  const edges = (p.edges || []).map(id => edgeById[id]).filter(Boolean);
+  const dubious = edges.slice().sort((a, b) => Number(a.confidence || 0) - Number(b.confidence || 0)).slice(0, 5);
+  const brutal = edges.slice().sort((a, b) => Number(b.difficulty || 0) - Number(a.difficulty || 0)).slice(0, 5);
+  return {{
+    dubious: dubious.map(e => `edge ${{e.edge_id}} ${{pct(e.confidence)}} ${{e.terrain || 'unknown'}}`).join(', ') || 'none',
+    brutal: brutal.map(e => `edge ${{e.edge_id}} ${{scalar(e.difficulty)}} ${{e.terrain || 'unknown'}}`).join(', ') || 'none'
+  }};
+}}
+function routeSummary(p) {{
+  const d = routeDiagnostics(p);
+  return `<h3>${{escapeHtml(p.name || 'route')}}</h3><dl class="diag">
+    ${{metricRow('constraint verdict', p.satisfied ? 'satisfied' : 'violated')}}
+    ${{metricRow('pareto rank', p.pareto_rank)}}
+    ${{metricRow('score', scalar(p.score))}}
+    ${{metricRow('shape', p.shape || 'unknown')}}
+    ${{metricRow('distance', km(p.distance_m))}}
+    ${{metricRow('ascent/descent', `${{scalar(p.ascent_m, 0)}} m / ${{scalar(p.descent_m, 0)}} m`)}}
+    ${{metricRow('difficulty', scalar(p.difficulty))}}
+    ${{metricRow('difficulty factors', difficultyText(p.difficulty_breakdown))}}
+    ${{metricRow('road/pavement', pct(p.road_fraction))}}
+    ${{metricRow('low confidence', pct(p.low_confidence_fraction))}}
+    ${{metricRow('repeated edge', pct(p.repeated_edge_fraction))}}
+    ${{metricRow('violations', (p.violations || []).join(' | ') || 'none')}}
+    ${{metricRow('dubious segments', d.dubious)}}
+    ${{metricRow('largest edge costs', d.brutal)}}
+  </dl>${{rawBlock('route', p)}}`;
+}}
+function show(kind, p) {{ details.innerHTML = kind === 'route' ? routeSummary(p) : edgeSummary(p); }}
 for (const [terrain, color] of Object.entries(terrainColors)) {{
   document.getElementById('legend').append(Object.assign(document.createElement('span'), {{className: 'swatch', style: `background:${{color}}`}}), terrain);
 }}
@@ -3289,6 +3364,9 @@ mod tests {
         let generated_map = fs::read_to_string(project.join("reports/map.html"))?;
         assert!(generated_map.contains("Offline diagnostic map"));
         assert!(generated_map.contains("const graph = {"));
+        assert!(generated_map.contains("edge width"));
+        assert!(generated_map.contains("difficulty factors"));
+        assert!(generated_map.contains("dubious segments"));
         let selected_map = fs::read_to_string(map)?;
         assert!(selected_map.contains("Export Test"));
         assert!(selected_map.contains("candidate-1"));

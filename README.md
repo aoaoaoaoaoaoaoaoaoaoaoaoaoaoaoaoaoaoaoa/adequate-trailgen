@@ -49,7 +49,7 @@ Generated artifacts land in the project directory:
 - `seeds/imports/`: archived copies of imported seed-route files
 - `seeds/seeds.json`: imported seed routes snapped to the graph, with original source paths retained for traceability
 - `reports/generated.md`: route diagnostics, the generation constraint envelope, and fingerprinted source manifest summary
-- `reports/map.html`: self-contained offline SVG map of the attributed graph and generated routes
+- `reports/map.html`: self-contained offline SVG map of graph terrain, edge difficulty, confidence, generated routes, and selected route diagnostics
 
 Use `trailgen export <project> --route candidate-1 --format gpx|geojson|csv|kml|kmz --output file` to re-export a selected generated route after the search run. Use `trailgen report <project> [--route candidate-1] [--output file.md]` to render either all generated routes or one named route, including the constraint envelope used for that generation run. Use `trailgen map <project> [--output file.html]` to regenerate the offline diagnostic map without rerunning the solver. These commands read `routes/generated.graph.json` when generated routes exist, so later cached-graph rerating or access-date changes do not silently reinterpret an old route.
 
