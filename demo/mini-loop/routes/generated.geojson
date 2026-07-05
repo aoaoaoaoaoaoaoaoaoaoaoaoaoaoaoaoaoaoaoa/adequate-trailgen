@@ -1547,7 +1547,16 @@
         "type": "LineString"
       },
       "properties": {
+        "access_fraction": {
+          "closed": 0.28312937564512086,
+          "open": 0.7168706243548791
+        },
+        "access_m": {
+          "closed": 1334.340962802445,
+          "open": 3378.490264130822
+        },
         "ascent_m": 136.9999999999991,
+        "constraint_penalty": 3858.036935132302,
         "crossings": {
           "road": 2,
           "water": 2
@@ -1566,7 +1575,178 @@
           "technical": 3.175731491469819,
           "terrain": 1.7346432516431782
         },
+        "difficulty_hotspots": [
+          {
+            "access": "closed",
+            "confidence": 0.82,
+            "edge_id": 3,
+            "factor": "access",
+            "length_m": 1334.340962802445,
+            "route_fraction": 0.9861263259758267,
+            "terrain": "talus",
+            "value": 1000.0
+          },
+          {
+            "access": "open",
+            "confidence": 0.82,
+            "edge_id": 1,
+            "factor": "technical",
+            "length_m": 1334.340962802445,
+            "route_fraction": 0.0015658362139844325,
+            "terrain": "talus",
+            "value": 1.5878657457349095
+          },
+          {
+            "access": "closed",
+            "confidence": 0.82,
+            "edge_id": 3,
+            "factor": "technical",
+            "length_m": 1334.340962802445,
+            "route_fraction": 0.0015658362139844325,
+            "terrain": "talus",
+            "value": 1.5878657457349095
+          },
+          {
+            "access": "closed",
+            "confidence": 0.82,
+            "edge_id": 3,
+            "factor": "ascent",
+            "length_m": 1334.340962802445,
+            "route_fraction": 0.0013371872980231995,
+            "terrain": "talus",
+            "value": 1.3559999999999781
+          },
+          {
+            "access": "open",
+            "confidence": 0.82,
+            "edge_id": 1,
+            "factor": "distance",
+            "length_m": 1334.340962802445,
+            "route_fraction": 0.0013158287512474223,
+            "terrain": "talus",
+            "value": 1.334340962802445
+          }
+        ],
         "distance_m": 4712.831226933267,
+        "dubious_edges": [
+          {
+            "access": "open",
+            "access_confidence": 0.9,
+            "confidence": 0.82,
+            "crossings": [
+              {
+                "count": 1,
+                "kind": "water",
+                "provenance": {
+                  "source": "fixture-hydrology-context",
+                  "source_id": "test-creek"
+                }
+              }
+            ],
+            "edge_id": 1,
+            "grade_abs_max": 0.09007592763064971,
+            "grade_distribution": {
+              "flat_m": 0.0,
+              "rolling_m": 1334.340962802445,
+              "savage_m": 0.0,
+              "steep_m": 0.0
+            },
+            "length_m": 1334.340962802445,
+            "provenance": "fixture:east",
+            "seed_count": 2,
+            "surface": null,
+            "terrain": "talus",
+            "terrain_confidence": 0.9
+          },
+          {
+            "access": "closed",
+            "access_confidence": 0.93,
+            "confidence": 0.82,
+            "crossings": [
+              {
+                "count": 1,
+                "kind": "water",
+                "provenance": {
+                  "source": "fixture-hydrology-context",
+                  "source_id": "test-creek"
+                }
+              }
+            ],
+            "edge_id": 3,
+            "grade_abs_max": 0.09007592763064971,
+            "grade_distribution": {
+              "flat_m": 0.0,
+              "rolling_m": 1334.340962802445,
+              "savage_m": 0.0,
+              "steep_m": 0.0
+            },
+            "length_m": 1334.340962802445,
+            "provenance": "fixture:west",
+            "seed_count": 2,
+            "surface": null,
+            "terrain": "talus",
+            "terrain_confidence": 0.9
+          },
+          {
+            "access": "open",
+            "access_confidence": 0.9,
+            "confidence": 0.82,
+            "crossings": [
+              {
+                "count": 1,
+                "kind": "road",
+                "provenance": {
+                  "source": "fixture-road-context",
+                  "source_id": "service-road"
+                }
+              }
+            ],
+            "edge_id": 2,
+            "grade_abs_max": 0.02347958716502997,
+            "grade_distribution": {
+              "flat_m": 1022.1644797803812,
+              "rolling_m": 0.0,
+              "savage_m": 0.0,
+              "steep_m": 0.0
+            },
+            "length_m": 1022.1644797803812,
+            "provenance": "fixture:south",
+            "seed_count": 2,
+            "surface": null,
+            "terrain": "trail",
+            "terrain_confidence": 0.9
+          },
+          {
+            "access": "open",
+            "access_confidence": 0.9,
+            "confidence": 0.82,
+            "crossings": [
+              {
+                "count": 1,
+                "kind": "road",
+                "provenance": {
+                  "source": "fixture-road-context",
+                  "source_id": "service-road"
+                }
+              }
+            ],
+            "edge_id": 0,
+            "grade_abs_max": 0.03992857735222904,
+            "grade_distribution": {
+              "flat_m": 1021.984821547996,
+              "rolling_m": 0.0,
+              "savage_m": 0.0,
+              "steep_m": 0.0
+            },
+            "length_m": 1021.984821547996,
+            "provenance": "fixture:north",
+            "seed_count": 2,
+            "surface": null,
+            "terrain": "trail",
+            "terrain_confidence": 0.9
+          }
+        ],
+        "edge_count": 4,
         "edges": [
           2,
           1,
@@ -1577,10 +1757,37 @@
         "name": "candidate-1",
         "pareto_rank": 1,
         "repeated_edge_fraction": 0.0,
+        "restricted_access_fraction": 0.28312937564512086,
         "road_fraction": 0.013012237461292745,
         "satisfied": false,
         "score": 3908.7403781729513,
         "shape": "loop",
+        "source_provenance": [
+          {
+            "source": "fixture",
+            "source_id": "south"
+          },
+          {
+            "source": "fixture",
+            "source_id": "east"
+          },
+          {
+            "source": "fixture",
+            "source_id": "north"
+          },
+          {
+            "source": "fixture",
+            "source_id": "west"
+          }
+        ],
+        "terrain_fraction": {
+          "talus": 0.5662587512902417,
+          "trail": 0.43374124870975816
+        },
+        "terrain_m": {
+          "talus": 2668.68192560489,
+          "trail": 2044.149301328377
+        },
         "violations": [
           "difficulty 1014.07 above maximum 90.00",
           "restricted-access fraction 28.3% above maximum 0.0%"
@@ -2880,7 +3087,16 @@
         "type": "LineString"
       },
       "properties": {
+        "access_fraction": {
+          "closed": 0.4163178669784435,
+          "open": 0.5836821330215566
+        },
+        "access_m": {
+          "closed": 1680.8040950311952,
+          "open": 2356.505442582826
+        },
         "ascent_m": 96.19999999999914,
+        "constraint_penalty": 5186.362792909272,
         "crossings": {
           "road": 2,
           "water": 2
@@ -2899,7 +3115,157 @@
           "technical": 2.1761471789958278,
           "terrain": 1.1698663629272041
         },
+        "difficulty_hotspots": [
+          {
+            "access": "closed",
+            "confidence": 0.81,
+            "edge_id": 4,
+            "factor": "access",
+            "length_m": 1680.8040950311952,
+            "route_fraction": 0.9892510838025943,
+            "terrain": "alpine",
+            "value": 1000.0
+          },
+          {
+            "access": "closed",
+            "confidence": 0.81,
+            "edge_id": 4,
+            "factor": "distance",
+            "length_m": 1680.8040950311952,
+            "route_fraction": 0.0016627372726694483,
+            "terrain": "alpine",
+            "value": 1.680804095031195
+          },
+          {
+            "access": "open",
+            "confidence": 0.82,
+            "edge_id": 1,
+            "factor": "technical",
+            "length_m": 1334.340962802445,
+            "route_fraction": 0.0015707979099012738,
+            "terrain": "talus",
+            "value": 1.5878657457349095
+          },
+          {
+            "access": "open",
+            "confidence": 0.82,
+            "edge_id": 1,
+            "factor": "distance",
+            "length_m": 1334.340962802445,
+            "route_fraction": 0.0013199982436145159,
+            "terrain": "talus",
+            "value": 1.334340962802445
+          },
+          {
+            "access": "open",
+            "confidence": 0.82,
+            "edge_id": 2,
+            "factor": "distance",
+            "length_m": 1022.1644797803812,
+            "route_fraction": 0.0010111773194472569,
+            "terrain": "trail",
+            "value": 1.022164479780381
+          }
+        ],
         "distance_m": 4037.3095376140213,
+        "dubious_edges": [
+          {
+            "access": "closed",
+            "access_confidence": 0.93,
+            "confidence": 0.81,
+            "crossings": [
+              {
+                "count": 1,
+                "kind": "road",
+                "provenance": {
+                  "source": "fixture-road-context",
+                  "source_id": "service-road"
+                }
+              },
+              {
+                "count": 1,
+                "kind": "water",
+                "provenance": {
+                  "source": "fixture-hydrology-context",
+                  "source_id": "test-creek"
+                }
+              }
+            ],
+            "edge_id": 4,
+            "grade_abs_max": 0.05711527963281148,
+            "grade_distribution": {
+              "flat_m": 980.7908188546152,
+              "rolling_m": 700.0132761765799,
+              "savage_m": 0.0,
+              "steep_m": 0.0
+            },
+            "length_m": 1680.8040950311952,
+            "provenance": "fixture:diagonal",
+            "seed_count": 0,
+            "surface": null,
+            "terrain": "alpine",
+            "terrain_confidence": 0.9
+          },
+          {
+            "access": "open",
+            "access_confidence": 0.9,
+            "confidence": 0.82,
+            "crossings": [
+              {
+                "count": 1,
+                "kind": "water",
+                "provenance": {
+                  "source": "fixture-hydrology-context",
+                  "source_id": "test-creek"
+                }
+              }
+            ],
+            "edge_id": 1,
+            "grade_abs_max": 0.09007592763064971,
+            "grade_distribution": {
+              "flat_m": 0.0,
+              "rolling_m": 1334.340962802445,
+              "savage_m": 0.0,
+              "steep_m": 0.0
+            },
+            "length_m": 1334.340962802445,
+            "provenance": "fixture:east",
+            "seed_count": 2,
+            "surface": null,
+            "terrain": "talus",
+            "terrain_confidence": 0.9
+          },
+          {
+            "access": "open",
+            "access_confidence": 0.9,
+            "confidence": 0.82,
+            "crossings": [
+              {
+                "count": 1,
+                "kind": "road",
+                "provenance": {
+                  "source": "fixture-road-context",
+                  "source_id": "service-road"
+                }
+              }
+            ],
+            "edge_id": 2,
+            "grade_abs_max": 0.02347958716502997,
+            "grade_distribution": {
+              "flat_m": 1022.1644797803812,
+              "rolling_m": 0.0,
+              "savage_m": 0.0,
+              "steep_m": 0.0
+            },
+            "length_m": 1022.1644797803812,
+            "provenance": "fixture:south",
+            "seed_count": 2,
+            "surface": null,
+            "terrain": "trail",
+            "terrain_confidence": 0.9
+          }
+        ],
+        "edge_count": 3,
         "edges": [
           2,
           1,
@@ -2909,10 +3275,35 @@
         "name": "candidate-2",
         "pareto_rank": 1,
         "repeated_edge_fraction": 0.0,
+        "restricted_access_fraction": 0.4163178669784435,
         "road_fraction": 0.020084924499564005,
         "satisfied": false,
         "score": 5236.90607844989,
         "shape": "loop",
+        "source_provenance": [
+          {
+            "source": "fixture",
+            "source_id": "south"
+          },
+          {
+            "source": "fixture",
+            "source_id": "east"
+          },
+          {
+            "source": "fixture",
+            "source_id": "diagonal"
+          }
+        ],
+        "terrain_fraction": {
+          "alpine": 0.4163178669784435,
+          "talus": 0.33050251668119973,
+          "trail": 0.2531796163403568
+        },
+        "terrain_m": {
+          "alpine": 1680.8040950311952,
+          "talus": 1334.340962802445,
+          "trail": 1022.1644797803812
+        },
         "violations": [
           "difficulty 1010.87 above maximum 90.00",
           "restricted-access fraction 41.6% above maximum 0.0%"
@@ -4467,7 +4858,16 @@
         "type": "LineString"
       },
       "properties": {
+        "access_fraction": {
+          "closed": 0.2831293756451209,
+          "open": 0.7168706243548791
+        },
+        "access_m": {
+          "closed": 1334.340962802445,
+          "open": 3378.4902641308217
+        },
         "ascent_m": 136.9999999999991,
+        "constraint_penalty": 3858.036935132303,
         "crossings": {
           "road": 2,
           "water": 2
@@ -4486,7 +4886,178 @@
           "technical": 3.175731491469819,
           "terrain": 1.7346432516431782
         },
+        "difficulty_hotspots": [
+          {
+            "access": "closed",
+            "confidence": 0.82,
+            "edge_id": 3,
+            "factor": "access",
+            "length_m": 1334.340962802445,
+            "route_fraction": 0.9861263259758267,
+            "terrain": "talus",
+            "value": 1000.0
+          },
+          {
+            "access": "closed",
+            "confidence": 0.82,
+            "edge_id": 3,
+            "factor": "technical",
+            "length_m": 1334.340962802445,
+            "route_fraction": 0.0015658362139844325,
+            "terrain": "talus",
+            "value": 1.5878657457349095
+          },
+          {
+            "access": "open",
+            "confidence": 0.82,
+            "edge_id": 1,
+            "factor": "technical",
+            "length_m": 1334.340962802445,
+            "route_fraction": 0.0015658362139844325,
+            "terrain": "talus",
+            "value": 1.5878657457349095
+          },
+          {
+            "access": "closed",
+            "confidence": 0.82,
+            "edge_id": 3,
+            "factor": "ascent",
+            "length_m": 1334.340962802445,
+            "route_fraction": 0.0013371872980231995,
+            "terrain": "talus",
+            "value": 1.3559999999999781
+          },
+          {
+            "access": "closed",
+            "confidence": 0.82,
+            "edge_id": 3,
+            "factor": "distance",
+            "length_m": 1334.340962802445,
+            "route_fraction": 0.0013158287512474223,
+            "terrain": "talus",
+            "value": 1.334340962802445
+          }
+        ],
         "distance_m": 4712.831226933266,
+        "dubious_edges": [
+          {
+            "access": "closed",
+            "access_confidence": 0.93,
+            "confidence": 0.82,
+            "crossings": [
+              {
+                "count": 1,
+                "kind": "water",
+                "provenance": {
+                  "source": "fixture-hydrology-context",
+                  "source_id": "test-creek"
+                }
+              }
+            ],
+            "edge_id": 3,
+            "grade_abs_max": 0.09007592763064971,
+            "grade_distribution": {
+              "flat_m": 0.0,
+              "rolling_m": 1334.340962802445,
+              "savage_m": 0.0,
+              "steep_m": 0.0
+            },
+            "length_m": 1334.340962802445,
+            "provenance": "fixture:west",
+            "seed_count": 2,
+            "surface": null,
+            "terrain": "talus",
+            "terrain_confidence": 0.9
+          },
+          {
+            "access": "open",
+            "access_confidence": 0.9,
+            "confidence": 0.82,
+            "crossings": [
+              {
+                "count": 1,
+                "kind": "water",
+                "provenance": {
+                  "source": "fixture-hydrology-context",
+                  "source_id": "test-creek"
+                }
+              }
+            ],
+            "edge_id": 1,
+            "grade_abs_max": 0.09007592763064971,
+            "grade_distribution": {
+              "flat_m": 0.0,
+              "rolling_m": 1334.340962802445,
+              "savage_m": 0.0,
+              "steep_m": 0.0
+            },
+            "length_m": 1334.340962802445,
+            "provenance": "fixture:east",
+            "seed_count": 2,
+            "surface": null,
+            "terrain": "talus",
+            "terrain_confidence": 0.9
+          },
+          {
+            "access": "open",
+            "access_confidence": 0.9,
+            "confidence": 0.82,
+            "crossings": [
+              {
+                "count": 1,
+                "kind": "road",
+                "provenance": {
+                  "source": "fixture-road-context",
+                  "source_id": "service-road"
+                }
+              }
+            ],
+            "edge_id": 2,
+            "grade_abs_max": 0.02347958716502997,
+            "grade_distribution": {
+              "flat_m": 1022.1644797803812,
+              "rolling_m": 0.0,
+              "savage_m": 0.0,
+              "steep_m": 0.0
+            },
+            "length_m": 1022.1644797803812,
+            "provenance": "fixture:south",
+            "seed_count": 2,
+            "surface": null,
+            "terrain": "trail",
+            "terrain_confidence": 0.9
+          },
+          {
+            "access": "open",
+            "access_confidence": 0.9,
+            "confidence": 0.82,
+            "crossings": [
+              {
+                "count": 1,
+                "kind": "road",
+                "provenance": {
+                  "source": "fixture-road-context",
+                  "source_id": "service-road"
+                }
+              }
+            ],
+            "edge_id": 0,
+            "grade_abs_max": 0.03992857735222904,
+            "grade_distribution": {
+              "flat_m": 1021.984821547996,
+              "rolling_m": 0.0,
+              "savage_m": 0.0,
+              "steep_m": 0.0
+            },
+            "length_m": 1021.984821547996,
+            "provenance": "fixture:north",
+            "seed_count": 2,
+            "surface": null,
+            "terrain": "trail",
+            "terrain_confidence": 0.9
+          }
+        ],
+        "edge_count": 4,
         "edges": [
           3,
           0,
@@ -4497,10 +5068,37 @@
         "name": "candidate-3",
         "pareto_rank": 2,
         "repeated_edge_fraction": 0.0,
+        "restricted_access_fraction": 0.2831293756451209,
         "road_fraction": 0.013012237461292748,
         "satisfied": false,
         "score": 3908.740378172952,
         "shape": "loop",
+        "source_provenance": [
+          {
+            "source": "fixture",
+            "source_id": "west"
+          },
+          {
+            "source": "fixture",
+            "source_id": "north"
+          },
+          {
+            "source": "fixture",
+            "source_id": "east"
+          },
+          {
+            "source": "fixture",
+            "source_id": "south"
+          }
+        ],
+        "terrain_fraction": {
+          "talus": 0.5662587512902418,
+          "trail": 0.4337412487097583
+        },
+        "terrain_m": {
+          "talus": 2668.68192560489,
+          "trail": 2044.149301328377
+        },
         "violations": [
           "difficulty 1014.07 above maximum 90.00",
           "restricted-access fraction 28.3% above maximum 0.0%"
@@ -5800,7 +6398,16 @@
         "type": "LineString"
       },
       "properties": {
+        "access_fraction": {
+          "closed": 0.4163178669784435,
+          "open": 0.5836821330215566
+        },
+        "access_m": {
+          "closed": 1680.8040950311952,
+          "open": 2356.505442582826
+        },
         "ascent_m": 96.19999999999914,
+        "constraint_penalty": 5186.362792909272,
         "crossings": {
           "road": 2,
           "water": 2
@@ -5819,7 +6426,157 @@
           "technical": 2.1761471789958278,
           "terrain": 1.1698663629272041
         },
+        "difficulty_hotspots": [
+          {
+            "access": "closed",
+            "confidence": 0.81,
+            "edge_id": 4,
+            "factor": "access",
+            "length_m": 1680.8040950311952,
+            "route_fraction": 0.9892510838025943,
+            "terrain": "alpine",
+            "value": 1000.0
+          },
+          {
+            "access": "closed",
+            "confidence": 0.81,
+            "edge_id": 4,
+            "factor": "distance",
+            "length_m": 1680.8040950311952,
+            "route_fraction": 0.0016627372726694483,
+            "terrain": "alpine",
+            "value": 1.680804095031195
+          },
+          {
+            "access": "open",
+            "confidence": 0.82,
+            "edge_id": 1,
+            "factor": "technical",
+            "length_m": 1334.340962802445,
+            "route_fraction": 0.0015707979099012738,
+            "terrain": "talus",
+            "value": 1.5878657457349095
+          },
+          {
+            "access": "open",
+            "confidence": 0.82,
+            "edge_id": 1,
+            "factor": "distance",
+            "length_m": 1334.340962802445,
+            "route_fraction": 0.0013199982436145159,
+            "terrain": "talus",
+            "value": 1.334340962802445
+          },
+          {
+            "access": "open",
+            "confidence": 0.82,
+            "edge_id": 2,
+            "factor": "distance",
+            "length_m": 1022.1644797803812,
+            "route_fraction": 0.0010111773194472569,
+            "terrain": "trail",
+            "value": 1.022164479780381
+          }
+        ],
         "distance_m": 4037.309537614021,
+        "dubious_edges": [
+          {
+            "access": "closed",
+            "access_confidence": 0.93,
+            "confidence": 0.81,
+            "crossings": [
+              {
+                "count": 1,
+                "kind": "road",
+                "provenance": {
+                  "source": "fixture-road-context",
+                  "source_id": "service-road"
+                }
+              },
+              {
+                "count": 1,
+                "kind": "water",
+                "provenance": {
+                  "source": "fixture-hydrology-context",
+                  "source_id": "test-creek"
+                }
+              }
+            ],
+            "edge_id": 4,
+            "grade_abs_max": 0.05711527963281148,
+            "grade_distribution": {
+              "flat_m": 980.7908188546152,
+              "rolling_m": 700.0132761765799,
+              "savage_m": 0.0,
+              "steep_m": 0.0
+            },
+            "length_m": 1680.8040950311952,
+            "provenance": "fixture:diagonal",
+            "seed_count": 0,
+            "surface": null,
+            "terrain": "alpine",
+            "terrain_confidence": 0.9
+          },
+          {
+            "access": "open",
+            "access_confidence": 0.9,
+            "confidence": 0.82,
+            "crossings": [
+              {
+                "count": 1,
+                "kind": "water",
+                "provenance": {
+                  "source": "fixture-hydrology-context",
+                  "source_id": "test-creek"
+                }
+              }
+            ],
+            "edge_id": 1,
+            "grade_abs_max": 0.09007592763064971,
+            "grade_distribution": {
+              "flat_m": 0.0,
+              "rolling_m": 1334.340962802445,
+              "savage_m": 0.0,
+              "steep_m": 0.0
+            },
+            "length_m": 1334.340962802445,
+            "provenance": "fixture:east",
+            "seed_count": 2,
+            "surface": null,
+            "terrain": "talus",
+            "terrain_confidence": 0.9
+          },
+          {
+            "access": "open",
+            "access_confidence": 0.9,
+            "confidence": 0.82,
+            "crossings": [
+              {
+                "count": 1,
+                "kind": "road",
+                "provenance": {
+                  "source": "fixture-road-context",
+                  "source_id": "service-road"
+                }
+              }
+            ],
+            "edge_id": 2,
+            "grade_abs_max": 0.02347958716502997,
+            "grade_distribution": {
+              "flat_m": 1022.1644797803812,
+              "rolling_m": 0.0,
+              "savage_m": 0.0,
+              "steep_m": 0.0
+            },
+            "length_m": 1022.1644797803812,
+            "provenance": "fixture:south",
+            "seed_count": 2,
+            "surface": null,
+            "terrain": "trail",
+            "terrain_confidence": 0.9
+          }
+        ],
+        "edge_count": 3,
         "edges": [
           4,
           1,
@@ -5829,10 +6586,35 @@
         "name": "candidate-4",
         "pareto_rank": 2,
         "repeated_edge_fraction": 0.0,
+        "restricted_access_fraction": 0.4163178669784435,
         "road_fraction": 0.02008492449956401,
         "satisfied": false,
         "score": 5236.90607844989,
         "shape": "loop",
+        "source_provenance": [
+          {
+            "source": "fixture",
+            "source_id": "diagonal"
+          },
+          {
+            "source": "fixture",
+            "source_id": "east"
+          },
+          {
+            "source": "fixture",
+            "source_id": "south"
+          }
+        ],
+        "terrain_fraction": {
+          "alpine": 0.4163178669784435,
+          "talus": 0.3305025166811998,
+          "trail": 0.2531796163403568
+        },
+        "terrain_m": {
+          "alpine": 1680.8040950311952,
+          "talus": 1334.340962802445,
+          "trail": 1022.1644797803812
+        },
         "violations": [
           "difficulty 1010.87 above maximum 90.00",
           "restricted-access fraction 41.6% above maximum 0.0%"

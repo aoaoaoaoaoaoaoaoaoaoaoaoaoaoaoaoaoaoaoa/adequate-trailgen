@@ -1510,8 +1510,12 @@ function difficultyText(breakdown) {{
   const xs = topEntries(breakdown, 5);
   return xs.length ? xs.map(([k, v]) => `${{k}} ${{scalar(v)}}`).join(', ') : 'none';
 }}
+function mixText(obj) {{
+  const xs = topEntries(obj, 6);
+  return xs.length ? xs.map(([k, v]) => `${{k}} ${{pct(v)}}`).join(', ') : 'none';
+}}
 function routeText(p) {{
-  return `${{p.name}} | rank ${{p.pareto_rank}} | ${{km(p.distance_m)}} | ascent ${{(p.ascent_m || 0).toFixed(0)}} m | difficulty ${{(p.difficulty || 0).toFixed(1)}} | road ${{pct(p.road_fraction)}} | low confidence ${{pct(p.low_confidence_fraction)}}`;
+  return `${{p.name}} | rank ${{p.pareto_rank}} | ${{km(p.distance_m)}} | ascent ${{(p.ascent_m || 0).toFixed(0)}} m | difficulty ${{(p.difficulty || 0).toFixed(1)}} | road ${{pct(p.road_fraction)}} | low confidence ${{pct(p.low_confidence_fraction)}} | restricted ${{pct(p.restricted_access_fraction)}}`;
 }}
 function escapeHtml(x) {{
   return String(x).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
@@ -1542,9 +1546,11 @@ function routeDiagnostics(p) {{
   const edges = (p.edges || []).map(id => edgeById[id]).filter(Boolean);
   const dubious = edges.slice().sort((a, b) => Number(a.confidence || 0) - Number(b.confidence || 0)).slice(0, 5);
   const brutal = edges.slice().sort((a, b) => Number(b.difficulty || 0) - Number(a.difficulty || 0)).slice(0, 5);
+  const routeDubious = (p.dubious_edges || []).map(e => `edge ${{e.edge_id}} ${{pct(e.confidence)}} ${{e.terrain || 'unknown'}}`);
+  const routeHotspots = (p.difficulty_hotspots || []).map(e => `edge ${{e.edge_id}} ${{e.factor}} ${{scalar(e.value)}} ${{e.terrain || 'unknown'}}`);
   return {{
-    dubious: dubious.map(e => `edge ${{e.edge_id}} ${{pct(e.confidence)}} ${{e.terrain || 'unknown'}}`).join(', ') || 'none',
-    brutal: brutal.map(e => `edge ${{e.edge_id}} ${{scalar(e.difficulty)}} ${{e.terrain || 'unknown'}}`).join(', ') || 'none'
+    dubious: routeDubious.join(', ') || dubious.map(e => `edge ${{e.edge_id}} ${{pct(e.confidence)}} ${{e.terrain || 'unknown'}}`).join(', ') || 'none',
+    brutal: routeHotspots.join(', ') || brutal.map(e => `edge ${{e.edge_id}} ${{scalar(e.difficulty)}} ${{e.terrain || 'unknown'}}`).join(', ') || 'none'
   }};
 }}
 function routeSummary(p) {{
@@ -1560,10 +1566,13 @@ function routeSummary(p) {{
     ${{metricRow('difficulty factors', difficultyText(p.difficulty_breakdown))}}
     ${{metricRow('road/pavement', pct(p.road_fraction))}}
     ${{metricRow('low confidence', pct(p.low_confidence_fraction))}}
+    ${{metricRow('restricted access', pct(p.restricted_access_fraction))}}
     ${{metricRow('repeated edge', pct(p.repeated_edge_fraction))}}
+    ${{metricRow('terrain mix', mixText(p.terrain_fraction))}}
+    ${{metricRow('access mix', mixText(p.access_fraction))}}
     ${{metricRow('violations', (p.violations || []).join(' | ') || 'none')}}
     ${{metricRow('dubious segments', d.dubious)}}
-    ${{metricRow('largest edge costs', d.brutal)}}
+    ${{metricRow('largest difficulty contributors', d.brutal)}}
   </dl>${{rawBlock('route', p)}}`;
 }}
 function show(kind, p) {{ details.innerHTML = kind === 'route' ? routeSummary(p) : edgeSummary(p); }}
@@ -3534,10 +3543,14 @@ mod tests {
         let csv_text = fs::read_to_string(csv)?;
         assert!(csv_text.starts_with("longitude,latitude,elevation_m\n"));
         assert!(csv::route_line_from_str(&csv_text)?.length_m() > 3_000.0);
-        assert_eq!(
-            serde_json::from_str::<Value>(&fs::read_to_string(geojson)?)?["type"],
-            "FeatureCollection"
-        );
+        let selected_geojson = serde_json::from_str::<Value>(&fs::read_to_string(geojson)?)?;
+        assert_eq!(selected_geojson["type"], "FeatureCollection");
+        let selected_properties = &selected_geojson["features"][0]["properties"];
+        assert!(selected_properties["restricted_access_fraction"].is_number());
+        assert!(selected_properties["terrain_fraction"].is_object());
+        assert!(selected_properties["access_fraction"].is_object());
+        assert!(selected_properties["difficulty_hotspots"].is_array());
+        assert!(selected_properties["dubious_edges"].is_array());
         let report = fs::read_to_string(md)?;
         assert!(report.contains("candidate-1"));
         assert!(report.contains("## Constraint Envelope"));
@@ -3554,6 +3567,9 @@ mod tests {
         assert!(generated_map.contains("edge width"));
         assert!(generated_map.contains("difficulty factors"));
         assert!(generated_map.contains("dubious segments"));
+        assert!(generated_map.contains("restricted access"));
+        assert!(generated_map.contains("terrain mix"));
+        assert!(generated_map.contains("largest difficulty contributors"));
         let selected_map = fs::read_to_string(map)?;
         assert!(selected_map.contains("Export Test"));
         assert!(selected_map.contains("candidate-1"));

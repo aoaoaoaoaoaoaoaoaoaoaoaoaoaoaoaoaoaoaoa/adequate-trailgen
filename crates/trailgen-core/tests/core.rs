@@ -518,6 +518,56 @@ fn access_restrictions_are_hard_route_constraints() {
 }
 
 #[test]
+fn route_geojson_exports_full_diagnostics() {
+    let drafts = geojson::network_from_str(include_str!("fixtures/mini_network.geojson")).unwrap();
+    let mut graph = GraphBuilder::default().build(&drafts).unwrap();
+    let overlays =
+        geojson::access_overlays_from_str(include_str!("fixtures/closure_overlay.geojson"))
+            .unwrap();
+    apply_access_overlays(&mut graph, &overlays, None, DifficultyWeights::default());
+    let edge = graph
+        .edges
+        .iter()
+        .find(|edge| edge.attr.access == Access::Closed)
+        .expect("fixture closure should touch an edge");
+    let route = Route::from_edges(
+        "closed-segment",
+        &graph,
+        edge.a,
+        vec![edge.id],
+        &LoopConstraints {
+            min_distance_m: 0.0,
+            max_distance_m: 10_000.0,
+            max_difficulty: 10_000.0,
+            allowed_shapes: vec![RouteShape::Open],
+            ..LoopConstraints::default()
+        },
+    );
+
+    let gj = geojson::routes_to_geojson(&graph, &[route]);
+    let properties = &gj["features"][0]["properties"];
+
+    assert_eq!(properties["restricted_access_fraction"], 1.0);
+    assert_eq!(properties["access_fraction"]["closed"], 1.0);
+    assert!(properties["terrain_fraction"].is_object());
+    assert!(properties["terrain_m"].is_object());
+    assert!(properties["access_m"].is_object());
+    assert!(
+        properties["constraint_penalty"]
+            .as_f64()
+            .is_some_and(|x| x > 0.0)
+    );
+    assert_eq!(properties["edge_count"], 1);
+    assert_eq!(properties["difficulty_hotspots"][0]["edge_id"], edge.id.0);
+    assert_eq!(properties["dubious_edges"][0]["edge_id"], edge.id.0);
+    assert!(
+        properties["source_provenance"]
+            .as_array()
+            .is_some_and(|xs| !xs.is_empty())
+    );
+}
+
+#[test]
 fn context_overlays_infer_road_and_water_crossings() {
     let drafts = geojson::network_from_str(include_str!("fixtures/mini_network.geojson")).unwrap();
     let mut graph = GraphBuilder::default().build(&drafts).unwrap();

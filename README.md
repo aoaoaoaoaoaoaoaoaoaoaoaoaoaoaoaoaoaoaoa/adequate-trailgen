@@ -39,7 +39,7 @@ Generated artifacts land in the project directory:
 - `sources/access-overlays.json`: applied access/closure overlays
 - `sources/access-baseline.json`: pre-access graph state used to re-materialize dated overlays without cumulative access drift
 - `sources/context-overlays.json`: applied road/hydrology context overlays from GeoJSON or shapefile linework
-- `routes/generated.geojson`: Pareto-ranked generated loops with persisted route scores
+- `routes/generated.geojson`: Pareto-ranked generated loops with persisted route scores, constraint penalties, terrain/access fractions, dubious segments, difficulty hotspots, and source provenance summaries
 - `routes/generated.graph.json`: effective graph snapshot used by generated route exports, reports, and maps
 - `routes/generated.manifest.json`: app version, random seed, requested/concrete solver, effective config, fingerprinted source manifest, graph summary, exact route edge sequences, and artifact list for reproducing a generation run
 - `routes/candidate-*.gpx`: GPX exports
@@ -51,7 +51,7 @@ Generated artifacts land in the project directory:
 - `reports/generated.md`: route diagnostics, the generation constraint envelope, and fingerprinted source manifest summary
 - `reports/map.html`: self-contained offline SVG map of graph terrain, edge difficulty, confidence, generated routes, and selected route diagnostics
 
-Use `trailgen export <project> --route candidate-1 --format gpx|geojson|csv|kml|kmz --output file` to re-export a selected generated route after the search run. Use `trailgen report <project> [--route candidate-1] [--output file.md]` to render either all generated routes or one named route, including the constraint envelope used for that generation run. Use `trailgen map <project> [--output file.html]` to regenerate the offline diagnostic map without rerunning the solver. These commands read `routes/generated.graph.json` when generated routes exist, so later cached-graph rerating or access-date changes do not silently reinterpret an old route.
+Use `trailgen export <project> --route candidate-1 --format gpx|geojson|csv|kml|kmz --output file` to re-export a selected generated route after the search run; GeoJSON route exports carry the same route-level diagnostic fields as `routes/generated.geojson`. Use `trailgen report <project> [--route candidate-1] [--output file.md]` to render either all generated routes or one named route, including the constraint envelope used for that generation run. Use `trailgen map <project> [--output file.html]` to regenerate the offline diagnostic map without rerunning the solver. These commands read `routes/generated.graph.json` when generated routes exist, so later cached-graph rerating or access-date changes do not silently reinterpret an old route.
 
 Use `trailgen rate <project> --route completed.gpx` to score a completed hike against the current graph. Route-file snapping is bounded by `max_route_snap_m`; use `--max-route-snap-m N` only for deliberately coarse tracks. Use `trailgen calibrate <project> --route completed.gpx --target-difficulty N --family elevation|technical|navigation` to dry-run a difficulty-weight patch from that hike; add `--write` to update `trailgen.toml` and rerate cached edge costs. `trailgen rerate <project>` reapplies hand-edited `[difficulty]` weights to every cached graph surface under `cache/`.
 
