@@ -1,0 +1,98 @@
+[
+  {
+    "name": "Known Good KMZ Loop",
+    "source_path": "demo/mini-loop/seeds/imports/known-good-kmz-loop.kmz",
+    "original_source_path": "demo/mini-loop/routes/candidate-1.kmz",
+    "source_format": "kmz",
+    "point_count": 257,
+    "snapped_edges": [
+      2,
+      1,
+      4
+    ],
+    "start": 3,
+    "closed_loop": true,
+    "metrics": {
+      "shape": "loop",
+      "distance_m": 4037.3095376140213,
+      "ascent_m": 96.19999999999914,
+      "descent_m": 96.19999999999914,
+      "difficulty": 1007.9548277759076,
+      "difficulty_breakdown": {
+        "distance": 4.037309537614021,
+        "ascent": 1.1543999999999897,
+        "descent": 0.2885999999999974,
+        "grade": 0.332473760877784,
+        "terrain": 1.1698663629272041,
+        "road": 0.16217811448869457,
+        "confidence": 0.8100000000000003,
+        "access": 1000.0
+      },
+      "road_fraction": 0.020084924499564005,
+      "low_confidence_fraction": 0.0,
+      "repeated_edge_fraction": 0.0,
+      "crossings": {
+        "road": 2,
+        "water": 2
+      },
+      "terrain_m": {
+        "trail": 1022.1644797803812,
+        "alpine": 1680.8040950311952,
+        "talus": 1334.340962802445
+      }
+    },
+    "provenance": {
+      "source": "seed-route",
+      "layer": "kmz",
+      "source_id": "Known Good KMZ Loop"
+    }
+  },
+  {
+    "name": "Known Good Loop",
+    "source_path": "demo/mini-loop/seeds/imports/known-good-loop.gpx",
+    "original_source_path": "demo/mini-loop/routes/candidate-1.gpx",
+    "source_format": "gpx",
+    "point_count": 257,
+    "snapped_edges": [
+      2,
+      1,
+      4
+    ],
+    "start": 3,
+    "closed_loop": true,
+    "metrics": {
+      "shape": "loop",
+      "distance_m": 4037.309537614022,
+      "ascent_m": 96.19999999999914,
+      "descent_m": 96.19999999999914,
+      "difficulty": 1007.9548277759076,
+      "difficulty_breakdown": {
+        "distance": 4.037309537614021,
+        "ascent": 1.1543999999999897,
+        "descent": 0.2885999999999974,
+        "grade": 0.332473760877784,
+        "terrain": 1.169866362927204,
+        "road": 0.16217811448869457,
+        "confidence": 0.8100000000000003,
+        "access": 1000.0
+      },
+      "road_fraction": 0.020084924499564005,
+      "low_confidence_fraction": 0.0,
+      "repeated_edge_fraction": 0.0,
+      "crossings": {
+        "road": 2,
+        "water": 2
+      },
+      "terrain_m": {
+        "trail": 1022.1644797803812,
+        "alpine": 1680.8040950311952,
+        "talus": 1334.340962802445
+      }
+    },
+    "provenance": {
+      "source": "seed-route",
+      "layer": "gpx",
+      "source_id": "Known Good Loop"
+    }
+  }
+]

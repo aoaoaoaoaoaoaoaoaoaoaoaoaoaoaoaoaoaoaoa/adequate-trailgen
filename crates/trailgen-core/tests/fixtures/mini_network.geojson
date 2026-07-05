@@ -1,0 +1,35 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "id": "north", "source": "fixture", "terrain": "trail", "access": "open", "confidence": 0.95 },
+      "geometry": { "type": "LineString", "coordinates": [[-105.0000, 40.0120, 1710], [-104.9880, 40.0120, 1760]] }
+    },
+    {
+      "type": "Feature",
+      "properties": { "id": "east", "source": "fixture", "terrain": "forest", "access": "open", "confidence": 0.90 },
+      "geometry": { "type": "LineString", "coordinates": [[-104.9880, 40.0120, 1760], [-104.9880, 40.0000, 1680]] }
+    },
+    {
+      "type": "Feature",
+      "properties": { "id": "south", "source": "fixture", "terrain": "trail", "access": "open", "confidence": 0.92 },
+      "geometry": { "type": "LineString", "coordinates": [[-104.9880, 40.0000, 1680], [-105.0000, 40.0000, 1660]] }
+    },
+    {
+      "type": "Feature",
+      "properties": { "id": "west", "source": "fixture", "terrain": "talus", "access": "open", "confidence": 0.70 },
+      "geometry": { "type": "LineString", "coordinates": [[-105.0000, 40.0000, 1660], [-105.0000, 40.0120, 1710]] }
+    },
+    {
+      "type": "Feature",
+      "properties": { "id": "diagonal", "source": "fixture", "terrain": "alpine", "access": "open", "confidence": 0.82 },
+      "geometry": { "type": "LineString", "coordinates": [[-105.0000, 40.0000, 1660], [-104.9880, 40.0120, 1760]] }
+    },
+    {
+      "type": "Feature",
+      "properties": { "id": "road-spur", "source": "fixture", "terrain": "road", "access": "open", "confidence": 0.65, "road_exposure": 1.0 },
+      "geometry": { "type": "LineString", "coordinates": [[-104.9880, 40.0000, 1680], [-104.9800, 40.0000, 1685]] }
+    }
+  ]
+}

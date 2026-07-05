@@ -1,0 +1,38 @@
+[
+  {
+    "name": "diagonal-closure",
+    "access": "closed",
+    "confidence": 0.93,
+    "tolerance_m": 20.0,
+    "provenance": {
+      "source": "fixture-closure",
+      "layer": "seasonal-closures",
+      "source_id": "diagonal-closure"
+    },
+    "geometry": {
+      "kind": "polygon",
+      "value": [
+        {
+          "lon": -105.0,
+          "lat": 40.002
+        },
+        {
+          "lon": -104.99,
+          "lat": 40.002
+        },
+        {
+          "lon": -104.99,
+          "lat": 40.01
+        },
+        {
+          "lon": -105.0,
+          "lat": 40.01
+        },
+        {
+          "lon": -105.0,
+          "lat": 40.002
+        }
+      ]
+    }
+  }
+]

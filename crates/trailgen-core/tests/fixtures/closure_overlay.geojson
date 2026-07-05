@@ -1,0 +1,25 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "diagonal-closure",
+        "source": "fixture-closure",
+        "layer": "seasonal-closures",
+        "access": "closed",
+        "confidence": 0.93
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [-105.0000, 40.0020],
+          [-104.9900, 40.0020],
+          [-104.9900, 40.0100],
+          [-105.0000, 40.0100],
+          [-105.0000, 40.0020]
+        ]]
+      }
+    }
+  ]
+}

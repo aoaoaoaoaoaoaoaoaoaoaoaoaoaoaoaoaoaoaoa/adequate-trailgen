@@ -1,0 +1,35 @@
+[workspace]
+members = ["crates/trailgen-core", "crates/trailgen-cli"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://example.invalid/adequate-trailgen"
+rust-version = "1.88"
+
+[workspace.dependencies]
+anyhow = "1.0.98"
+clap = { version = "4.5.40", features = ["derive"] }
+roxmltree = "0.20.0"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+sha2 = "0.10.9"
+tempfile = "3.20.0"
+thiserror = "2.0.12"
+toml = "0.8.23"
+trailgen-core = { path = "crates/trailgen-core" }
+zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+multiple_crate_versions = "allow"

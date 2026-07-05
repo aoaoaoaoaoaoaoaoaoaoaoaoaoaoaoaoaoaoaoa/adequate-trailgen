@@ -1,0 +1,31 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "service-road",
+        "kind": "road",
+        "source": "fixture-road-context",
+        "confidence": 0.88
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [[-104.9940, 39.9980], [-104.9940, 40.0140]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "test-creek",
+        "kind": "water",
+        "source": "fixture-hydrology-context",
+        "confidence": 0.86
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [[-105.0020, 40.0060], [-104.9860, 40.0060]]
+      }
+    }
+  ]
+}

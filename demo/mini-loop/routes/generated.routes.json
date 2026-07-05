@@ -1,0 +1,190 @@
+[
+  {
+    "name": "candidate-1",
+    "start": 3,
+    "edges": [
+      2,
+      1,
+      4
+    ],
+    "pareto_rank": 1,
+    "metrics": {
+      "shape": "loop",
+      "distance_m": 4037.3095376140213,
+      "ascent_m": 96.19999999999914,
+      "descent_m": 96.19999999999914,
+      "difficulty": 1007.9548277759076,
+      "difficulty_breakdown": {
+        "distance": 4.037309537614021,
+        "ascent": 1.1543999999999897,
+        "descent": 0.2885999999999974,
+        "grade": 0.332473760877784,
+        "terrain": 1.1698663629272041,
+        "road": 0.16217811448869457,
+        "confidence": 0.8100000000000003,
+        "access": 1000.0
+      },
+      "road_fraction": 0.020084924499564005,
+      "low_confidence_fraction": 0.0,
+      "repeated_edge_fraction": 0.0,
+      "crossings": {
+        "road": 2,
+        "water": 2
+      },
+      "terrain_m": {
+        "trail": 1022.1644797803812,
+        "alpine": 1680.8040950311952,
+        "talus": 1334.340962802445
+      }
+    },
+    "verdict": {
+      "satisfied": false,
+      "violations": [
+        "difficulty 1007.95 above maximum 90.00"
+      ],
+      "penalty": 1019.9498086398974
+    },
+    "score": 1070.3475500286927
+  },
+  {
+    "name": "candidate-2",
+    "start": 3,
+    "edges": [
+      2,
+      1,
+      0,
+      3
+    ],
+    "pareto_rank": 1,
+    "metrics": {
+      "shape": "loop",
+      "distance_m": 4712.831226933267,
+      "ascent_m": 136.9999999999991,
+      "descent_m": 136.9999999999991,
+      "difficulty": 1010.4285636421024,
+      "difficulty_breakdown": {
+        "distance": 4.712831226933266,
+        "ascent": 1.6439999999999888,
+        "descent": 0.4109999999999973,
+        "grade": 0.5284402054463663,
+        "terrain": 1.7346432516431782,
+        "road": 0.12264895807970262,
+        "confidence": 1.2750000000000001,
+        "access": 1000.0
+      },
+      "road_fraction": 0.013012237461292745,
+      "low_confidence_fraction": 0.0,
+      "repeated_edge_fraction": 0.0,
+      "crossings": {
+        "road": 2,
+        "water": 2
+      },
+      "terrain_m": {
+        "trail": 2044.149301328377,
+        "talus": 2668.68192560489
+      }
+    },
+    "verdict": {
+      "satisfied": false,
+      "violations": [
+        "difficulty 1010.43 above maximum 90.00"
+      ],
+      "penalty": 1022.6984040467805
+    },
+    "score": 1073.2198322288857
+  },
+  {
+    "name": "candidate-3",
+    "start": 3,
+    "edges": [
+      4,
+      1,
+      2
+    ],
+    "pareto_rank": 2,
+    "metrics": {
+      "shape": "loop",
+      "distance_m": 4037.309537614021,
+      "ascent_m": 96.19999999999914,
+      "descent_m": 96.19999999999914,
+      "difficulty": 1007.9548277759076,
+      "difficulty_breakdown": {
+        "distance": 4.037309537614021,
+        "ascent": 1.1543999999999897,
+        "descent": 0.2885999999999974,
+        "grade": 0.332473760877784,
+        "terrain": 1.1698663629272041,
+        "road": 0.16217811448869457,
+        "confidence": 0.8100000000000003,
+        "access": 1000.0
+      },
+      "road_fraction": 0.02008492449956401,
+      "low_confidence_fraction": 0.0,
+      "repeated_edge_fraction": 0.0,
+      "crossings": {
+        "road": 2,
+        "water": 2
+      },
+      "terrain_m": {
+        "trail": 1022.1644797803812,
+        "alpine": 1680.8040950311952,
+        "talus": 1334.340962802445
+      }
+    },
+    "verdict": {
+      "satisfied": false,
+      "violations": [
+        "difficulty 1007.95 above maximum 90.00"
+      ],
+      "penalty": 1019.9498086398974
+    },
+    "score": 1070.3475500286927
+  },
+  {
+    "name": "candidate-4",
+    "start": 3,
+    "edges": [
+      3,
+      0,
+      1,
+      2
+    ],
+    "pareto_rank": 2,
+    "metrics": {
+      "shape": "loop",
+      "distance_m": 4712.831226933266,
+      "ascent_m": 136.9999999999991,
+      "descent_m": 136.9999999999991,
+      "difficulty": 1010.4285636421024,
+      "difficulty_breakdown": {
+        "distance": 4.712831226933267,
+        "ascent": 1.6439999999999888,
+        "descent": 0.4109999999999973,
+        "grade": 0.5284402054463663,
+        "terrain": 1.7346432516431782,
+        "road": 0.12264895807970262,
+        "confidence": 1.2750000000000001,
+        "access": 1000.0
+      },
+      "road_fraction": 0.013012237461292748,
+      "low_confidence_fraction": 0.0,
+      "repeated_edge_fraction": 0.0,
+      "crossings": {
+        "road": 2,
+        "water": 2
+      },
+      "terrain_m": {
+        "trail": 2044.149301328377,
+        "talus": 2668.68192560489
+      }
+    },
+    "verdict": {
+      "satisfied": false,
+      "violations": [
+        "difficulty 1010.43 above maximum 90.00"
+      ],
+      "penalty": 1022.6984040467805
+    },
+    "score": 1073.2198322288857
+  }
+]

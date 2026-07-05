@@ -1,0 +1,419 @@
+{
+  "adapters": [
+    {
+      "id": "geojson-network",
+      "kind": "trail-network",
+      "status": "implemented",
+      "consumes": [
+        "geojson",
+        "json"
+      ],
+      "produces": [
+        "SegmentDraft",
+        "TrailGraph"
+      ],
+      "note": "Provider-neutral LineString and MultiLineString network ingestion."
+    },
+    {
+      "id": "geojson-route",
+      "kind": "seed-route",
+      "status": "implemented",
+      "consumes": [
+        "geojson",
+        "json"
+      ],
+      "produces": [
+        "LineString",
+        "snapped route metrics"
+      ],
+      "note": "User-supplied seed route import."
+    },
+    {
+      "id": "gpx-route",
+      "kind": "seed-route",
+      "status": "implemented",
+      "consumes": [
+        "gpx",
+        "csv"
+      ],
+      "produces": [
+        "LineString",
+        "snapped route metrics"
+      ],
+      "note": "GPX and CSV route import/export, including user-supplied app exports."
+    },
+    {
+      "id": "kml-route",
+      "kind": "seed-route",
+      "status": "implemented",
+      "consumes": [
+        "kml",
+        "kmz"
+      ],
+      "produces": [
+        "LineString",
+        "snapped route metrics"
+      ],
+      "note": "KML/KMZ route import/export for manual map-app exchange."
+    },
+    {
+      "id": "arc-ascii-elevation",
+      "kind": "elevation",
+      "status": "implemented",
+      "consumes": [
+        "asc"
+      ],
+      "produces": [
+        "sampled elevation profile",
+        "edge ascent/descent"
+      ],
+      "note": "Arc/Info ASCII Grid DEM sampling for local elevation enrichment."
+    },
+    {
+      "id": "geospatial-elevation-raster",
+      "kind": "elevation",
+      "status": "planned",
+      "consumes": [
+        "tif",
+        "tiff",
+        "vrt"
+      ],
+      "produces": [
+        "sampled elevation profile",
+        "edge ascent/descent"
+      ],
+      "note": "USGS/3DEP, Copernicus DEM, or local GeoTIFF/VRT sampling seam."
+    },
+    {
+      "id": "geojson-terrain-overlay",
+      "kind": "terrain",
+      "status": "implemented",
+      "consumes": [
+        "geojson",
+        "json"
+      ],
+      "produces": [
+        "terrain overrides",
+        "confidence/provenance"
+      ],
+      "note": "GeoJSON land-cover, surface, or user terrain overlays applied after graph construction."
+    },
+    {
+      "id": "geojson-access-overlay",
+      "kind": "access",
+      "status": "implemented",
+      "consumes": [
+        "geojson",
+        "json"
+      ],
+      "produces": [
+        "access overrides",
+        "confidence/provenance"
+      ],
+      "note": "GeoJSON access/status overlay applied after graph construction."
+    },
+    {
+      "id": "geojson-closure-overlay",
+      "kind": "closure",
+      "status": "implemented",
+      "consumes": [
+        "geojson",
+        "json"
+      ],
+      "produces": [
+        "access overrides",
+        "confidence/provenance"
+      ],
+      "note": "GeoJSON closure/restriction overlay applied after graph construction."
+    },
+    {
+      "id": "geojson-road-context",
+      "kind": "road",
+      "status": "implemented",
+      "consumes": [
+        "geojson",
+        "json"
+      ],
+      "produces": [
+        "road crossings",
+        "road exposure hints"
+      ],
+      "note": "GeoJSON road/street context lines used to infer trail crossings."
+    },
+    {
+      "id": "geojson-hydrology-context",
+      "kind": "hydrology",
+      "status": "implemented",
+      "consumes": [
+        "geojson",
+        "json"
+      ],
+      "produces": [
+        "water crossings"
+      ],
+      "note": "GeoJSON stream/river context lines used to infer water crossings."
+    },
+    {
+      "id": "shapefile-closure-layer",
+      "kind": "closure",
+      "status": "planned",
+      "consumes": [
+        "shp"
+      ],
+      "produces": [
+        "access overrides",
+        "confidence/provenance"
+      ],
+      "note": "Future official park/agency shapefile closure and restriction layers."
+    }
+  ],
+  "recommendations": [
+    {
+      "kind": "trail-network",
+      "priority": "required",
+      "adapter_ids": [
+        "geojson-network"
+      ],
+      "suggested_paths": [
+        "sources/trails.geojson",
+        "sources/network.geojson"
+      ],
+      "search_terms": [
+        "official trail GIS line layer",
+        "OSM hiking path extract",
+        "park trail network GeoJSON"
+      ],
+      "acceptance": "LineString or MultiLineString trail geometries covering the AOI, with names, access/surface tags when available, and enough topology to build junctions.",
+      "rationale": "The normalized graph cannot exist without a routable trail network.",
+      "area": {
+        "west": -105.02,
+        "south": 39.99,
+        "east": -104.98,
+        "north": 40.02
+      }
+    },
+    {
+      "kind": "elevation",
+      "priority": "required",
+      "adapter_ids": [
+        "arc-ascii-elevation",
+        "geospatial-elevation-raster"
+      ],
+      "suggested_paths": [
+        "sources/dem.asc",
+        "sources/dem.tif"
+      ],
+      "search_terms": [
+        "USGS 3DEP DEM",
+        "Copernicus DEM",
+        "local elevation raster for hiking area"
+      ],
+      "acceptance": "DEM coverage intersects every trail edge; vertical units and CRS are documented before enrichment.",
+      "rationale": "Long-day route quality depends on ascent, descent, grade, and sustained steepness.",
+      "area": {
+        "west": -105.02,
+        "south": 39.99,
+        "east": -104.98,
+        "north": 40.02
+      }
+    },
+    {
+      "kind": "terrain",
+      "priority": "recommended",
+      "adapter_ids": [
+        "geojson-terrain-overlay"
+      ],
+      "suggested_paths": [
+        "sources/terrain.geojson",
+        "sources/landcover.geojson"
+      ],
+      "search_terms": [
+        "land cover polygons",
+        "trail surface GIS layer",
+        "alpine talus scramble terrain map"
+      ],
+      "acceptance": "Terrain or surface features can be normalized into known buckets and carry confidence/provenance.",
+      "rationale": "Terrain multipliers are inspectable only when roughness evidence is explicit instead of magical.",
+      "area": {
+        "west": -105.02,
+        "south": 39.99,
+        "east": -104.98,
+        "north": 40.02
+      }
+    },
+    {
+      "kind": "closure",
+      "priority": "recommended",
+      "adapter_ids": [
+        "geojson-closure-overlay",
+        "shapefile-closure-layer"
+      ],
+      "suggested_paths": [
+        "sources/closures.geojson",
+        "sources/access.geojson"
+      ],
+      "search_terms": [
+        "official trail closure layer",
+        "park access restriction GIS",
+        "seasonal closure boundary GeoJSON"
+      ],
+      "acceptance": "Closure, private, restricted, and open statuses can be attached to graph edges with dated provenance.",
+      "rationale": "A beautiful generated loop is trash if it crosses a closed trail or forbidden parcel.",
+      "area": {
+        "west": -105.02,
+        "south": 39.99,
+        "east": -104.98,
+        "north": 40.02
+      }
+    },
+    {
+      "kind": "road",
+      "priority": "recommended",
+      "adapter_ids": [
+        "geojson-road-context"
+      ],
+      "suggested_paths": [
+        "sources/roads.geojson",
+        "sources/context-roads.geojson"
+      ],
+      "search_terms": [
+        "road centerline GeoJSON",
+        "street context lines",
+        "OSM road extract"
+      ],
+      "acceptance": "Road context lines cover the AOI and can identify crossings or road-exposed trail segments.",
+      "rationale": "Road exposure and road crossings are hard constraints for many hikes.",
+      "area": {
+        "west": -105.02,
+        "south": 39.99,
+        "east": -104.98,
+        "north": 40.02
+      }
+    },
+    {
+      "kind": "hydrology",
+      "priority": "recommended",
+      "adapter_ids": [
+        "geojson-hydrology-context"
+      ],
+      "suggested_paths": [
+        "sources/hydrology.geojson",
+        "sources/streams.geojson"
+      ],
+      "search_terms": [
+        "NHD stream lines",
+        "hydrology GeoJSON",
+        "river creek crossing layer"
+      ],
+      "acceptance": "Hydrology linework intersects likely crossings and carries source confidence where known.",
+      "rationale": "Water crossings are route diagnostics, risk signals, and useful report context.",
+      "area": {
+        "west": -105.02,
+        "south": 39.99,
+        "east": -104.98,
+        "north": 40.02
+      }
+    },
+    {
+      "kind": "seed-route",
+      "priority": "optional",
+      "adapter_ids": [
+        "gpx-route",
+        "geojson-route",
+        "kml-route"
+      ],
+      "suggested_paths": [
+        "sources/seeds/completed.gpx",
+        "sources/seeds/alltrails-export.gpx",
+        "sources/seeds/reference.geojson"
+      ],
+      "search_terms": [
+        "personal completed hike GPX",
+        "AllTrails export GPX",
+        "reference route KML"
+      ],
+      "acceptance": "Seed routes snap to the current graph and their provenance is preserved.",
+      "rationale": "Seeds improve confidence/popularity hints and provide validation loops without contaminating the provider-neutral model.",
+      "area": {
+        "west": -105.02,
+        "south": 39.99,
+        "east": -104.98,
+        "north": 40.02
+      }
+    }
+  ],
+  "candidates": [
+    {
+      "path": "crates/trailgen-core/tests/fixtures/closure_overlay.geojson",
+      "kind": "closure",
+      "adapter_id": "geojson-closure-overlay",
+      "fingerprint": {
+        "bytes": 538,
+        "sha256": "d6cd44ab43fbbee3fc58581bd8a8b9a97c413eb283d17dfc37ff3c1984397d2d"
+      }
+    },
+    {
+      "path": "crates/trailgen-core/tests/fixtures/context_overlay.geojson",
+      "kind": "road",
+      "adapter_id": "geojson-road-context",
+      "fingerprint": {
+        "bytes": 694,
+        "sha256": "5aace6064e9fb87161fc95d71183e5d639f8eee46b86c3b3c084eba09f0171bd"
+      }
+    },
+    {
+      "path": "crates/trailgen-core/tests/fixtures/context_overlay.geojson",
+      "kind": "hydrology",
+      "adapter_id": "geojson-hydrology-context",
+      "fingerprint": {
+        "bytes": 694,
+        "sha256": "5aace6064e9fb87161fc95d71183e5d639f8eee46b86c3b3c084eba09f0171bd"
+      }
+    },
+    {
+      "path": "crates/trailgen-core/tests/fixtures/mini_dem.asc",
+      "kind": "elevation",
+      "adapter_id": "arc-ascii-elevation",
+      "fingerprint": {
+        "bytes": 169,
+        "sha256": "8200f8e889b76ecff72d845148d2476a5b4f75edbf782e6082a5e300a54e0859"
+      }
+    },
+    {
+      "path": "crates/trailgen-core/tests/fixtures/mini_network.geojson",
+      "kind": "trail-network",
+      "adapter_id": "geojson-network",
+      "fingerprint": {
+        "bytes": 1714,
+        "sha256": "eae6f4f939c209fb1ab455e581d4e50f7dffab68d7a6d7f4c9800e65fec64857"
+      }
+    },
+    {
+      "path": "crates/trailgen-core/tests/fixtures/terrain_overlay.geojson",
+      "kind": "terrain",
+      "adapter_id": "geojson-terrain-overlay",
+      "fingerprint": {
+        "bytes": 535,
+        "sha256": "2136c1627f1898ed1d6524f923e2a1e4edbcaab9cd6058a0cccebb3dfd62e936"
+      }
+    },
+    {
+      "path": "demo/mini-loop/seeds/imports/known-good-kmz-loop.kmz",
+      "kind": "seed-route",
+      "adapter_id": "kml-route",
+      "fingerprint": {
+        "bytes": 2211,
+        "sha256": "62446dfdccf78cda3838cb4cc566d8148edc18046412870f6ad7a50e15922f25"
+      }
+    },
+    {
+      "path": "demo/mini-loop/seeds/imports/known-good-loop.gpx",
+      "kind": "seed-route",
+      "adapter_id": "gpx-route",
+      "fingerprint": {
+        "bytes": 20255,
+        "sha256": "e088880059b82e1bfba8cb3e69fad5d054185cf166ead03600564f4319939ee3"
+      }
+    }
+  ]
+}

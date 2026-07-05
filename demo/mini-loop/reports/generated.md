@@ -1,0 +1,245 @@
+# Generated Hiking Routes
+
+## candidate-1
+
+- score: 1070.35
+- pareto rank: 1
+- shape: Loop
+- distance: 4.04 km
+- ascent/descent: 96 m / 96 m
+- scalar difficulty: 1007.95
+- road exposure: 2.0%
+- low-confidence fraction: 0.0%
+- repeated-edge fraction: 0.0%
+- constraint verdict: violated
+
+Violations:
+- difficulty 1007.95 above maximum 90.00
+
+Difficulty decomposition:
+- access: 1000.00 (99.2%)
+- distance: 4.04 (0.4%)
+- terrain: 1.17 (0.1%)
+- ascent: 1.15 (0.1%)
+- confidence: 0.81 (0.1%)
+- grade: 0.33 (0.0%)
+- descent: 0.29 (0.0%)
+- road: 0.16 (0.0%)
+
+Access warnings:
+- edge 4: Closed, confidence 93%, provenance fixture-closure:diagonal-closure
+
+Crossings:
+- Road: 2
+- Water: 2
+
+Terrain mix:
+- Trail: 25.3%
+- Alpine: 41.6%
+- Talus: 33.1%
+
+Largest difficulty contributors:
+- edge 4 access: 1000.00 (99.2% of route), Alpine, 1681 m
+- edge 4 distance: 1.68 (0.2% of route), Alpine, 1681 m
+- edge 1 distance: 1.33 (0.1% of route), Talus, 1334 m
+- edge 2 distance: 1.02 (0.1% of route), Trail, 1022 m
+- edge 1 terrain: 0.87 (0.1% of route), Talus, 1334 m
+
+Most dubious segments:
+- edge 2: 1022 m, Trail, grade max 2.3%, crossings 1, confidence 0.82, seed count 2, provenance fixture:south
+- edge 1: 1334 m, Talus, grade max 9.0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:east
+- edge 4: 1681 m, Alpine, grade max 5.7%, crossings 2, confidence 0.82, seed count 2, provenance fixture:diagonal
+
+Terrain/elevation evidence:
+- edge 2: Trail 90%: explicit source terrain tag; elevation source arc-ascii-grid
+- edge 1: Forest 90%: explicit source terrain tag; elevation source arc-ascii-grid
+- edge 4: Alpine 90%: explicit source terrain tag; elevation source arc-ascii-grid
+
+## candidate-2
+
+- score: 1073.22
+- pareto rank: 1
+- shape: Loop
+- distance: 4.71 km
+- ascent/descent: 137 m / 137 m
+- scalar difficulty: 1010.43
+- road exposure: 1.3%
+- low-confidence fraction: 0.0%
+- repeated-edge fraction: 0.0%
+- constraint verdict: violated
+
+Violations:
+- difficulty 1010.43 above maximum 90.00
+
+Difficulty decomposition:
+- access: 1000.00 (99.0%)
+- distance: 4.71 (0.5%)
+- terrain: 1.73 (0.2%)
+- ascent: 1.64 (0.2%)
+- confidence: 1.28 (0.1%)
+- grade: 0.53 (0.1%)
+- descent: 0.41 (0.0%)
+- road: 0.12 (0.0%)
+
+Access warnings:
+- edge 3: Closed, confidence 93%, provenance fixture-closure:diagonal-closure
+
+Crossings:
+- Road: 2
+- Water: 2
+
+Terrain mix:
+- Trail: 43.4%
+- Talus: 56.6%
+
+Largest difficulty contributors:
+- edge 3 access: 1000.00 (99.0% of route), Talus, 1334 m
+- edge 3 ascent: 1.36 (0.1% of route), Talus, 1334 m
+- edge 1 distance: 1.33 (0.1% of route), Talus, 1334 m
+- edge 3 distance: 1.33 (0.1% of route), Talus, 1334 m
+- edge 2 distance: 1.02 (0.1% of route), Trail, 1022 m
+
+Most dubious segments:
+- edge 3: 1334 m, Talus, grade max 9.0%, crossings 1, confidence 0.70, seed count 0, provenance fixture:west
+- edge 0: 1022 m, Trail, grade max 4.0%, crossings 1, confidence 0.81, seed count 0, provenance fixture:north
+- edge 2: 1022 m, Trail, grade max 2.3%, crossings 1, confidence 0.82, seed count 2, provenance fixture:south
+- edge 1: 1334 m, Talus, grade max 9.0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:east
+
+Terrain/elevation evidence:
+- edge 2: Trail 90%: explicit source terrain tag; elevation source arc-ascii-grid
+- edge 1: Forest 90%: explicit source terrain tag; elevation source arc-ascii-grid
+- edge 0: Trail 90%: explicit source terrain tag; elevation source arc-ascii-grid
+- edge 3: Talus 90%: explicit source terrain tag; elevation source arc-ascii-grid
+
+## candidate-3
+
+- score: 1070.35
+- pareto rank: 2
+- shape: Loop
+- distance: 4.04 km
+- ascent/descent: 96 m / 96 m
+- scalar difficulty: 1007.95
+- road exposure: 2.0%
+- low-confidence fraction: 0.0%
+- repeated-edge fraction: 0.0%
+- constraint verdict: violated
+
+Violations:
+- difficulty 1007.95 above maximum 90.00
+
+Difficulty decomposition:
+- access: 1000.00 (99.2%)
+- distance: 4.04 (0.4%)
+- terrain: 1.17 (0.1%)
+- ascent: 1.15 (0.1%)
+- confidence: 0.81 (0.1%)
+- grade: 0.33 (0.0%)
+- descent: 0.29 (0.0%)
+- road: 0.16 (0.0%)
+
+Access warnings:
+- edge 4: Closed, confidence 93%, provenance fixture-closure:diagonal-closure
+
+Crossings:
+- Road: 2
+- Water: 2
+
+Terrain mix:
+- Trail: 25.3%
+- Alpine: 41.6%
+- Talus: 33.1%
+
+Largest difficulty contributors:
+- edge 4 access: 1000.00 (99.2% of route), Alpine, 1681 m
+- edge 4 distance: 1.68 (0.2% of route), Alpine, 1681 m
+- edge 1 distance: 1.33 (0.1% of route), Talus, 1334 m
+- edge 2 distance: 1.02 (0.1% of route), Trail, 1022 m
+- edge 1 terrain: 0.87 (0.1% of route), Talus, 1334 m
+
+Most dubious segments:
+- edge 4: 1681 m, Alpine, grade max 5.7%, crossings 2, confidence 0.82, seed count 2, provenance fixture:diagonal
+- edge 1: 1334 m, Talus, grade max 9.0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:east
+- edge 2: 1022 m, Trail, grade max 2.3%, crossings 1, confidence 0.82, seed count 2, provenance fixture:south
+
+Terrain/elevation evidence:
+- edge 4: Alpine 90%: explicit source terrain tag; elevation source arc-ascii-grid
+- edge 1: Forest 90%: explicit source terrain tag; elevation source arc-ascii-grid
+- edge 2: Trail 90%: explicit source terrain tag; elevation source arc-ascii-grid
+
+## candidate-4
+
+- score: 1073.22
+- pareto rank: 2
+- shape: Loop
+- distance: 4.71 km
+- ascent/descent: 137 m / 137 m
+- scalar difficulty: 1010.43
+- road exposure: 1.3%
+- low-confidence fraction: 0.0%
+- repeated-edge fraction: 0.0%
+- constraint verdict: violated
+
+Violations:
+- difficulty 1010.43 above maximum 90.00
+
+Difficulty decomposition:
+- access: 1000.00 (99.0%)
+- distance: 4.71 (0.5%)
+- terrain: 1.73 (0.2%)
+- ascent: 1.64 (0.2%)
+- confidence: 1.28 (0.1%)
+- grade: 0.53 (0.1%)
+- descent: 0.41 (0.0%)
+- road: 0.12 (0.0%)
+
+Access warnings:
+- edge 3: Closed, confidence 93%, provenance fixture-closure:diagonal-closure
+
+Crossings:
+- Road: 2
+- Water: 2
+
+Terrain mix:
+- Trail: 43.4%
+- Talus: 56.6%
+
+Largest difficulty contributors:
+- edge 3 access: 1000.00 (99.0% of route), Talus, 1334 m
+- edge 3 ascent: 1.36 (0.1% of route), Talus, 1334 m
+- edge 3 distance: 1.33 (0.1% of route), Talus, 1334 m
+- edge 1 distance: 1.33 (0.1% of route), Talus, 1334 m
+- edge 2 distance: 1.02 (0.1% of route), Trail, 1022 m
+
+Most dubious segments:
+- edge 3: 1334 m, Talus, grade max 9.0%, crossings 1, confidence 0.70, seed count 0, provenance fixture:west
+- edge 0: 1022 m, Trail, grade max 4.0%, crossings 1, confidence 0.81, seed count 0, provenance fixture:north
+- edge 1: 1334 m, Talus, grade max 9.0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:east
+- edge 2: 1022 m, Trail, grade max 2.3%, crossings 1, confidence 0.82, seed count 2, provenance fixture:south
+
+Terrain/elevation evidence:
+- edge 3: Talus 90%: explicit source terrain tag; elevation source arc-ascii-grid
+- edge 0: Trail 90%: explicit source terrain tag; elevation source arc-ascii-grid
+- edge 1: Forest 90%: explicit source terrain tag; elevation source arc-ascii-grid
+- edge 2: Trail 90%: explicit source terrain tag; elevation source arc-ascii-grid
+
+## Constraint Envelope
+
+- distance: 3.00–8.00 km
+- scalar difficulty: 0.00–90.00
+- ascent: 0–3000 m
+- descent: 0–3000 m
+- max road exposure: 12.0%
+- max low-confidence fraction: 20.0%
+- max repeated-edge fraction: 0.0%
+- allowed shapes: [Loop]
+
+## Source Manifest
+
+- crates/trailgen-core/tests/fixtures/closure_overlay.geojson: Closure via geojson-closure-overlay; 538 bytes, sha256 d6cd44ab43fbbee3fc58581bd8a8b9a97c413eb283d17dfc37ff3c1984397d2d
+- crates/trailgen-core/tests/fixtures/context_overlay.geojson: Road via geojson-road-context; 694 bytes, sha256 5aace6064e9fb87161fc95d71183e5d639f8eee46b86c3b3c084eba09f0171bd
+- crates/trailgen-core/tests/fixtures/context_overlay.geojson: Hydrology via geojson-hydrology-context; 694 bytes, sha256 5aace6064e9fb87161fc95d71183e5d639f8eee46b86c3b3c084eba09f0171bd
+- crates/trailgen-core/tests/fixtures/mini_dem.asc: Elevation via arc-ascii-elevation; 169 bytes, sha256 8200f8e889b76ecff72d845148d2476a5b4f75edbf782e6082a5e300a54e0859
+- crates/trailgen-core/tests/fixtures/mini_network.geojson: TrailNetwork via geojson-network; 1714 bytes, sha256 eae6f4f939c209fb1ab455e581d4e50f7dffab68d7a6d7f4c9800e65fec64857
+- crates/trailgen-core/tests/fixtures/terrain_overlay.geojson: Terrain via geojson-terrain-overlay; 535 bytes, sha256 2136c1627f1898ed1d6524f923e2a1e4edbcaab9cd6058a0cccebb3dfd62e936
+- demo/mini-loop/seeds/imports/known-good-kmz-loop.kmz: SeedRoute via kml-route; 2211 bytes, sha256 62446dfdccf78cda3838cb4cc566d8148edc18046412870f6ad7a50e15922f25
+- demo/mini-loop/seeds/imports/known-good-loop.gpx: SeedRoute via gpx-route; 20255 bytes, sha256 e088880059b82e1bfba8cb3e69fad5d054185cf166ead03600564f4319939ee3

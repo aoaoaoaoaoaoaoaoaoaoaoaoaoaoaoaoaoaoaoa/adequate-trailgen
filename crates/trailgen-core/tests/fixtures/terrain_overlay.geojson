@@ -1,0 +1,25 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "talus-basin",
+        "terrain": "talus",
+        "source": "fixture-landcover",
+        "layer": "synthetic-terrain",
+        "confidence": 0.87
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [-104.9890, 40.0000],
+          [-104.9870, 40.0000],
+          [-104.9870, 40.0130],
+          [-104.9890, 40.0130],
+          [-104.9890, 40.0000]
+        ]]
+      }
+    }
+  ]
+}
