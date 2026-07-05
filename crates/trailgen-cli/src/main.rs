@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use trailgen_core::alltrails::{AllTrailsBridge, ManualAllTrailsBridge};
-use trailgen_core::io::{csv, geojson, gpx, kml, kmz, report};
+use trailgen_core::io::{csv, geojson, gpx, kml, kmz, report, shapefile as shp};
 use trailgen_core::source::{
     GeoBounds, SourceCandidate, SourceFingerprint, SourceKind, SourceManifest, adapter_registry,
     classify_path, discovery_recommendations, source_coverage,
@@ -430,8 +430,13 @@ fn build_source(source: &Path) -> Result<BuildSource> {
             kind: SourceKind::SeedRoute,
             adapter_id: route_adapter_id(source),
         }),
+        Some("shp") => Ok(BuildSource {
+            drafts: shp::network_from_path(source)?,
+            kind: SourceKind::TrailNetwork,
+            adapter_id: "shapefile-network",
+        }),
         Some(ext) => bail!(
-            "unsupported build source extension {ext:?}; expected geojson, json, gpx, csv, kml, or kmz"
+            "unsupported build source extension {ext:?}; expected geojson, json, shp, gpx, csv, kml, or kmz"
         ),
         None => bail!("build source has no extension"),
     }
@@ -636,6 +641,7 @@ fn cache_source(
     let path = cached_source_path(project, input, output)?;
     let bytes = read_source_input(input)?;
     write_bytes(&path, &bytes)?;
+    copy_shapefile_sidecars(input, &path)?;
     let fingerprint = source_fingerprint(&path)?;
     let mut candidate = cached_source_candidate(&path, kind, adapter, fingerprint)?;
     candidate.origin = Some(input.to_owned());
@@ -1389,9 +1395,7 @@ fn archive_seed_route(project: &Path, route: &Path, name: &str) -> Result<PathBu
 fn apply_access(project: &Path, source: &Path) -> Result<()> {
     let config = load_config(project)?;
     let mut graph = load_graph(project)?;
-    let raw = fs::read_to_string(source).with_context(|| format!("read {}", source.display()))?;
-    let overlays =
-        geojson::access_overlays_from_str(&raw).with_context(|| "parse access overlay GeoJSON")?;
+    let overlays = access_overlays(source)?;
     let touched = apply_access_overlays(&mut graph, &overlays, config.difficulty);
     write_json(project.join("cache/graph.json"), &graph)?;
     write_json(
@@ -1407,6 +1411,17 @@ fn apply_access(project: &Path, source: &Path) -> Result<()> {
         touched
     );
     Ok(())
+}
+
+fn access_overlays(source: &Path) -> Result<Vec<trailgen_core::AccessOverlay>> {
+    if source_ext(source).as_deref() == Some("shp") {
+        shp::access_overlays_from_path(source).map_err(Into::into)
+    } else {
+        let raw =
+            fs::read_to_string(source).with_context(|| format!("read {}", source.display()))?;
+        Ok(geojson::access_overlays_from_str(&raw)
+            .with_context(|| "parse access overlay GeoJSON")?)
+    }
 }
 
 fn apply_terrain(project: &Path, source: &Path) -> Result<()> {
@@ -1834,19 +1849,55 @@ fn unregister_source_candidate_path(project: &Path, path: &str) -> Result<()> {
 }
 
 fn source_fingerprint(path: &Path) -> Result<SourceFingerprint> {
-    let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
-    let digest = Sha256::digest(&bytes);
+    let members = fingerprint_members(path)?;
+    let mut bytes = 0u64;
+    let mut hasher = Sha256::new();
+    for member in &members {
+        let member_bytes =
+            fs::read(member).with_context(|| format!("read {}", member.display()))?;
+        bytes += u64::try_from(member_bytes.len()).expect("usize file length must fit in u64");
+        if members.len() > 1 {
+            hasher.update(
+                member
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .unwrap_or("")
+                    .as_bytes(),
+            );
+            hasher.update([0]);
+        }
+        hasher.update(&member_bytes);
+        if members.len() > 1 {
+            hasher.update([0xff]);
+        }
+    }
+    let digest = hasher.finalize();
     let mut sha256 = String::with_capacity(digest.len() * 2);
     for byte in digest {
         write!(&mut sha256, "{byte:02x}")?;
     }
-    Ok(SourceFingerprint {
-        bytes: bytes
-            .len()
-            .try_into()
-            .expect("usize file length must fit in u64"),
-        sha256,
-    })
+    Ok(SourceFingerprint { bytes, sha256 })
+}
+
+fn fingerprint_members(path: &Path) -> Result<Vec<PathBuf>> {
+    if source_ext(path).as_deref() != Some("shp") {
+        return Ok(vec![path.to_path_buf()]);
+    }
+    let dbf = path.with_extension("dbf");
+    if !dbf.exists() {
+        bail!(
+            "shapefile source {} is missing mandatory DBF sidecar {}",
+            path.display(),
+            dbf.display()
+        );
+    }
+    let mut members = vec![path.to_path_buf(), dbf];
+    let shx = path.with_extension("shx");
+    if shx.exists() {
+        members.push(shx);
+    }
+    members.sort();
+    Ok(members)
 }
 
 fn generation_manifest(
@@ -1987,6 +2038,47 @@ fn read_source_input(input: &str) -> Result<Vec<u8>> {
     } else {
         let path = input.strip_prefix("file://").unwrap_or(input);
         fs::read(path).with_context(|| format!("read {path}"))
+    }
+}
+
+fn copy_shapefile_sidecars(input: &str, cached_shp: &Path) -> Result<()> {
+    if source_ext(cached_shp).as_deref() != Some("shp") {
+        return Ok(());
+    }
+    let Some(local_shp) = local_input_path(input) else {
+        bail!(
+            "remote shapefile caching requires a bundled archive; cache local .shp/.dbf/.shx files or normalize to GeoJSON first"
+        );
+    };
+    for ext in ["dbf", "shx"] {
+        let src = local_shp.with_extension(ext);
+        if !src.exists() && ext == "dbf" {
+            bail!(
+                "shapefile source {} is missing mandatory DBF sidecar {}",
+                local_shp.display(),
+                src.display()
+            );
+        }
+        if src.exists() {
+            fs::copy(&src, cached_shp.with_extension(ext)).with_context(|| {
+                format!(
+                    "cache shapefile sidecar {} beside {}",
+                    src.display(),
+                    cached_shp.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn local_input_path(input: &str) -> Option<PathBuf> {
+    if input.starts_with("http://") || input.starts_with("https://") {
+        None
+    } else {
+        Some(PathBuf::from(
+            input.strip_prefix("file://").unwrap_or(input),
+        ))
     }
 }
 
@@ -2610,6 +2702,49 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn shapefile_source_verification_covers_dbf_sidecar() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path().join("project");
+        let source = tmp.path().join("trails.shp");
+        write_test_shapefile(&source, "trail-1");
+
+        init(&project, "Shapefile Cache Test".to_owned(), None)?;
+        cache_source(
+            &project,
+            source.to_str().expect("utf-8 temp path"),
+            Some(Path::new("cached/trails.shp")),
+            None,
+            None,
+        )?;
+        verify_sources(&project)?;
+
+        let cached = project.join("sources/cached/trails.shp");
+        assert!(cached.exists());
+        assert!(cached.with_extension("dbf").exists());
+        assert!(cached.with_extension("shx").exists());
+
+        write_test_shapefile(&cached, "trail-2");
+        let error = verify_sources(&project).expect_err("DBF drift should fail verification");
+        assert!(format!("{error:#}").contains("drifted"));
+        Ok(())
+    }
+
+    fn write_test_shapefile(path: &Path, id: &str) {
+        let table = ::shapefile::dbase::TableWriterBuilder::new()
+            .add_character_field("id".try_into().unwrap(), 32)
+            .add_character_field("terrain".try_into().unwrap(), 16);
+        let mut writer = ::shapefile::Writer::from_path(path, table).unwrap();
+        let line = ::shapefile::Polyline::new(vec![
+            ::shapefile::Point::new(0.0, 0.0),
+            ::shapefile::Point::new(0.01, 0.0),
+        ]);
+        let mut record = ::shapefile::dbase::Record::default();
+        record.insert("id".to_owned(), id.to_owned().into());
+        record.insert("terrain".to_owned(), "trail".to_owned().into());
+        writer.write_shape_and_record(&line, &record).unwrap();
     }
 
     #[test]

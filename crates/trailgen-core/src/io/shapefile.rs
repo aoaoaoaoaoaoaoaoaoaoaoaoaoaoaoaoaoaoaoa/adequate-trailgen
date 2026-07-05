@@ -1,0 +1,235 @@
+use crate::builder::SegmentDraft;
+use crate::geo::{Coord, LineString};
+use crate::model::{Access, Provenance, Terrain};
+use crate::overlay::{AccessOverlay, OverlayGeometry};
+use crate::{Result, TrailgenError};
+use ::shapefile::dbase::{FieldValue, Record};
+use ::shapefile::{Point, PointM, PointZ, PolygonRing, Shape};
+use std::path::Path;
+
+pub fn network_from_path(path: &Path) -> Result<Vec<SegmentDraft>> {
+    let mut drafts = Vec::new();
+    for (i, row) in read(path)?.into_iter().enumerate() {
+        let (shape, record) = row;
+        let props = ShpProps::new(&record);
+        let surface = props.str("surface").map(str::to_owned);
+        let terrain = props
+            .str("terrain")
+            .or(surface.as_deref())
+            .map_or(Terrain::Unknown, Terrain::from_tag);
+        let access = props
+            .str("access")
+            .or_else(|| props.str("status"))
+            .map_or(Access::Unknown, Access::from_tag);
+        let confidence = props.f64("confidence").unwrap_or(0.78).clamp(0.0, 1.0);
+        let road_exposure = props
+            .f64("road_exposure")
+            .or_else(|| props.bool("road").map(f64::from))
+            .unwrap_or_else(|| f64::from(matches!(terrain, Terrain::Road | Terrain::Pavement)));
+        let provenance = Provenance {
+            source: props
+                .str("source")
+                .unwrap_or("shapefile-network")
+                .to_owned(),
+            layer: props.str("layer").map(str::to_owned),
+            source_id: props
+                .str("id")
+                .or_else(|| props.str("name"))
+                .map(str::to_owned)
+                .or_else(|| Some(format!("feature-{i}"))),
+            license: props.str("license").map(str::to_owned),
+        };
+        for line in lines(&shape)? {
+            drafts.push(SegmentDraft {
+                geometry: line,
+                terrain,
+                surface: surface.clone(),
+                access,
+                road_exposure,
+                confidence,
+                provenance: provenance.clone(),
+            });
+        }
+    }
+    Ok(drafts)
+}
+
+pub fn access_overlays_from_path(path: &Path) -> Result<Vec<AccessOverlay>> {
+    let mut overlays = Vec::new();
+    for (i, row) in read(path)?.into_iter().enumerate() {
+        let (shape, record) = row;
+        let props = ShpProps::new(&record);
+        let access = props
+            .str("access")
+            .or_else(|| props.str("status"))
+            .map_or(Access::Closed, Access::from_tag);
+        let name = props
+            .str("name")
+            .or_else(|| props.str("id"))
+            .map_or_else(|| format!("overlay-{i}"), str::to_owned);
+        let provenance = Provenance {
+            source: props
+                .str("source")
+                .unwrap_or("shapefile-access-overlay")
+                .to_owned(),
+            layer: props.str("layer").map(str::to_owned),
+            source_id: Some(name.clone()),
+            license: props.str("license").map(str::to_owned),
+        };
+        for geometry in overlay_geometries(&shape)? {
+            overlays.push(AccessOverlay {
+                name: name.clone(),
+                access,
+                confidence: props.f64("confidence").unwrap_or(0.86).clamp(0.0, 1.0),
+                tolerance_m: props.f64("tolerance_m").unwrap_or(20.0).max(0.0),
+                provenance: provenance.clone(),
+                geometry,
+            });
+        }
+    }
+    Ok(overlays)
+}
+
+fn read(path: &Path) -> Result<Vec<(Shape, Record)>> {
+    ::shapefile::read(path).map_err(|error| {
+        TrailgenError::InvalidData(format!("read shapefile {}: {error}", path.display()))
+    })
+}
+
+fn lines(shape: &Shape) -> Result<Vec<LineString>> {
+    match shape {
+        Shape::Polyline(polyline) => polyline.parts().iter().map(|part| line_xy(part)).collect(),
+        Shape::PolylineM(polyline) => polyline.parts().iter().map(|part| line_xym(part)).collect(),
+        Shape::PolylineZ(polyline) => polyline.parts().iter().map(|part| line_xyz(part)).collect(),
+        other => Err(TrailgenError::UnsupportedFormat(format!(
+            "shapefile network geometry {:?}",
+            other.shapetype()
+        ))),
+    }
+}
+
+fn overlay_geometries(shape: &Shape) -> Result<Vec<OverlayGeometry>> {
+    match shape {
+        Shape::Polygon(polygon) => Ok(outer_rings(polygon.rings(), ring_xy)),
+        Shape::PolygonM(polygon) => Ok(outer_rings(polygon.rings(), ring_xym)),
+        Shape::PolygonZ(polygon) => Ok(outer_rings(polygon.rings(), ring_xyz)),
+        Shape::Polyline(polyline) => polyline
+            .parts()
+            .iter()
+            .map(|part| Ok(OverlayGeometry::Line(line_xy(part)?)))
+            .collect(),
+        Shape::PolylineM(polyline) => polyline
+            .parts()
+            .iter()
+            .map(|part| Ok(OverlayGeometry::Line(line_xym(part)?)))
+            .collect(),
+        Shape::PolylineZ(polyline) => polyline
+            .parts()
+            .iter()
+            .map(|part| Ok(OverlayGeometry::Line(line_xyz(part)?)))
+            .collect(),
+        other => Err(TrailgenError::UnsupportedFormat(format!(
+            "shapefile overlay geometry {:?}",
+            other.shapetype()
+        ))),
+    }
+}
+
+fn outer_rings<P, F>(rings: &[PolygonRing<P>], f: F) -> Vec<OverlayGeometry>
+where
+    F: Fn(&[P]) -> Vec<Coord>,
+{
+    rings
+        .iter()
+        .filter_map(|ring| match ring {
+            PolygonRing::Outer(points) => Some(OverlayGeometry::Polygon(f(points))),
+            PolygonRing::Inner(_) => None,
+        })
+        .collect()
+}
+
+fn line_xy(points: &[Point]) -> Result<LineString> {
+    LineString::new(points.iter().map(|p| Coord::new(p.x, p.y)).collect())
+}
+
+fn line_xym(points: &[PointM]) -> Result<LineString> {
+    LineString::new(points.iter().map(|p| Coord::new(p.x, p.y)).collect())
+}
+
+fn line_xyz(points: &[PointZ]) -> Result<LineString> {
+    LineString::new(
+        points
+            .iter()
+            .map(|p| Coord::with_ele(p.x, p.y, p.z))
+            .collect(),
+    )
+}
+
+fn ring_xy(points: &[Point]) -> Vec<Coord> {
+    points.iter().map(|p| Coord::new(p.x, p.y)).collect()
+}
+
+fn ring_xym(points: &[PointM]) -> Vec<Coord> {
+    points.iter().map(|p| Coord::new(p.x, p.y)).collect()
+}
+
+fn ring_xyz(points: &[PointZ]) -> Vec<Coord> {
+    points
+        .iter()
+        .map(|p| Coord::with_ele(p.x, p.y, p.z))
+        .collect()
+}
+
+struct ShpProps<'a> {
+    record: &'a Record,
+}
+
+impl<'a> ShpProps<'a> {
+    const fn new(record: &'a Record) -> Self {
+        Self { record }
+    }
+
+    fn field(&self, key: &str) -> Option<&'a FieldValue> {
+        self.record
+            .as_ref()
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(key))
+            .map(|(_, value)| value)
+    }
+
+    fn str(&self, key: &str) -> Option<&'a str> {
+        match self.field(key)? {
+            FieldValue::Character(Some(value)) | FieldValue::Memo(value) => Some(value.trim()),
+            _ => None,
+        }
+        .filter(|value| !value.is_empty())
+    }
+
+    fn f64(&self, key: &str) -> Option<f64> {
+        match self.field(key)? {
+            FieldValue::Numeric(Some(value))
+            | FieldValue::Double(value)
+            | FieldValue::Currency(value) => Some(*value),
+            FieldValue::Float(Some(value)) => Some(f64::from(*value)),
+            FieldValue::Integer(value) => Some(f64::from(*value)),
+            FieldValue::Character(Some(value)) => value.trim().parse().ok(),
+            _ => None,
+        }
+    }
+
+    fn bool(&self, key: &str) -> Option<bool> {
+        match self.field(key)? {
+            FieldValue::Logical(Some(value)) => Some(*value),
+            FieldValue::Character(Some(value)) => {
+                match value.trim().to_ascii_lowercase().as_str() {
+                    "1" | "true" | "t" | "yes" | "y" => Some(true),
+                    "0" | "false" | "f" | "no" | "n" => Some(false),
+                    _ => None,
+                }
+            }
+            FieldValue::Numeric(Some(value)) => Some(*value != 0.0),
+            FieldValue::Integer(value) => Some(*value != 0),
+            _ => None,
+        }
+    }
+}

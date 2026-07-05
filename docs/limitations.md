@@ -3,7 +3,7 @@
 The app is useful today as a local-first route generator over normalized project data, but several seams are intentionally incomplete.
 
 - Discovery recommends source classes and caches explicit URLs or files; it does not yet crawl every regional GIS portal automatically.
-- GeoTIFF/VRT DEMs and shapefiles are planned seams, not implemented adapters. Current elevation sampling supports Arc/Info ASCII Grid.
+- GeoTIFF/VRT DEMs are planned seams, not implemented adapters. Current elevation sampling supports Arc/Info ASCII Grid. Shapefile vector support exists for trail-network polylines plus access/closure polygon or line overlays.
 - Input geometries are assumed to be geographic lon/lat decimal degrees. There is no CRS detection or reprojection layer yet.
 - Graph directionality is not represented. Edges are bidirectional unless a future adapter adds a proven one-way travel model.
 - The current solver is a bounded deterministic heuristic behind `RouteSolver`, not a MILP/CP-SAT backend and not yet a stochastic annealer.

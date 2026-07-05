@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use trailgen_core::alltrails::{
     AllTrailsBridge, AllTrailsExchange, BridgeStatus, ManualAllTrailsBridge,
 };
-use trailgen_core::io::{csv, geojson, gpx, kml, kmz, report};
+use trailgen_core::io::{csv, geojson, gpx, kml, kmz, report, shapefile as shp_io};
 use trailgen_core::source::{
     SourceCoverageStatus, SourceKind, adapter_registry, classify_path, discovery_recommendations,
     source_coverage,
@@ -1016,6 +1016,41 @@ fn source_registry_classifies_local_inputs() {
     let ascii_dem = classify_path(std::path::Path::new("sources/dem.asc")).unwrap();
     assert_eq!(ascii_dem.kind, SourceKind::Elevation);
     assert_eq!(ascii_dem.adapter_id, "arc-ascii-elevation");
+    let shp_network = classify_path(std::path::Path::new("sources/trails.shp")).unwrap();
+    assert_eq!(shp_network.kind, SourceKind::TrailNetwork);
+    assert_eq!(shp_network.adapter_id, "shapefile-network");
+    let shp_access = classify_path(std::path::Path::new("sources/ownership-access.shp")).unwrap();
+    assert_eq!(shp_access.kind, SourceKind::Access);
+    assert_eq!(shp_access.adapter_id, "shapefile-access-overlay");
+    let shp_closure = classify_path(std::path::Path::new("sources/raptor-closure.shp")).unwrap();
+    assert_eq!(shp_closure.kind, SourceKind::Closure);
+    assert_eq!(shp_closure.adapter_id, "shapefile-closure-layer");
+}
+
+#[test]
+fn shapefile_adapters_normalize_networks_and_access_overlays() {
+    let tmp = tempfile::tempdir().unwrap();
+    let network = tmp.path().join("trails.shp");
+    let access = tmp.path().join("access.shp");
+    write_network_shapefile(&network);
+    write_access_shapefile(&access);
+
+    let drafts = shp_io::network_from_path(&network).unwrap();
+    assert_eq!(drafts.len(), 1);
+    assert_eq!(drafts[0].terrain, Terrain::Trail);
+    assert_eq!(drafts[0].surface.as_deref(), Some("dirt"));
+    assert_eq!(drafts[0].access, Access::Open);
+    assert_eq!(drafts[0].provenance.source, "agency");
+    assert_eq!(drafts[0].provenance.source_id.as_deref(), Some("trail-1"));
+
+    let overlays = shp_io::access_overlays_from_path(&access).unwrap();
+    assert_eq!(overlays.len(), 1);
+    assert_eq!(overlays[0].access, Access::Closed);
+    assert_eq!(overlays[0].name, "closure-1");
+    assert!(matches!(
+        overlays[0].geometry,
+        trailgen_core::OverlayGeometry::Polygon(_)
+    ));
 }
 
 #[test]
@@ -1051,6 +1086,49 @@ fn source_coverage_evaluates_recommendations_against_candidates() {
         .expect("hydrology coverage");
     assert_eq!(hydrology.status, SourceCoverageStatus::Missing);
     assert!(hydrology.message.contains("sources/hydrology.geojson"));
+}
+
+fn write_network_shapefile(path: &std::path::Path) {
+    let table = ::shapefile::dbase::TableWriterBuilder::new()
+        .add_character_field("id".try_into().unwrap(), 32)
+        .add_character_field("terrain".try_into().unwrap(), 16)
+        .add_character_field("surface".try_into().unwrap(), 16)
+        .add_character_field("access".try_into().unwrap(), 16)
+        .add_character_field("source".try_into().unwrap(), 32)
+        .add_numeric_field("confidence".try_into().unwrap(), 5, 2);
+    let mut writer = ::shapefile::Writer::from_path(path, table).unwrap();
+    let line = ::shapefile::Polyline::new(vec![
+        ::shapefile::Point::new(0.0, 0.0),
+        ::shapefile::Point::new(0.01, 0.0),
+    ]);
+    let mut record = ::shapefile::dbase::Record::default();
+    record.insert("id".to_owned(), "trail-1".to_owned().into());
+    record.insert("terrain".to_owned(), "trail".to_owned().into());
+    record.insert("surface".to_owned(), "dirt".to_owned().into());
+    record.insert("access".to_owned(), "open".to_owned().into());
+    record.insert("source".to_owned(), "agency".to_owned().into());
+    record.insert("confidence".to_owned(), 0.91.into());
+    writer.write_shape_and_record(&line, &record).unwrap();
+}
+
+fn write_access_shapefile(path: &std::path::Path) {
+    let table = ::shapefile::dbase::TableWriterBuilder::new()
+        .add_character_field("name".try_into().unwrap(), 32)
+        .add_character_field("status".try_into().unwrap(), 16)
+        .add_character_field("source".try_into().unwrap(), 32);
+    let mut writer = ::shapefile::Writer::from_path(path, table).unwrap();
+    let polygon = ::shapefile::Polygon::with_rings(vec![::shapefile::PolygonRing::Outer(vec![
+        ::shapefile::Point::new(-0.001, -0.001),
+        ::shapefile::Point::new(0.011, -0.001),
+        ::shapefile::Point::new(0.011, 0.001),
+        ::shapefile::Point::new(-0.001, 0.001),
+        ::shapefile::Point::new(-0.001, -0.001),
+    ])]);
+    let mut record = ::shapefile::dbase::Record::default();
+    record.insert("name".to_owned(), "closure-1".to_owned().into());
+    record.insert("status".to_owned(), "closed".to_owned().into());
+    record.insert("source".to_owned(), "agency".to_owned().into());
+    writer.write_shape_and_record(&polygon, &record).unwrap();
 }
 
 #[test]

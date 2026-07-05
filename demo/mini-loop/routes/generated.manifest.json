@@ -86,6 +86,21 @@
         "note": "Provider-neutral LineString and MultiLineString network ingestion."
       },
       {
+        "id": "shapefile-network",
+        "kind": "trail-network",
+        "status": "implemented",
+        "consumes": [
+          "shp",
+          "dbf",
+          "shx"
+        ],
+        "produces": [
+          "SegmentDraft",
+          "TrailGraph"
+        ],
+        "note": "Official/agency polyline shapefile trail-network ingestion with DBF attribute normalization."
+      },
+      {
         "id": "geojson-route",
         "kind": "seed-route",
         "status": "implemented",
@@ -184,6 +199,21 @@
         "note": "GeoJSON access/status overlay applied after graph construction."
       },
       {
+        "id": "shapefile-access-overlay",
+        "kind": "access",
+        "status": "implemented",
+        "consumes": [
+          "shp",
+          "dbf",
+          "shx"
+        ],
+        "produces": [
+          "access overrides",
+          "confidence/provenance"
+        ],
+        "note": "Polygon or line shapefile access/status overlay applied after graph construction."
+      },
+      {
         "id": "geojson-closure-overlay",
         "kind": "closure",
         "status": "implemented",
@@ -227,15 +257,17 @@
       {
         "id": "shapefile-closure-layer",
         "kind": "closure",
-        "status": "planned",
+        "status": "implemented",
         "consumes": [
-          "shp"
+          "shp",
+          "dbf",
+          "shx"
         ],
         "produces": [
           "access overrides",
           "confidence/provenance"
         ],
-        "note": "Future official park/agency shapefile closure and restriction layers."
+        "note": "Official park/agency shapefile closure and restriction overlays."
       }
     ],
     "recommendations": [
@@ -243,11 +275,13 @@
         "kind": "trail-network",
         "priority": "required",
         "adapter_ids": [
-          "geojson-network"
+          "geojson-network",
+          "shapefile-network"
         ],
         "suggested_paths": [
           "sources/trails.geojson",
-          "sources/network.geojson"
+          "sources/network.geojson",
+          "sources/trails.shp"
         ],
         "search_terms": [
           "official trail GIS line layer",
@@ -321,7 +355,8 @@
         ],
         "suggested_paths": [
           "sources/closures.geojson",
-          "sources/access.geojson"
+          "sources/access.geojson",
+          "sources/closures.shp"
         ],
         "search_terms": [
           "official trail closure layer",
@@ -341,11 +376,13 @@
         "kind": "access",
         "priority": "recommended",
         "adapter_ids": [
-          "geojson-access-overlay"
+          "geojson-access-overlay",
+          "shapefile-access-overlay"
         ],
         "suggested_paths": [
           "sources/access.geojson",
-          "sources/ownership.geojson"
+          "sources/ownership.geojson",
+          "sources/access.shp"
         ],
         "search_terms": [
           "public access boundary GeoJSON",
@@ -497,7 +534,7 @@
         "candidate_paths": [],
         "implemented_adapter_ids": [],
         "planned_adapter_ids": [],
-        "message": "Access source is Recommended; acquire one of sources/access.geojson, sources/ownership.geojson."
+        "message": "Access source is Recommended; acquire one of sources/access.geojson, sources/ownership.geojson, sources/access.shp."
       },
       {
         "kind": "road",

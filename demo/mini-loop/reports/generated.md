@@ -273,7 +273,7 @@ Coverage:
 - Elevation (Required): Satisfied; candidates: crates/trailgen-core/tests/fixtures/mini_dem.asc; Elevation source requirement has implemented candidate(s).
 - Terrain (Recommended): Satisfied; candidates: crates/trailgen-core/tests/fixtures/terrain_overlay.geojson; Terrain source requirement has implemented candidate(s).
 - Closure (Recommended): Satisfied; candidates: crates/trailgen-core/tests/fixtures/closure_overlay.geojson; Closure source requirement has implemented candidate(s).
-- Access (Recommended): Missing; candidates: none; Access source is Recommended; acquire one of sources/access.geojson, sources/ownership.geojson.
+- Access (Recommended): Missing; candidates: none; Access source is Recommended; acquire one of sources/access.geojson, sources/ownership.geojson, sources/access.shp.
 - Road (Recommended): Satisfied; candidates: crates/trailgen-core/tests/fixtures/context_overlay.geojson; Road source requirement has implemented candidate(s).
 - Hydrology (Recommended): Satisfied; candidates: crates/trailgen-core/tests/fixtures/context_overlay.geojson; Hydrology source requirement has implemented candidate(s).
 - SeedRoute (Optional): Satisfied; candidates: demo/mini-loop/seeds/imports/known-good-kmz-loop.kmz, demo/mini-loop/seeds/imports/known-good-loop.gpx; SeedRoute source requirement has implemented candidate(s).

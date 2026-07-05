@@ -229,6 +229,14 @@ fn coverage_message(recommendation: &SourceRecommendation, status: SourceCoverag
 
 #[must_use]
 pub fn adapter_registry() -> Vec<SourceAdapter> {
+    let mut adapters = network_adapters();
+    adapters.extend(route_adapters());
+    adapters.extend(elevation_adapters());
+    adapters.extend(overlay_context_adapters());
+    adapters
+}
+
+fn network_adapters() -> Vec<SourceAdapter> {
     vec![
         adapter(
             "geojson-network",
@@ -238,6 +246,19 @@ pub fn adapter_registry() -> Vec<SourceAdapter> {
             ["SegmentDraft", "TrailGraph"],
             "Provider-neutral LineString and MultiLineString network ingestion.",
         ),
+        adapter(
+            "shapefile-network",
+            SourceKind::TrailNetwork,
+            AdapterStatus::Implemented,
+            ["shp", "dbf", "shx"],
+            ["SegmentDraft", "TrailGraph"],
+            "Official/agency polyline shapefile trail-network ingestion with DBF attribute normalization.",
+        ),
+    ]
+}
+
+fn route_adapters() -> Vec<SourceAdapter> {
+    vec![
         adapter(
             "geojson-route",
             SourceKind::SeedRoute,
@@ -262,6 +283,11 @@ pub fn adapter_registry() -> Vec<SourceAdapter> {
             ["LineString", "snapped route metrics"],
             "KML/KMZ route import/export for manual map-app exchange.",
         ),
+    ]
+}
+
+fn elevation_adapters() -> Vec<SourceAdapter> {
+    vec![
         adapter(
             "arc-ascii-elevation",
             SourceKind::Elevation,
@@ -278,6 +304,11 @@ pub fn adapter_registry() -> Vec<SourceAdapter> {
             ["sampled elevation profile", "edge ascent/descent"],
             "USGS/3DEP, Copernicus DEM, or local GeoTIFF/VRT sampling seam.",
         ),
+    ]
+}
+
+fn overlay_context_adapters() -> Vec<SourceAdapter> {
+    vec![
         adapter(
             "geojson-terrain-overlay",
             SourceKind::Terrain,
@@ -293,6 +324,14 @@ pub fn adapter_registry() -> Vec<SourceAdapter> {
             ["geojson", "json"],
             ["access overrides", "confidence/provenance"],
             "GeoJSON access/status overlay applied after graph construction.",
+        ),
+        adapter(
+            "shapefile-access-overlay",
+            SourceKind::Access,
+            AdapterStatus::Implemented,
+            ["shp", "dbf", "shx"],
+            ["access overrides", "confidence/provenance"],
+            "Polygon or line shapefile access/status overlay applied after graph construction.",
         ),
         adapter(
             "geojson-closure-overlay",
@@ -321,10 +360,10 @@ pub fn adapter_registry() -> Vec<SourceAdapter> {
         adapter(
             "shapefile-closure-layer",
             SourceKind::Closure,
-            AdapterStatus::Planned,
-            ["shp"],
+            AdapterStatus::Implemented,
+            ["shp", "dbf", "shx"],
             ["access overrides", "confidence/provenance"],
-            "Future official park/agency shapefile closure and restriction layers.",
+            "Official park/agency shapefile closure and restriction overlays.",
         ),
     ]
 }
@@ -388,8 +427,12 @@ const RECOMMENDATION_SPECS: &[RecommendationSpec] = &[
     RecommendationSpec {
         kind: SourceKind::TrailNetwork,
         priority: SourcePriority::Required,
-        adapter_ids: &["geojson-network"],
-        suggested_paths: &["sources/trails.geojson", "sources/network.geojson"],
+        adapter_ids: &["geojson-network", "shapefile-network"],
+        suggested_paths: &[
+            "sources/trails.geojson",
+            "sources/network.geojson",
+            "sources/trails.shp",
+        ],
         search_terms: &[
             "official trail GIS line layer",
             "OSM hiking path extract",
@@ -428,7 +471,11 @@ const RECOMMENDATION_SPECS: &[RecommendationSpec] = &[
         kind: SourceKind::Closure,
         priority: SourcePriority::Recommended,
         adapter_ids: &["geojson-closure-overlay", "shapefile-closure-layer"],
-        suggested_paths: &["sources/closures.geojson", "sources/access.geojson"],
+        suggested_paths: &[
+            "sources/closures.geojson",
+            "sources/access.geojson",
+            "sources/closures.shp",
+        ],
         search_terms: &[
             "official trail closure layer",
             "park access restriction GIS",
@@ -440,8 +487,12 @@ const RECOMMENDATION_SPECS: &[RecommendationSpec] = &[
     RecommendationSpec {
         kind: SourceKind::Access,
         priority: SourcePriority::Recommended,
-        adapter_ids: &["geojson-access-overlay"],
-        suggested_paths: &["sources/access.geojson", "sources/ownership.geojson"],
+        adapter_ids: &["geojson-access-overlay", "shapefile-access-overlay"],
+        suggested_paths: &[
+            "sources/access.geojson",
+            "sources/ownership.geojson",
+            "sources/access.shp",
+        ],
         search_terms: &[
             "public access boundary GeoJSON",
             "land ownership parcel open space GIS",
@@ -530,6 +581,11 @@ pub fn classify_path(path: &Path) -> Option<SourceCandidate> {
         "geojson" | "json" => (SourceKind::TrailNetwork, "geojson-network"),
         "asc" => (SourceKind::Elevation, "arc-ascii-elevation"),
         "tif" | "tiff" | "vrt" => (SourceKind::Elevation, "geospatial-elevation-raster"),
+        "shp" if path_lc.contains("closure") => (SourceKind::Closure, "shapefile-closure-layer"),
+        "shp" if path_lc.contains("access") || path_lc.contains("ownership") => {
+            (SourceKind::Access, "shapefile-access-overlay")
+        }
+        "shp" => (SourceKind::TrailNetwork, "shapefile-network"),
         _ => return None,
     };
     Some(SourceCandidate {

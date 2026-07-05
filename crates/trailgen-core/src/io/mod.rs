@@ -4,3 +4,4 @@ pub mod gpx;
 pub mod kml;
 pub mod kmz;
 pub mod report;
+pub mod shapefile;

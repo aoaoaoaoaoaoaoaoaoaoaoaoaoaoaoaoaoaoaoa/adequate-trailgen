@@ -14,6 +14,7 @@ categories = ["science::geo", "algorithms"]
 roxmltree.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+shapefile.workspace = true
 thiserror.workspace = true
 zip.workspace = true
 
