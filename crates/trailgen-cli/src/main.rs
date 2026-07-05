@@ -665,11 +665,12 @@ fn cache_source(
 ) -> Result<()> {
     fs::create_dir_all(project.join("sources"))?;
     let path = cached_source_path(project, input, output)?;
+    let (kind, adapter_id) = cached_source_kind_adapter(&path, kind, adapter)?;
     let bytes = read_source_input(input)?;
     write_bytes(&path, &bytes)?;
     copy_shapefile_sidecars(input, &path)?;
     let fingerprint = source_fingerprint(&path)?;
-    let mut candidate = cached_source_candidate(&path, kind, adapter, fingerprint)?;
+    let mut candidate = source_candidate(&path, kind, &adapter_id, fingerprint);
     candidate.origin = Some(input.to_owned());
     register_source_candidates(project, vec![candidate])?;
     println!(
@@ -2446,12 +2447,11 @@ fn source_candidate(
     }
 }
 
-fn cached_source_candidate(
+fn cached_source_kind_adapter(
     source: &Path,
     kind: Option<SourceKind>,
     adapter: Option<&str>,
-    fingerprint: SourceFingerprint,
-) -> Result<SourceCandidate> {
+) -> Result<(SourceKind, String)> {
     let classified = classify_path(source);
     let kind = kind
         .or_else(|| classified.as_ref().map(|candidate| candidate.kind))
@@ -2464,22 +2464,14 @@ fn cached_source_candidate(
     let adapter_id = adapter
         .map(str::to_owned)
         .or_else(|| classified.map(|candidate| candidate.adapter_id))
-        .unwrap_or_else(|| default_adapter_id(kind).to_owned());
+        .with_context(|| {
+            format!(
+                "cannot infer source adapter for {}; pass --adapter",
+                source.display()
+            )
+        })?;
     ensure_adapter_supports_kind(kind, &adapter_id)?;
-    Ok(source_candidate(source, kind, &adapter_id, fingerprint))
-}
-
-const fn default_adapter_id(kind: SourceKind) -> &'static str {
-    match kind {
-        SourceKind::TrailNetwork => "geojson-network",
-        SourceKind::SeedRoute => "gpx-route",
-        SourceKind::Elevation => "arc-ascii-elevation",
-        SourceKind::Terrain => "geojson-terrain-overlay",
-        SourceKind::Access => "geojson-access-overlay",
-        SourceKind::Closure => "geojson-closure-overlay",
-        SourceKind::Road => "geojson-road-context",
-        SourceKind::Hydrology => "geojson-hydrology-context",
-    }
+    Ok((kind, adapter_id))
 }
 
 fn ensure_adapter_supports_kind(kind: SourceKind, adapter_id: &str) -> Result<()> {
@@ -3547,6 +3539,47 @@ mod tests {
             candidate["fingerprint"]["sha256"]
                 .as_str()
                 .is_some_and(|hash| hash.len() == 64)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn cache_source_requires_adapter_for_ambiguous_kind() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path().join("project");
+        let source = tmp.path().join("raw-route");
+        fs::write(&source, "-105.0,40.0,1600\n-105.0,40.01,1700\n")?;
+
+        init(&project, "Ambiguous Cache Test".to_owned(), None)?;
+        let error = cache_source(
+            &project,
+            source.to_str().expect("utf-8 temp path"),
+            Some(Path::new("cached/route")),
+            Some(SourceKind::SeedRoute),
+            None,
+        )
+        .expect_err("ambiguous seed route adapter should fail");
+        assert!(format!("{error:#}").contains("pass --adapter"));
+        assert!(!project.join("sources/cached/route").exists());
+
+        cache_source(
+            &project,
+            source.to_str().expect("utf-8 temp path"),
+            Some(Path::new("cached/route")),
+            Some(SourceKind::SeedRoute),
+            Some("csv-route"),
+        )?;
+        verify_sources(&project)?;
+
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(project.join("sources/manifest.json"))?)?;
+        assert!(
+            manifest["candidates"]
+                .as_array()
+                .expect("candidates")
+                .iter()
+                .any(|candidate| candidate["adapter_id"] == "csv-route")
         );
 
         Ok(())
