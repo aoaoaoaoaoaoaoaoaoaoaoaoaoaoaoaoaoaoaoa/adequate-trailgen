@@ -70,6 +70,40 @@ impl Access {
     }
 }
 
+#[derive(
+    Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum EdgeTravel {
+    #[default]
+    Both,
+    Forward,
+    Backward,
+}
+
+impl EdgeTravel {
+    #[must_use]
+    pub fn from_tag(tag: &str) -> Self {
+        match tag.trim().to_ascii_lowercase().as_str() {
+            "both" | "bidirectional" | "two-way" | "twoway" | "2" | "no" | "false" | "0" => {
+                Self::Both
+            }
+            "forward" | "with" | "yes" | "true" | "1" => Self::Forward,
+            "backward" | "reverse" | "against" | "-1" => Self::Backward,
+            _ => Self::Both,
+        }
+    }
+
+    #[must_use]
+    pub const fn can_depart(self, from: VertexId, a: VertexId, b: VertexId) -> bool {
+        match self {
+            Self::Both => from.0 == a.0 || from.0 == b.0,
+            Self::Forward => from.0 == a.0,
+            Self::Backward => from.0 == b.0,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Provenance {
     pub source: String,
@@ -183,6 +217,8 @@ pub struct EdgeAttr {
     pub terrain_evidence: Vec<TerrainEvidence>,
     pub access: Access,
     #[serde(default)]
+    pub travel: EdgeTravel,
+    #[serde(default)]
     pub access_confidence: f64,
     #[serde(default)]
     pub access_provenance: Vec<Provenance>,
@@ -226,6 +262,14 @@ impl Edge {
     }
 
     #[must_use]
+    pub fn traverse(&self, from: VertexId) -> Option<VertexId> {
+        if !self.attr.travel.can_depart(from, self.a, self.b) {
+            return None;
+        }
+        self.other(from)
+    }
+
+    #[must_use]
     pub fn oriented_geometry(&self, from: VertexId) -> LineString {
         if from == self.a {
             self.geometry.clone()
@@ -258,8 +302,12 @@ impl TrailGraph {
         self.adjacency.clear();
         self.adjacency.resize_with(self.vertices.len(), Vec::new);
         for edge in &self.edges {
-            self.adjacency[edge.a.0].push(edge.id);
-            self.adjacency[edge.b.0].push(edge.id);
+            if edge.attr.travel.can_depart(edge.a, edge.a, edge.b) {
+                self.adjacency[edge.a.0].push(edge.id);
+            }
+            if edge.attr.travel.can_depart(edge.b, edge.a, edge.b) {
+                self.adjacency[edge.b.0].push(edge.id);
+            }
         }
     }
 
@@ -320,7 +368,7 @@ impl TrailGraph {
     pub fn walk_edges(&self, start: VertexId, edges: &[EdgeId]) -> Option<VertexId> {
         let mut at = start;
         for edge_id in edges {
-            at = self.edges.get(edge_id.0)?.other(at)?;
+            at = self.edges.get(edge_id.0)?.traverse(at)?;
         }
         Some(at)
     }

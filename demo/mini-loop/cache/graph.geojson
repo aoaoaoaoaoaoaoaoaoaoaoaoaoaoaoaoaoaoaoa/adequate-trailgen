@@ -499,7 +499,8 @@
             "terrain": "trail"
           }
         ],
-        "to": 1
+        "to": 1,
+        "travel": "both"
       },
       "type": "Feature"
     },
@@ -972,7 +973,8 @@
             "terrain": "talus"
           }
         ],
-        "to": 2
+        "to": 2,
+        "travel": "both"
       },
       "type": "Feature"
     },
@@ -1475,7 +1477,8 @@
             "terrain": "trail"
           }
         ],
-        "to": 3
+        "to": 3,
+        "travel": "both"
       },
       "type": "Feature"
     },
@@ -1939,7 +1942,8 @@
             "terrain": "talus"
           }
         ],
-        "to": 0
+        "to": 0,
+        "travel": "both"
       },
       "type": "Feature"
     },
@@ -2550,7 +2554,8 @@
             "terrain": "alpine"
           }
         ],
-        "to": 1
+        "to": 1,
+        "travel": "both"
       },
       "type": "Feature"
     },
@@ -2903,7 +2908,8 @@
             "terrain": "road"
           }
         ],
-        "to": 4
+        "to": 4,
+        "travel": "both"
       },
       "type": "Feature"
     }

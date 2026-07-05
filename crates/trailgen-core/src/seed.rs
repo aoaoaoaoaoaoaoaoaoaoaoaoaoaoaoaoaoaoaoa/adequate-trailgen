@@ -30,10 +30,11 @@ impl SeedRoute {
         line: &LineString,
     ) -> Self {
         let snapped_edges = graph.snap_line_edges(line);
-        let start = graph.snapped_line_start(line, &snapped_edges);
-        let closed_loop = start
-            .and_then(|v| graph.walk_edges(v, &snapped_edges))
-            .is_some_and(|finish| Some(finish) == start);
+        let candidate_start = graph.snapped_line_start(line, &snapped_edges);
+        let finish =
+            candidate_start.and_then(|v| graph.walk_edges(v, &snapped_edges).map(|f| (v, f)));
+        let start = finish.map(|(start, _)| start);
+        let closed_loop = finish.is_some_and(|(start, finish)| finish == start);
         let metrics = start.map_or_else(RouteMetrics::default, |v| {
             RouteMetrics::measure(graph, v, &snapped_edges)
         });

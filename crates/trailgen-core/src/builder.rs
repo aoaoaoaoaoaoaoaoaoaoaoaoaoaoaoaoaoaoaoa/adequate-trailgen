@@ -2,8 +2,8 @@ use crate::difficulty::DifficultyWeights;
 use crate::enrich::{EmbeddedElevation, EnrichmentConfig, enrich_graph};
 use crate::geo::{Coord, LineString};
 use crate::model::{
-    Access, Edge, EdgeAttr, EdgeId, GradeDistribution, Provenance, Terrain, TrailGraph, Vertex,
-    VertexId,
+    Access, Edge, EdgeAttr, EdgeId, EdgeTravel, GradeDistribution, Provenance, Terrain, TrailGraph,
+    Vertex, VertexId,
 };
 use crate::{Result, TrailgenError};
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,8 @@ pub struct SegmentDraft {
     pub terrain: Terrain,
     pub surface: Option<String>,
     pub access: Access,
+    #[serde(default)]
+    pub travel: EdgeTravel,
     pub road_exposure: f64,
     pub confidence: f64,
     pub provenance: Provenance,
@@ -209,6 +211,7 @@ fn edge_attr(
         },
         terrain_evidence: Vec::new(),
         access: draft.access,
+        travel: draft.travel,
         access_confidence: if draft.access == Access::Unknown {
             0.0
         } else {

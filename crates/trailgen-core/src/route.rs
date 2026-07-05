@@ -70,7 +70,7 @@ impl Route {
             } else {
                 points.extend(line.points.iter().skip(1).copied());
             }
-            at = edge.other(at).expect("route edge must touch cursor");
+            at = edge.traverse(at).expect("route edge must be traversable");
         }
         LineString::unchecked(points)
     }
@@ -230,7 +230,7 @@ impl RouteMetrics {
         for edge_id in edges {
             let edge = &graph.edges[edge_id.0];
             let from = at;
-            at = edge.other(from).expect("route edge must touch cursor");
+            at = edge.traverse(from).expect("route edge must be traversable");
             *vertex_visits.entry(at).or_default() += 1;
             let a = &edge.attr;
             m.distance_m += a.length_m;

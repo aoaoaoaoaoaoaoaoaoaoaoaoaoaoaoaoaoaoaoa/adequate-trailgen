@@ -8,8 +8,8 @@ use trailgen_core::source::{
     source_coverage,
 };
 use trailgen_core::{
-    Access, ArcAsciiGrid, CrossingKind, EdgeId, ElevationSampler, GeoTiffDem, Route, RouteMetrics,
-    RouteShape, SearchParams, VertexId,
+    Access, ArcAsciiGrid, CrossingKind, EdgeId, EdgeTravel, ElevationSampler, GeoTiffDem, Route,
+    RouteMetrics, RouteShape, SearchParams, VertexId,
 };
 use trailgen_core::{
     Coord, DifficultyWeights, EnrichmentConfig, GraphBuilder, LineString, LoopConstraints,
@@ -26,6 +26,7 @@ fn builder_splits_crossing_lines() {
             terrain: Terrain::Trail,
             surface: None,
             access: Access::Open,
+            travel: EdgeTravel::Both,
             road_exposure: 0.0,
             confidence: 1.0,
             provenance: Provenance::fixture("a"),
@@ -35,6 +36,7 @@ fn builder_splits_crossing_lines() {
             terrain: Terrain::Trail,
             surface: None,
             access: Access::Open,
+            travel: EdgeTravel::Both,
             road_exposure: 0.0,
             confidence: 1.0,
             provenance: Provenance::fixture("b"),
@@ -48,6 +50,30 @@ fn builder_splits_crossing_lines() {
             .iter()
             .any(|v| graph.adjacency[v.id.0].len() == 4)
     );
+}
+
+#[test]
+fn graph_adjacency_respects_one_way_travel() {
+    let graph = GraphBuilder::default()
+        .build(&[SegmentDraft {
+            geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
+            terrain: Terrain::Trail,
+            surface: None,
+            access: Access::Open,
+            travel: EdgeTravel::Forward,
+            road_exposure: 0.0,
+            confidence: 1.0,
+            provenance: Provenance::fixture("one-way"),
+        }])
+        .unwrap();
+    let edge = graph.edges[0].id;
+    let a = graph.edges[0].a;
+    let b = graph.edges[0].b;
+
+    assert_eq!(graph.adjacency[a.0], vec![edge]);
+    assert!(graph.adjacency[b.0].is_empty());
+    assert_eq!(graph.walk_edges(a, &[edge]), Some(b));
+    assert_eq!(graph.walk_edges(b, &[edge]), None);
 }
 
 #[test]
@@ -110,6 +136,7 @@ fn near_miss_drafts() -> Vec<SegmentDraft> {
             terrain: Terrain::Trail,
             surface: None,
             access: Access::Open,
+            travel: EdgeTravel::Both,
             road_exposure: 0.0,
             confidence: 1.0,
             provenance: Provenance::fixture("trunk"),
@@ -120,6 +147,7 @@ fn near_miss_drafts() -> Vec<SegmentDraft> {
             terrain: Terrain::Trail,
             surface: None,
             access: Access::Open,
+            travel: EdgeTravel::Both,
             road_exposure: 0.0,
             confidence: 1.0,
             provenance: Provenance::fixture("spur"),
@@ -134,6 +162,7 @@ fn difficulty_penalizes_rough_uncertain_closed_edges() {
         terrain: Terrain::Trail,
         surface: Some("dirt".to_owned()),
         access: Access::Open,
+        travel: EdgeTravel::Both,
         road_exposure: 0.0,
         confidence: 1.0,
         provenance: Provenance::fixture("smooth"),
@@ -192,6 +221,7 @@ fn terrain_multipliers_are_configurable_and_defaulted() {
         terrain: Terrain::Talus,
         surface: None,
         access: Access::Open,
+        travel: EdgeTravel::Both,
         road_exposure: 0.0,
         confidence: 1.0,
         provenance: Provenance::fixture("talus"),
@@ -251,6 +281,20 @@ fn geojson_network_preserves_surface_tags() {
 }
 
 #[test]
+fn geojson_network_normalizes_one_way_tags() {
+    let drafts = geojson::network_from_str(
+        r#"{"type":"FeatureCollection","features":[{
+            "type":"Feature",
+            "properties":{"oneway":"-1","source":"fixture","id":"reverse-edge"},
+            "geometry":{"type":"LineString","coordinates":[[0.0,0.0],[0.01,0.0]]}
+        }]}"#,
+    )
+    .unwrap();
+
+    assert_eq!(drafts[0].travel, EdgeTravel::Backward);
+}
+
+#[test]
 fn road_fraction_counts_road_and_pavement_terrain() {
     let graph = GraphBuilder::default()
         .build(&[SegmentDraft {
@@ -258,6 +302,7 @@ fn road_fraction_counts_road_and_pavement_terrain() {
             terrain: Terrain::Pavement,
             surface: Some("asphalt".to_owned()),
             access: Access::Open,
+            travel: EdgeTravel::Both,
             road_exposure: 0.0,
             confidence: 1.0,
             provenance: Provenance::fixture("paved"),
@@ -670,6 +715,7 @@ fn repeated_edge_fraction_is_distance_weighted() {
             terrain: Terrain::Trail,
             surface: None,
             access: Access::Open,
+            travel: EdgeTravel::Both,
             road_exposure: 0.0,
             confidence: 1.0,
             provenance: Provenance::fixture("skewed-path"),
@@ -1056,6 +1102,7 @@ fn shapefile_adapters_normalize_networks_and_overlays() {
     assert_eq!(drafts[0].terrain, Terrain::Trail);
     assert_eq!(drafts[0].surface.as_deref(), Some("dirt"));
     assert_eq!(drafts[0].access, Access::Open);
+    assert_eq!(drafts[0].travel, EdgeTravel::Backward);
     assert_eq!(drafts[0].provenance.source, "agency");
     assert_eq!(drafts[0].provenance.source_id.as_deref(), Some("trail-1"));
 
@@ -1126,6 +1173,7 @@ fn write_network_shapefile(path: &std::path::Path) {
         .add_character_field("terrain".try_into().unwrap(), 16)
         .add_character_field("surface".try_into().unwrap(), 16)
         .add_character_field("access".try_into().unwrap(), 16)
+        .add_character_field("direction".try_into().unwrap(), 16)
         .add_character_field("source".try_into().unwrap(), 32)
         .add_numeric_field("confidence".try_into().unwrap(), 5, 2);
     let mut writer = ::shapefile::Writer::from_path(path, table).unwrap();
@@ -1138,6 +1186,7 @@ fn write_network_shapefile(path: &std::path::Path) {
     record.insert("terrain".to_owned(), "trail".to_owned().into());
     record.insert("surface".to_owned(), "dirt".to_owned().into());
     record.insert("access".to_owned(), "open".to_owned().into());
+    record.insert("direction".to_owned(), "backward".to_owned().into());
     record.insert("source".to_owned(), "agency".to_owned().into());
     record.insert("confidence".to_owned(), 0.91.into());
     writer.write_shape_and_record(&line, &record).unwrap();
@@ -1228,6 +1277,7 @@ fn elevation_enrichment_densifies_rates_and_infers_terrain() {
         terrain: Terrain::Unknown,
         surface: None,
         access: Access::Open,
+        travel: EdgeTravel::Both,
         road_exposure: 0.0,
         confidence: 0.9,
         provenance: Provenance::fixture("climb"),
@@ -1395,6 +1445,7 @@ fn simple_path_draft() -> SegmentDraft {
         terrain: Terrain::Trail,
         surface: None,
         access: Access::Open,
+        travel: EdgeTravel::Both,
         road_exposure: 0.0,
         confidence: 1.0,
         provenance: Provenance::fixture("simple-path"),
@@ -1421,6 +1472,7 @@ fn bowtie_drafts() -> Vec<SegmentDraft> {
         terrain: Terrain::Trail,
         surface: None,
         access: Access::Open,
+        travel: EdgeTravel::Both,
         road_exposure: 0.0,
         confidence: 1.0,
         provenance: Provenance::fixture(name),

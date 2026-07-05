@@ -14,10 +14,10 @@ use trailgen_core::source::{
 };
 use trailgen_core::{
     Access, ArcAsciiGrid, Coord, CrossingKind, DifficultyBreakdown, DifficultyWeights, EdgeId,
-    EnrichmentConfig, GeoTiffDem, GraphBuilder, LineString, LoopConstraints, LoopHunter,
-    Provenance, Route, RouteMetrics, RouteShape, SearchParams, SeedRoute, SegmentDraft, Terrain,
-    TrailGraph, VertexId, apply_access_overlays, apply_context_overlays, apply_terrain_overlays,
-    enrich_graph, rank_routes, slug,
+    EdgeTravel, EnrichmentConfig, GeoTiffDem, GraphBuilder, LineString, LoopConstraints,
+    LoopHunter, Provenance, Route, RouteMetrics, RouteShape, SearchParams, SeedRoute, SegmentDraft,
+    Terrain, TrailGraph, VertexId, apply_access_overlays, apply_context_overlays,
+    apply_terrain_overlays, enrich_graph, rank_routes, slug,
 };
 
 #[derive(Parser)]
@@ -453,6 +453,7 @@ fn route_source_draft_from_line(source: &Path, line: LineString) -> SegmentDraft
         terrain: Terrain::Unknown,
         surface: None,
         access: Access::Unknown,
+        travel: EdgeTravel::Both,
         road_exposure: 0.0,
         confidence: 0.65,
         provenance: Provenance {
@@ -2399,6 +2400,7 @@ mod tests {
                 terrain: Terrain::Trail,
                 surface: None,
                 access: Access::Open,
+                travel: EdgeTravel::Both,
                 road_exposure: 0.0,
                 confidence: 1.0,
                 provenance: Provenance::fixture("trail"),
@@ -2409,6 +2411,7 @@ mod tests {
                 terrain: Terrain::Road,
                 surface: Some("gravel".to_owned()),
                 access: Access::Restricted,
+                travel: EdgeTravel::Both,
                 road_exposure: 0.25,
                 confidence: 0.5,
                 provenance: Provenance::fixture("restricted-road"),

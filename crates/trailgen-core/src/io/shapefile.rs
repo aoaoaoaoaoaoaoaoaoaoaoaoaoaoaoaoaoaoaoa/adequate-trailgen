@@ -1,6 +1,6 @@
 use crate::builder::SegmentDraft;
 use crate::geo::{Coord, LineString};
-use crate::model::{Access, CrossingKind, Provenance, Terrain};
+use crate::model::{Access, CrossingKind, EdgeTravel, Provenance, Terrain};
 use crate::overlay::{AccessOverlay, ContextOverlay, OverlayGeometry, TerrainOverlay};
 use crate::{Result, TrailgenError};
 use ::shapefile::dbase::{FieldValue, Record};
@@ -21,6 +21,7 @@ pub fn network_from_path(path: &Path) -> Result<Vec<SegmentDraft>> {
             .str("access")
             .or_else(|| props.str("status"))
             .map_or(Access::Unknown, Access::from_tag);
+        let travel = travel_from_props(&props);
         let confidence = props.f64("confidence").unwrap_or(0.78).clamp(0.0, 1.0);
         let road_exposure = props
             .f64("road_exposure")
@@ -45,6 +46,7 @@ pub fn network_from_path(path: &Path) -> Result<Vec<SegmentDraft>> {
                 terrain,
                 surface: surface.clone(),
                 access,
+                travel,
                 road_exposure,
                 confidence,
                 provenance: provenance.clone(),
@@ -195,6 +197,29 @@ const fn default_context_source(kind: CrossingKind) -> &'static str {
         CrossingKind::Road => "shapefile-road-context",
         CrossingKind::Water => "shapefile-hydrology-context",
     }
+}
+
+fn travel_from_props(props: &ShpProps<'_>) -> EdgeTravel {
+    props
+        .str("travel")
+        .or_else(|| props.str("travel_direction"))
+        .or_else(|| props.str("direction"))
+        .or_else(|| props.str("oneway"))
+        .or_else(|| props.str("one_way"))
+        .map(EdgeTravel::from_tag)
+        .or_else(|| {
+            props
+                .bool("oneway")
+                .or_else(|| props.bool("one_way"))
+                .map(|oneway| {
+                    if oneway {
+                        EdgeTravel::Forward
+                    } else {
+                        EdgeTravel::Both
+                    }
+                })
+        })
+        .unwrap_or_default()
 }
 
 fn lines(shape: &Shape) -> Result<Vec<LineString>> {

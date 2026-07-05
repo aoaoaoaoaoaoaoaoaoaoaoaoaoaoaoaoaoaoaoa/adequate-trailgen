@@ -1,6 +1,6 @@
 use crate::builder::SegmentDraft;
 use crate::geo::{Coord, LineString};
-use crate::model::{Access, CrossingKind, Provenance, Terrain, TrailGraph};
+use crate::model::{Access, CrossingKind, EdgeTravel, Provenance, Terrain, TrailGraph};
 use crate::overlay::{AccessOverlay, ContextOverlay, OverlayGeometry, TerrainOverlay, polygon};
 use crate::route::Route;
 use crate::{Result, TrailgenError};
@@ -26,6 +26,7 @@ pub fn network_from_str(s: &str) -> Result<Vec<SegmentDraft>> {
             .or(surface.as_deref())
             .map_or(Terrain::Unknown, Terrain::from_tag);
         let access = prop_str(&properties, "access").map_or(Access::Unknown, Access::from_tag);
+        let travel = travel_from_properties(&properties);
         let confidence = prop_f64(&properties, "confidence").unwrap_or(0.75);
         let road_exposure = prop_f64(&properties, "road_exposure")
             .or_else(|| prop_bool(&properties, "road").map(f64::from))
@@ -52,6 +53,7 @@ pub fn network_from_str(s: &str) -> Result<Vec<SegmentDraft>> {
                 terrain,
                 surface: surface.clone(),
                 access,
+                travel,
                 road_exposure,
                 confidence,
                 provenance: provenance.clone(),
@@ -167,6 +169,7 @@ pub fn graph_to_geojson(graph: &TrailGraph) -> Value {
                 ("difficulty".to_owned(), json!(edge.attr.difficulty)),
                 ("difficulty_breakdown".to_owned(), json!(edge.attr.difficulty_breakdown)),
                 ("terrain".to_owned(), json!(edge.attr.terrain)),
+                ("travel".to_owned(), json!(edge.attr.travel)),
                 ("terrain_confidence".to_owned(), json!(edge.attr.terrain_confidence)),
                 ("terrain_evidence".to_owned(), json!(edge.attr.terrain_evidence)),
                 ("access".to_owned(), json!(edge.attr.access)),
@@ -465,4 +468,25 @@ fn prop_f64(props: &Map<String, Value>, key: &str) -> Option<f64> {
 
 fn prop_bool(props: &Map<String, Value>, key: &str) -> Option<bool> {
     props.get(key).and_then(Value::as_bool)
+}
+
+fn travel_from_properties(props: &Map<String, Value>) -> EdgeTravel {
+    prop_str(props, "travel")
+        .or_else(|| prop_str(props, "travel_direction"))
+        .or_else(|| prop_str(props, "direction"))
+        .or_else(|| prop_str(props, "oneway"))
+        .or_else(|| prop_str(props, "one_way"))
+        .map(EdgeTravel::from_tag)
+        .or_else(|| {
+            prop_bool(props, "oneway")
+                .or_else(|| prop_bool(props, "one_way"))
+                .map(|oneway| {
+                    if oneway {
+                        EdgeTravel::Forward
+                    } else {
+                        EdgeTravel::Both
+                    }
+                })
+        })
+        .unwrap_or_default()
 }

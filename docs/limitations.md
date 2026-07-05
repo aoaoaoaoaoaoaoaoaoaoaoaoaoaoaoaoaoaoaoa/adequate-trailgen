@@ -5,7 +5,7 @@ The app is useful today as a local-first route generator over normalized project
 - Discovery recommends source classes and caches explicit URLs or files; it does not yet crawl every regional GIS portal automatically.
 - VRT, projected GeoTIFF, and rotated/sheared raster DEMs are planned seams, not implemented adapters. Current elevation sampling supports Arc/Info ASCII Grid and north-up geographic single-band GeoTIFF DEMs. Shapefile vector support exists for trail-network polylines, terrain overlays, access/closure overlays, and road/hydrology context linework.
 - Input geometries are assumed to be geographic lon/lat decimal degrees. There is no CRS detection or reprojection layer yet.
-- Graph directionality is not represented. Edges are bidirectional unless a future adapter adds a proven one-way travel model.
+- Turn restrictions and time/seasonal direction rules are not represented. Edges are bidirectional by default, with one-way travel preserved only when GeoJSON or shapefile source attributes prove it.
 - The current solver is a bounded deterministic heuristic behind `RouteSolver`, not a MILP/CP-SAT backend and not yet a stochastic annealer.
 - The local map UI is not implemented; diagnostics are CLI, JSON/GeoJSON, GPX/KML/KMZ, and Markdown reports.
 - AllTrails write-back uses only manual-compatible exports. The core deliberately avoids brittle private APIs.

@@ -96,7 +96,7 @@ impl RouteSolver for LoopHunter {
                     continue;
                 }
                 let edge = &graph.edges[edge_id.0];
-                let Some(next) = edge.other(state.at) else {
+                let Some(next) = edge.traverse(state.at) else {
                     continue;
                 };
                 let distance_m = state.distance_m + edge.attr.length_m;
