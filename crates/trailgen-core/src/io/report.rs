@@ -1,6 +1,7 @@
 use crate::difficulty::DifficultyFactor;
 use crate::model::{Access, Edge, Provenance, TerrainEvidence, TrailGraph};
 use crate::route::Route;
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 #[must_use]
@@ -49,6 +50,7 @@ fn render_route(graph: &TrailGraph, route: &Route, s: &mut String) {
     render_access_warnings(graph, route, s);
     render_crossings(route, s);
     render_terrain_mix(route, s);
+    render_source_provenance(graph, route, s);
     render_difficulty_hotspots(graph, route, s);
     render_dubious_edges(graph, route, s);
     render_evidence(graph, route, s);
@@ -138,6 +140,34 @@ fn render_terrain_mix(route: &Route, s: &mut String) {
     s.push_str("\nTerrain mix:\n");
     for (terrain, fraction) in route.metrics.terrain_percentages() {
         let _ = writeln!(s, "- {terrain:?}: {:.1}%", fraction * 100.0);
+    }
+}
+
+fn render_source_provenance(graph: &TrailGraph, route: &Route, s: &mut String) {
+    let mut meters_by_source = BTreeMap::<String, f64>::new();
+    for edge in route.edges.iter().map(|id| &graph.edges[id.0]) {
+        *meters_by_source
+            .entry(
+                edge.attr
+                    .provenance
+                    .first()
+                    .map_or_else(|| "unknown".to_owned(), provenance_label),
+            )
+            .or_default() += edge.attr.length_m;
+    }
+    s.push_str("\nSource provenance:\n");
+    if meters_by_source.is_empty() {
+        s.push_str("- none\n");
+        return;
+    }
+    let total_m = route.metrics.distance_m.max(1.0);
+    for (source, meters) in meters_by_source {
+        let _ = writeln!(
+            s,
+            "- {source}: {:.2} km ({:.1}%)",
+            meters / 1_000.0,
+            meters / total_m * 100.0
+        );
     }
 }
 

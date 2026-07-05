@@ -877,6 +877,8 @@ fn report_explains_difficulty_decomposition() {
     assert!(rendered.contains("- distance:"));
     assert!(rendered.contains("- ascent:"));
     assert!(rendered.contains("Largest difficulty contributors:"));
+    assert!(rendered.contains("Source provenance:"));
+    assert!(rendered.contains("fixture:"));
     assert!(rendered.contains("edge "));
     assert!(rendered.contains("grade bins flat"));
 }
