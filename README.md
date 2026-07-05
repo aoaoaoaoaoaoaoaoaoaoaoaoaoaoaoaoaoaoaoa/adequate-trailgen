@@ -22,6 +22,7 @@ cargo run -p trailgen -- stats demo/mini-loop
 cargo run -p trailgen -- generate demo/mini-loop --start=-105.0000,40.0000 --min-km 4 --max-km 9 --count 4 --seed 0
 cargo run -p trailgen -- export demo/mini-loop --route candidate-1 --format gpx --output /tmp/candidate-1.gpx
 cargo run -p trailgen -- report demo/mini-loop --route candidate-1 --output /tmp/candidate-1.md
+cargo run -p trailgen -- map demo/mini-loop --output /tmp/mini-loop-map.html
 ```
 
 For an out-and-back search, run `generate` with `--shape out-and-back --max-repeated-edge-fraction 1`. For a tighter climbing window, add flags such as `--min-ascent-m 500 --max-ascent-m 1800 --max-descent-m 1800`. For terrain steering, use repeated flags such as `--forbid-terrain pavement --min-terrain trail:0.60 --max-terrain talus=0.10`. `--max-road-fraction` covers explicit road exposure plus terrain tagged `road` or `pavement`. Access restrictions are hard by default: `restricted`, `closed`, and `private` edges violate the route unless `--max-restricted-access-fraction` allows them.
@@ -42,8 +43,9 @@ Generated artifacts land in the project directory:
 - `seeds/imports/`: archived copies of imported seed-route files
 - `seeds/seeds.json`: imported seed routes snapped to the graph, with original source paths retained for traceability
 - `reports/generated.md`: route diagnostics, the generation constraint envelope, and fingerprinted source manifest summary
+- `reports/map.html`: self-contained offline SVG map of the attributed graph and generated routes
 
-Use `trailgen export <project> --route candidate-1 --format gpx|geojson|kml|kmz --output file` to re-export a selected generated route after the search run. Use `trailgen report <project> [--route candidate-1] [--output file.md]` to render either all generated routes or one named route, including the constraint envelope used for that generation run.
+Use `trailgen export <project> --route candidate-1 --format gpx|geojson|kml|kmz --output file` to re-export a selected generated route after the search run. Use `trailgen report <project> [--route candidate-1] [--output file.md]` to render either all generated routes or one named route, including the constraint envelope used for that generation run. Use `trailgen map <project> [--output file.html]` to regenerate the offline diagnostic map without rerunning the solver.
 
 Use `trailgen rate <project> --route completed.gpx` to score a completed hike against the current graph. Use `trailgen calibrate <project> --route completed.gpx --target-difficulty N --family elevation|technical|navigation` to dry-run a difficulty-weight patch from that hike; add `--write` to update `trailgen.toml` and rerate cached edge costs. `trailgen rerate <project>` reapplies hand-edited `[difficulty]` weights to `cache/graph.json` and `cache/graph.geojson`.
 

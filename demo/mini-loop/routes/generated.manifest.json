@@ -1136,6 +1136,7 @@
     "routes/generated.routes.json",
     "routes/generated.manifest.json",
     "reports/generated.md",
+    "reports/map.html",
     "routes/candidate-1.gpx",
     "routes/candidate-1.kml",
     "routes/candidate-1.kmz",

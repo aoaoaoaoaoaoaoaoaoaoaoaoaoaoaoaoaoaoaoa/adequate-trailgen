@@ -125,6 +125,11 @@ enum Cmd {
         #[arg(long)]
         output: Option<PathBuf>,
     },
+    Map {
+        project: PathBuf,
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
     Rate {
         project: PathBuf,
         #[arg(long)]
@@ -325,6 +330,7 @@ fn main() -> Result<()> {
             route,
             output,
         } => report_generated(&project, route.as_deref(), output.as_deref()),
+        Cmd::Map { project, output } => map_html(&project, output.as_deref()),
         Cmd::Rate { project, route } => rate(&project, &route),
         Cmd::Rerate { project } => rerate(&project),
         Cmd::Calibrate {
@@ -826,6 +832,10 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
         render_project_report(project, &graph, &routes, &config.constraints)?,
     )
     .with_context(|| "write generated report")?;
+    write_bytes(
+        project.join("reports/map.html"),
+        render_map_html(&config.name, &graph, &routes)?,
+    )?;
     println!("generated {} route(s)", routes.len());
     Ok(())
 }
@@ -1171,6 +1181,156 @@ fn report_generated(project: &Path, route_name: Option<&str>, output: Option<&Pa
         println!("{text}");
     }
     Ok(())
+}
+
+fn map_html(project: &Path, output: Option<&Path>) -> Result<()> {
+    let graph = load_graph(project)?;
+    let routes = load_generated_routes(project).unwrap_or_default();
+    let config = load_config(project)?;
+    let output = output.map_or_else(|| project.join("reports/map.html"), Path::to_path_buf);
+    write_bytes(&output, render_map_html(&config.name, &graph, &routes)?)?;
+    println!("wrote map {}", output.display());
+    Ok(())
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "A self-contained offline HTML artifact is clearer as one template than as scattered string shards."
+)]
+fn render_map_html(project_name: &str, graph: &TrailGraph, routes: &[Route]) -> Result<String> {
+    let graph_json = js_json(&geojson::graph_to_geojson(graph))?;
+    let routes_json = js_json(&geojson::routes_to_geojson(graph, routes))?;
+    let title = html_text(project_name);
+    Ok(format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title} trailgen map</title>
+<style>
+:root {{ color-scheme: dark; font-family: ui-sans-serif, system-ui, sans-serif; background: #101318; color: #edf2f7; }}
+body {{ margin: 0; display: grid; grid-template-columns: minmax(0, 1fr) 360px; min-height: 100vh; }}
+main {{ padding: 16px; }}
+aside {{ border-left: 1px solid #2d3748; padding: 16px; background: #171b22; overflow: auto; }}
+h1, h2, h3 {{ margin: 0 0 12px; }}
+#map {{ width: 100%; height: calc(100vh - 32px); background: #0b0f14; border: 1px solid #2d3748; border-radius: 10px; }}
+.edge {{ fill: none; stroke-linecap: round; vector-effect: non-scaling-stroke; }}
+.route {{ fill: none; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; cursor: pointer; }}
+.route:hover {{ stroke-width: 7; }}
+.halo {{ fill: none; stroke: #05070a; stroke-width: 8; opacity: .7; vector-effect: non-scaling-stroke; }}
+.closed {{ stroke-dasharray: 6 4; }}
+.legend {{ display: grid; grid-template-columns: 18px 1fr; gap: 6px 8px; font-size: 13px; margin: 12px 0 18px; }}
+.swatch {{ width: 18px; height: 12px; border-radius: 3px; align-self: center; }}
+.route-card {{ border: 1px solid #2d3748; border-radius: 8px; padding: 10px; margin: 10px 0; background: #101318; }}
+.ok {{ color: #68d391; }}
+.bad {{ color: #fc8181; }}
+code {{ color: #f6ad55; }}
+small {{ color: #a0aec0; }}
+</style>
+</head>
+<body>
+<main>
+<svg id="map" role="img" aria-label="Trail graph and generated route map"></svg>
+</main>
+<aside>
+<h1>{title}</h1>
+<p><small>Offline diagnostic map. Graph edges are colored by terrain and faded by confidence; generated routes are drawn thick above the graph.</small></p>
+<h2>Terrain</h2>
+<div class="legend" id="legend"></div>
+<h2>Routes</h2>
+<div id="routes"></div>
+<h2>Selected</h2>
+<pre id="details">Click a route or edge.</pre>
+</aside>
+<script>
+const graph = {graph_json};
+const routes = {routes_json};
+const terrainColors = {{
+  unknown: '#718096', trail: '#68d391', forest: '#38a169', alpine: '#90cdf4',
+  talus: '#b7791f', scramble: '#f56565', pavement: '#a0aec0', road: '#f6ad55', water: '#63b3ed'
+}};
+const routeColors = ['#f56565', '#f6ad55', '#faf089', '#68d391', '#63b3ed', '#b794f4', '#f687b3'];
+const svg = document.getElementById('map');
+const details = document.getElementById('details');
+function coords(feature) {{ return feature.geometry && feature.geometry.coordinates || []; }}
+function allPoints() {{
+  return graph.features.concat(routes.features).flatMap(f => coords(f).map(c => [c[0], c[1]]));
+}}
+const pts = allPoints();
+const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+const bounds = {{
+  west: Math.min(...xs), east: Math.max(...xs), south: Math.min(...ys), north: Math.max(...ys)
+}};
+const W = 1200, H = 850, P = 36;
+svg.setAttribute('viewBox', `0 0 ${{W}} ${{H}}`);
+function project(c) {{
+  const dx = Math.max(bounds.east - bounds.west, 1e-9);
+  const dy = Math.max(bounds.north - bounds.south, 1e-9);
+  return [P + (c[0] - bounds.west) / dx * (W - 2 * P), H - P - (c[1] - bounds.south) / dy * (H - 2 * P)];
+}}
+function path(feature) {{ return coords(feature).map((c, i) => `${{i ? 'L' : 'M'}}${{project(c)[0].toFixed(2)}} ${{project(c)[1].toFixed(2)}}`).join(' '); }}
+function el(name, attrs) {{
+  const node = document.createElementNS('http://www.w3.org/2000/svg', name);
+  Object.entries(attrs).forEach(([k, v]) => node.setAttribute(k, v));
+  return node;
+}}
+function pct(x) {{ return `${{(100 * (x || 0)).toFixed(1)}}%`; }}
+function km(x) {{ return `${{((x || 0) / 1000).toFixed(2)}} km`; }}
+function routeText(p) {{
+  return `${{p.name}} | rank ${{p.pareto_rank}} | ${{km(p.distance_m)}} | ascent ${{(p.ascent_m || 0).toFixed(0)}} m | difficulty ${{(p.difficulty || 0).toFixed(1)}} | road ${{pct(p.road_fraction)}} | low confidence ${{pct(p.low_confidence_fraction)}}`;
+}}
+function show(kind, p) {{ details.textContent = JSON.stringify({{kind, ...p}}, null, 2); }}
+for (const [terrain, color] of Object.entries(terrainColors)) {{
+  document.getElementById('legend').append(Object.assign(document.createElement('span'), {{className: 'swatch', style: `background:${{color}}`}}), terrain);
+}}
+const graphLayer = el('g', {{id: 'graph'}});
+svg.append(graphLayer);
+for (const f of graph.features) {{
+  const p = f.properties || {{}};
+  const terrain = p.terrain || 'unknown';
+  const edge = el('path', {{
+    d: path(f),
+    class: `edge ${{p.access === 'closed' ? 'closed' : ''}}`,
+    stroke: terrainColors[terrain] || terrainColors.unknown,
+    'stroke-width': Math.max(1, Math.min(5, 1 + Math.log10(1 + (p.difficulty || 0)))),
+    opacity: Math.max(.18, Math.min(.9, p.confidence || .5))
+  }});
+  edge.addEventListener('click', () => show('edge', p));
+  graphLayer.append(edge);
+}}
+const routeLayer = el('g', {{id: 'routes-layer'}});
+svg.append(routeLayer);
+const list = document.getElementById('routes');
+routes.features.forEach((f, i) => {{
+  const p = f.properties || {{}};
+  const color = routeColors[i % routeColors.length];
+  routeLayer.append(el('path', {{d: path(f), class: 'halo'}}));
+  const r = el('path', {{d: path(f), class: 'route', stroke: color, 'stroke-width': 4}});
+  r.addEventListener('click', () => show('route', p));
+  routeLayer.append(r);
+  const card = document.createElement('div');
+  card.className = 'route-card';
+  card.innerHTML = `<h3 style="color:${{color}}">${{p.name}}</h3><div class="${{p.satisfied ? 'ok' : 'bad'}}">${{p.satisfied ? 'satisfied' : 'violates constraints'}}</div><small>${{routeText(p)}}</small>`;
+  card.addEventListener('click', () => show('route', p));
+  list.append(card);
+}});
+</script>
+</body>
+</html>
+"#
+    ))
+}
+
+fn js_json(value: &serde_json::Value) -> Result<String> {
+    Ok(serde_json::to_string(value)?.replace("</", "<\\/"))
+}
+
+fn html_text(raw: &str) -> String {
+    raw.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 fn render_project_report(
@@ -2135,6 +2295,7 @@ fn generation_artifacts(routes: &[Route]) -> Vec<String> {
         "routes/generated.routes.json".to_owned(),
         "routes/generated.manifest.json".to_owned(),
         "reports/generated.md".to_owned(),
+        "reports/map.html".to_owned(),
     ];
     for route in routes {
         artifacts.extend([
@@ -2568,11 +2729,10 @@ mod tests {
                 .as_array()
                 .is_some_and(|xs| !xs.is_empty())
         );
-        assert!(
-            manifest["artifacts"]
-                .as_array()
-                .is_some_and(|xs| xs.iter().any(|x| x == "routes/generated.manifest.json"))
-        );
+        assert!(manifest["artifacts"].as_array().is_some_and(|xs| {
+            xs.iter().any(|x| x == "routes/generated.manifest.json")
+                && xs.iter().any(|x| x == "reports/map.html")
+        }));
 
         Ok(())
     }
@@ -2639,9 +2799,11 @@ mod tests {
         let gpx = project.join("exports/candidate-1.gpx");
         let geojson = project.join("exports/candidate-1.geojson");
         let md = project.join("reports/candidate-1.md");
+        let map = project.join("exports/map.html");
         export_route(project, "candidate-1", ExportFormat::Gpx, &gpx)?;
         export_route(project, "candidate-1", ExportFormat::Geojson, &geojson)?;
         report_generated(project, Some("candidate-1"), Some(&md))?;
+        map_html(project, Some(&map))?;
 
         assert!(fs::read_to_string(gpx)?.contains("<gpx"));
         assert_eq!(
@@ -2658,6 +2820,12 @@ mod tests {
         assert!(report.contains("restricted-access fraction"));
         assert!(report.contains("## Source Manifest"));
         assert!(report.contains("sha256 "));
+        let generated_map = fs::read_to_string(project.join("reports/map.html"))?;
+        assert!(generated_map.contains("Offline diagnostic map"));
+        assert!(generated_map.contains("const graph = {"));
+        let selected_map = fs::read_to_string(map)?;
+        assert!(selected_map.contains("Export Test"));
+        assert!(selected_map.contains("candidate-1"));
 
         Ok(())
     }
