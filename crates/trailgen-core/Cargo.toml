@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Typed trail graph, route scoring, loop search, and geospatial route I/O for adequate-trailgen."
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 rust-version.workspace = true
 readme = "../../README.md"
 keywords = ["gis", "hiking", "routing", "geojson", "gpx"]

@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "CLI for designing constrained long-day-hike loops over normalized trail graphs."
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 rust-version.workspace = true
 readme = "../../README.md"
 keywords = ["gis", "hiking", "routing", "geojson", "gpx"]
