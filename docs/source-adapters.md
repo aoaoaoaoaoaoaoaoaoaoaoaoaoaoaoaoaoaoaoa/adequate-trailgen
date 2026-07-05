@@ -16,6 +16,7 @@ If filenames can identify the source class, update `classify_path()` in the same
 Normalization targets:
 
 - trail networks become `SegmentDraft` values and are built by `GraphBuilder`
+- route files may also become low-confidence `SegmentDraft` scaffolds for `trailgen build` when no network layer is available
 - terrain/access/context layers become overlay structs in `overlay.rs`
 - elevation sources implement `ElevationSampler`
 - user routes become `LineString` or `SeedRoute`

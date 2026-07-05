@@ -13,9 +13,9 @@ use trailgen_core::source::{
     classify_path, discovery_recommendations, source_coverage,
 };
 use trailgen_core::{
-    ArcAsciiGrid, Coord, CrossingKind, DifficultyBreakdown, DifficultyWeights, EdgeId,
+    Access, ArcAsciiGrid, Coord, CrossingKind, DifficultyBreakdown, DifficultyWeights, EdgeId,
     EnrichmentConfig, GraphBuilder, LineString, LoopConstraints, LoopHunter, Provenance, Route,
-    RouteMetrics, RouteShape, SearchParams, SeedRoute, Terrain, TrailGraph, VertexId,
+    RouteMetrics, RouteShape, SearchParams, SeedRoute, SegmentDraft, Terrain, TrailGraph, VertexId,
     apply_access_overlays, apply_context_overlays, apply_terrain_overlays, enrich_graph,
     rank_routes, slug,
 };
@@ -376,27 +376,97 @@ fn init(project: &Path, name: String, area: Option<GeoBounds>) -> Result<()> {
 
 fn build(project: &Path, source: &Path) -> Result<()> {
     let config = load_config(project)?;
-    let raw = fs::read_to_string(source).with_context(|| format!("read {}", source.display()))?;
-    let drafts = geojson::network_from_str(&raw).with_context(|| "parse source GeoJSON")?;
+    let build_source = build_source(source)?;
     let graph = GraphBuilder {
         snap_tolerance_m: config.snap_tolerance_m,
         enrichment: config.enrichment,
         weights: config.difficulty,
     }
-    .build(&drafts)
+    .build(&build_source.drafts)
     .with_context(|| "build graph")?;
     write_json(project.join("cache/graph.json"), &graph)?;
     write_json(
         project.join("cache/graph.geojson"),
         &geojson::graph_to_geojson(&graph),
     )?;
-    register_source_candidate_as(project, source, SourceKind::TrailNetwork, "geojson-network")?;
+    register_source_candidate_as(project, source, build_source.kind, build_source.adapter_id)?;
     println!(
-        "built graph: {} vertices, {} edges",
+        "built graph from {}: {} vertices, {} edges",
+        build_source.adapter_id,
         graph.vertices.len(),
         graph.edges.len()
     );
     Ok(())
+}
+
+fn build_source(source: &Path) -> Result<BuildSource> {
+    match source_ext(source).as_deref() {
+        Some("geojson" | "json") => {
+            let raw =
+                fs::read_to_string(source).with_context(|| format!("read {}", source.display()))?;
+            match geojson::network_from_str(&raw) {
+                Ok(drafts) => Ok(BuildSource {
+                    drafts,
+                    kind: SourceKind::TrailNetwork,
+                    adapter_id: "geojson-network",
+                }),
+                Err(network_error) => Ok(BuildSource {
+                    drafts: vec![route_source_draft_from_line(
+                        source,
+                        geojson::route_line_from_str(&raw).with_context(|| {
+                            format!(
+                                "parse {} as GeoJSON trail network ({network_error}) or route",
+                                source.display()
+                            )
+                        })?,
+                    )],
+                    kind: SourceKind::SeedRoute,
+                    adapter_id: "geojson-route",
+                }),
+            }
+        }
+        Some("gpx" | "csv" | "kml" | "kmz") => Ok(BuildSource {
+            drafts: vec![route_source_draft(source)?],
+            kind: SourceKind::SeedRoute,
+            adapter_id: route_adapter_id(source),
+        }),
+        Some(ext) => bail!(
+            "unsupported build source extension {ext:?}; expected geojson, json, gpx, csv, kml, or kmz"
+        ),
+        None => bail!("build source has no extension"),
+    }
+}
+
+fn route_source_draft(source: &Path) -> Result<SegmentDraft> {
+    let line = load_route_line(source)?;
+    Ok(route_source_draft_from_line(source, line))
+}
+
+fn route_source_draft_from_line(source: &Path, line: LineString) -> SegmentDraft {
+    SegmentDraft {
+        geometry: line,
+        terrain: Terrain::Unknown,
+        access: Access::Unknown,
+        road_exposure: 0.0,
+        confidence: 0.65,
+        provenance: Provenance {
+            source: "route-file".to_owned(),
+            layer: Some("route-derived-network".to_owned()),
+            source_id: source
+                .file_name()
+                .and_then(|x| x.to_str())
+                .map(str::to_owned),
+            license: None,
+        },
+    }
+}
+
+fn route_adapter_id(source: &Path) -> &'static str {
+    match source_ext(source).as_deref() {
+        Some("kml" | "kmz") => "kml-route",
+        Some("geojson" | "json") => "geojson-route",
+        _ => "gpx-route",
+    }
 }
 
 fn stats(project: &Path) -> Result<()> {
@@ -526,6 +596,12 @@ struct GenerationManifest {
     graph: GraphManifest,
     routes: Vec<RouteManifestEntry>,
     artifacts: Vec<String>,
+}
+
+struct BuildSource {
+    drafts: Vec<SegmentDraft>,
+    kind: SourceKind,
+    adapter_id: &'static str,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1352,7 +1428,7 @@ fn rerate_cached_graph(project: &Path, weights: DifficultyWeights) -> Result<usi
 }
 
 fn load_route_line(path: &Path) -> Result<LineString> {
-    match path.extension().and_then(|x| x.to_str()) {
+    match source_ext(path).as_deref() {
         Some("kmz") => {
             let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
             Ok(kmz::route_line_from_bytes(&bytes)?)
@@ -1380,6 +1456,12 @@ fn load_route_line(path: &Path) -> Result<LineString> {
         Some(ext) => bail!("unsupported route extension: {ext}"),
         None => bail!("route file has no extension"),
     }
+}
+
+fn source_ext(path: &Path) -> Option<String> {
+    path.extension()
+        .and_then(|x| x.to_str())
+        .map(str::to_ascii_lowercase)
 }
 
 fn load_seeds(project: &Path) -> Result<Vec<SeedRoute>> {
@@ -2150,6 +2232,71 @@ mod tests {
         assert!(report.contains("restricted-access fraction"));
         assert!(report.contains("## Source Manifest"));
         assert!(report.contains("sha256 "));
+
+        Ok(())
+    }
+
+    #[test]
+    fn build_accepts_route_files_as_practical_graph_sources() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path();
+        let route = tmp.path().join("completed.csv");
+        fs::write(
+            &route,
+            "longitude,latitude,elevation_m\n-105.0,40.0,1600\n-104.995,40.0,1620\n-104.990,40.004,1660\n",
+        )?;
+
+        init(project, "Route Build Test".to_owned(), None)?;
+        build(project, &route)?;
+
+        let graph = load_graph(project)?;
+        assert_eq!(graph.edges.len(), 2);
+        assert!(graph.edges.iter().all(|edge| {
+            edge.attr.provenance.iter().any(|p| {
+                p.source == "route-file" && p.layer.as_deref() == Some("route-derived-network")
+            })
+        }));
+
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(project.join("sources/manifest.json"))?)?;
+        let candidate = manifest["candidates"]
+            .as_array()
+            .expect("candidates")
+            .iter()
+            .find(|candidate| candidate["path"].as_str() == Some(route.to_str().unwrap()))
+            .expect("route source candidate");
+        assert_eq!(candidate["kind"], "seed-route");
+        assert_eq!(candidate["adapter_id"], "gpx-route");
+        assert!(
+            manifest["coverage"]
+                .as_array()
+                .expect("coverage")
+                .iter()
+                .any(|entry| entry["kind"] == "trail-network" && entry["status"] == "missing")
+        );
+
+        let geojson_project = tmp.path().join("geojson-route-project");
+        let geojson_route = tmp.path().join("route.geojson");
+        fs::write(
+            &geojson_route,
+            r#"{"type":"LineString","coordinates":[[-105.0,40.0,1600],[-104.995,40.0,1620]]}"#,
+        )?;
+        init(
+            &geojson_project,
+            "Route GeoJSON Build Test".to_owned(),
+            None,
+        )?;
+        build(&geojson_project, &geojson_route)?;
+        let manifest: Value = serde_json::from_str(&fs::read_to_string(
+            geojson_project.join("sources/manifest.json"),
+        )?)?;
+        assert!(
+            manifest["candidates"]
+                .as_array()
+                .expect("candidates")
+                .iter()
+                .any(|candidate| candidate["adapter_id"] == "geojson-route")
+        );
 
         Ok(())
     }

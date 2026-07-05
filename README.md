@@ -4,6 +4,8 @@
 
 The current implementation is intentionally local-first: use GeoJSON/GPX fixtures, official GIS exports, park layers, OSM-derived extracts, or user-supplied AllTrails exports. The internal model is provider-agnostic; AllTrails is treated as an import/export workflow, not as a privileged dependency.
 
+`trailgen build` prefers provider-neutral GeoJSON trail/network layers, but it can also bootstrap a practical graph from a supplied GPX, KML, KMZ, CSV, or route GeoJSON file. Route-derived graphs preserve `route-file` provenance and lower confidence; use them as seed scaffolds when a real network layer is not yet available.
+
 ## Quickstart
 
 ```sh
