@@ -229,6 +229,7 @@ impl ProjectConfig {
 enum ExportFormat {
     Gpx,
     Geojson,
+    Csv,
     Kml,
     Kmz,
 }
@@ -920,6 +921,11 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
         )
         .with_context(|| format!("write GPX for {}", route.name))?;
         fs::write(
+            project.join(format!("routes/{}.csv", route.name)),
+            csv::route_to_csv(&graph, route),
+        )
+        .with_context(|| format!("write CSV for {}", route.name))?;
+        fs::write(
             project.join(format!("routes/{}.kml", route.name)),
             kml::route_to_kml(&graph, route),
         )
@@ -1254,6 +1260,7 @@ fn export_route(
             output,
             &geojson::routes_to_geojson(&graph, &[(*route).clone()]),
         ),
+        ExportFormat::Csv => write_bytes(output, csv::route_to_csv(&graph, route)),
         ExportFormat::Kml => write_bytes(output, kml::route_to_kml(&graph, route)),
         ExportFormat::Kmz => write_bytes(output, kmz::route_to_kmz(&graph, route)?),
     }?;
@@ -2660,6 +2667,7 @@ fn generation_artifacts(routes: &[Route]) -> Vec<String> {
     for route in routes {
         artifacts.extend([
             format!("routes/{}.gpx", route.name),
+            format!("routes/{}.csv", route.name),
             format!("routes/{}.kml", route.name),
             format!("routes/{}.kmz", route.name),
         ]);
@@ -3201,15 +3209,20 @@ mod tests {
         )?;
 
         let gpx = project.join("exports/candidate-1.gpx");
+        let csv = project.join("exports/candidate-1.csv");
         let geojson = project.join("exports/candidate-1.geojson");
         let md = project.join("reports/candidate-1.md");
         let map = project.join("exports/map.html");
         export_route(project, "candidate-1", ExportFormat::Gpx, &gpx)?;
+        export_route(project, "candidate-1", ExportFormat::Csv, &csv)?;
         export_route(project, "candidate-1", ExportFormat::Geojson, &geojson)?;
         report_generated(project, Some("candidate-1"), Some(&md))?;
         map_html(project, Some(&map))?;
 
         assert!(fs::read_to_string(gpx)?.contains("<gpx"));
+        let csv_text = fs::read_to_string(csv)?;
+        assert!(csv_text.starts_with("longitude,latitude,elevation_m\n"));
+        assert!(csv::route_line_from_str(&csv_text)?.length_m() > 3_000.0);
         assert_eq!(
             serde_json::from_str::<Value>(&fs::read_to_string(geojson)?)?["type"],
             "FeatureCollection"

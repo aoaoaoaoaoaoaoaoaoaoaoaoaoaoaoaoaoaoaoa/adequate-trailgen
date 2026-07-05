@@ -6,7 +6,7 @@ Supported now:
 
 - import user-supplied AllTrails GPX exports via `trailgen import-seed --route file.gpx` or `trailgen rate --route file.gpx`
 - import user-supplied GeoJSON, KML, and CSV route/network files
-- export generated routes as GPX, GeoJSON, KML, and KMZ
+- export generated routes as GPX, GeoJSON, CSV, KML, and KMZ
 - expose `ManualAllTrailsBridge` capabilities for future connectors
 
 Not implemented:
@@ -16,7 +16,7 @@ Not implemented:
 
 Official support pages describe a sanctioned manual upload path: Build custom route → Upload a route on the website, or Saved → Custom routes → Upload route in mobile apps. AllTrails lists GPX, KML, KMZ, CSV, and many other formats as uploadable. Official support also documents downloads from activities, custom routes, and trail pages, including GPX route/track, GeoJSON track, JSON track, KML, and KMZ.
 
-Current best workflow: export a generated `routes/candidate-N.gpx`, `routes/candidate-N.kml`, or `routes/candidate-N.kmz` file and use AllTrails’ manual upload path. If AllTrails publishes a documented route-create/import API, it should be added behind the `AllTrailsBridge` trait, leaving graph construction and optimization untouched.
+Current best workflow: export a generated `routes/candidate-N.gpx`, `routes/candidate-N.csv`, `routes/candidate-N.kml`, or `routes/candidate-N.kmz` file and use AllTrails’ manual upload path. If AllTrails publishes a documented route-create/import API, it should be added behind the `AllTrailsBridge` trait, leaving graph construction and optimization untouched.
 
 Official references:
 

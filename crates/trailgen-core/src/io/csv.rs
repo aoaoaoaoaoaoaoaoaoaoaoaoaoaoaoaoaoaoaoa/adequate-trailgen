@@ -1,5 +1,8 @@
 use crate::geo::{Coord, LineString};
+use crate::model::TrailGraph;
+use crate::route::Route;
 use crate::{Result, TrailgenError};
+use std::fmt::Write as _;
 
 pub fn route_line_from_str(s: &str) -> Result<LineString> {
     let mut rows = s
@@ -77,4 +80,17 @@ fn field_f64(fields: &[&str], index: usize, name: &str) -> Result<f64> {
         .trim()
         .parse()
         .map_err(|e| TrailgenError::InvalidData(format!("invalid CSV {name}: {e}")))
+}
+
+#[must_use]
+pub fn route_to_csv(graph: &TrailGraph, route: &Route) -> String {
+    let mut out = String::from("longitude,latitude,elevation_m\n");
+    for Coord { lon, lat, ele } in route.geometry(graph).points {
+        writeln!(out, "{lon:.7},{lat:.7},{}", csv_ele(ele)).expect("write to string");
+    }
+    out
+}
+
+fn csv_ele(ele: Option<f64>) -> String {
+    ele.map_or_else(String::new, |x| format!("{x:.3}"))
 }

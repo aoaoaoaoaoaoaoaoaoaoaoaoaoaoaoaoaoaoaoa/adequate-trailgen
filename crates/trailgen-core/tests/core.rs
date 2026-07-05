@@ -1259,6 +1259,31 @@ fn csv_route_import_reads_headered_lon_lat_ele() {
 }
 
 #[test]
+fn csv_round_trip_reads_exported_route() {
+    let drafts = geojson::network_from_str(include_str!("fixtures/mini_network.geojson")).unwrap();
+    let graph = GraphBuilder::default().build(&drafts).unwrap();
+    let start = graph.nearest_vertex(Coord::new(-105.0, 40.0)).unwrap();
+    let route = LoopHunter::default()
+        .hunt(
+            &graph,
+            start,
+            &LoopConstraints {
+                min_distance_m: 3_000.0,
+                max_distance_m: 8_000.0,
+                ..LoopConstraints::default()
+            },
+            1,
+        )
+        .into_iter()
+        .next()
+        .unwrap();
+    let text = csv::route_to_csv(&graph, &route);
+    assert!(text.starts_with("longitude,latitude,elevation_m\n"));
+    let line = csv::route_line_from_str(&text).unwrap();
+    assert!(line.length_m() > 3_000.0);
+}
+
+#[test]
 fn seed_routes_snap_and_raise_edge_confidence() {
     let drafts = geojson::network_from_str(include_str!("fixtures/mini_network.geojson")).unwrap();
     let mut graph = GraphBuilder::default().build(&drafts).unwrap();
