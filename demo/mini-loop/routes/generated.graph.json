@@ -2893,10 +2893,16 @@
             }
           }
         ],
-        "access": "open",
+        "access": "restricted",
         "travel": "both",
-        "access_confidence": 0.9,
-        "access_provenance": [],
+        "access_confidence": 0.91,
+        "access_provenance": [
+          {
+            "source": "fixture-access",
+            "layer": "ownership-access",
+            "source_id": "road-spur-easement"
+          }
+        ],
         "crossings": [],
         "road_exposure": 1.0,
         "confidence": 0.65,
@@ -2910,9 +2916,9 @@
           "technical": 0.0,
           "navigation": 0.021806175568635244,
           "confidence": 0.5249999999999999,
-          "access": 0.0
+          "access": 50.0
         },
-        "difficulty": 2.62734184567225,
+        "difficulty": 52.62734184567225,
         "seed_count": 0,
         "popularity": 0.0,
         "seed_provenance": [],

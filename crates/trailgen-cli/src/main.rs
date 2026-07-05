@@ -179,8 +179,8 @@ enum Cmd {
     },
     ApplyAccess {
         project: PathBuf,
-        #[arg(long)]
-        source: PathBuf,
+        #[arg(long = "source", required = true)]
+        source: Vec<PathBuf>,
         #[arg(long, value_parser = parse_planning_date)]
         date: Option<PlanningDate>,
     },
@@ -2163,14 +2163,34 @@ fn archive_seed_route(project: &Path, route: &Path, name: &str) -> Result<PathBu
     Ok(archived_route)
 }
 
-fn apply_access(project: &Path, source: &Path, date: Option<PlanningDate>) -> Result<()> {
+struct AccessOverlayBundle<'a> {
+    source: &'a Path,
+    overlays: Vec<AccessOverlay>,
+}
+
+fn apply_access(project: &Path, sources: &[PathBuf], date: Option<PlanningDate>) -> Result<()> {
+    if sources.is_empty() {
+        bail!("apply-access requires at least one --source");
+    }
     let mut config = load_config(project)?;
     let date_override = date.is_some();
     if let Some(date) = date {
         config.planning_date = Some(date);
     }
     let mut graph = load_graph(project)?;
-    let overlays = access_overlays(source)?;
+    let bundles = sources
+        .iter()
+        .map(|source| {
+            Ok(AccessOverlayBundle {
+                source,
+                overlays: access_overlays(source)?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let overlays = bundles
+        .iter()
+        .flat_map(|bundle| bundle.overlays.iter().cloned())
+        .collect::<Vec<_>>();
     restore_or_capture_access_baseline(project, &mut graph, &overlays, config.difficulty)?;
     let touched = apply_access_overlays(
         &mut graph,
@@ -2184,9 +2204,10 @@ fn apply_access(project: &Path, source: &Path, date: Option<PlanningDate>) -> Re
     if date_override {
         save_config(project, &config)?;
     }
-    register_access_source(project, source)?;
+    register_access_sources(project, &bundles)?;
     println!(
-        "applied {} access overlay(s); touched {} edge(s)",
+        "applied {} access overlay source(s), {} overlay(s); touched {} edge(s)",
+        bundles.len(),
         overlays.len(),
         touched
     );
@@ -2980,16 +3001,57 @@ fn register_source_candidate_as(
     )
 }
 
-fn register_access_source(project: &Path, source: &Path) -> Result<()> {
-    let (kind, adapter_id) = classify_path(source).map_or_else(
-        || (SourceKind::Access, "geojson-access-overlay".to_owned()),
-        |candidate| match candidate.kind {
-            SourceKind::Closure => (SourceKind::Closure, candidate.adapter_id),
-            SourceKind::Access => (SourceKind::Access, candidate.adapter_id),
-            _ => (SourceKind::Access, "geojson-access-overlay".to_owned()),
+fn register_access_sources(project: &Path, bundles: &[AccessOverlayBundle<'_>]) -> Result<()> {
+    let mut candidates = Vec::new();
+    for bundle in bundles {
+        let fingerprint = source_fingerprint(bundle.source)?;
+        let mut kinds = bundle
+            .overlays
+            .iter()
+            .map(|overlay| access_source_kind(overlay.access))
+            .collect::<Vec<_>>();
+        kinds.sort_unstable();
+        kinds.dedup();
+        for kind in kinds {
+            candidates.push(source_candidate(
+                bundle.source,
+                kind,
+                &access_adapter_id(bundle.source, kind),
+                fingerprint.clone(),
+            ));
+        }
+    }
+    register_source_candidates(project, candidates)
+}
+
+const fn access_source_kind(access: Access) -> SourceKind {
+    match access {
+        Access::Closed => SourceKind::Closure,
+        Access::Unknown | Access::Open | Access::Restricted | Access::Private => SourceKind::Access,
+    }
+}
+
+fn access_adapter_id(source: &Path, kind: SourceKind) -> String {
+    classify_path(source).map_or_else(
+        || fallback_access_adapter_id(source, kind),
+        |candidate| {
+            if candidate.kind == kind {
+                candidate.adapter_id
+            } else {
+                fallback_access_adapter_id(source, kind)
+            }
         },
-    );
-    register_source_candidate_as(project, source, kind, &adapter_id)
+    )
+}
+
+fn fallback_access_adapter_id(source: &Path, kind: SourceKind) -> String {
+    match (kind, source_ext(source).as_deref()) {
+        (SourceKind::Closure, Some("shp")) => "shapefile-closure-layer".to_owned(),
+        (SourceKind::Closure, _) => "geojson-closure-overlay".to_owned(),
+        (SourceKind::Access, Some("shp")) => "shapefile-access-overlay".to_owned(),
+        (SourceKind::Access, _) => "geojson-access-overlay".to_owned(),
+        _ => unreachable!("access overlay registration only handles access and closure"),
+    }
 }
 
 fn register_context_source(
@@ -4288,7 +4350,11 @@ mod tests {
 
         init(project, "Date Access Test".to_owned(), None)?;
         build(project, &fixture)?;
-        apply_access(project, &closure, Some("2026-05-15".parse().unwrap()))?;
+        apply_access(
+            project,
+            std::slice::from_ref(&closure),
+            Some("2026-05-15".parse().unwrap()),
+        )?;
         assert!(
             load_graph(project)?
                 .edges
@@ -4340,6 +4406,107 @@ mod tests {
             manifest["artifacts"]
                 .as_array()
                 .is_some_and(|xs| { xs.iter().any(|x| x == "routes/generated.graph.json") })
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn access_and_closure_sources_compose_from_one_baseline() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path();
+        let fixture_dir =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../trailgen-core/tests/fixtures");
+        let network = fixture_dir.join("mini_network.geojson");
+        let access = fixture_dir.join("access_overlay.geojson");
+        let closure = fixture_dir.join("closure_overlay.geojson");
+
+        init(project, "Access Composition Test".to_owned(), None)?;
+        discover(project, None)?;
+        build(project, &network)?;
+        apply_access(
+            project,
+            &[access, closure],
+            Some("2026-05-15".parse().unwrap()),
+        )?;
+        let graph = load_graph(project)?;
+        assert!(
+            graph
+                .edges
+                .iter()
+                .any(|edge| edge.attr.access == Access::Restricted)
+        );
+        assert!(
+            graph
+                .edges
+                .iter()
+                .any(|edge| edge.attr.access == Access::Closed)
+        );
+
+        generate(
+            project,
+            &GenerateOptions {
+                start: "-105.0000,40.0000".to_owned(),
+                min_km: 3.0,
+                max_km: 8.0,
+                count: 2,
+                seed: 0,
+                max_start_snap_m: None,
+                solver: Some(SolverKind::Exact),
+                date: Some("2026-07-15".parse().unwrap()),
+                min_difficulty: None,
+                max_difficulty: None,
+                min_ascent_m: None,
+                max_ascent_m: None,
+                min_descent_m: None,
+                max_descent_m: None,
+                max_road_fraction: None,
+                max_low_confidence_fraction: None,
+                max_restricted_access_fraction: Some(1.0),
+                shape: Vec::new(),
+                max_repeated_edge_fraction: None,
+                forbidden_terrain: Vec::new(),
+                forbidden_area: Vec::new(),
+                min_terrain: Vec::new(),
+                max_terrain: Vec::new(),
+            },
+        )?;
+
+        let generated_graph = load_generated_graph(project)?;
+        assert!(
+            generated_graph
+                .edges
+                .iter()
+                .any(|edge| edge.attr.access == Access::Restricted)
+        );
+        assert!(
+            !generated_graph
+                .edges
+                .iter()
+                .any(|edge| edge.attr.access == Access::Closed)
+        );
+        let manifest: Value = serde_json::from_str(&fs::read_to_string(
+            project.join("routes/generated.manifest.json"),
+        )?)?;
+        let coverage = manifest["source_manifest"]["coverage"]
+            .as_array()
+            .expect("coverage");
+        assert!(
+            coverage
+                .iter()
+                .any(|entry| { entry["kind"] == "access" && entry["status"] == "satisfied" })
+        );
+        assert!(
+            coverage
+                .iter()
+                .any(|entry| { entry["kind"] == "closure" && entry["status"] == "satisfied" })
+        );
+        let stored_overlays: Value = serde_json::from_str(&fs::read_to_string(
+            project.join("sources/access-overlays.json"),
+        )?)?;
+        assert_eq!(
+            stored_overlays.as_array().expect("stored overlays").len(),
+            2
         );
 
         Ok(())
@@ -4691,7 +4858,7 @@ mod tests {
 
         init(&project, "Shapefile Apply Test".to_owned(), None)?;
         build(&project, &fixture)?;
-        apply_access(&project, &closure, None)?;
+        apply_access(&project, std::slice::from_ref(&closure), None)?;
         apply_terrain(&project, &terrain)?;
         apply_context(&project, &roads)?;
 

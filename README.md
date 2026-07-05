@@ -16,7 +16,7 @@ cargo run -p trailgen -- apply-elevation demo/mini-loop --source crates/trailgen
 cargo run -p trailgen -- apply-terrain demo/mini-loop --source crates/trailgen-core/tests/fixtures/terrain_overlay.geojson
 cargo run -p trailgen -- apply-context demo/mini-loop --source crates/trailgen-core/tests/fixtures/context_overlay.geojson
 cargo run -p trailgen -- import-seed demo/mini-loop --route demo/mini-loop/routes/candidate-1.gpx --name "Known Good Loop"
-cargo run -p trailgen -- apply-access demo/mini-loop --source crates/trailgen-core/tests/fixtures/closure_overlay.geojson --date 2026-05-15
+cargo run -p trailgen -- apply-access demo/mini-loop --source crates/trailgen-core/tests/fixtures/access_overlay.geojson --source crates/trailgen-core/tests/fixtures/closure_overlay.geojson --date 2026-05-15
 cargo run -p trailgen -- verify-sources demo/mini-loop
 cargo run -p trailgen -- stats demo/mini-loop
 cargo run -p trailgen -- generate demo/mini-loop --start=-105.0000,40.0000 --min-km 4 --max-km 9 --count 4 --seed 0
@@ -36,7 +36,7 @@ Generated artifacts land in the project directory:
 - `sources/manifest.json`: source adapter registry, AOI-bound acquisition recommendations, and discovered/used source files with byte counts and SHA-256 fingerprints
 - `sources/elevation-arc-ascii.json` or `sources/elevation-geotiff.json`: applied local DEM sampler metadata
 - `sources/terrain-overlays.json`: applied land-cover, surface, or user terrain overrides from GeoJSON or shapefile layers
-- `sources/access-overlays.json`: applied access/closure overlays
+- `sources/access-overlays.json`: composed access/closure overlays from every `apply-access --source`
 - `sources/access-baseline.json`: pre-access graph state used to re-materialize dated overlays without cumulative access drift
 - `sources/context-overlays.json`: applied road/hydrology context overlays from GeoJSON or shapefile linework
 - `routes/generated.geojson`: Pareto-ranked generated loops with persisted route scores, constraint penalties, terrain/access fractions, dubious segments, difficulty hotspots, and source provenance summaries

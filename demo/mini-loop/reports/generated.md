@@ -295,12 +295,13 @@ Coverage:
 - Elevation (Required): Satisfied; candidates: crates/trailgen-core/tests/fixtures/mini_dem.asc; Elevation source requirement has implemented candidate(s).
 - Terrain (Recommended): Satisfied; candidates: crates/trailgen-core/tests/fixtures/terrain_overlay.geojson; Terrain source requirement has implemented candidate(s).
 - Closure (Recommended): Satisfied; candidates: crates/trailgen-core/tests/fixtures/closure_overlay.geojson; Closure source requirement has implemented candidate(s).
-- Access (Recommended): Missing; candidates: none; Access source is Recommended; acquire one of sources/access.geojson, sources/ownership.geojson, sources/access.shp.
+- Access (Recommended): Satisfied; candidates: crates/trailgen-core/tests/fixtures/access_overlay.geojson; Access source requirement has implemented candidate(s).
 - Road (Recommended): Satisfied; candidates: crates/trailgen-core/tests/fixtures/context_overlay.geojson; Road source requirement has implemented candidate(s).
 - Hydrology (Recommended): Satisfied; candidates: crates/trailgen-core/tests/fixtures/context_overlay.geojson; Hydrology source requirement has implemented candidate(s).
 - SeedRoute (Optional): Satisfied; candidates: demo/mini-loop/seeds/imports/known-good-kmz-loop.kmz, demo/mini-loop/seeds/imports/known-good-loop.gpx; SeedRoute source requirement has implemented candidate(s).
 
 Candidates:
+- crates/trailgen-core/tests/fixtures/access_overlay.geojson: Access via geojson-access-overlay; 542 bytes, sha256 7acb7fd8292df30f79ce3abd53bfa9c944c09cdc8586ccfd81a2ba7228972ff0
 - crates/trailgen-core/tests/fixtures/closure_overlay.geojson: Closure via geojson-closure-overlay; 610 bytes, sha256 75032f041c59c46efb0f01802a4cc234b6756a5e7eed2dd79ba1e69fa355aa02
 - crates/trailgen-core/tests/fixtures/context_overlay.geojson: Road via geojson-road-context; 694 bytes, sha256 5aace6064e9fb87161fc95d71183e5d639f8eee46b86c3b3c084eba09f0171bd
 - crates/trailgen-core/tests/fixtures/context_overlay.geojson: Hydrology via geojson-hydrology-context; 694 bytes, sha256 5aace6064e9fb87161fc95d71183e5d639f8eee46b86c3b3c084eba09f0171bd

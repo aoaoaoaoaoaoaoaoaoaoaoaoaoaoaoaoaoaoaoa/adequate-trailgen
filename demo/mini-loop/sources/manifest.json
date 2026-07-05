@@ -743,11 +743,15 @@
     {
       "kind": "access",
       "priority": "recommended",
-      "status": "missing",
-      "candidate_paths": [],
-      "implemented_adapter_ids": [],
+      "status": "satisfied",
+      "candidate_paths": [
+        "crates/trailgen-core/tests/fixtures/access_overlay.geojson"
+      ],
+      "implemented_adapter_ids": [
+        "geojson-access-overlay"
+      ],
       "planned_adapter_ids": [],
-      "message": "Access source is Recommended; acquire one of sources/access.geojson, sources/ownership.geojson, sources/access.shp."
+      "message": "Access source requirement has implemented candidate(s)."
     },
     {
       "kind": "road",
@@ -792,6 +796,15 @@
     }
   ],
   "candidates": [
+    {
+      "path": "crates/trailgen-core/tests/fixtures/access_overlay.geojson",
+      "kind": "access",
+      "adapter_id": "geojson-access-overlay",
+      "fingerprint": {
+        "bytes": 542,
+        "sha256": "7acb7fd8292df30f79ce3abd53bfa9c944c09cdc8586ccfd81a2ba7228972ff0"
+      }
+    },
     {
       "path": "crates/trailgen-core/tests/fixtures/closure_overlay.geojson",
       "kind": "closure",

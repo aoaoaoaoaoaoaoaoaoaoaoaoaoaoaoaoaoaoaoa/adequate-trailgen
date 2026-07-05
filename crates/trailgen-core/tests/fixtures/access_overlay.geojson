@@ -1,0 +1,25 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "road-spur-easement",
+        "source": "fixture-access",
+        "layer": "ownership-access",
+        "access": "restricted",
+        "confidence": 0.91
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [-104.9890, 39.9990],
+          [-104.9790, 39.9990],
+          [-104.9790, 40.0010],
+          [-104.9890, 40.0010],
+          [-104.9890, 39.9990]
+        ]]
+      }
+    }
+  ]
+}

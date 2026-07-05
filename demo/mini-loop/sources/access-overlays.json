@@ -1,5 +1,41 @@
 [
   {
+    "name": "road-spur-easement",
+    "access": "restricted",
+    "confidence": 0.91,
+    "tolerance_m": 20.0,
+    "provenance": {
+      "source": "fixture-access",
+      "layer": "ownership-access",
+      "source_id": "road-spur-easement"
+    },
+    "geometry": {
+      "kind": "polygon",
+      "value": [
+        {
+          "lon": -104.989,
+          "lat": 39.999
+        },
+        {
+          "lon": -104.979,
+          "lat": 39.999
+        },
+        {
+          "lon": -104.979,
+          "lat": 40.001
+        },
+        {
+          "lon": -104.989,
+          "lat": 40.001
+        },
+        {
+          "lon": -104.989,
+          "lat": 39.999
+        }
+      ]
+    }
+  },
+  {
     "name": "diagonal-closure",
     "access": "closed",
     "active": {

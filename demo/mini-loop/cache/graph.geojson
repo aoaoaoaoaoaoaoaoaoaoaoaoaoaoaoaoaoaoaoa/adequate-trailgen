@@ -2846,16 +2846,22 @@
         "type": "LineString"
       },
       "properties": {
-        "access": "open",
-        "access_confidence": 0.9,
-        "access_provenance": [],
+        "access": "restricted",
+        "access_confidence": 0.91,
+        "access_provenance": [
+          {
+            "layer": "ownership-access",
+            "source": "fixture-access",
+            "source_id": "road-spur-easement"
+          }
+        ],
         "ascent_m": 0.0,
         "confidence": 0.65,
         "crossings": [],
         "descent_m": 15.999999999991132,
-        "difficulty": 2.62734184567225,
+        "difficulty": 52.62734184567225,
         "difficulty_breakdown": {
-          "access": 0.0,
+          "access": 50.0,
           "ascent": 0.0,
           "confidence": 0.5249999999999999,
           "descent": 0.0479999999999734,
