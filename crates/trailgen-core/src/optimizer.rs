@@ -3,7 +3,8 @@ use crate::constraints::LoopConstraints;
 use crate::model::{EdgeId, TrailGraph, VertexId};
 use crate::route::{Route, rank_routes};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::cmp::Ordering;
+use std::collections::{BTreeSet, BinaryHeap};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SearchParams {
@@ -80,6 +81,16 @@ impl RouteSolver for LoopHunter {
             if expanded > self.params.max_frontier {
                 break;
             }
+            if closes_allowed(constraints) && state.at != start && !state.edges.is_empty() {
+                let max_return_m = constraints.max_distance_m.mul_add(1.35, -state.distance_m);
+                if let Some(return_edges) =
+                    shortest_return_path(graph, state.at, start, &state.used, max_return_m)
+                {
+                    let mut route_edges = state.edges.clone();
+                    route_edges.extend(return_edges);
+                    push_allowed_route(&mut routes, graph, start, route_edges, constraints);
+                }
+            }
             if state.edges.len() >= self.params.max_hops {
                 continue;
             }
@@ -147,6 +158,10 @@ impl RouteSolver for LoopHunter {
     }
 }
 
+fn closes_allowed(constraints: &LoopConstraints) -> bool {
+    constraints.allows_shape(RouteShape::Loop) || constraints.allows_shape(RouteShape::FigureEight)
+}
+
 fn push_allowed_route(
     routes: &mut Vec<Route>,
     graph: &TrailGraph,
@@ -154,6 +169,9 @@ fn push_allowed_route(
     edges: Vec<EdgeId>,
     constraints: &LoopConstraints,
 ) {
+    if graph.walk_edges(start, &edges).is_none() {
+        return;
+    }
     let route = Route::from_edges(
         format!("candidate-{}", routes.len() + 1),
         graph,
@@ -171,6 +189,89 @@ fn route_distance(graph: &TrailGraph, edges: &[EdgeId]) -> f64 {
         .iter()
         .map(|edge_id| graph.edges[edge_id.0].attr.length_m)
         .sum()
+}
+
+fn shortest_return_path(
+    graph: &TrailGraph,
+    from: VertexId,
+    target: VertexId,
+    banned_edges: &BTreeSet<EdgeId>,
+    max_distance_m: f64,
+) -> Option<Vec<EdgeId>> {
+    if max_distance_m < 0.0 {
+        return None;
+    }
+    let mut distance = vec![f64::INFINITY; graph.vertices.len()];
+    let mut predecessor = vec![None::<(VertexId, EdgeId)>; graph.vertices.len()];
+    let mut heap = BinaryHeap::new();
+    distance[from.0] = 0.0;
+    heap.push(HeapEntry {
+        cost_m: 0.0,
+        vertex: from,
+    });
+
+    while let Some(HeapEntry { cost_m, vertex }) = heap.pop() {
+        if cost_m > distance[vertex.0] {
+            continue;
+        }
+        if vertex == target {
+            break;
+        }
+        for edge_id in &graph.adjacency[vertex.0] {
+            if banned_edges.contains(edge_id) {
+                continue;
+            }
+            let edge = &graph.edges[edge_id.0];
+            let Some(next) = edge.traverse(vertex) else {
+                continue;
+            };
+            let next_cost_m = cost_m + edge.attr.length_m;
+            if next_cost_m > max_distance_m || next_cost_m >= distance[next.0] {
+                continue;
+            }
+            distance[next.0] = next_cost_m;
+            predecessor[next.0] = Some((vertex, *edge_id));
+            heap.push(HeapEntry {
+                cost_m: next_cost_m,
+                vertex: next,
+            });
+        }
+    }
+
+    if !distance[target.0].is_finite() {
+        return None;
+    }
+    let mut path = Vec::new();
+    let mut cursor = target;
+    while cursor != from {
+        let (previous, edge_id) = predecessor[cursor.0]?;
+        path.push(edge_id);
+        cursor = previous;
+    }
+    path.reverse();
+    Some(path)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct HeapEntry {
+    cost_m: f64,
+    vertex: VertexId,
+}
+
+impl Eq for HeapEntry {}
+
+impl Ord for HeapEntry {
+    fn cmp(&self, rhs: &Self) -> Ordering {
+        rhs.cost_m
+            .total_cmp(&self.cost_m)
+            .then_with(|| rhs.vertex.cmp(&self.vertex))
+    }
+}
+
+impl PartialOrd for HeapEntry {
+    fn partial_cmp(&self, rhs: &Self) -> Option<Ordering> {
+        Some(self.cmp(rhs))
+    }
 }
 
 fn mirrored_route(edges: &[EdgeId]) -> Vec<EdgeId> {

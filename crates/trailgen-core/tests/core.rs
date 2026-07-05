@@ -782,6 +782,74 @@ fn loop_hunter_emits_out_and_back_when_shape_allows_repeated_edges() {
 }
 
 #[test]
+fn loop_hunter_rejects_directionally_impossible_out_and_back() {
+    let graph = GraphBuilder::default()
+        .build(&[SegmentDraft {
+            geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
+            terrain: Terrain::Trail,
+            surface: None,
+            access: Access::Open,
+            travel: EdgeTravel::Forward,
+            road_exposure: 0.0,
+            confidence: 1.0,
+            provenance: Provenance::fixture("one-way-spur"),
+        }])
+        .unwrap();
+    let start = graph.nearest_vertex(Coord::new(0.0, 0.0)).unwrap();
+    let routes = LoopHunter {
+        params: SearchParams {
+            max_hops: 1,
+            max_frontier: 10,
+            keep: 4,
+        },
+    }
+    .hunt(
+        &graph,
+        start,
+        &LoopConstraints {
+            min_distance_m: 0.0,
+            max_distance_m: 10_000.0,
+            max_difficulty: 10_000.0,
+            max_repeated_edge_fraction: 1.0,
+            allowed_shapes: vec![RouteShape::OutAndBack],
+            ..LoopConstraints::default()
+        },
+        4,
+    );
+
+    assert!(routes.is_empty());
+}
+
+#[test]
+fn loop_hunter_closes_sparse_frontier_with_shortest_return_path() {
+    let graph = GraphBuilder::default().build(&square_drafts()).unwrap();
+    let start = graph.nearest_vertex(Coord::new(0.0, 0.0)).unwrap();
+    let routes = LoopHunter {
+        params: SearchParams {
+            max_hops: 1,
+            max_frontier: 20,
+            keep: 4,
+        },
+    }
+    .hunt(
+        &graph,
+        start,
+        &LoopConstraints {
+            min_distance_m: 0.0,
+            max_distance_m: 10_000.0,
+            max_difficulty: 10_000.0,
+            allowed_shapes: vec![RouteShape::Loop],
+            ..LoopConstraints::default()
+        },
+        4,
+    );
+
+    assert!(routes.iter().any(|r| {
+        r.metrics.shape == RouteShape::Loop && r.edges.len() == 4 && r.verdict.satisfied
+    }));
+}
+
+#[test]
 fn loop_hunter_builds_figure_eights_when_shape_allows_two_lobes() {
     let graph = GraphBuilder::default().build(&bowtie_drafts()).unwrap();
     let start = graph.nearest_vertex(Coord::new(0.0, 0.0)).unwrap();
@@ -1450,6 +1518,31 @@ fn simple_path_draft() -> SegmentDraft {
         confidence: 1.0,
         provenance: Provenance::fixture("simple-path"),
     }
+}
+
+fn square_drafts() -> Vec<SegmentDraft> {
+    let a = Coord::new(0.0, 0.0);
+    let b = Coord::new(0.01, 0.0);
+    let c = Coord::new(0.01, 0.01);
+    let d = Coord::new(0.0, 0.01);
+    [
+        (a, b, "south"),
+        (b, c, "east"),
+        (c, d, "north"),
+        (d, a, "west"),
+    ]
+    .into_iter()
+    .map(|(from, to, name)| SegmentDraft {
+        geometry: LineString::new(vec![from, to]).unwrap(),
+        terrain: Terrain::Trail,
+        surface: None,
+        access: Access::Open,
+        travel: EdgeTravel::Both,
+        road_exposure: 0.0,
+        confidence: 1.0,
+        provenance: Provenance::fixture(name),
+    })
+    .collect()
 }
 
 fn bowtie_drafts() -> Vec<SegmentDraft> {
