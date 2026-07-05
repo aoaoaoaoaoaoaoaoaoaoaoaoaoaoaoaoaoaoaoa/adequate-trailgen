@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
@@ -59,6 +60,14 @@ pub enum SourcePriority {
     Optional,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SourceCoverageStatus {
+    Satisfied,
+    Missing,
+    PlannedAdapterOnly,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SourceAdapter {
     pub id: String,
@@ -99,12 +108,123 @@ pub struct SourceFingerprint {
     pub sha256: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SourceCoverage {
+    pub kind: SourceKind,
+    pub priority: SourcePriority,
+    pub status: SourceCoverageStatus,
+    pub candidate_paths: Vec<String>,
+    pub implemented_adapter_ids: Vec<String>,
+    pub planned_adapter_ids: Vec<String>,
+    pub message: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SourceManifest {
     pub adapters: Vec<SourceAdapter>,
     #[serde(default)]
     pub recommendations: Vec<SourceRecommendation>,
+    #[serde(default)]
+    pub coverage: Vec<SourceCoverage>,
     pub candidates: Vec<SourceCandidate>,
+}
+
+#[must_use]
+pub fn source_coverage(
+    adapters: &[SourceAdapter],
+    recommendations: &[SourceRecommendation],
+    candidates: &[SourceCandidate],
+) -> Vec<SourceCoverage> {
+    let adapter_status = adapters
+        .iter()
+        .map(|adapter| (adapter.id.as_str(), adapter.status))
+        .collect::<BTreeMap<_, _>>();
+    recommendations
+        .iter()
+        .map(|recommendation| {
+            coverage_for_recommendation(recommendation, candidates, &adapter_status)
+        })
+        .collect()
+}
+
+fn coverage_for_recommendation(
+    recommendation: &SourceRecommendation,
+    candidates: &[SourceCandidate],
+    adapter_status: &BTreeMap<&str, AdapterStatus>,
+) -> SourceCoverage {
+    let matching = candidates
+        .iter()
+        .filter(|candidate| {
+            candidate.kind == recommendation.kind
+                && recommendation
+                    .adapter_ids
+                    .iter()
+                    .any(|id| id == &candidate.adapter_id)
+        })
+        .collect::<Vec<_>>();
+    let candidate_paths = matching
+        .iter()
+        .map(|candidate| candidate.path.clone())
+        .collect::<Vec<_>>();
+    let implemented_adapter_ids = matching
+        .iter()
+        .filter(|candidate| {
+            adapter_status
+                .get(candidate.adapter_id.as_str())
+                .is_some_and(|status| *status == AdapterStatus::Implemented)
+        })
+        .map(|candidate| candidate.adapter_id.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let planned_adapter_ids = matching
+        .iter()
+        .filter(|candidate| {
+            adapter_status
+                .get(candidate.adapter_id.as_str())
+                .is_some_and(|status| *status == AdapterStatus::Planned)
+        })
+        .map(|candidate| candidate.adapter_id.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let status = if !implemented_adapter_ids.is_empty() {
+        SourceCoverageStatus::Satisfied
+    } else if !planned_adapter_ids.is_empty() {
+        SourceCoverageStatus::PlannedAdapterOnly
+    } else {
+        SourceCoverageStatus::Missing
+    };
+    SourceCoverage {
+        kind: recommendation.kind,
+        priority: recommendation.priority,
+        status,
+        candidate_paths,
+        implemented_adapter_ids,
+        planned_adapter_ids,
+        message: coverage_message(recommendation, status),
+    }
+}
+
+fn coverage_message(recommendation: &SourceRecommendation, status: SourceCoverageStatus) -> String {
+    match status {
+        SourceCoverageStatus::Satisfied => {
+            format!(
+                "{:?} source requirement has implemented candidate(s).",
+                recommendation.kind
+            )
+        }
+        SourceCoverageStatus::Missing => format!(
+            "{:?} source is {:?}; acquire one of {}.",
+            recommendation.kind,
+            recommendation.priority,
+            recommendation.suggested_paths.join(", ")
+        ),
+        SourceCoverageStatus::PlannedAdapterOnly => format!(
+            "{:?} candidate exists, but only through a planned adapter; normalize to an implemented adapter or finish the adapter.",
+            recommendation.kind
+        ),
+    }
 }
 
 #[must_use]
@@ -316,6 +436,19 @@ const RECOMMENDATION_SPECS: &[RecommendationSpec] = &[
         ],
         acceptance: "Closure, private, restricted, and open statuses can be attached to graph edges with dated provenance.",
         rationale: "A beautiful generated loop is trash if it crosses a closed trail or forbidden parcel.",
+    },
+    RecommendationSpec {
+        kind: SourceKind::Access,
+        priority: SourcePriority::Recommended,
+        adapter_ids: &["geojson-access-overlay"],
+        suggested_paths: &["sources/access.geojson", "sources/ownership.geojson"],
+        search_terms: &[
+            "public access boundary GeoJSON",
+            "land ownership parcel open space GIS",
+            "park access status trail layer",
+        ],
+        acceptance: "Open, restricted, private, or unknown access statuses can be attached to graph edges with provenance.",
+        rationale: "Access and ownership boundaries are distinct from temporary closures and should be visible in route legality diagnostics.",
     },
     RecommendationSpec {
         kind: SourceKind::Road,

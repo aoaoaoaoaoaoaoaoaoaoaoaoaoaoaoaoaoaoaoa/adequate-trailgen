@@ -3,7 +3,10 @@ use trailgen_core::alltrails::{
     AllTrailsBridge, AllTrailsExchange, BridgeStatus, ManualAllTrailsBridge,
 };
 use trailgen_core::io::{csv, geojson, gpx, kml, kmz, report};
-use trailgen_core::source::{SourceKind, adapter_registry, classify_path};
+use trailgen_core::source::{
+    SourceCoverageStatus, SourceKind, adapter_registry, classify_path, discovery_recommendations,
+    source_coverage,
+};
 use trailgen_core::{
     Access, ArcAsciiGrid, CrossingKind, EdgeId, ElevationSampler, Route, RouteMetrics, RouteShape,
     SearchParams, VertexId,
@@ -874,6 +877,41 @@ fn source_registry_classifies_local_inputs() {
     let ascii_dem = classify_path(std::path::Path::new("sources/dem.asc")).unwrap();
     assert_eq!(ascii_dem.kind, SourceKind::Elevation);
     assert_eq!(ascii_dem.adapter_id, "arc-ascii-elevation");
+}
+
+#[test]
+fn source_coverage_evaluates_recommendations_against_candidates() {
+    let adapters = adapter_registry();
+    let recommendations = discovery_recommendations(None);
+    let candidates = vec![
+        classify_path(std::path::Path::new("sources/network.geojson")).unwrap(),
+        classify_path(std::path::Path::new("sources/dem.tif")).unwrap(),
+    ];
+    let coverage = source_coverage(&adapters, &recommendations, &candidates);
+
+    let trail = coverage
+        .iter()
+        .find(|entry| entry.kind == SourceKind::TrailNetwork)
+        .expect("trail network coverage");
+    assert_eq!(trail.status, SourceCoverageStatus::Satisfied);
+    assert_eq!(trail.candidate_paths, vec!["sources/network.geojson"]);
+
+    let elevation = coverage
+        .iter()
+        .find(|entry| entry.kind == SourceKind::Elevation)
+        .expect("elevation coverage");
+    assert_eq!(elevation.status, SourceCoverageStatus::PlannedAdapterOnly);
+    assert_eq!(
+        elevation.planned_adapter_ids,
+        vec!["geospatial-elevation-raster"]
+    );
+
+    let hydrology = coverage
+        .iter()
+        .find(|entry| entry.kind == SourceKind::Hydrology)
+        .expect("hydrology coverage");
+    assert_eq!(hydrology.status, SourceCoverageStatus::Missing);
+    assert!(hydrology.message.contains("sources/hydrology.geojson"));
 }
 
 #[test]

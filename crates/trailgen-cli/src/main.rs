@@ -10,7 +10,7 @@ use trailgen_core::alltrails::{AllTrailsBridge, ManualAllTrailsBridge};
 use trailgen_core::io::{csv, geojson, gpx, kml, kmz, report};
 use trailgen_core::source::{
     GeoBounds, SourceCandidate, SourceFingerprint, SourceKind, SourceManifest, adapter_registry,
-    classify_path, discovery_recommendations,
+    classify_path, discovery_recommendations, source_coverage,
 };
 use trailgen_core::{
     ArcAsciiGrid, Coord, CrossingKind, DifficultyWeights, EdgeId, EnrichmentConfig, GraphBuilder,
@@ -389,16 +389,13 @@ fn discover(project: &Path, area: Option<GeoBounds>) -> Result<()> {
             candidates.push(candidate);
         }
     }
-    let manifest = SourceManifest {
-        adapters: adapter_registry(),
-        recommendations: discovery_recommendations(area),
-        candidates,
-    };
+    let manifest = source_manifest(area, candidates);
     write_json(project.join("sources/manifest.json"), &manifest)?;
     println!(
-        "discovered {} local candidate(s), recommended {} source class(es); wrote {}",
+        "discovered {} local candidate(s), recommended {} source class(es), evaluated {} source class(es); wrote {}",
         manifest.candidates.len(),
         manifest.recommendations.len(),
+        manifest.coverage.len(),
         project.join("sources/manifest.json").display()
     );
     Ok(())
@@ -773,10 +770,27 @@ fn render_source_manifest_section(text: &mut String, manifest: Option<&SourceMan
         text.push_str("No source manifest found.\n");
         return;
     };
+    if !manifest.coverage.is_empty() {
+        text.push_str("Coverage:\n");
+        for coverage in &manifest.coverage {
+            let candidates = if coverage.candidate_paths.is_empty() {
+                "none".to_owned()
+            } else {
+                coverage.candidate_paths.join(", ")
+            };
+            let _ = writeln!(
+                text,
+                "- {:?} ({:?}): {:?}; candidates: {}; {}",
+                coverage.kind, coverage.priority, coverage.status, candidates, coverage.message
+            );
+        }
+        text.push('\n');
+    }
     if manifest.candidates.is_empty() {
         text.push_str("No source candidates recorded.\n");
         return;
     }
+    text.push_str("Candidates:\n");
     for candidate in &manifest.candidates {
         let fingerprint = candidate.fingerprint.as_ref().map_or_else(
             || "unfingerprinted".to_owned(),
@@ -1120,6 +1134,32 @@ fn load_source_manifest(project: &Path) -> Result<Option<SourceManifest>> {
     Ok(Some(serde_json::from_str(&raw)?))
 }
 
+fn source_manifest(area: Option<GeoBounds>, candidates: Vec<SourceCandidate>) -> SourceManifest {
+    let adapters = adapter_registry();
+    let recommendations = discovery_recommendations(area);
+    let coverage = source_coverage(&adapters, &recommendations, &candidates);
+    SourceManifest {
+        adapters,
+        recommendations,
+        coverage,
+        candidates,
+    }
+}
+
+fn refresh_source_coverage(manifest: &mut SourceManifest) {
+    let area = manifest
+        .recommendations
+        .iter()
+        .find_map(|recommendation| recommendation.area);
+    manifest.adapters = adapter_registry();
+    manifest.recommendations = discovery_recommendations(area);
+    manifest.coverage = source_coverage(
+        &manifest.adapters,
+        &manifest.recommendations,
+        &manifest.candidates,
+    );
+}
+
 fn register_source_candidate(project: &Path, source: &Path) -> Result<()> {
     let Some(mut candidate) = classify_path(source) else {
         return Ok(());
@@ -1261,15 +1301,8 @@ fn register_source_candidates(project: &Path, candidates: Vec<SourceCandidate>) 
     if candidates.is_empty() {
         return Ok(());
     }
-    let mut manifest = load_source_manifest(project)?.unwrap_or_else(|| SourceManifest {
-        adapters: adapter_registry(),
-        recommendations: discovery_recommendations(None),
-        candidates: Vec::new(),
-    });
-    manifest.adapters = adapter_registry();
-    if manifest.recommendations.is_empty() {
-        manifest.recommendations = discovery_recommendations(None);
-    }
+    let mut manifest =
+        load_source_manifest(project)?.unwrap_or_else(|| source_manifest(None, Vec::new()));
     manifest.candidates.retain(|old| {
         candidates
             .iter()
@@ -1279,6 +1312,7 @@ fn register_source_candidates(project: &Path, candidates: Vec<SourceCandidate>) 
     manifest
         .candidates
         .sort_by(|a, b| (&a.path, a.kind, &a.adapter_id).cmp(&(&b.path, b.kind, &b.adapter_id)));
+    refresh_source_coverage(&mut manifest);
     write_json(project.join("sources/manifest.json"), &manifest)
 }
 
@@ -1289,6 +1323,7 @@ fn unregister_source_candidate_path(project: &Path, path: &str) -> Result<()> {
     manifest
         .candidates
         .retain(|candidate| candidate.path != path);
+    refresh_source_coverage(&mut manifest);
     write_json(project.join("sources/manifest.json"), &manifest)
 }
 
@@ -1686,31 +1721,13 @@ mod tests {
         assert_eq!(manifest["app_version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(manifest["solver"], "loop-hunter");
         assert_eq!(manifest["random_seed"], 77);
-        assert_eq!(
-            manifest["effective_config"]["constraints"]["min_distance_m"],
-            3_000.0
-        );
-        assert_eq!(
-            manifest["effective_config"]["constraints"]["forbidden_terrain"][0],
-            "road"
-        );
-        assert_eq!(
-            manifest["effective_config"]["constraints"]["min_terrain_fraction"]["trail"],
-            0.50
-        );
-        assert_eq!(
-            manifest["effective_config"]["constraints"]["max_terrain_fraction"]["pavement"],
-            0.05
-        );
-        assert_eq!(
-            manifest["effective_config"]["constraints"]["max_restricted_access_fraction"],
-            0.0
-        );
+        assert_effective_constraints_manifest(&manifest);
         assert!(manifest["source_manifest"]["adapters"].as_array().is_some());
         assert_eq!(
             manifest["source_manifest"]["recommendations"][0]["area"]["west"],
             -105.1
         );
+        assert_source_coverage_manifest(&manifest);
         let candidates = manifest["source_manifest"]["candidates"]
             .as_array()
             .expect("source candidates");
@@ -1741,6 +1758,31 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    fn assert_effective_constraints_manifest(manifest: &Value) {
+        let constraints = &manifest["effective_config"]["constraints"];
+        assert_eq!(constraints["min_distance_m"], 3_000.0);
+        assert_eq!(constraints["forbidden_terrain"][0], "road");
+        assert_eq!(constraints["min_terrain_fraction"]["trail"], 0.50);
+        assert_eq!(constraints["max_terrain_fraction"]["pavement"], 0.05);
+        assert_eq!(constraints["max_restricted_access_fraction"], 0.0);
+    }
+
+    fn assert_source_coverage_manifest(manifest: &Value) {
+        let coverage = manifest["source_manifest"]["coverage"]
+            .as_array()
+            .expect("source coverage");
+        assert!(
+            coverage.iter().any(|entry| {
+                entry["kind"] == "trail-network" && entry["status"] == "satisfied"
+            })
+        );
+        assert!(
+            coverage
+                .iter()
+                .any(|entry| { entry["kind"] == "elevation" && entry["status"] == "missing" })
+        );
     }
 
     #[test]

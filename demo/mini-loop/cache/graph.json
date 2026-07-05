@@ -492,7 +492,7 @@
           }
         ],
         "road_exposure": 0.03,
-        "confidence": 0.81,
+        "confidence": 0.82,
         "difficulty_breakdown": {
           "distance": 1.021984821547996,
           "ascent": 0.0,
@@ -500,13 +500,24 @@
           "grade": 0.09581355606796675,
           "terrain": 0.0,
           "road": 0.06131908929287976,
-          "confidence": 0.2849999999999999,
+          "confidence": 0.2700000000000001,
           "access": 0.0
         },
-        "difficulty": 1.5865174669088422,
-        "seed_count": 0,
-        "popularity": 0.0,
-        "seed_provenance": [],
+        "difficulty": 1.5715174669088423,
+        "seed_count": 2,
+        "popularity": 1.0986122886681096,
+        "seed_provenance": [
+          {
+            "source": "seed-route",
+            "layer": "gpx",
+            "source_id": "Known Good Loop"
+          },
+          {
+            "source": "seed-route",
+            "layer": "kmz",
+            "source_id": "Known Good KMZ Loop"
+          }
+        ],
         "elevation_provenance": [
           {
             "source": "arc-ascii-grid",
@@ -1885,7 +1896,7 @@
           }
         ],
         "road_exposure": 0.0,
-        "confidence": 0.7,
+        "confidence": 0.82,
         "difficulty_breakdown": {
           "distance": 1.334340962802445,
           "ascent": 1.3559999999999781,
@@ -1893,13 +1904,24 @@
           "grade": 0.2032464022017347,
           "terrain": 0.8673216258215891,
           "road": 0.0,
-          "confidence": 0.45000000000000007,
+          "confidence": 0.2700000000000001,
           "access": 1000.0
         },
-        "difficulty": 1004.2109089908257,
-        "seed_count": 0,
-        "popularity": 0.0,
-        "seed_provenance": [],
+        "difficulty": 1004.0309089908258,
+        "seed_count": 2,
+        "popularity": 1.0986122886681096,
+        "seed_provenance": [
+          {
+            "source": "seed-route",
+            "layer": "gpx",
+            "source_id": "Known Good Loop"
+          },
+          {
+            "source": "seed-route",
+            "layer": "kmz",
+            "source_id": "Known Good KMZ Loop"
+          }
+        ],
         "elevation_provenance": [
           {
             "source": "arc-ascii-grid",
@@ -2484,7 +2506,7 @@
           }
         ],
         "road_exposure": 0.03,
-        "confidence": 0.82,
+        "confidence": 0.81,
         "difficulty_breakdown": {
           "distance": 1.680804095031195,
           "ascent": 0.8663999999999787,
@@ -2492,24 +2514,13 @@
           "grade": 0.10309351370111917,
           "terrain": 0.302544737105615,
           "road": 0.1008482457018717,
-          "confidence": 0.2700000000000001,
+          "confidence": 0.2849999999999999,
           "access": 1000.0
         },
-        "difficulty": 1003.3236905915397,
-        "seed_count": 2,
-        "popularity": 1.0986122886681096,
-        "seed_provenance": [
-          {
-            "source": "seed-route",
-            "layer": "gpx",
-            "source_id": "Known Good Loop"
-          },
-          {
-            "source": "seed-route",
-            "layer": "kmz",
-            "source_id": "Known Good KMZ Loop"
-          }
-        ],
+        "difficulty": 1003.3386905915398,
+        "seed_count": 0,
+        "popularity": 0.0,
+        "seed_provenance": [],
         "elevation_provenance": [
           {
             "source": "arc-ascii-grid",

@@ -3,41 +3,46 @@
   "source_path": "demo/mini-loop/seeds/imports/known-good-loop.gpx",
   "original_source_path": "demo/mini-loop/routes/candidate-1.gpx",
   "source_format": "gpx",
-  "point_count": 257,
+  "point_count": 308,
   "snapped_edges": [
     2,
     1,
-    4
+    0,
+    3
   ],
   "start": 3,
   "closed_loop": true,
   "metrics": {
     "shape": "loop",
-    "distance_m": 4037.3095376140213,
-    "ascent_m": 96.19999999999914,
-    "descent_m": 96.19999999999914,
-    "difficulty": 1007.9548277759076,
+    "distance_m": 4712.831226933267,
+    "ascent_m": 136.9999999999991,
+    "descent_m": 136.9999999999991,
+    "difficulty": 1010.4585636421024,
     "difficulty_breakdown": {
-      "distance": 4.037309537614021,
-      "ascent": 1.1543999999999897,
-      "descent": 0.2885999999999974,
-      "grade": 0.332473760877784,
-      "terrain": 1.1698663629272041,
-      "road": 0.16217811448869457,
-      "confidence": 0.8100000000000003,
+      "distance": 4.712831226933266,
+      "ascent": 1.6439999999999888,
+      "descent": 0.4109999999999973,
+      "grade": 0.5284402054463663,
+      "terrain": 1.7346432516431782,
+      "road": 0.12264895807970262,
+      "confidence": 1.3049999999999997,
       "access": 1000.0
     },
-    "road_fraction": 0.020084924499564005,
+    "road_fraction": 0.013012237461292745,
     "low_confidence_fraction": 0.0,
+    "restricted_access_fraction": 0.28312937564512086,
     "repeated_edge_fraction": 0.0,
     "crossings": {
       "road": 2,
       "water": 2
     },
+    "access_m": {
+      "open": 3378.490264130822,
+      "closed": 1334.340962802445
+    },
     "terrain_m": {
-      "trail": 1022.1644797803812,
-      "alpine": 1680.8040950311952,
-      "talus": 1334.340962802445
+      "trail": 2044.149301328377,
+      "talus": 2668.68192560489
     }
   },
   "provenance": {

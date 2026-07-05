@@ -336,6 +336,30 @@
         }
       },
       {
+        "kind": "access",
+        "priority": "recommended",
+        "adapter_ids": [
+          "geojson-access-overlay"
+        ],
+        "suggested_paths": [
+          "sources/access.geojson",
+          "sources/ownership.geojson"
+        ],
+        "search_terms": [
+          "public access boundary GeoJSON",
+          "land ownership parcel open space GIS",
+          "park access status trail layer"
+        ],
+        "acceptance": "Open, restricted, private, or unknown access statuses can be attached to graph edges with provenance.",
+        "rationale": "Access and ownership boundaries are distinct from temporary closures and should be visible in route legality diagnostics.",
+        "area": {
+          "west": -105.02,
+          "south": 39.99,
+          "east": -104.98,
+          "north": 40.02
+        }
+      },
+      {
         "kind": "road",
         "priority": "recommended",
         "adapter_ids": [
@@ -411,6 +435,110 @@
         }
       }
     ],
+    "coverage": [
+      {
+        "kind": "trail-network",
+        "priority": "required",
+        "status": "satisfied",
+        "candidate_paths": [
+          "crates/trailgen-core/tests/fixtures/mini_network.geojson"
+        ],
+        "implemented_adapter_ids": [
+          "geojson-network"
+        ],
+        "planned_adapter_ids": [],
+        "message": "TrailNetwork source requirement has implemented candidate(s)."
+      },
+      {
+        "kind": "elevation",
+        "priority": "required",
+        "status": "satisfied",
+        "candidate_paths": [
+          "crates/trailgen-core/tests/fixtures/mini_dem.asc"
+        ],
+        "implemented_adapter_ids": [
+          "arc-ascii-elevation"
+        ],
+        "planned_adapter_ids": [],
+        "message": "Elevation source requirement has implemented candidate(s)."
+      },
+      {
+        "kind": "terrain",
+        "priority": "recommended",
+        "status": "satisfied",
+        "candidate_paths": [
+          "crates/trailgen-core/tests/fixtures/terrain_overlay.geojson"
+        ],
+        "implemented_adapter_ids": [
+          "geojson-terrain-overlay"
+        ],
+        "planned_adapter_ids": [],
+        "message": "Terrain source requirement has implemented candidate(s)."
+      },
+      {
+        "kind": "closure",
+        "priority": "recommended",
+        "status": "satisfied",
+        "candidate_paths": [
+          "crates/trailgen-core/tests/fixtures/closure_overlay.geojson"
+        ],
+        "implemented_adapter_ids": [
+          "geojson-closure-overlay"
+        ],
+        "planned_adapter_ids": [],
+        "message": "Closure source requirement has implemented candidate(s)."
+      },
+      {
+        "kind": "access",
+        "priority": "recommended",
+        "status": "missing",
+        "candidate_paths": [],
+        "implemented_adapter_ids": [],
+        "planned_adapter_ids": [],
+        "message": "Access source is Recommended; acquire one of sources/access.geojson, sources/ownership.geojson."
+      },
+      {
+        "kind": "road",
+        "priority": "recommended",
+        "status": "satisfied",
+        "candidate_paths": [
+          "crates/trailgen-core/tests/fixtures/context_overlay.geojson"
+        ],
+        "implemented_adapter_ids": [
+          "geojson-road-context"
+        ],
+        "planned_adapter_ids": [],
+        "message": "Road source requirement has implemented candidate(s)."
+      },
+      {
+        "kind": "hydrology",
+        "priority": "recommended",
+        "status": "satisfied",
+        "candidate_paths": [
+          "crates/trailgen-core/tests/fixtures/context_overlay.geojson"
+        ],
+        "implemented_adapter_ids": [
+          "geojson-hydrology-context"
+        ],
+        "planned_adapter_ids": [],
+        "message": "Hydrology source requirement has implemented candidate(s)."
+      },
+      {
+        "kind": "seed-route",
+        "priority": "optional",
+        "status": "satisfied",
+        "candidate_paths": [
+          "demo/mini-loop/seeds/imports/known-good-kmz-loop.kmz",
+          "demo/mini-loop/seeds/imports/known-good-loop.gpx"
+        ],
+        "implemented_adapter_ids": [
+          "gpx-route",
+          "kml-route"
+        ],
+        "planned_adapter_ids": [],
+        "message": "SeedRoute source requirement has implemented candidate(s)."
+      }
+    ],
     "candidates": [
       {
         "path": "crates/trailgen-core/tests/fixtures/closure_overlay.geojson",
@@ -471,8 +599,8 @@
         "kind": "seed-route",
         "adapter_id": "kml-route",
         "fingerprint": {
-          "bytes": 2211,
-          "sha256": "62446dfdccf78cda3838cb4cc566d8148edc18046412870f6ad7a50e15922f25"
+          "bytes": 2040,
+          "sha256": "c4cc6ef457687665c65f34ceb78575ee99b35f24ac87584ada694cee6f34a121"
         }
       },
       {
@@ -480,8 +608,8 @@
         "kind": "seed-route",
         "adapter_id": "gpx-route",
         "fingerprint": {
-          "bytes": 20255,
-          "sha256": "e088880059b82e1bfba8cb3e69fad5d054185cf166ead03600564f4319939ee3"
+          "bytes": 24233,
+          "sha256": "aa020e4b300d952cc8e647bb3244be92389aa612f9454f1ba1c9a19bc40a1199"
         }
       }
     ]
@@ -512,13 +640,13 @@
         0,
         3
       ],
-      "score": 3904.5135886800945,
+      "score": 3904.287172013428,
       "metrics": {
         "shape": "loop",
         "distance_m": 4712.831226933267,
         "ascent_m": 136.9999999999991,
         "descent_m": 136.9999999999991,
-        "difficulty": 1010.4285636421024,
+        "difficulty": 1010.2335636421025,
         "difficulty_breakdown": {
           "distance": 4.712831226933266,
           "ascent": 1.6439999999999888,
@@ -526,7 +654,7 @@
           "grade": 0.5284402054463663,
           "terrain": 1.7346432516431782,
           "road": 0.12264895807970262,
-          "confidence": 1.2750000000000001,
+          "confidence": 1.0800000000000003,
           "access": 1000.0
         },
         "road_fraction": 0.013012237461292745,
@@ -548,7 +676,7 @@
       },
       "satisfied": false,
       "violations": [
-        "difficulty 1010.43 above maximum 90.00",
+        "difficulty 1010.23 above maximum 90.00",
         "restricted-access fraction 28.3% above maximum 0.0%"
       ],
       "rank": 1
@@ -561,13 +689,13 @@
         1,
         4
       ],
-      "score": 5233.526219813128,
+      "score": 5233.543636479794,
       "metrics": {
         "shape": "loop",
         "distance_m": 4037.3095376140213,
         "ascent_m": 96.19999999999914,
         "descent_m": 96.19999999999914,
-        "difficulty": 1007.9548277759076,
+        "difficulty": 1007.9698277759078,
         "difficulty_breakdown": {
           "distance": 4.037309537614021,
           "ascent": 1.1543999999999897,
@@ -575,7 +703,7 @@
           "grade": 0.332473760877784,
           "terrain": 1.1698663629272041,
           "road": 0.16217811448869457,
-          "confidence": 0.8100000000000003,
+          "confidence": 0.8250000000000001,
           "access": 1000.0
         },
         "road_fraction": 0.020084924499564005,
@@ -598,7 +726,7 @@
       },
       "satisfied": false,
       "violations": [
-        "difficulty 1007.95 above maximum 90.00",
+        "difficulty 1007.97 above maximum 90.00",
         "restricted-access fraction 41.6% above maximum 0.0%"
       ],
       "rank": 1
@@ -612,13 +740,13 @@
         1,
         2
       ],
-      "score": 3904.5135886800945,
+      "score": 3904.287172013428,
       "metrics": {
         "shape": "loop",
         "distance_m": 4712.831226933266,
         "ascent_m": 136.9999999999991,
         "descent_m": 136.9999999999991,
-        "difficulty": 1010.4285636421024,
+        "difficulty": 1010.2335636421026,
         "difficulty_breakdown": {
           "distance": 4.712831226933267,
           "ascent": 1.6439999999999888,
@@ -626,7 +754,7 @@
           "grade": 0.5284402054463663,
           "terrain": 1.7346432516431782,
           "road": 0.12264895807970262,
-          "confidence": 1.2750000000000001,
+          "confidence": 1.0800000000000003,
           "access": 1000.0
         },
         "road_fraction": 0.013012237461292748,
@@ -648,7 +776,7 @@
       },
       "satisfied": false,
       "violations": [
-        "difficulty 1010.43 above maximum 90.00",
+        "difficulty 1010.23 above maximum 90.00",
         "restricted-access fraction 28.3% above maximum 0.0%"
       ],
       "rank": 2
@@ -661,13 +789,13 @@
         1,
         2
       ],
-      "score": 5233.526219813128,
+      "score": 5233.543636479794,
       "metrics": {
         "shape": "loop",
         "distance_m": 4037.309537614021,
         "ascent_m": 96.19999999999914,
         "descent_m": 96.19999999999914,
-        "difficulty": 1007.9548277759076,
+        "difficulty": 1007.9698277759078,
         "difficulty_breakdown": {
           "distance": 4.037309537614021,
           "ascent": 1.1543999999999897,
@@ -675,7 +803,7 @@
           "grade": 0.332473760877784,
           "terrain": 1.1698663629272041,
           "road": 0.16217811448869457,
-          "confidence": 0.8100000000000003,
+          "confidence": 0.825,
           "access": 1000.0
         },
         "road_fraction": 0.02008492449956401,
@@ -698,7 +826,7 @@
       },
       "satisfied": false,
       "violations": [
-        "difficulty 1007.95 above maximum 90.00",
+        "difficulty 1007.97 above maximum 90.00",
         "restricted-access fraction 41.6% above maximum 0.0%"
       ],
       "rank": 2
