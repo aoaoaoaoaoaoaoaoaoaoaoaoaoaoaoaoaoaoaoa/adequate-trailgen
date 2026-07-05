@@ -8,6 +8,7 @@ Supported now:
 - import user-supplied GeoJSON, JSON, KML, KMZ, and CSV route/network files
 - export generated routes as GPX, GeoJSON, CSV, KML, and KMZ
 - expose `ManualAllTrailsBridge` capabilities and canonical exchange plans for future connectors
+- preserve provider-neutral imported route metadata: title, description, recorded timestamp, and activity type when present
 
 Not implemented:
 

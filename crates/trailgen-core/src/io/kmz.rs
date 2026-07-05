@@ -1,5 +1,6 @@
 use crate::geo::LineString;
 use crate::io::kml;
+use crate::io::route_file::RouteFile;
 use crate::model::TrailGraph;
 use crate::route::Route;
 use crate::{Result, TrailgenError};
@@ -7,6 +8,10 @@ use std::io::{Cursor, Read, Write};
 use zip::write::SimpleFileOptions;
 
 pub fn route_line_from_bytes(bytes: &[u8]) -> Result<LineString> {
+    route_file_from_bytes(bytes).map(|route| route.line)
+}
+
+pub fn route_file_from_bytes(bytes: &[u8]) -> Result<RouteFile> {
     let cursor = Cursor::new(bytes);
     let mut archive = zip::ZipArchive::new(cursor)
         .map_err(|e| TrailgenError::InvalidData(format!("invalid KMZ archive: {e}")))?;
@@ -20,7 +25,7 @@ pub fn route_line_from_bytes(bytes: &[u8]) -> Result<LineString> {
         let mut xml = String::new();
         file.read_to_string(&mut xml)
             .map_err(|e| TrailgenError::InvalidData(format!("invalid KMZ KML text: {e}")))?;
-        return kml::route_line_from_str(&xml);
+        return kml::route_file_from_str(&xml);
     }
     Err(TrailgenError::InvalidData(
         "KMZ archive contains no KML member".to_owned(),

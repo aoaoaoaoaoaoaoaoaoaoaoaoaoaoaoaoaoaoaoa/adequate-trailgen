@@ -1,6 +1,7 @@
 use crate::builder::SegmentDraft;
 use crate::crs::{VectorCrsKind, validate_crs_name};
 use crate::geo::{Coord, LineString};
+use crate::io::route_file::{RouteFile, RouteFileMetadata};
 use crate::model::{Access, CrossingKind, Edge, EdgeTravel, Provenance, Terrain, TrailGraph};
 use crate::overlay::{
     AccessOverlay, AccessWindow, ContextOverlay, OverlayGeometry, PlanningDate, TerrainOverlay,
@@ -70,6 +71,10 @@ pub fn network_from_str(s: &str) -> Result<Vec<SegmentDraft>> {
 }
 
 pub fn route_line_from_str(s: &str) -> Result<LineString> {
+    route_file_from_str(s).map(|route| route.line)
+}
+
+pub fn route_file_from_str(s: &str) -> Result<RouteFile> {
     let root: Value = serde_json::from_str(s)?;
     validate_geojson_crs(&root)?;
     if root.get("type").and_then(Value::as_str) == Some("FeatureCollection") {
@@ -83,22 +88,24 @@ pub fn route_line_from_str(s: &str) -> Result<LineString> {
             if let Some(geometry) = feature.get("geometry")
                 && let Some(line) = lines_from_geometry(geometry)?.into_iter().next()
             {
-                return Ok(line);
+                return Ok(RouteFile::new(line, metadata_from_feature(feature)));
             }
         }
     }
     if root.get("type").and_then(Value::as_str) == Some("Feature") {
-        return lines_from_geometry(root.get("geometry").ok_or_else(|| {
+        let line = lines_from_geometry(root.get("geometry").ok_or_else(|| {
             TrailgenError::InvalidData("GeoJSON feature has no geometry".to_owned())
         })?)?
         .into_iter()
         .next()
-        .ok_or_else(|| TrailgenError::InvalidGeometry("no LineString in GeoJSON".to_owned()));
+        .ok_or_else(|| TrailgenError::InvalidGeometry("no LineString in GeoJSON".to_owned()))?;
+        return Ok(RouteFile::new(line, metadata_from_feature(&root)));
     }
-    lines_from_geometry(&root)?
+    let line = lines_from_geometry(&root)?
         .into_iter()
         .next()
-        .ok_or_else(|| TrailgenError::InvalidGeometry("no LineString in GeoJSON".to_owned()))
+        .ok_or_else(|| TrailgenError::InvalidGeometry("no LineString in GeoJSON".to_owned()))?;
+    Ok(RouteFile::new(line, RouteFileMetadata::default()))
 }
 
 pub fn access_overlays_from_str(s: &str) -> Result<Vec<AccessOverlay>> {
@@ -340,6 +347,37 @@ fn primary_provenance_label(edge: &Edge) -> String {
                 .map_or_else(|| p.source.clone(), |id| format!("{}:{id}", p.source))
         },
     )
+}
+
+fn metadata_from_feature(feature: &Value) -> RouteFileMetadata {
+    let properties = feature
+        .get("properties")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    RouteFileMetadata {
+        title: prop_str_any(
+            &properties,
+            &["name", "title", "route_name", "activity_name"],
+        )
+        .map(str::to_owned),
+        description: prop_str_any(&properties, &["description", "desc", "comment", "notes"])
+            .map(str::to_owned),
+        recorded_at: prop_str_any(
+            &properties,
+            &[
+                "recorded_at",
+                "time",
+                "timestamp",
+                "start_time",
+                "created_at",
+                "date",
+            ],
+        )
+        .map(str::to_owned),
+        activity_type: prop_str_any(&properties, &["activity_type", "activity", "sport", "type"])
+            .map(str::to_owned),
+    }
 }
 
 fn validate_geojson_crs(value: &Value) -> Result<()> {
@@ -626,7 +664,15 @@ fn line_geometry(line: &LineString) -> Value {
 }
 
 fn prop_str<'a>(props: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
-    props.get(key).and_then(Value::as_str)
+    props
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+fn prop_str_any<'a>(props: &'a Map<String, Value>, keys: &[&str]) -> Option<&'a str> {
+    keys.iter().find_map(|key| prop_str(props, key))
 }
 
 fn prop_f64(props: &Map<String, Value>, key: &str) -> Option<f64> {

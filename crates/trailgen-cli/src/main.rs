@@ -10,6 +10,7 @@ use trailgen_core::alltrails::{
     AllTrailsBridge, AllTrailsExchange, AllTrailsRequest, ManualAllTrailsBridge,
     RouteExchangeFormat,
 };
+use trailgen_core::io::route_file::RouteFile;
 use trailgen_core::io::{csv, geojson, gpx, json_route, kml, kmz, report, shapefile as shp};
 use trailgen_core::source::{
     GeoBounds, SourceCandidate, SourceFingerprint, SourceKind, SourceManifest, adapter_registry,
@@ -1877,11 +1878,16 @@ fn import_seed(
 ) -> Result<()> {
     let config = load_config(project)?;
     let mut graph = load_graph(project)?;
+    let route_file = load_route_file(route)?;
     let name = name.unwrap_or_else(|| {
-        route
-            .file_stem()
-            .and_then(|x| x.to_str())
-            .unwrap_or("seed-route")
+        route_file
+            .metadata
+            .title_or(
+                route
+                    .file_stem()
+                    .and_then(|x| x.to_str())
+                    .unwrap_or("seed-route"),
+            )
             .to_owned()
     });
     let mut seeds = load_seeds(project)?;
@@ -1899,7 +1905,7 @@ fn import_seed(
         route.display().to_string()
     };
     let archived_route = archive_seed_route(project, route, &name)?;
-    let line = load_route_line(&archived_route)?;
+    let route_file = load_route_file(&archived_route)?;
     let source_format = archived_route
         .extension()
         .and_then(|x| x.to_str())
@@ -1910,9 +1916,10 @@ fn import_seed(
         name,
         archived_route.display().to_string(),
         source_format,
-        &line,
+        &route_file.line,
         max_route_snap_m.unwrap_or(config.max_route_snap_m),
     );
+    seed.metadata = route_file.metadata;
     seed.original_source_path = Some(original_source_path);
     ensure_route_snap_accepted(
         &seed.snap,
@@ -2619,33 +2626,37 @@ fn rerate_cached_graph(project: &Path, weights: DifficultyWeights) -> Result<usi
 }
 
 fn load_route_line(path: &Path) -> Result<LineString> {
+    load_route_file(path).map(|route| route.line)
+}
+
+fn load_route_file(path: &Path) -> Result<RouteFile> {
     match source_ext(path).as_deref() {
         Some("kmz") => {
             let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
-            Ok(kmz::route_line_from_bytes(&bytes)?)
+            Ok(kmz::route_file_from_bytes(&bytes)?)
         }
         Some("csv") => {
             let raw =
                 fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-            Ok(csv::route_line_from_str(&raw)?)
+            Ok(csv::route_file_from_str(&raw)?)
         }
         Some("gpx") => {
             let raw =
                 fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-            Ok(gpx::route_line_from_str(&raw)?)
+            Ok(gpx::route_file_from_str(&raw)?)
         }
         Some("kml") => {
             let raw =
                 fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-            Ok(kml::route_line_from_str(&raw)?)
+            Ok(kml::route_file_from_str(&raw)?)
         }
         Some("geojson" | "json") => {
             let raw =
                 fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
             if source_ext(path).as_deref() == Some("json") {
-                Ok(json_route_line(&raw)?.0)
+                Ok(json_route_file(&raw)?.0)
             } else {
-                Ok(geojson::route_line_from_str(&raw)?)
+                Ok(geojson::route_file_from_str(&raw)?)
             }
         }
         Some(ext) => bail!("unsupported route extension: {ext}"),
@@ -2654,10 +2665,14 @@ fn load_route_line(path: &Path) -> Result<LineString> {
 }
 
 fn json_route_line(raw: &str) -> Result<(LineString, &'static str)> {
-    match geojson::route_line_from_str(raw) {
-        Ok(line) => Ok((line, "geojson-route")),
-        Err(geojson_error) => json_route::route_line_from_str(raw)
-            .map(|line| (line, "json-route"))
+    json_route_file(raw).map(|(route, adapter)| (route.line, adapter))
+}
+
+fn json_route_file(raw: &str) -> Result<(RouteFile, &'static str)> {
+    match geojson::route_file_from_str(raw) {
+        Ok(route) => Ok((route, "geojson-route")),
+        Err(geojson_error) => json_route::route_file_from_str(raw)
+            .map(|route| (route, "json-route"))
             .with_context(|| format!("parse JSON route after GeoJSON failed: {geojson_error}")),
     }
 }
@@ -4653,6 +4668,7 @@ mod tests {
                 .as_str()
                 .is_some_and(|path| path.ends_with("routes/candidate-1.gpx"))
         );
+        assert_eq!(seeds["metadata"]["title"], "candidate-1");
 
         Ok(())
     }

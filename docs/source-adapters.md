@@ -20,6 +20,7 @@ Normalization targets:
 - trail networks become `SegmentDraft` values and are built by `GraphBuilder`
 - route files may also become low-confidence `SegmentDraft` scaffolds for `trailgen build` when no network layer is available
 - route JSON adapters should stay structural and provider-neutral: accept coordinate arrays or point objects, not opaque private API documents
+- seed-route adapters may preserve only provider-neutral metadata fields: title, description, recorded timestamp, and activity type
 - terrain/access/context layers become overlay structs in `overlay.rs`
 - elevation sources implement `ElevationSampler`
 - user routes become `LineString` or `SeedRoute`

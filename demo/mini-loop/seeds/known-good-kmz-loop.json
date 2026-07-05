@@ -3,6 +3,9 @@
   "source_path": "demo/mini-loop/seeds/imports/known-good-kmz-loop.kmz",
   "original_source_path": "demo/mini-loop/routes/candidate-1.kmz",
   "source_format": "kmz",
+  "metadata": {
+    "title": "candidate-1"
+  },
   "point_count": 308,
   "snapped_edges": [
     2,

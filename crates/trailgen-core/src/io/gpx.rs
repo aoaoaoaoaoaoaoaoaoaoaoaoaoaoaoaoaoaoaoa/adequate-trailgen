@@ -1,10 +1,15 @@
 use crate::geo::{Coord, LineString};
+use crate::io::route_file::{RouteFile, RouteFileMetadata, clean_text};
 use crate::model::TrailGraph;
 use crate::route::Route;
 use crate::{Result, TrailgenError};
 use std::fmt::Write as _;
 
 pub fn route_line_from_str(s: &str) -> Result<LineString> {
+    route_file_from_str(s).map(|route| route.line)
+}
+
+pub fn route_file_from_str(s: &str) -> Result<RouteFile> {
     let doc = roxmltree::Document::parse(s).map_err(|e| TrailgenError::Xml(e.to_string()))?;
     let points = doc
         .descendants()
@@ -28,7 +33,10 @@ pub fn route_line_from_str(s: &str) -> Result<LineString> {
             Ok(Coord { lon, lat, ele })
         })
         .collect::<Result<Vec<_>>>()?;
-    LineString::new(points)
+    Ok(RouteFile::new(
+        LineString::new(points)?,
+        metadata_from_doc(&doc),
+    ))
 }
 
 #[must_use]
@@ -65,4 +73,37 @@ fn escape_xml(raw: &str, out: &mut String) {
             _ => out.push(ch),
         }
     }
+}
+
+fn metadata_from_doc(doc: &roxmltree::Document<'_>) -> RouteFileMetadata {
+    let route = doc
+        .descendants()
+        .find(|n| n.has_tag_name("trk") || n.has_tag_name("rte"));
+    RouteFileMetadata {
+        title: route.and_then(|n| child_text(n, "name")).or_else(|| {
+            doc.descendants()
+                .find(|n| n.has_tag_name("metadata"))
+                .and_then(|n| child_text(n, "name"))
+        }),
+        description: route
+            .and_then(|n| child_text(n, "desc").or_else(|| child_text(n, "cmt")))
+            .or_else(|| {
+                doc.descendants()
+                    .find(|n| n.has_tag_name("metadata"))
+                    .and_then(|n| child_text(n, "desc"))
+            }),
+        recorded_at: doc
+            .descendants()
+            .find(|n| n.has_tag_name("time"))
+            .and_then(|n| n.text())
+            .and_then(clean_text),
+        activity_type: route.and_then(|n| child_text(n, "type")),
+    }
+}
+
+fn child_text(node: roxmltree::Node<'_, '_>, tag: &str) -> Option<String> {
+    node.children()
+        .find(|child| child.has_tag_name(tag))
+        .and_then(|child| child.text())
+        .and_then(clean_text)
 }

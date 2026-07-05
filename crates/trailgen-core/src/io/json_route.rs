@@ -1,15 +1,23 @@
 use crate::geo::{Coord, LineString};
+use crate::io::route_file::{RouteFile, RouteFileMetadata};
 use crate::{Result, TrailgenError};
 use serde_json::{Map, Value};
 
 pub fn route_line_from_str(s: &str) -> Result<LineString> {
+    route_file_from_str(s).map(|route| route.line)
+}
+
+pub fn route_file_from_str(s: &str) -> Result<RouteFile> {
     let root: Value = serde_json::from_str(s)?;
     let points = route_points(&root).ok_or_else(|| {
         TrailgenError::InvalidData(
             "route JSON must contain coordinates, points, track, or route arrays".to_owned(),
         )
     })?;
-    LineString::new(points)
+    Ok(RouteFile::new(
+        LineString::new(points)?,
+        metadata_from_value(&root),
+    ))
 }
 
 fn route_points(value: &Value) -> Option<Vec<Coord>> {
@@ -105,4 +113,43 @@ fn value_f64(value: &Value) -> Option<f64> {
         Value::String(s) => s.parse().ok(),
         _ => None,
     }
+}
+
+fn metadata_from_value(value: &Value) -> RouteFileMetadata {
+    let Value::Object(obj) = value else {
+        return RouteFileMetadata::default();
+    };
+    RouteFileMetadata {
+        title: keyed_str(
+            obj,
+            &[
+                "name",
+                "title",
+                "route_name",
+                "activity_name",
+                "display_name",
+            ],
+        ),
+        description: keyed_str(obj, &["description", "desc", "comment", "notes"]),
+        recorded_at: keyed_str(
+            obj,
+            &[
+                "recorded_at",
+                "time",
+                "timestamp",
+                "start_time",
+                "created_at",
+                "date",
+            ],
+        ),
+        activity_type: keyed_str(obj, &["activity_type", "activity", "sport", "type"]),
+    }
+}
+
+fn keyed_str(obj: &Map<String, Value>, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| obj.get(*key).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
 }

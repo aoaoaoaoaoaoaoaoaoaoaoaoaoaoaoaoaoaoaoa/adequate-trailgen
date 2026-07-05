@@ -3,6 +3,9 @@
   "source_path": "demo/mini-loop/seeds/imports/known-good-loop.gpx",
   "original_source_path": "demo/mini-loop/routes/candidate-1.gpx",
   "source_format": "gpx",
+  "metadata": {
+    "title": "candidate-1"
+  },
   "point_count": 308,
   "snapped_edges": [
     2,

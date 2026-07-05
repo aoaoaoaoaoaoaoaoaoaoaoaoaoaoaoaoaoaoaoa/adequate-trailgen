@@ -1,5 +1,6 @@
 use crate::constraints::LoopConstraints;
 use crate::geo::LineString;
+use crate::io::route_file::RouteFileMetadata;
 use crate::model::{EdgeId, Provenance, RouteSnapStats, TrailGraph, VertexId};
 use crate::route::{Route, RouteMetrics};
 use serde::{Deserialize, Serialize};
@@ -11,6 +12,8 @@ pub struct SeedRoute {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original_source_path: Option<String>,
     pub source_format: String,
+    #[serde(default, skip_serializing_if = "RouteFileMetadata::is_empty")]
+    pub metadata: RouteFileMetadata,
     pub point_count: usize,
     pub snapped_edges: Vec<EdgeId>,
     #[serde(default)]
@@ -67,6 +70,7 @@ impl SeedRoute {
             source_path,
             original_source_path: None,
             source_format,
+            metadata: RouteFileMetadata::default(),
             point_count: line.points.len(),
             snapped_edges,
             snap: snap.stats,

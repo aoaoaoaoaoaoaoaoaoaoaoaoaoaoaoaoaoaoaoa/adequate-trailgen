@@ -1,10 +1,15 @@
 use crate::geo::{Coord, LineString};
+use crate::io::route_file::{RouteFile, RouteFileMetadata, clean_text};
 use crate::model::TrailGraph;
 use crate::route::Route;
 use crate::{Result, TrailgenError};
 use std::fmt::Write as _;
 
 pub fn route_line_from_str(s: &str) -> Result<LineString> {
+    route_file_from_str(s).map(|route| route.line)
+}
+
+pub fn route_file_from_str(s: &str) -> Result<RouteFile> {
     let mut rows = s
         .lines()
         .map(str::trim)
@@ -24,7 +29,10 @@ pub fn route_line_from_str(s: &str) -> Result<LineString> {
             points.push(coord_from_bare_row(row)?);
         }
     }
-    LineString::new(points)
+    Ok(RouteFile::new(
+        LineString::new(points)?,
+        metadata_from_comments(s),
+    ))
 }
 
 #[derive(Clone, Copy)]
@@ -93,4 +101,32 @@ pub fn route_to_csv(graph: &TrailGraph, route: &Route) -> String {
 
 fn csv_ele(ele: Option<f64>) -> String {
     ele.map_or_else(String::new, |x| format!("{x:.3}"))
+}
+
+fn metadata_from_comments(s: &str) -> RouteFileMetadata {
+    let mut metadata = RouteFileMetadata::default();
+    for line in s.lines().map(str::trim) {
+        let Some(comment) = line.strip_prefix('#') else {
+            if !line.is_empty() {
+                break;
+            }
+            continue;
+        };
+        let Some((key, value)) = comment.split_once(':') else {
+            continue;
+        };
+        let value = clean_text(value);
+        match key.trim().to_ascii_lowercase().as_str() {
+            "name" | "title" => metadata.title = metadata.title.or(value),
+            "description" | "desc" => metadata.description = metadata.description.or(value),
+            "recorded_at" | "time" | "timestamp" | "date" => {
+                metadata.recorded_at = metadata.recorded_at.or(value);
+            }
+            "activity" | "activity_type" | "sport" | "type" => {
+                metadata.activity_type = metadata.activity_type.or(value);
+            }
+            _ => {}
+        }
+    }
+    metadata
 }

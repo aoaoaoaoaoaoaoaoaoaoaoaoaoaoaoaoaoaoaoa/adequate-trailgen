@@ -47,7 +47,7 @@ Generated artifacts land in the project directory:
 - `routes/candidate-*.kml`: KML exports
 - `routes/candidate-*.kmz`: KMZ exports
 - `seeds/imports/`: archived copies of imported seed-route files
-- `seeds/seeds.json`: imported seed routes snapped to the graph, with original source paths retained for traceability
+- `seeds/seeds.json`: imported seed routes snapped to the graph, with original source paths and route metadata retained for traceability
 - `reports/generated.md`: route diagnostics, the generation constraint envelope, and fingerprinted source manifest summary
 - `reports/map.html`: self-contained offline SVG map of graph terrain, edge difficulty, confidence, generated routes, and selected route diagnostics
 

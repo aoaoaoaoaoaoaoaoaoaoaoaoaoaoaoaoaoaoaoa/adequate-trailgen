@@ -4,6 +4,9 @@
     "source_path": "demo/mini-loop/seeds/imports/known-good-kmz-loop.kmz",
     "original_source_path": "demo/mini-loop/routes/candidate-1.kmz",
     "source_format": "kmz",
+    "metadata": {
+      "title": "candidate-1"
+    },
     "point_count": 308,
     "snapped_edges": [
       2,
@@ -66,6 +69,9 @@
     "source_path": "demo/mini-loop/seeds/imports/known-good-loop.gpx",
     "original_source_path": "demo/mini-loop/routes/candidate-1.gpx",
     "source_format": "gpx",
+    "metadata": {
+      "title": "candidate-1"
+    },
     "point_count": 308,
     "snapped_edges": [
       2,
@@ -74,11 +80,11 @@
       3
     ],
     "snap": {
-      "segment_count": 0,
-      "snapped_segment_count": 0,
+      "segment_count": 307,
+      "snapped_segment_count": 307,
       "rejected_segment_count": 0,
-      "max_snap_m": 0.0,
-      "mean_snap_m": 0.0
+      "max_snap_m": 3.552713678800501e-15,
+      "mean_snap_m": 7.232735096258395e-16
     },
     "start": 3,
     "closed_loop": true,
@@ -87,7 +93,7 @@
       "distance_m": 4712.831226933267,
       "ascent_m": 136.9999999999991,
       "descent_m": 136.9999999999991,
-      "difficulty": 14.2938608129841,
+      "difficulty": 1014.0688608129842,
       "difficulty_breakdown": {
         "distance": 4.712831226933266,
         "ascent": 1.6439999999999888,
@@ -97,19 +103,20 @@
         "road": 0.12264895807970262,
         "technical": 3.1757314914698194,
         "navigation": 0.659565679411782,
-        "confidence": 1.3049999999999995,
-        "access": 0.0
+        "confidence": 1.0800000000000003,
+        "access": 1000.0
       },
       "road_fraction": 0.013012237461292745,
       "low_confidence_fraction": 0.0,
-      "restricted_access_fraction": 0.0,
+      "restricted_access_fraction": 0.28312937564512086,
       "repeated_edge_fraction": 0.0,
       "crossings": {
         "road": 2,
         "water": 2
       },
       "access_m": {
-        "open": 4712.831226933267
+        "open": 3378.490264130822,
+        "closed": 1334.340962802445
       },
       "terrain_m": {
         "trail": 2044.149301328377,

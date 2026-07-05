@@ -5,4 +5,5 @@ pub mod json_route;
 pub mod kml;
 pub mod kmz;
 pub mod report;
+pub mod route_file;
 pub mod shapefile;

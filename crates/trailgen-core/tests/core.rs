@@ -1330,6 +1330,50 @@ fn json_route_import_reads_coordinate_tuples_and_point_objects() {
 }
 
 #[test]
+fn route_file_import_preserves_provider_neutral_metadata() {
+    let gpx = gpx::route_file_from_str(
+        r#"<gpx version="1.1"><metadata><name>Fallback</name></metadata><trk><name>AllTrails Ridge</name><desc>Windy loop</desc><type>hike</type><trkseg><trkpt lat="40.0" lon="-105.0"><time>2026-07-01T12:00:00Z</time></trkpt><trkpt lat="40.01" lon="-105.0"/></trkseg></trk></gpx>"#,
+    )
+    .unwrap();
+    assert_eq!(gpx.metadata.title.as_deref(), Some("AllTrails Ridge"));
+    assert_eq!(gpx.metadata.description.as_deref(), Some("Windy loop"));
+    assert_eq!(
+        gpx.metadata.recorded_at.as_deref(),
+        Some("2026-07-01T12:00:00Z")
+    );
+    assert_eq!(gpx.metadata.activity_type.as_deref(), Some("hike"));
+
+    let kml = kml::route_file_from_str(
+        r"<kml><Document><name>Doc</name><Placemark><name>Knife Edge</name><description>exposed</description><TimeStamp><when>2026-07-02</when></TimeStamp><LineString><coordinates>-105.0,40.0,0 -105.0,40.01,0</coordinates></LineString></Placemark></Document></kml>",
+    )
+    .unwrap();
+    assert_eq!(kml.metadata.title.as_deref(), Some("Knife Edge"));
+    assert_eq!(kml.metadata.description.as_deref(), Some("exposed"));
+    assert_eq!(kml.metadata.recorded_at.as_deref(), Some("2026-07-02"));
+
+    let geojson = geojson::route_file_from_str(
+        r#"{"type":"Feature","properties":{"name":"Mesa Loop","description":"sunny","start_time":"2026-07-03","sport":"hiking"},"geometry":{"type":"LineString","coordinates":[[-105.0,40.0],[-105.0,40.01]]}}"#,
+    )
+    .unwrap();
+    assert_eq!(geojson.metadata.title.as_deref(), Some("Mesa Loop"));
+    assert_eq!(geojson.metadata.activity_type.as_deref(), Some("hiking"));
+
+    let json = json_route::route_file_from_str(
+        r#"{"title":"App Export","activity_type":"hike","created_at":"2026-07-04","coordinates":[[-105.0,40.0],[-105.0,40.01]]}"#,
+    )
+    .unwrap();
+    assert_eq!(json.metadata.title.as_deref(), Some("App Export"));
+    assert_eq!(json.metadata.recorded_at.as_deref(), Some("2026-07-04"));
+
+    let csv = csv::route_file_from_str(
+        "# title: Spreadsheet Loop\n# activity: hike\nlongitude,latitude\n-105.0,40.0\n-105.0,40.01\n",
+    )
+    .unwrap();
+    assert_eq!(csv.metadata.title.as_deref(), Some("Spreadsheet Loop"));
+    assert_eq!(csv.metadata.activity_type.as_deref(), Some("hike"));
+}
+
+#[test]
 fn csv_round_trip_reads_exported_route() {
     let drafts = geojson::network_from_str(include_str!("fixtures/mini_network.geojson")).unwrap();
     let graph = GraphBuilder::default().build(&drafts).unwrap();
