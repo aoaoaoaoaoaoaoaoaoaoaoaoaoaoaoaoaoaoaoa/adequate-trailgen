@@ -1,5 +1,6 @@
 name = "Mini Loop"
 snap_tolerance_m = 8.0
+solver = "auto"
 
 [area]
 west = -105.02

@@ -15,7 +15,7 @@ use trailgen_core::source::{
 use trailgen_core::{
     Access, ArcAsciiGrid, Coord, CrossingKind, DifficultyBreakdown, DifficultyWeights, EdgeId,
     EdgeTravel, EnrichmentConfig, GeoTiffDem, GraphBuilder, LineString, LoopConstraints,
-    LoopHunter, Provenance, Route, RouteMetrics, RouteShape, SearchParams, SeedRoute, SegmentDraft,
+    Provenance, Route, RouteMetrics, RouteShape, SearchParams, SeedRoute, SegmentDraft, SolverKind,
     Terrain, TrailGraph, VertexId, VrtDem, apply_access_overlays, apply_context_overlays,
     apply_terrain_overlays, enrich_graph, rank_routes, slug,
 };
@@ -80,6 +80,8 @@ enum Cmd {
         count: usize,
         #[arg(long, default_value_t = 0)]
         seed: u64,
+        #[arg(long, value_parser = parse_solver_kind)]
+        solver: Option<SolverKind>,
         #[arg(long)]
         min_difficulty: Option<f64>,
         #[arg(long)]
@@ -196,6 +198,8 @@ struct ProjectConfig {
     constraints: LoopConstraints,
     #[serde(default)]
     search: SearchParams,
+    #[serde(default)]
+    solver: SolverKind,
 }
 
 impl ProjectConfig {
@@ -208,6 +212,7 @@ impl ProjectConfig {
             difficulty: DifficultyWeights::default(),
             constraints: LoopConstraints::default(),
             search: SearchParams::default(),
+            solver: SolverKind::default(),
         }
     }
 }
@@ -281,6 +286,7 @@ fn main() -> Result<()> {
             max_km,
             count,
             seed,
+            solver,
             min_difficulty,
             max_difficulty,
             min_ascent_m,
@@ -303,6 +309,7 @@ fn main() -> Result<()> {
                 max_km,
                 count,
                 seed,
+                solver,
                 min_difficulty,
                 max_difficulty,
                 min_ascent_m,
@@ -695,6 +702,7 @@ struct GenerateOptions {
     max_km: f64,
     count: usize,
     seed: u64,
+    solver: Option<SolverKind>,
     min_difficulty: Option<f64>,
     max_difficulty: Option<f64>,
     min_ascent_m: Option<f64>,
@@ -716,6 +724,7 @@ struct GenerationManifest {
     schema_version: u32,
     app_version: &'static str,
     solver: &'static str,
+    requested_solver: SolverKind,
     random_seed: u64,
     requested_start: Coord,
     snapped_start_vertex: VertexId,
@@ -724,6 +733,12 @@ struct GenerationManifest {
     graph: GraphManifest,
     routes: Vec<RouteManifestEntry>,
     artifacts: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct StartSnap {
+    requested: Coord,
+    snapped: VertexId,
 }
 
 struct BuildSource {
@@ -773,15 +788,22 @@ struct DifficultySnippet {
 fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
     let mut config = load_config(project)?;
     let graph = load_graph(project)?;
+    if let Some(solver) = options.solver {
+        config.solver = solver;
+    }
     apply_generate_options(&mut config.constraints, options);
     let start_coord = parse_coord(&options.start)?;
     let start_vertex = graph
         .nearest_vertex(start_coord)
         .with_context(|| "graph has no vertices")?;
-    let mut routes = LoopHunter {
-        params: config.search,
-    }
-    .hunt(&graph, start_vertex, &config.constraints, options.count);
+    let solver = config.solver.resolve(&graph);
+    let mut routes = solver.solve(
+        config.search,
+        &graph,
+        start_vertex,
+        &config.constraints,
+        options.count,
+    );
     routes.extend(
         load_seeds(project)?
             .iter()
@@ -805,9 +827,12 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
             options,
             &config,
             &graph,
-            start_coord,
-            start_vertex,
+            StartSnap {
+                requested: start_coord,
+                snapped: start_vertex,
+            },
             &routes,
+            solver,
         )?,
     )?;
     for route in &routes {
@@ -2233,17 +2258,18 @@ fn generation_manifest(
     options: &GenerateOptions,
     config: &ProjectConfig,
     graph: &TrailGraph,
-    requested_start: Coord,
-    snapped_start_vertex: VertexId,
+    start: StartSnap,
     routes: &[Route],
+    solver: SolverKind,
 ) -> Result<GenerationManifest> {
     Ok(GenerationManifest {
         schema_version: 1,
         app_version: env!("CARGO_PKG_VERSION"),
-        solver: "loop-hunter",
+        solver: solver.label(),
+        requested_solver: config.solver,
         random_seed: options.seed,
-        requested_start,
-        snapped_start_vertex,
+        requested_start: start.requested,
+        snapped_start_vertex: start.snapped,
         effective_config: config.clone(),
         source_manifest: load_source_manifest(project)?,
         graph: graph_manifest(graph),
@@ -2493,6 +2519,15 @@ fn parse_shape(raw: &str) -> Result<RouteShape, String> {
     }
 }
 
+fn parse_solver_kind(raw: &str) -> Result<SolverKind, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "auto" => Ok(SolverKind::Auto),
+        "heuristic" | "loop-hunter" | "loophunter" => Ok(SolverKind::Heuristic),
+        "exact" | "exact-enumerator" | "enumerator" => Ok(SolverKind::Exact),
+        _ => Err("expected auto, heuristic, or exact".to_owned()),
+    }
+}
+
 fn parse_terrain(raw: &str) -> Result<Terrain, String> {
     let terrain = Terrain::from_tag(raw);
     if terrain == Terrain::Unknown && !raw.trim().eq_ignore_ascii_case("unknown") {
@@ -2553,6 +2588,7 @@ mod tests {
                 max_km: 8.0,
                 count: 2,
                 seed: 0,
+                solver: None,
                 min_difficulty: None,
                 max_difficulty: None,
                 min_ascent_m: None,
@@ -2666,6 +2702,7 @@ mod tests {
                 max_km: 8.0,
                 count: 2,
                 seed: 77,
+                solver: Some(SolverKind::Exact),
                 min_difficulty: None,
                 max_difficulty: None,
                 min_ascent_m: None,
@@ -2692,7 +2729,8 @@ mod tests {
         let raw = fs::read_to_string(project.join("routes/generated.manifest.json"))?;
         let manifest: Value = serde_json::from_str(&raw)?;
         assert_eq!(manifest["app_version"], env!("CARGO_PKG_VERSION"));
-        assert_eq!(manifest["solver"], "loop-hunter");
+        assert_eq!(manifest["solver"], "exact-enumerator");
+        assert_eq!(manifest["requested_solver"], "exact");
         assert_eq!(manifest["random_seed"], 77);
         assert_effective_constraints_manifest(&manifest);
         assert!(manifest["source_manifest"]["adapters"].as_array().is_some());
@@ -2779,6 +2817,7 @@ mod tests {
                 max_km: 8.0,
                 count: 2,
                 seed: 0,
+                solver: None,
                 min_difficulty: None,
                 max_difficulty: None,
                 min_ascent_m: None,
@@ -2912,6 +2951,7 @@ mod tests {
                 max_km: 8.0,
                 count: 1,
                 seed: 0,
+                solver: None,
                 min_difficulty: None,
                 max_difficulty: Some(10_000.0),
                 min_ascent_m: None,
@@ -3341,6 +3381,7 @@ mod tests {
                 max_km: 8.0,
                 count: 2,
                 seed: 0,
+                solver: None,
                 min_difficulty: None,
                 max_difficulty: None,
                 min_ascent_m: None,
@@ -3370,6 +3411,7 @@ mod tests {
                 max_km: 8.0,
                 count: 2,
                 seed: 0,
+                solver: None,
                 min_difficulty: None,
                 max_difficulty: None,
                 min_ascent_m: None,

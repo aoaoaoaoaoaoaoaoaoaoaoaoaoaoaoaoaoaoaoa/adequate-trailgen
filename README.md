@@ -25,7 +25,7 @@ cargo run -p trailgen -- report demo/mini-loop --route candidate-1 --output /tmp
 cargo run -p trailgen -- map demo/mini-loop --output /tmp/mini-loop-map.html
 ```
 
-For an out-and-back search, run `generate` with `--shape out-and-back --max-repeated-edge-fraction 1`. For a tighter climbing window, add flags such as `--min-ascent-m 500 --max-ascent-m 1800 --max-descent-m 1800`. For terrain steering, use repeated flags such as `--forbid-terrain pavement --min-terrain trail:0.60 --max-terrain talus=0.10`. `--max-road-fraction` covers explicit road exposure plus terrain tagged `road` or `pavement`. Access restrictions are hard by default: `restricted`, `closed`, and `private` edges violate the route unless `--max-restricted-access-fraction` allows them.
+For an exact small-graph search, add `--solver exact`; `--solver auto` uses the exact enumerator on small graphs and the sparse heuristic elsewhere. For an out-and-back search, run `generate` with `--shape out-and-back --max-repeated-edge-fraction 1`. For a tighter climbing window, add flags such as `--min-ascent-m 500 --max-ascent-m 1800 --max-descent-m 1800`. For terrain steering, use repeated flags such as `--forbid-terrain pavement --min-terrain trail:0.60 --max-terrain talus=0.10`. `--max-road-fraction` covers explicit road exposure plus terrain tagged `road` or `pavement`. Access restrictions are hard by default: `restricted`, `closed`, and `private` edges violate the route unless `--max-restricted-access-fraction` allows them.
 
 Generated artifacts land in the project directory:
 
@@ -36,7 +36,7 @@ Generated artifacts land in the project directory:
 - `sources/access-overlays.json`: applied access/closure overlays
 - `sources/context-overlays.json`: applied road/hydrology context overlays from GeoJSON or shapefile linework
 - `routes/generated.geojson`: Pareto-ranked generated loops with persisted route scores
-- `routes/generated.manifest.json`: app version, random seed, effective config, fingerprinted source manifest, graph summary, exact route edge sequences, and artifact list for reproducing a generation run
+- `routes/generated.manifest.json`: app version, random seed, requested/concrete solver, effective config, fingerprinted source manifest, graph summary, exact route edge sequences, and artifact list for reproducing a generation run
 - `routes/candidate-*.gpx`: GPX exports
 - `routes/candidate-*.kml`: KML exports
 - `routes/candidate-*.kmz`: KMZ exports

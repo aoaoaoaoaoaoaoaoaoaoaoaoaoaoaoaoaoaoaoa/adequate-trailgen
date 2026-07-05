@@ -8,8 +8,8 @@ use trailgen_core::source::{
     source_coverage,
 };
 use trailgen_core::{
-    Access, ArcAsciiGrid, CrossingKind, EdgeId, EdgeTravel, ElevationSampler, GeoTiffDem, Route,
-    RouteMetrics, RouteShape, SearchParams, VertexId, VrtDem,
+    Access, ArcAsciiGrid, CrossingKind, EdgeId, EdgeTravel, ElevationSampler, ExactLoopSolver,
+    GeoTiffDem, Route, RouteMetrics, RouteShape, SearchParams, SolverKind, VertexId, VrtDem,
 };
 use trailgen_core::{
     Coord, DifficultyWeights, EnrichmentConfig, GraphBuilder, LineString, LoopConstraints,
@@ -847,6 +847,124 @@ fn loop_hunter_closes_sparse_frontier_with_shortest_return_path() {
     assert!(routes.iter().any(|r| {
         r.metrics.shape == RouteShape::Loop && r.edges.len() == 4 && r.verdict.satisfied
     }));
+}
+
+#[test]
+fn exact_solver_enumerates_only_fully_bounded_loops() {
+    let graph = GraphBuilder::default().build(&square_drafts()).unwrap();
+    let start = graph.nearest_vertex(Coord::new(0.0, 0.0)).unwrap();
+    let constraints = LoopConstraints {
+        min_distance_m: 0.0,
+        max_distance_m: 10_000.0,
+        max_difficulty: 10_000.0,
+        allowed_shapes: vec![RouteShape::Loop],
+        ..LoopConstraints::default()
+    };
+
+    assert!(
+        ExactLoopSolver {
+            params: SearchParams {
+                max_hops: 3,
+                max_frontier: 100,
+                keep: 4,
+            },
+        }
+        .enumerate(&graph, start, &constraints, 4)
+        .is_empty()
+    );
+    let routes = ExactLoopSolver {
+        params: SearchParams {
+            max_hops: 4,
+            max_frontier: 100,
+            keep: 4,
+        },
+    }
+    .enumerate(&graph, start, &constraints, 4);
+
+    assert!(routes.iter().any(|r| {
+        r.metrics.shape == RouteShape::Loop && r.edges.len() == 4 && r.verdict.satisfied
+    }));
+}
+
+#[test]
+fn exact_solver_accepts_two_edge_multiedge_loops() {
+    let graph = GraphBuilder::default()
+        .build(&[
+            SegmentDraft {
+                geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)])
+                    .unwrap(),
+                terrain: Terrain::Trail,
+                surface: None,
+                access: Access::Open,
+                travel: EdgeTravel::Both,
+                road_exposure: 0.0,
+                confidence: 1.0,
+                provenance: Provenance::fixture("out"),
+            },
+            SegmentDraft {
+                geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)])
+                    .unwrap(),
+                terrain: Terrain::Trail,
+                surface: None,
+                access: Access::Open,
+                travel: EdgeTravel::Both,
+                road_exposure: 0.0,
+                confidence: 1.0,
+                provenance: Provenance::fixture("back"),
+            },
+        ])
+        .unwrap();
+    let start = graph.nearest_vertex(Coord::new(0.0, 0.0)).unwrap();
+    let routes = ExactLoopSolver {
+        params: SearchParams {
+            max_hops: 2,
+            max_frontier: 100,
+            keep: 4,
+        },
+    }
+    .enumerate(
+        &graph,
+        start,
+        &LoopConstraints {
+            min_distance_m: 0.0,
+            max_distance_m: 10_000.0,
+            max_difficulty: 10_000.0,
+            allowed_shapes: vec![RouteShape::Loop],
+            ..LoopConstraints::default()
+        },
+        4,
+    );
+
+    assert!(routes.iter().any(|r| {
+        r.metrics.shape == RouteShape::Loop
+            && r.edges.len() == 2
+            && r.metrics.repeated_edge_fraction == 0.0
+    }));
+}
+
+#[test]
+fn auto_solver_uses_exact_backend_only_for_small_graphs() {
+    let graph = GraphBuilder::default().build(&square_drafts()).unwrap();
+    assert_eq!(SolverKind::Auto.resolve(&graph), SolverKind::Exact);
+
+    let drafts = (0..40)
+        .map(|i| SegmentDraft {
+            geometry: LineString::new(vec![
+                Coord::new(f64::from(i) * 0.01, 0.0),
+                Coord::new(f64::from(i + 1) * 0.01, 0.0),
+            ])
+            .unwrap(),
+            terrain: Terrain::Trail,
+            surface: None,
+            access: Access::Open,
+            travel: EdgeTravel::Both,
+            road_exposure: 0.0,
+            confidence: 1.0,
+            provenance: Provenance::fixture("large"),
+        })
+        .collect::<Vec<_>>();
+    let large = GraphBuilder::default().build(&drafts).unwrap();
+    assert_eq!(SolverKind::Auto.resolve(&large), SolverKind::Heuristic);
 }
 
 #[test]

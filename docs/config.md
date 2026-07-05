@@ -16,6 +16,14 @@ The AOI is not a routing constraint. It is a discovery/reproducibility contract:
 
 `snap_tolerance_m` controls cautious graph-construction snapping. Exact segment intersections are always split. In addition, a dangling source-geometry endpoint may be projected onto another source segment when the projected point lies inside that segment and within `snap_tolerance_m`; snapped edges receive `graph-builder` / `near-miss-snap` provenance and capped confidence so reports expose the uncertainty instead of pretending the junction was source-authored.
 
+`solver` selects the generation backend:
+
+- `auto`: use the bounded exact enumerator on small graphs and the sparse-graph heuristic elsewhere
+- `heuristic`: always use `LoopHunter`
+- `exact`: always use `ExactLoopSolver`, bounded by `[search]`
+
+`trailgen generate --solver auto|heuristic|exact` overrides the config for one run. The manifest records both `requested_solver` and the concrete `solver`.
+
 `[difficulty]` controls additive edge rating. The supported weights are `distance_per_km`, `ascent_per_m`, `descent_per_m`, `grade_per_abs_fraction`, `road_penalty`, `technical_penalty`, `navigation_penalty`, `low_confidence_penalty`, and `closed_access_penalty`. `[difficulty.terrain_multipliers]` overrides the per-terrain distance multiplier table for `unknown`, `trail`, `forest`, `alpine`, `talus`, `scramble`, `pavement`, `road`, and `water`; omitted buckets use defaults. Use `trailgen rerate <project>` after hand edits to push the current weights into cached edge costs. Use `trailgen calibrate <project> --route completed.gpx --target-difficulty N [--family elevation] [--write]` to solve and optionally persist a completed-hike calibration. See [difficulty.md](difficulty.md) for the factor formula and calibration workflow.
 
 Distance and elevation constraints are stored in meters. CLI `generate --min-km --max-km` overrides the distance window for that run. `generate` can also override scalar difficulty, ascent/descent, road/pavement exposure, access restriction exposure, low-confidence limits, and terrain mix with `--min-difficulty`, `--max-difficulty`, `--min-ascent-m`, `--max-ascent-m`, `--min-descent-m`, `--max-descent-m`, `--max-road-fraction`, `--max-restricted-access-fraction`, `--max-low-confidence-fraction`, `--forbid-terrain`, `--min-terrain terrain:fraction`, and `--max-terrain terrain:fraction`. Confidence is a scalar in `[0,1]`; low-confidence route fraction is measured by distance over edges below `0.6`.
@@ -42,7 +50,7 @@ Shape constraints are also stored in `[constraints]`:
 - `allowed_shapes`: route-shape whitelist; defaults to `["loop"]`
 - `max_repeated_edge_fraction`: required for useful `out-and-back` generation, because out-and-back routes intentionally traverse edges twice
 
-The CLI can override shape for one generation run with repeated `--shape` flags: `loop`, `figure-eight`, `out-and-back`, or `open`. `LoopHunter` filters emitted candidates by their measured shape. Figure-eights are deliberate multi-lobe closures through the start; out-and-backs are deliberate mirrored paths. Override repeated-edge tolerance with `--max-repeated-edge-fraction`; `--shape out-and-back --max-repeated-edge-fraction 1` is the permissive smoke-test setting. `generate --seed N` records the random seed in `routes/generated.manifest.json`; `LoopHunter` is deterministic today, but the manifest schema already preserves the seed needed by future stochastic solvers.
+The CLI can override shape for one generation run with repeated `--shape` flags: `loop`, `figure-eight`, `out-and-back`, or `open`. Solvers filter emitted candidates by their measured shape. Figure-eights are deliberate multi-lobe closures through the start; out-and-backs are deliberate mirrored paths. Override repeated-edge tolerance with `--max-repeated-edge-fraction`; `--shape out-and-back --max-repeated-edge-fraction 1` is the permissive smoke-test setting. `generate --seed N` records the random seed in `routes/generated.manifest.json`; built-in solvers are deterministic today, but the manifest schema already preserves the seed needed by future stochastic solvers.
 
 `[enrichment]` controls the graph enrichment phase:
 

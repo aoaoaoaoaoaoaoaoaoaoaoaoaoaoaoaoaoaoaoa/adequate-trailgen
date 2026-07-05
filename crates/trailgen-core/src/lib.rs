@@ -30,7 +30,7 @@ pub use model::{
     Access, CrossingEvidence, CrossingKind, Edge, EdgeAttr, EdgeId, EdgeTravel, GradeDistribution,
     Provenance, Terrain, TrailGraph, Vertex, VertexId,
 };
-pub use optimizer::{LoopHunter, RouteSolver, SearchParams};
+pub use optimizer::{ExactLoopSolver, LoopHunter, RouteSolver, SearchParams, SolverKind};
 pub use overlay::{
     AccessOverlay, ContextOverlay, OverlayGeometry, TerrainOverlay, apply_access_overlays,
     apply_context_overlays, apply_terrain_overlays,

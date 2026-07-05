@@ -24,7 +24,59 @@ impl Default for SearchParams {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SolverKind {
+    #[default]
+    Auto,
+    Heuristic,
+    Exact,
+}
+
+impl SolverKind {
+    const AUTO_EXACT_EDGE_LIMIT: usize = 32;
+
+    #[must_use]
+    pub const fn resolve(self, graph: &TrailGraph) -> Self {
+        match self {
+            Self::Auto if graph.edges.len() <= Self::AUTO_EXACT_EDGE_LIMIT => Self::Exact,
+            Self::Auto => Self::Heuristic,
+            resolved => resolved,
+        }
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Heuristic => "loop-hunter",
+            Self::Exact => "exact-enumerator",
+        }
+    }
+
+    #[must_use]
+    pub fn solve(
+        self,
+        params: SearchParams,
+        graph: &TrailGraph,
+        start: VertexId,
+        constraints: &LoopConstraints,
+        count: usize,
+    ) -> Vec<Route> {
+        match self.resolve(graph) {
+            Self::Auto => unreachable!("auto solver must resolve to a concrete backend"),
+            Self::Heuristic => LoopHunter { params }.solve(graph, start, constraints, count),
+            Self::Exact => ExactLoopSolver { params }.solve(graph, start, constraints, count),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LoopHunter {
+    pub params: SearchParams,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ExactLoopSolver {
     pub params: SearchParams,
 }
 
@@ -125,7 +177,7 @@ impl RouteSolver for LoopHunter {
 
                 let mut used = state.used.clone();
                 used.insert(edge_id);
-                if next == start && edges.len() >= 3 {
+                if next == start && edges.len() >= 2 {
                     push_allowed_route(&mut routes, graph, start, edges.clone(), constraints);
                     if constraints.allows_shape(RouteShape::FigureEight) {
                         stack.push(State {
@@ -147,14 +199,94 @@ impl RouteSolver for LoopHunter {
             }
         }
 
-        let mut seen = BTreeSet::new();
-        routes.retain(|route| seen.insert(route.edges.clone()));
-        rank_routes(&mut routes, constraints);
-        routes.truncate(count.max(1).min(self.params.keep));
-        for (i, route) in routes.iter_mut().enumerate() {
-            route.name = format!("candidate-{}", i + 1);
+        finish_routes(routes, constraints, count, self.params.keep)
+    }
+}
+
+impl ExactLoopSolver {
+    #[must_use]
+    pub fn enumerate(
+        self,
+        graph: &TrailGraph,
+        start: VertexId,
+        constraints: &LoopConstraints,
+        count: usize,
+    ) -> Vec<Route> {
+        self.solve(graph, start, constraints, count)
+    }
+}
+
+impl RouteSolver for ExactLoopSolver {
+    fn solve(
+        &self,
+        graph: &TrailGraph,
+        start: VertexId,
+        constraints: &LoopConstraints,
+        count: usize,
+    ) -> Vec<Route> {
+        let mut stack = vec![State {
+            at: start,
+            edges: Vec::new(),
+            used: BTreeSet::new(),
+            distance_m: 0.0,
+        }];
+        let mut routes = Vec::<Route>::new();
+        let mut expanded = 0usize;
+
+        while let Some(state) = stack.pop() {
+            expanded += 1;
+            if expanded > self.params.max_frontier {
+                break;
+            }
+            if state.edges.len() >= self.params.max_hops {
+                continue;
+            }
+
+            let mut fanout = graph.adjacency[state.at.0].clone();
+            fanout.sort();
+            fanout.reverse();
+
+            for edge_id in fanout {
+                if state.used.contains(&edge_id) {
+                    continue;
+                }
+                let edge = &graph.edges[edge_id.0];
+                let Some(next) = edge.traverse(state.at) else {
+                    continue;
+                };
+                let distance_m = state.distance_m + edge.attr.length_m;
+                if distance_m > constraints.max_distance_m * 1.35 {
+                    continue;
+                }
+
+                let mut edges = state.edges.clone();
+                edges.push(edge_id);
+                if constraints.allows_shape(RouteShape::OutAndBack) {
+                    let out_and_back = mirrored_route(&edges);
+                    if route_distance(graph, &out_and_back) <= constraints.max_distance_m * 1.35 {
+                        push_allowed_route(&mut routes, graph, start, out_and_back, constraints);
+                    }
+                }
+
+                let mut used = state.used.clone();
+                used.insert(edge_id);
+                if next == start && edges.len() >= 2 {
+                    push_allowed_route(&mut routes, graph, start, edges.clone(), constraints);
+                    if !constraints.allows_shape(RouteShape::FigureEight) {
+                        continue;
+                    }
+                }
+
+                stack.push(State {
+                    at: next,
+                    edges,
+                    used,
+                    distance_m,
+                });
+            }
         }
-        routes
+
+        finish_routes(routes, constraints, count, self.params.keep)
     }
 }
 
@@ -182,6 +314,22 @@ fn push_allowed_route(
     if constraints.allows_shape(route.metrics.shape) {
         routes.push(route);
     }
+}
+
+fn finish_routes(
+    mut routes: Vec<Route>,
+    constraints: &LoopConstraints,
+    count: usize,
+    keep: usize,
+) -> Vec<Route> {
+    let mut seen = BTreeSet::new();
+    routes.retain(|route| seen.insert(route.edges.clone()));
+    rank_routes(&mut routes, constraints);
+    routes.truncate(count.max(1).min(keep));
+    for (i, route) in routes.iter_mut().enumerate() {
+        route.name = format!("candidate-{}", i + 1);
+    }
+    routes
 }
 
 fn route_distance(graph: &TrailGraph, edges: &[EdgeId]) -> f64 {
