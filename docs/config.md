@@ -49,7 +49,7 @@ The CLI can override shape for one generation run with repeated `--shape` flags:
 - `sample_spacing_m`: maximum spacing between elevation samples along each graph edge
 - `steep_grade_threshold`: absolute grade threshold used to accumulate sustained steep distance
 
-`apply-elevation --confidence` sets the confidence carried by a local Arc/Info ASCII DEM sample. Edge confidence is capped by sampled elevation confidence, because precise grade and ascent claims should not outvote a weak raster.
+`apply-elevation --confidence` sets the confidence carried by a local Arc/Info ASCII or GeoTIFF DEM sample. Edge confidence is capped by sampled elevation confidence, because precise grade and ascent claims should not outvote a weak raster.
 
 `apply-terrain --source terrain.geojson` accepts FeatureCollections with Polygon, MultiPolygon, or LineString geometries. Each feature should carry a recognized `terrain`, `surface`, `landcover`, or `land_cover` tag plus optional `confidence`, `tolerance_m`, `source`, `layer`, `id`/`name`, and `license`. Recognized terrain tags normalize through the same `Terrain` enum as network ingestion.
 

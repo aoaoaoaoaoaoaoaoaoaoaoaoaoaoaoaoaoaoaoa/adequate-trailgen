@@ -156,19 +156,31 @@
         "note": "Arc/Info ASCII Grid DEM sampling for local elevation enrichment."
       },
       {
-        "id": "geospatial-elevation-raster",
+        "id": "geotiff-elevation",
+        "kind": "elevation",
+        "status": "implemented",
+        "consumes": [
+          "tif",
+          "tiff"
+        ],
+        "produces": [
+          "sampled elevation profile",
+          "edge ascent/descent"
+        ],
+        "note": "North-up geographic single-band GeoTIFF DEM sampling."
+      },
+      {
+        "id": "vrt-elevation",
         "kind": "elevation",
         "status": "planned",
         "consumes": [
-          "tif",
-          "tiff",
           "vrt"
         ],
         "produces": [
           "sampled elevation profile",
           "edge ascent/descent"
         ],
-        "note": "USGS/3DEP, Copernicus DEM, or local GeoTIFF/VRT sampling seam."
+        "note": "GDAL VRT elevation raster seam."
       },
       {
         "id": "geojson-terrain-overlay",
@@ -346,7 +358,8 @@
         "priority": "required",
         "adapter_ids": [
           "arc-ascii-elevation",
-          "geospatial-elevation-raster"
+          "geotiff-elevation",
+          "vrt-elevation"
         ],
         "suggested_paths": [
           "sources/dem.asc",

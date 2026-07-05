@@ -30,7 +30,7 @@ Generated artifacts land in the project directory:
 
 - `cache/graph.json`: normalized attributed graph
 - `sources/manifest.json`: source adapter registry, AOI-bound acquisition recommendations, and discovered/used source files with byte counts and SHA-256 fingerprints
-- `sources/elevation-arc-ascii.json`: applied local DEM sampler metadata
+- `sources/elevation-arc-ascii.json` or `sources/elevation-geotiff.json`: applied local DEM sampler metadata
 - `sources/terrain-overlays.json`: applied land-cover, surface, or user terrain overrides from GeoJSON or shapefile layers
 - `sources/access-overlays.json`: applied access/closure overlays
 - `sources/context-overlays.json`: applied road/hydrology context overlays from GeoJSON or shapefile linework

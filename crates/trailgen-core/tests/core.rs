@@ -8,8 +8,8 @@ use trailgen_core::source::{
     source_coverage,
 };
 use trailgen_core::{
-    Access, ArcAsciiGrid, CrossingKind, EdgeId, ElevationSampler, Route, RouteMetrics, RouteShape,
-    SearchParams, VertexId,
+    Access, ArcAsciiGrid, CrossingKind, EdgeId, ElevationSampler, GeoTiffDem, Route, RouteMetrics,
+    RouteShape, SearchParams, VertexId,
 };
 use trailgen_core::{
     Coord, DifficultyWeights, EnrichmentConfig, GraphBuilder, LineString, LoopConstraints,
@@ -1013,6 +1013,7 @@ fn source_registry_classifies_local_inputs() {
     assert_eq!(water.adapter_id, "geojson-hydrology-context");
     let dem = classify_path(std::path::Path::new("sources/dem.tif")).unwrap();
     assert_eq!(dem.kind, SourceKind::Elevation);
+    assert_eq!(dem.adapter_id, "geotiff-elevation");
     let ascii_dem = classify_path(std::path::Path::new("sources/dem.asc")).unwrap();
     assert_eq!(ascii_dem.kind, SourceKind::Elevation);
     assert_eq!(ascii_dem.adapter_id, "arc-ascii-elevation");
@@ -1108,11 +1109,8 @@ fn source_coverage_evaluates_recommendations_against_candidates() {
         .iter()
         .find(|entry| entry.kind == SourceKind::Elevation)
         .expect("elevation coverage");
-    assert_eq!(elevation.status, SourceCoverageStatus::PlannedAdapterOnly);
-    assert_eq!(
-        elevation.planned_adapter_ids,
-        vec!["geospatial-elevation-raster"]
-    );
+    assert_eq!(elevation.status, SourceCoverageStatus::Satisfied);
+    assert_eq!(elevation.implemented_adapter_ids, vec!["geotiff-elevation"]);
 
     let hydrology = coverage
         .iter()
@@ -1303,6 +1301,87 @@ fn arc_ascii_grid_samples_and_reenriches_graph() {
             .any(|p| p.source == "fixture-dem")
     }));
     assert!(graph.edges.iter().any(|edge| edge.attr.grade_abs_max > 0.0));
+}
+
+#[test]
+fn geotiff_dem_samples_and_reenriches_graph() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dem = tmp.path().join("mini_dem.tif");
+    write_geotiff_dem(&dem);
+    let raster = GeoTiffDem::from_path(
+        &dem,
+        Provenance {
+            source: "fixture-geotiff-dem".to_owned(),
+            layer: Some("geotiff".to_owned()),
+            source_id: Some("mini_dem.tif".to_owned()),
+            license: Some("CC0-fixture".to_owned()),
+        },
+        0.83,
+    )
+    .unwrap();
+    assert_eq!(raster.width, 3);
+    assert_eq!(raster.height, 3);
+    let sample = raster.sample(Coord::new(-104.995, 40.005)).unwrap();
+    assert!((sample.ele_m - 1_600.0).abs() <= 1.0e-9);
+    assert!(raster.sample(Coord::new(-106.0, 40.0)).is_none());
+
+    let drafts = geojson::network_from_str(include_str!("fixtures/mini_network.geojson")).unwrap();
+    let mut graph = GraphBuilder::default().build(&drafts).unwrap();
+    enrich_graph(
+        &mut graph,
+        &raster,
+        EnrichmentConfig {
+            sample_spacing_m: 100.0,
+            steep_grade_threshold: 0.10,
+        },
+        DifficultyWeights::default(),
+    )
+    .unwrap();
+    assert!(graph.edges.iter().any(|edge| {
+        edge.attr
+            .elevation_provenance
+            .iter()
+            .any(|p| p.source == "fixture-geotiff-dem")
+    }));
+    assert!(graph.edges.iter().any(|edge| edge.attr.grade_abs_max > 0.0));
+}
+
+fn write_geotiff_dem(path: &std::path::Path) {
+    use tiff::encoder::{TiffEncoder, colortype};
+    use tiff::tags::Tag;
+
+    let file = std::fs::File::create(path).unwrap();
+    let mut tiff = TiffEncoder::new(file).unwrap();
+    let mut image = tiff.new_image::<colortype::GrayI16>(3, 3).unwrap();
+    image
+        .encoder()
+        .write_tag(Tag::ModelPixelScaleTag, &[0.01_f64, 0.01, 0.0][..])
+        .unwrap();
+    image
+        .encoder()
+        .write_tag(
+            Tag::ModelTiepointTag,
+            &[0.0_f64, 0.0, 0.0, -105.01, 40.02, 0.0][..],
+        )
+        .unwrap();
+    image
+        .encoder()
+        .write_tag(
+            Tag::GeoKeyDirectoryTag,
+            &[
+                1_u16, 1, 0, 3, 1024, 0, 1, 2, 2048, 0, 1, 4326, 2054, 0, 1, 9102,
+            ][..],
+        )
+        .unwrap();
+    image
+        .encoder()
+        .write_tag(Tag::GdalNodata, "-32768")
+        .unwrap();
+    image
+        .write_data(&[
+            1_500_i16, 1_510, 1_520, 1_590, 1_600, 1_610, 1_700, 1_710, 1_720,
+        ])
+        .unwrap();
 }
 
 fn simple_path_draft() -> SegmentDraft {

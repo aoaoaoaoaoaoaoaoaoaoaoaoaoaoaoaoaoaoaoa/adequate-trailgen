@@ -23,6 +23,7 @@ trailgen-core.workspace = true
 [dev-dependencies]
 shapefile.workspace = true
 tempfile.workspace = true
+tiff.workspace = true
 
 [lints]
 workspace = true

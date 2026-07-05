@@ -297,12 +297,20 @@ fn elevation_adapters() -> Vec<SourceAdapter> {
             "Arc/Info ASCII Grid DEM sampling for local elevation enrichment.",
         ),
         adapter(
-            "geospatial-elevation-raster",
+            "geotiff-elevation",
+            SourceKind::Elevation,
+            AdapterStatus::Implemented,
+            ["tif", "tiff"],
+            ["sampled elevation profile", "edge ascent/descent"],
+            "North-up geographic single-band GeoTIFF DEM sampling.",
+        ),
+        adapter(
+            "vrt-elevation",
             SourceKind::Elevation,
             AdapterStatus::Planned,
-            ["tif", "tiff", "vrt"],
+            ["vrt"],
             ["sampled elevation profile", "edge ascent/descent"],
-            "USGS/3DEP, Copernicus DEM, or local GeoTIFF/VRT sampling seam.",
+            "GDAL VRT elevation raster seam.",
         ),
     ]
 }
@@ -468,7 +476,7 @@ const RECOMMENDATION_SPECS: &[RecommendationSpec] = &[
     RecommendationSpec {
         kind: SourceKind::Elevation,
         priority: SourcePriority::Required,
-        adapter_ids: &["arc-ascii-elevation", "geospatial-elevation-raster"],
+        adapter_ids: &["arc-ascii-elevation", "geotiff-elevation", "vrt-elevation"],
         suggested_paths: &["sources/dem.asc", "sources/dem.tif"],
         search_terms: &[
             "USGS 3DEP DEM",
@@ -616,7 +624,8 @@ pub fn classify_path(path: &Path) -> Option<SourceCandidate> {
         }
         "geojson" | "json" => (SourceKind::TrailNetwork, "geojson-network"),
         "asc" => (SourceKind::Elevation, "arc-ascii-elevation"),
-        "tif" | "tiff" | "vrt" => (SourceKind::Elevation, "geospatial-elevation-raster"),
+        "tif" | "tiff" => (SourceKind::Elevation, "geotiff-elevation"),
+        "vrt" => (SourceKind::Elevation, "vrt-elevation"),
         "shp" if path_lc.contains("closure") => (SourceKind::Closure, "shapefile-closure-layer"),
         "shp" if path_lc.contains("access") || path_lc.contains("ownership") => {
             (SourceKind::Access, "shapefile-access-overlay")

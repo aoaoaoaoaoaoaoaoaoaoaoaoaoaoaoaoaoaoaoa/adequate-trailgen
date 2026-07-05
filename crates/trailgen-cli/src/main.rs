@@ -14,10 +14,10 @@ use trailgen_core::source::{
 };
 use trailgen_core::{
     Access, ArcAsciiGrid, Coord, CrossingKind, DifficultyBreakdown, DifficultyWeights, EdgeId,
-    EnrichmentConfig, GraphBuilder, LineString, LoopConstraints, LoopHunter, Provenance, Route,
-    RouteMetrics, RouteShape, SearchParams, SeedRoute, SegmentDraft, Terrain, TrailGraph, VertexId,
-    apply_access_overlays, apply_context_overlays, apply_terrain_overlays, enrich_graph,
-    rank_routes, slug,
+    EnrichmentConfig, GeoTiffDem, GraphBuilder, LineString, LoopConstraints, LoopHunter,
+    Provenance, Route, RouteMetrics, RouteShape, SearchParams, SeedRoute, SegmentDraft, Terrain,
+    TrailGraph, VertexId, apply_access_overlays, apply_context_overlays, apply_terrain_overlays,
+    enrich_graph, rank_routes, slug,
 };
 
 #[derive(Parser)]
@@ -1464,6 +1464,67 @@ fn terrain_overlays(source: &Path) -> Result<Vec<trailgen_core::TerrainOverlay>>
 fn apply_elevation(project: &Path, source: &Path, confidence: f64) -> Result<()> {
     let config = load_config(project)?;
     let mut graph = load_graph(project)?;
+    let applied = apply_elevation_source(&mut graph, source, confidence, &config)?;
+    write_json(project.join("cache/graph.json"), &graph)?;
+    write_json(
+        project.join("cache/graph.geojson"),
+        &geojson::graph_to_geojson(&graph),
+    )?;
+    fs::create_dir_all(project.join("sources"))?;
+    applied.write_metadata(project)?;
+    register_source_candidate_as(project, source, SourceKind::Elevation, applied.adapter_id)?;
+    println!("{}", applied.message);
+    Ok(())
+}
+
+struct AppliedElevation {
+    adapter_id: &'static str,
+    metadata_path: &'static str,
+    metadata: ElevationMetadata,
+    message: String,
+}
+
+impl AppliedElevation {
+    fn write_metadata(&self, project: &Path) -> Result<()> {
+        match &self.metadata {
+            ElevationMetadata::ArcAscii(raster) => {
+                write_json(project.join(self.metadata_path), raster)
+            }
+            ElevationMetadata::GeoTiff(raster) => {
+                write_json(project.join(self.metadata_path), raster)
+            }
+        }
+    }
+}
+
+enum ElevationMetadata {
+    ArcAscii(ArcAsciiGrid),
+    GeoTiff(GeoTiffDem),
+}
+
+fn apply_elevation_source(
+    graph: &mut TrailGraph,
+    source: &Path,
+    confidence: f64,
+    config: &ProjectConfig,
+) -> Result<AppliedElevation> {
+    match source_ext(source).as_deref() {
+        Some("asc") => apply_arc_ascii_elevation(graph, source, confidence, config),
+        Some("tif" | "tiff") => apply_geotiff_elevation(graph, source, confidence, config),
+        Some("vrt") => bail!(
+            "VRT elevation rasters are still a planned adapter; use GeoTIFF or Arc/Info ASCII Grid"
+        ),
+        Some(ext) => bail!("unsupported elevation extension {ext:?}; expected asc, tif, or tiff"),
+        None => bail!("elevation source has no file extension"),
+    }
+}
+
+fn apply_arc_ascii_elevation(
+    graph: &mut TrailGraph,
+    source: &Path,
+    confidence: f64,
+    config: &ProjectConfig,
+) -> Result<AppliedElevation> {
     let raw = fs::read_to_string(source).with_context(|| format!("read {}", source.display()))?;
     let raster = ArcAsciiGrid::parse(
         &raw,
@@ -1478,29 +1539,57 @@ fn apply_elevation(project: &Path, source: &Path, confidence: f64) -> Result<()>
         },
         confidence,
     )
-    .with_context(|| "parse elevation raster")?;
-    enrich_graph(&mut graph, &raster, config.enrichment, config.difficulty)
-        .with_context(|| "apply elevation raster")?;
-    write_json(project.join("cache/graph.json"), &graph)?;
-    write_json(
-        project.join("cache/graph.geojson"),
-        &geojson::graph_to_geojson(&graph),
-    )?;
-    fs::create_dir_all(project.join("sources"))?;
-    write_json(project.join("sources/elevation-arc-ascii.json"), &raster)?;
-    register_source_candidate_as(
-        project,
+    .with_context(|| "parse Arc/Info ASCII elevation raster")?;
+    enrich_graph(graph, &raster, config.enrichment, config.difficulty)
+        .with_context(|| "apply Arc/Info ASCII elevation raster")?;
+    let (ncols, nrows) = (raster.ncols, raster.nrows);
+    Ok(AppliedElevation {
+        adapter_id: "arc-ascii-elevation",
+        metadata_path: "sources/elevation-arc-ascii.json",
+        metadata: ElevationMetadata::ArcAscii(raster),
+        message: format!(
+            "applied Arc/Info ASCII elevation grid {}x{} from {}",
+            ncols,
+            nrows,
+            source.display()
+        ),
+    })
+}
+
+fn apply_geotiff_elevation(
+    graph: &mut TrailGraph,
+    source: &Path,
+    confidence: f64,
+    config: &ProjectConfig,
+) -> Result<AppliedElevation> {
+    let raster = GeoTiffDem::from_path(
         source,
-        SourceKind::Elevation,
-        "arc-ascii-elevation",
-    )?;
-    println!(
-        "applied Arc/Info ASCII elevation grid {}x{} from {}",
-        raster.ncols,
-        raster.nrows,
-        source.display()
-    );
-    Ok(())
+        Provenance {
+            source: "geotiff-dem".to_owned(),
+            layer: Some("geotiff".to_owned()),
+            source_id: source
+                .file_name()
+                .and_then(|x| x.to_str())
+                .map(str::to_owned),
+            license: None,
+        },
+        confidence,
+    )
+    .with_context(|| "parse GeoTIFF elevation raster")?;
+    enrich_graph(graph, &raster, config.enrichment, config.difficulty)
+        .with_context(|| "apply GeoTIFF elevation raster")?;
+    let (width, height) = (raster.width, raster.height);
+    Ok(AppliedElevation {
+        adapter_id: "geotiff-elevation",
+        metadata_path: "sources/elevation-geotiff.json",
+        metadata: ElevationMetadata::GeoTiff(raster),
+        message: format!(
+            "applied GeoTIFF elevation grid {}x{} from {}",
+            width,
+            height,
+            source.display()
+        ),
+    })
 }
 
 fn apply_context(project: &Path, source: &Path) -> Result<()> {
@@ -2131,6 +2220,7 @@ fn is_generated_source_artifact(path: &Path) -> bool {
                 | "terrain-overlays.json"
                 | "context-overlays.json"
                 | "elevation-arc-ascii.json"
+                | "elevation-geotiff.json"
                 | "elevation-raster.json"
         )
     )
@@ -2761,6 +2851,43 @@ mod tests {
     }
 
     #[test]
+    fn geotiff_elevation_application_registers_source() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path().join("project");
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../trailgen-core/tests/fixtures/mini_network.geojson");
+        let dem = tmp.path().join("dem.tif");
+        write_cli_geotiff_dem(&dem);
+
+        init(&project, "GeoTIFF Elevation Test".to_owned(), None)?;
+        build(&project, &fixture)?;
+        apply_elevation(&project, &dem, 0.84)?;
+
+        let metadata: Value = serde_json::from_str(&fs::read_to_string(
+            project.join("sources/elevation-geotiff.json"),
+        )?)?;
+        assert_eq!(metadata["width"], 3);
+        assert_eq!(metadata["height"], 3);
+        assert_eq!(metadata["confidence"], 0.84);
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(project.join("sources/manifest.json"))?)?;
+        assert!(
+            manifest["candidates"]
+                .as_array()
+                .expect("candidates")
+                .iter()
+                .any(|candidate| {
+                    candidate["kind"] == "elevation"
+                        && candidate["adapter_id"] == "geotiff-elevation"
+                        && candidate["fingerprint"]["sha256"]
+                            .as_str()
+                            .is_some_and(|hash| hash.len() == 64)
+                })
+        );
+        Ok(())
+    }
+
+    #[test]
     fn shapefile_apply_commands_register_true_adapter_ids() -> Result<()> {
         let tmp = tempfile::tempdir()?;
         let project = tmp.path().join("project");
@@ -2807,6 +2934,40 @@ mod tests {
         record.insert("id".to_owned(), id.to_owned().into());
         record.insert("terrain".to_owned(), "trail".to_owned().into());
         writer.write_shape_and_record(&line, &record).unwrap();
+    }
+
+    fn write_cli_geotiff_dem(path: &Path) {
+        use tiff::encoder::{TiffEncoder, colortype};
+        use tiff::tags::Tag;
+
+        let file = fs::File::create(path).unwrap();
+        let mut tiff = TiffEncoder::new(file).unwrap();
+        let mut image = tiff.new_image::<colortype::GrayI16>(3, 3).unwrap();
+        image
+            .encoder()
+            .write_tag(Tag::ModelPixelScaleTag, &[0.01_f64, 0.01, 0.0][..])
+            .unwrap();
+        image
+            .encoder()
+            .write_tag(
+                Tag::ModelTiepointTag,
+                &[0.0_f64, 0.0, 0.0, -105.01, 40.02, 0.0][..],
+            )
+            .unwrap();
+        image
+            .encoder()
+            .write_tag(
+                Tag::GeoKeyDirectoryTag,
+                &[
+                    1_u16, 1, 0, 3, 1024, 0, 1, 2, 2048, 0, 1, 4326, 2054, 0, 1, 9102,
+                ][..],
+            )
+            .unwrap();
+        image
+            .write_data(&[
+                1_500_i16, 1_510, 1_520, 1_590, 1_600, 1_610, 1_700, 1_710, 1_720,
+            ])
+            .unwrap();
     }
 
     fn write_status_polygon_shapefile(path: &Path, status: &str) {
