@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
+use std::fmt::{self, Write as _};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use trailgen_core::alltrails::{
@@ -18,11 +18,11 @@ use trailgen_core::source::{
 };
 use trailgen_core::{
     Access, AccessOverlay, AccessWindow, ArcAsciiGrid, Coord, CrossingKind, DifficultyBreakdown,
-    DifficultyWeights, EdgeId, EdgeTravel, EnrichmentConfig, GeoTiffDem, GraphBuilder, LineString,
-    LoopConstraints, PlanningDate, Provenance, Route, RouteMetrics, RouteShape, RouteSnapStats,
-    SearchParams, SeedRoute, SegmentDraft, SolverKind, Terrain, TrailGraph, VertexId, VrtDem,
-    apply_access_overlays, apply_context_overlays, apply_terrain_overlays, enrich_graph,
-    rank_routes, slug,
+    DifficultyWeights, EdgeAttr, EdgeId, EdgeTravel, EnrichmentConfig, GeoTiffDem, GraphBuilder,
+    LineString, LoopConstraints, PlanningDate, Provenance, Route, RouteMetrics, RouteShape,
+    RouteSnapStats, SearchParams, SeedRoute, SegmentDraft, SolverKind, Terrain, TrailGraph,
+    VertexId, VrtDem, apply_access_overlays, apply_context_overlays, apply_terrain_overlays,
+    enrich_graph, rank_routes, slug,
 };
 
 #[derive(Parser)]
@@ -682,15 +682,22 @@ fn stats_text(graph: &TrailGraph) -> String {
     let mut text = String::new();
     let mut terrain_m = BTreeMap::<Terrain, f64>::new();
     let mut access_m = BTreeMap::<Access, f64>::new();
+    let mut source_m = BTreeMap::<String, f64>::new();
+    let mut confidence_m = BTreeMap::<ConfidenceBand, f64>::new();
     let mut road_m = 0.0;
     let mut low_conf_m = 0.0;
     let mut restricted_m = 0.0;
     let mut elevation_m = 0.0;
+    let mut seed_m = 0.0;
     let mut difficulty = 0.0;
     for edge in &graph.edges {
         let a = &edge.attr;
         *terrain_m.entry(a.terrain).or_default() += a.length_m;
         *access_m.entry(a.access).or_default() += a.length_m;
+        *source_m.entry(primary_source_label(a)).or_default() += a.length_m;
+        *confidence_m
+            .entry(ConfidenceBand::from_confidence(a.confidence))
+            .or_default() += a.length_m;
         road_m = a.length_m.mul_add(
             edge_road_pavement_exposure(a.terrain, a.road_exposure),
             road_m,
@@ -706,6 +713,9 @@ fn stats_text(graph: &TrailGraph) -> String {
         }
         if edge_has_elevation(a) {
             elevation_m += a.length_m;
+        }
+        if a.seed_count > 0 {
+            seed_m += a.length_m;
         }
         difficulty += a.difficulty;
     }
@@ -746,8 +756,16 @@ fn stats_text(graph: &TrailGraph) -> String {
         elevation_m / 1_000.0,
         percent(elevation_m, total_m)
     );
+    let _ = writeln!(
+        text,
+        "seed-attributed edge-km: {:.2} ({:.1}%)",
+        seed_m / 1_000.0,
+        percent(seed_m, total_m)
+    );
     write_meter_mix(&mut text, "Terrain mix", &terrain_m, total_m);
     write_meter_mix(&mut text, "Access mix", &access_m, total_m);
+    write_labeled_meter_mix(&mut text, "Source mix", &source_m, total_m);
+    write_labeled_meter_mix(&mut text, "Confidence mix", &confidence_m, total_m);
     text.push_str("Crossings:\n");
     let crossings = crossing_totals(graph);
     if crossings.is_empty() {
@@ -770,13 +788,54 @@ const fn edge_road_pavement_exposure(terrain: Terrain, road_exposure: f64) -> f6
         })
 }
 
-fn edge_has_elevation(a: &trailgen_core::EdgeAttr) -> bool {
+fn edge_has_elevation(a: &EdgeAttr) -> bool {
     !a.elevation_provenance.is_empty()
         || a.ascent_m > 0.0
         || a.descent_m > 0.0
         || a.grade_abs_mean > 0.0
         || a.grade_abs_max > 0.0
         || a.grade_distribution.total_m() > 0.0
+}
+
+fn primary_source_label(a: &EdgeAttr) -> String {
+    a.provenance
+        .first()
+        .map_or_else(|| "unknown".to_owned(), provenance_label)
+}
+
+fn provenance_label(p: &Provenance) -> String {
+    p.source_id
+        .as_ref()
+        .map_or_else(|| p.source.clone(), |id| format!("{}:{id}", p.source))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+enum ConfidenceBand {
+    Low,
+    Medium,
+    High,
+}
+
+impl ConfidenceBand {
+    const fn from_confidence(confidence: f64) -> Self {
+        if confidence < 0.6 {
+            Self::Low
+        } else if confidence < 0.8 {
+            Self::Medium
+        } else {
+            Self::High
+        }
+    }
+}
+
+impl fmt::Display for ConfidenceBand {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Low => "low <0.60",
+            Self::Medium => "medium 0.60–0.79",
+            Self::High => "high ≥0.80",
+        })
+    }
 }
 
 fn write_meter_mix<K: std::fmt::Debug + Ord>(
@@ -794,6 +853,27 @@ fn write_meter_mix<K: std::fmt::Debug + Ord>(
         let _ = writeln!(
             text,
             "- {key:?}: {:.2} km ({:.1}%)",
+            meters / 1_000.0,
+            percent(*meters, total_m)
+        );
+    }
+}
+
+fn write_labeled_meter_mix<K: fmt::Display + Ord>(
+    text: &mut String,
+    title: &str,
+    meters_by_key: &BTreeMap<K, f64>,
+    total_m: f64,
+) {
+    let _ = writeln!(text, "{title}:");
+    if meters_by_key.is_empty() {
+        text.push_str("- none\n");
+        return;
+    }
+    for (key, meters) in meters_by_key {
+        let _ = writeln!(
+            text,
+            "- {key}: {:.2} km ({:.1}%)",
             meters / 1_000.0,
             percent(*meters, total_m)
         );
@@ -3521,11 +3601,18 @@ mod tests {
         assert!(text.contains("restricted-access edge-km:"));
         assert!(text.contains("road/pavement edge-km:"));
         assert!(text.contains("elevation-attributed edge-km:"));
+        assert!(text.contains("seed-attributed edge-km:"));
         assert!(text.contains("Terrain mix:"));
         assert!(text.contains("- Trail:"));
         assert!(text.contains("- Road:"));
         assert!(text.contains("Access mix:"));
         assert!(text.contains("- Restricted:"));
+        assert!(text.contains("Source mix:"));
+        assert!(text.contains("- fixture:trail:"));
+        assert!(text.contains("- fixture:restricted-road:"));
+        assert!(text.contains("Confidence mix:"));
+        assert!(text.contains("- low <0.60:"));
+        assert!(text.contains("- high ≥0.80:"));
         assert!(text.contains("Crossings:"));
         Ok(())
     }
