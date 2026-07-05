@@ -48,8 +48,8 @@ enum Cmd {
     },
     Build {
         project: PathBuf,
-        #[arg(long)]
-        source: PathBuf,
+        #[arg(long, required = true)]
+        source: Vec<PathBuf>,
     },
     Stats {
         project: PathBuf,
@@ -301,7 +301,7 @@ fn main() -> Result<()> {
             name,
             bbox,
         } => init(&project, name, bbox),
-        Cmd::Build { project, source } => build(&project, &source),
+        Cmd::Build { project, source } => build_many(&project, source.iter().map(PathBuf::as_path)),
         Cmd::Stats { project } => stats(&project),
         Cmd::Discover { project, bbox } => discover(&project, bbox),
         Cmd::CacheSource {
@@ -520,21 +520,48 @@ fn init(project: &Path, name: String, area: Option<GeoBounds>) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn build(project: &Path, source: &Path) -> Result<()> {
+    build_many(project, std::iter::once(source))
+}
+
+fn build_many<'a>(project: &Path, sources: impl IntoIterator<Item = &'a Path>) -> Result<()> {
+    let sources = sources.into_iter().collect::<Vec<_>>();
+    if sources.is_empty() {
+        bail!("build requires at least one --source");
+    }
     let config = load_config(project)?;
-    let build_source = build_source(source)?;
+    let mut drafts = Vec::new();
+    let mut candidates = Vec::new();
+    let mut adapter_counts = BTreeMap::<&'static str, usize>::new();
+    for source in sources {
+        let build_source = build_source(source)?;
+        *adapter_counts.entry(build_source.adapter_id).or_default() += 1;
+        candidates.push(source_candidate(
+            source,
+            build_source.kind,
+            build_source.adapter_id,
+            source_fingerprint(source)?,
+        ));
+        drafts.extend(build_source.drafts);
+    }
     let graph = GraphBuilder {
         snap_tolerance_m: config.snap_tolerance_m,
         enrichment: config.enrichment,
         weights: config.difficulty,
     }
-    .build(&build_source.drafts)
+    .build(&drafts)
     .with_context(|| "build graph")?;
     save_graph(project, &graph)?;
-    register_source_candidate_as(project, source, build_source.kind, build_source.adapter_id)?;
+    register_source_candidates(project, candidates)?;
     println!(
-        "built graph from {}: {} vertices, {} edges",
-        build_source.adapter_id,
+        "built graph from {} source(s) via {}: {} vertices, {} edges",
+        adapter_counts.values().sum::<usize>(),
+        adapter_counts
+            .into_iter()
+            .map(|(adapter, count)| format!("{adapter}×{count}"))
+            .collect::<Vec<_>>()
+            .join(", "),
         graph.vertices.len(),
         graph.edges.len()
     );
@@ -4054,6 +4081,54 @@ mod tests {
                 .any(|candidate| candidate["adapter_id"] == "geojson-route")
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn build_accepts_multiple_network_sources() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../trailgen-core/tests/fixtures/mini_network.geojson");
+        let spur = tmp.path().join("agency-spur.geojson");
+        fs::write(
+            &spur,
+            r#"{"type":"FeatureCollection","features":[{
+                "type":"Feature",
+                "properties":{"id":"agency-spur","source":"agency-two","terrain":"trail","access":"open","confidence":0.88},
+                "geometry":{"type":"LineString","coordinates":[[-104.9800,40.0000,1685],[-104.9760,40.0000,1690]]}
+            }]}"#,
+        )?;
+
+        init(project, "Multi Source Build Test".to_owned(), None)?;
+        build_many(project, [fixture.as_path(), spur.as_path()])?;
+
+        let graph = load_graph(project)?;
+        assert!(graph.edges.iter().any(|edge| {
+            edge.attr
+                .provenance
+                .iter()
+                .any(|p| p.source == "agency-two" && p.source_id.as_deref() == Some("agency-spur"))
+        }));
+
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(project.join("sources/manifest.json"))?)?;
+        let candidates = manifest["candidates"].as_array().expect("candidates");
+        assert!(candidates.iter().any(|candidate| {
+            candidate["path"].as_str() == Some(fixture.to_str().unwrap())
+                && candidate["adapter_id"] == "geojson-network"
+        }));
+        assert!(candidates.iter().any(|candidate| {
+            candidate["path"].as_str() == Some(spur.to_str().unwrap())
+                && candidate["adapter_id"] == "geojson-network"
+        }));
+        assert!(
+            manifest["coverage"]
+                .as_array()
+                .expect("coverage")
+                .iter()
+                .any(|entry| entry["kind"] == "trail-network" && entry["status"] == "satisfied")
+        );
         Ok(())
     }
 
