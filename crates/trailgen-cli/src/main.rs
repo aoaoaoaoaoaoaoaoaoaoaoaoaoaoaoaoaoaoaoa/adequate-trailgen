@@ -472,20 +472,134 @@ fn route_adapter_id(source: &Path) -> &'static str {
 
 fn stats(project: &Path) -> Result<()> {
     let graph = load_graph(project)?;
-    let distance_km = graph.edges.iter().map(|e| e.attr.length_m).sum::<f64>() / 1_000.0;
-    let low_conf = graph
+    print!("{}", stats_text(&graph));
+    Ok(())
+}
+
+fn stats_text(graph: &TrailGraph) -> String {
+    let mut text = String::new();
+    let mut terrain_m = BTreeMap::<Terrain, f64>::new();
+    let mut access_m = BTreeMap::<Access, f64>::new();
+    let mut road_m = 0.0;
+    let mut low_conf_m = 0.0;
+    let mut restricted_m = 0.0;
+    let mut elevation_m = 0.0;
+    let mut difficulty = 0.0;
+    for edge in &graph.edges {
+        let a = &edge.attr;
+        *terrain_m.entry(a.terrain).or_default() += a.length_m;
+        *access_m.entry(a.access).or_default() += a.length_m;
+        road_m = a.length_m.mul_add(
+            edge_road_pavement_exposure(a.terrain, a.road_exposure),
+            road_m,
+        );
+        if a.confidence < 0.6 {
+            low_conf_m += a.length_m;
+        }
+        if matches!(
+            a.access,
+            Access::Restricted | Access::Closed | Access::Private
+        ) {
+            restricted_m += a.length_m;
+        }
+        if edge_has_elevation(a) {
+            elevation_m += a.length_m;
+        }
+        difficulty += a.difficulty;
+    }
+    let total_m = graph
         .edges
         .iter()
-        .filter(|e| e.attr.confidence < 0.6)
-        .count();
-    println!("vertices: {}", graph.vertices.len());
-    println!("edges: {}", graph.edges.len());
-    println!("edge-km: {distance_km:.2}");
-    println!("low-confidence edges: {low_conf}");
-    for (kind, count) in crossing_totals(&graph) {
-        println!("{kind:?} crossings: {count}");
+        .map(|edge| edge.attr.length_m)
+        .sum::<f64>();
+    let _ = writeln!(text, "vertices: {}", graph.vertices.len());
+    let _ = writeln!(text, "edges: {}", graph.edges.len());
+    let _ = writeln!(text, "edge-km: {:.2}", total_m / 1_000.0);
+    let _ = writeln!(
+        text,
+        "mean difficulty per km: {:.2}",
+        difficulty / (total_m / 1_000.0).max(1.0e-9)
+    );
+    let _ = writeln!(
+        text,
+        "low-confidence edge-km: {:.2} ({:.1}%)",
+        low_conf_m / 1_000.0,
+        percent(low_conf_m, total_m)
+    );
+    let _ = writeln!(
+        text,
+        "restricted-access edge-km: {:.2} ({:.1}%)",
+        restricted_m / 1_000.0,
+        percent(restricted_m, total_m)
+    );
+    let _ = writeln!(
+        text,
+        "road/pavement edge-km: {:.2} ({:.1}%)",
+        road_m / 1_000.0,
+        percent(road_m, total_m)
+    );
+    let _ = writeln!(
+        text,
+        "elevation-attributed edge-km: {:.2} ({:.1}%)",
+        elevation_m / 1_000.0,
+        percent(elevation_m, total_m)
+    );
+    write_meter_mix(&mut text, "Terrain mix", &terrain_m, total_m);
+    write_meter_mix(&mut text, "Access mix", &access_m, total_m);
+    text.push_str("Crossings:\n");
+    let crossings = crossing_totals(graph);
+    if crossings.is_empty() {
+        text.push_str("- none\n");
+    } else {
+        for (kind, count) in crossings {
+            let _ = writeln!(text, "- {kind:?}: {count}");
+        }
     }
-    Ok(())
+    text
+}
+
+const fn edge_road_pavement_exposure(terrain: Terrain, road_exposure: f64) -> f64 {
+    road_exposure
+        .clamp(0.0, 1.0)
+        .max(if matches!(terrain, Terrain::Pavement | Terrain::Road) {
+            1.0
+        } else {
+            0.0
+        })
+}
+
+fn edge_has_elevation(a: &trailgen_core::EdgeAttr) -> bool {
+    !a.elevation_provenance.is_empty()
+        || a.ascent_m > 0.0
+        || a.descent_m > 0.0
+        || a.grade_abs_mean > 0.0
+        || a.grade_abs_max > 0.0
+        || a.grade_distribution.total_m() > 0.0
+}
+
+fn write_meter_mix<K: std::fmt::Debug + Ord>(
+    text: &mut String,
+    title: &str,
+    meters_by_key: &BTreeMap<K, f64>,
+    total_m: f64,
+) {
+    let _ = writeln!(text, "{title}:");
+    if meters_by_key.is_empty() {
+        text.push_str("- none\n");
+        return;
+    }
+    for (key, meters) in meters_by_key {
+        let _ = writeln!(
+            text,
+            "- {key:?}: {:.2} km ({:.1}%)",
+            meters / 1_000.0,
+            percent(*meters, total_m)
+        );
+    }
+}
+
+fn percent(part: f64, whole: f64) -> f64 {
+    100.0 * part / whole.max(1.0)
 }
 
 fn discover(project: &Path, area: Option<GeoBounds>) -> Result<()> {
@@ -2061,6 +2175,49 @@ mod tests {
             }
         );
         assert!(parse_terrain_fraction("scramble=1.25").is_err());
+    }
+
+    #[test]
+    fn graph_stats_report_attributed_exposure() -> Result<()> {
+        let graph = GraphBuilder::default().build(&[
+            SegmentDraft {
+                geometry: LineString::new(vec![
+                    Coord::with_ele(0.0, 0.0, 1_000.0),
+                    Coord::with_ele(0.01, 0.0, 1_030.0),
+                ])
+                .unwrap(),
+                terrain: Terrain::Trail,
+                surface: None,
+                access: Access::Open,
+                road_exposure: 0.0,
+                confidence: 1.0,
+                provenance: Provenance::fixture("trail"),
+            },
+            SegmentDraft {
+                geometry: LineString::new(vec![Coord::new(0.01, 0.0), Coord::new(0.02, 0.0)])
+                    .unwrap(),
+                terrain: Terrain::Road,
+                surface: Some("gravel".to_owned()),
+                access: Access::Restricted,
+                road_exposure: 0.25,
+                confidence: 0.5,
+                provenance: Provenance::fixture("restricted-road"),
+            },
+        ])?;
+
+        let text = stats_text(&graph);
+        assert!(text.contains("mean difficulty per km:"));
+        assert!(text.contains("low-confidence edge-km:"));
+        assert!(text.contains("restricted-access edge-km:"));
+        assert!(text.contains("road/pavement edge-km:"));
+        assert!(text.contains("elevation-attributed edge-km:"));
+        assert!(text.contains("Terrain mix:"));
+        assert!(text.contains("- Trail:"));
+        assert!(text.contains("- Road:"));
+        assert!(text.contains("Access mix:"));
+        assert!(text.contains("- Restricted:"));
+        assert!(text.contains("Crossings:"));
+        Ok(())
     }
 
     #[test]
