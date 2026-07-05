@@ -1808,6 +1808,14 @@ function mixText(obj) {{
   const xs = topEntries(obj, 6);
   return xs.length ? xs.map(([k, v]) => `${{k}} ${{pct(v)}}`).join(', ') : 'none';
 }}
+function sourceText(p) {{
+  const xs = (p.source_provenance || []).map(x => {{
+    const source = x.source || 'unknown';
+    const base = x.source_id ? `${{source}}:${{x.source_id}}` : source;
+    return x.layer ? `${{base}} (${{x.layer}})` : base;
+  }});
+  return xs.length ? xs.join(', ') : 'none';
+}}
 function routeText(p) {{
   return `${{p.name}} | rank ${{p.pareto_rank}} | ${{km(p.distance_m)}} | ascent ${{(p.ascent_m || 0).toFixed(0)}} m | difficulty ${{(p.difficulty || 0).toFixed(1)}} | road ${{pct(p.road_fraction)}} | low confidence ${{pct(p.low_confidence_fraction)}} | restricted ${{pct(p.restricted_access_fraction)}}`;
 }}
@@ -1854,6 +1862,7 @@ function routeSummary(p) {{
     ${{metricRow('pareto rank', p.pareto_rank)}}
     ${{metricRow('score', scalar(p.score))}}
     ${{metricRow('shape', p.shape || 'unknown')}}
+    ${{metricRow('source provenance', sourceText(p))}}
     ${{metricRow('distance', km(p.distance_m))}}
     ${{metricRow('ascent/descent', `${{scalar(p.ascent_m, 0)}} m / ${{scalar(p.descent_m, 0)}} m`)}}
     ${{metricRow('difficulty', scalar(p.difficulty))}}
@@ -4122,6 +4131,8 @@ mod tests {
         assert!(generated_map.contains("dubious segments"));
         assert!(generated_map.contains("restricted access"));
         assert!(generated_map.contains("terrain mix"));
+        assert!(generated_map.contains("source provenance"));
+        assert!(generated_map.contains("fixture:"));
         assert!(generated_map.contains("largest difficulty contributors"));
         let selected_map = fs::read_to_string(map)?;
         assert!(selected_map.contains("Export Test"));
