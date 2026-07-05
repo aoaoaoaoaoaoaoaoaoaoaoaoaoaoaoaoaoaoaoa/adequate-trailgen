@@ -618,7 +618,7 @@ const SEED_ROUTE_HINTS: &[AcquisitionHintSpec] = &[
     AcquisitionHintSpec {
         label: "AllTrails import/export support",
         url: "https://support.alltrails.com/hc/en-us/sections/360006411352-Importing-and-exporting-files",
-        formats: &["GPX", "KML"],
+        formats: &["GPX", "GeoJSON", "KML", "KMZ", "CSV"],
         note: "Use user-supplied exports as seed routes only; never couple core graph semantics to private AllTrails APIs.",
     },
     AcquisitionHintSpec {

@@ -1596,6 +1596,11 @@ fn alltrails_bridge_refuses_undocumented_write_api() {
             && cap.formats.iter().any(|fmt| fmt == "gpx")
     }));
     assert!(caps.iter().any(|cap| {
+        cap.exchange == AllTrailsExchange::ManualUploadActivity
+            && cap.status == BridgeStatus::Manual
+            && cap.formats.iter().any(|fmt| fmt == "csv")
+    }));
+    assert!(caps.iter().any(|cap| {
         cap.exchange == AllTrailsExchange::DirectWriteApi
             && cap.status == BridgeStatus::Undocumented
     }));

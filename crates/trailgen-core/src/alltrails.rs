@@ -69,6 +69,22 @@ impl AllTrailsBridge for ManualAllTrailsBridge {
                         .to_owned(),
             },
             AllTrailsCapability {
+                exchange: AllTrailsExchange::ManualUploadActivity,
+                status: BridgeStatus::Manual,
+                formats: vec![
+                    "gpx".to_owned(),
+                    "kml".to_owned(),
+                    "kmz".to_owned(),
+                    "csv".to_owned(),
+                ],
+                workflow:
+                    "User uploads a generated route to the AllTrails activities list on the website."
+                        .to_owned(),
+                source_url:
+                    "https://support.alltrails.com/hc/en-us/articles/37228498475028-Uploading-files-to-AllTrails"
+                        .to_owned(),
+            },
+            AllTrailsCapability {
                 exchange: AllTrailsExchange::DirectWriteApi,
                 status: BridgeStatus::Undocumented,
                 formats: Vec::new(),
