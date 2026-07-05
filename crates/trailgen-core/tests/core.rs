@@ -658,6 +658,45 @@ fn shape_constraints_reject_and_allow_out_and_back_routes() {
 }
 
 #[test]
+fn repeated_edge_fraction_is_distance_weighted() {
+    let graph = GraphBuilder::default()
+        .build(&[SegmentDraft {
+            geometry: LineString::new(vec![
+                Coord::new(0.0, 0.0),
+                Coord::new(0.02, 0.0),
+                Coord::new(0.021, 0.0),
+            ])
+            .unwrap(),
+            terrain: Terrain::Trail,
+            surface: None,
+            access: Access::Open,
+            road_exposure: 0.0,
+            confidence: 1.0,
+            provenance: Provenance::fixture("skewed-path"),
+        }])
+        .unwrap();
+    let long = graph.edges[0].id;
+    let short = graph.edges[1].id;
+    let route = Route::from_edges(
+        "short-repeat",
+        &graph,
+        graph.nearest_vertex(Coord::new(0.0, 0.0)).unwrap(),
+        vec![long, short, short],
+        &LoopConstraints {
+            min_distance_m: 0.0,
+            max_distance_m: 10_000.0,
+            max_difficulty: 10_000.0,
+            allowed_shapes: vec![RouteShape::Open],
+            ..LoopConstraints::default()
+        },
+    );
+
+    let expected = graph.edges[short.0].attr.length_m / route.metrics.distance_m;
+    assert!((route.metrics.repeated_edge_fraction - expected).abs() <= 1.0e-12);
+    assert!(route.metrics.repeated_edge_fraction < 0.1);
+}
+
+#[test]
 fn loop_hunter_emits_out_and_back_when_shape_allows_repeated_edges() {
     let graph = GraphBuilder::default()
         .build(&[simple_path_draft()])

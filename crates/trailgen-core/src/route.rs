@@ -226,10 +226,8 @@ impl RouteMetrics {
         let mut road_m = 0.0;
         let mut low_conf_m = 0.0;
         let mut restricted_access_m = 0.0;
-        let mut repeated_edges = 0.0;
-        let mut total_edges = 0.0;
+        let mut repeated_edge_m = 0.0;
         for edge_id in edges {
-            total_edges += 1.0;
             let edge = &graph.edges[edge_id.0];
             let from = at;
             at = edge.other(from).expect("route edge must touch cursor");
@@ -261,7 +259,7 @@ impl RouteMetrics {
             *m.terrain_m.entry(a.terrain).or_default() += a.length_m;
             let n = seen.entry(*edge_id).or_default();
             if *n > 0 {
-                repeated_edges += 1.0;
+                repeated_edge_m += a.length_m;
             }
             *n += 1;
         }
@@ -269,11 +267,9 @@ impl RouteMetrics {
             m.road_fraction = road_m / m.distance_m;
             m.low_confidence_fraction = low_conf_m / m.distance_m;
             m.restricted_access_fraction = restricted_access_m / m.distance_m;
+            m.repeated_edge_fraction = repeated_edge_m / m.distance_m;
         }
-        if total_edges > 0.0 {
-            m.repeated_edge_fraction = repeated_edges / total_edges;
-        }
-        m.shape = classify_shape(start, at, repeated_edges, &vertex_visits);
+        m.shape = classify_shape(start, at, repeated_edge_m, &vertex_visits);
         m
     }
 
@@ -314,13 +310,13 @@ const fn road_pavement_exposure(terrain: Terrain, road_exposure: f64) -> f64 {
 fn classify_shape(
     start: VertexId,
     end: VertexId,
-    repeated_edges: f64,
+    repeated_edge_m: f64,
     vertex_visits: &BTreeMap<VertexId, usize>,
 ) -> RouteShape {
     if start != end {
         return RouteShape::Open;
     }
-    if repeated_edges > 0.0 {
+    if repeated_edge_m > 0.0 {
         return RouteShape::OutAndBack;
     }
     if vertex_visits
