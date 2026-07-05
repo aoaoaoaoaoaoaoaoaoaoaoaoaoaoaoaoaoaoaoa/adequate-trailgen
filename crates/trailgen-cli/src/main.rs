@@ -13,10 +13,11 @@ use trailgen_core::source::{
     classify_path, discovery_recommendations, source_coverage,
 };
 use trailgen_core::{
-    ArcAsciiGrid, Coord, CrossingKind, DifficultyWeights, EdgeId, EnrichmentConfig, GraphBuilder,
-    LineString, LoopConstraints, LoopHunter, Provenance, Route, RouteMetrics, RouteShape,
-    SearchParams, SeedRoute, Terrain, TrailGraph, VertexId, apply_access_overlays,
-    apply_context_overlays, apply_terrain_overlays, enrich_graph, rank_routes, slug,
+    ArcAsciiGrid, Coord, CrossingKind, DifficultyBreakdown, DifficultyWeights, EdgeId,
+    EnrichmentConfig, GraphBuilder, LineString, LoopConstraints, LoopHunter, Provenance, Route,
+    RouteMetrics, RouteShape, SearchParams, SeedRoute, Terrain, TrailGraph, VertexId,
+    apply_access_overlays, apply_context_overlays, apply_terrain_overlays, enrich_graph,
+    rank_routes, slug,
 };
 
 #[derive(Parser)]
@@ -129,6 +130,20 @@ enum Cmd {
         #[arg(long)]
         route: PathBuf,
     },
+    Rerate {
+        project: PathBuf,
+    },
+    Calibrate {
+        project: PathBuf,
+        #[arg(long)]
+        route: PathBuf,
+        #[arg(long)]
+        target_difficulty: f64,
+        #[arg(long, value_enum, default_value = "all")]
+        family: CalibrationFamily,
+        #[arg(long)]
+        write: bool,
+    },
     ImportSeed {
         project: PathBuf,
         #[arg(long)]
@@ -198,6 +213,20 @@ enum ExportFormat {
     Geojson,
     Kml,
     Kmz,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum CalibrationFamily {
+    All,
+    Distance,
+    Elevation,
+    Ascent,
+    Descent,
+    Grade,
+    Terrain,
+    Road,
+    Confidence,
+    Access,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -295,6 +324,14 @@ fn main() -> Result<()> {
             output,
         } => report_generated(&project, route.as_deref(), output.as_deref()),
         Cmd::Rate { project, route } => rate(&project, &route),
+        Cmd::Rerate { project } => rerate(&project),
+        Cmd::Calibrate {
+            project,
+            route,
+            target_difficulty,
+            family,
+            write,
+        } => calibrate(&project, &route, target_difficulty, family, write),
         Cmd::ImportSeed {
             project,
             route,
@@ -511,6 +548,22 @@ struct RouteManifestEntry {
     rank: u32,
 }
 
+#[derive(Clone, Debug)]
+struct Calibration {
+    family: CalibrationFamily,
+    before: f64,
+    target: f64,
+    selected: f64,
+    fixed: f64,
+    multiplier: f64,
+    weights: DifficultyWeights,
+}
+
+#[derive(Serialize)]
+struct DifficultySnippet {
+    difficulty: DifficultyWeights,
+}
+
 fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
     let mut config = load_config(project)?;
     let graph = load_graph(project)?;
@@ -629,7 +682,59 @@ fn apply_generate_options(constraints: &mut LoopConstraints, options: &GenerateO
 fn rate(project: &Path, route: &Path) -> Result<()> {
     let config = load_config(project)?;
     let graph = load_graph(project)?;
-    let line = load_route_line(route)?;
+    let route = snapped_route(&graph, route, &config.constraints, "rated-route")?;
+    println!(
+        "{}",
+        render_project_report(project, &graph, &[route], &config.constraints)?
+    );
+    Ok(())
+}
+
+fn rerate(project: &Path) -> Result<()> {
+    let config = load_config(project)?;
+    let count = rerate_cached_graph(project, config.difficulty)?;
+    println!("rerated {count} cached edge(s)");
+    Ok(())
+}
+
+fn calibrate(
+    project: &Path,
+    route_path: &Path,
+    target_difficulty: f64,
+    family: CalibrationFamily,
+    write: bool,
+) -> Result<()> {
+    let mut config = load_config(project)?;
+    let graph = load_graph(project)?;
+    let route = snapped_route(&graph, route_path, &config.constraints, "calibration-route")?;
+    let calibration = calibrate_weights(
+        config.difficulty,
+        route.metrics.difficulty_breakdown,
+        target_difficulty,
+        family,
+    )?;
+    println!("{}", render_calibration(&calibration));
+    if write {
+        config.difficulty = calibration.weights;
+        save_config(project, &config)?;
+        let count = rerate_cached_graph(project, config.difficulty)?;
+        println!(
+            "wrote {}; rerated {count} cached edge(s)",
+            project.join("trailgen.toml").display()
+        );
+    } else {
+        println!("dry run; pass --write to update trailgen.toml and rerate cache/graph.json");
+    }
+    Ok(())
+}
+
+fn snapped_route(
+    graph: &TrailGraph,
+    route_path: &Path,
+    constraints: &LoopConstraints,
+    name: &str,
+) -> Result<Route> {
+    let line = load_route_line(route_path)?;
     let edges = graph.snap_line_edges(&line);
     if edges.is_empty() {
         bail!("route did not snap to any graph edges");
@@ -637,11 +742,181 @@ fn rate(project: &Path, route: &Path) -> Result<()> {
     let start = graph
         .nearest_vertex(line.start())
         .with_context(|| "graph has no vertices")?;
-    let route = Route::from_edges("rated-route", &graph, start, edges, &config.constraints);
-    println!(
-        "{}",
-        render_project_report(project, &graph, &[route], &config.constraints)?
+    Ok(Route::from_edges(name, graph, start, edges, constraints))
+}
+
+fn calibrate_weights(
+    weights: DifficultyWeights,
+    breakdown: DifficultyBreakdown,
+    target: f64,
+    family: CalibrationFamily,
+) -> Result<Calibration> {
+    if !target.is_finite() || target <= 0.0 {
+        bail!("target difficulty must be a positive finite number");
+    }
+    let before = breakdown.total();
+    let selected = family.contribution(breakdown);
+    if selected.abs() <= f64::EPSILON {
+        bail!("calibration family {family:?} has zero contribution on this route");
+    }
+    let fixed = before - selected;
+    let required = target - fixed;
+    let multiplier = required / selected;
+    if !multiplier.is_finite() || multiplier <= 0.0 {
+        bail!(
+            "target {target:.2} is unreachable by positively scaling {family:?}; fixed contribution is {fixed:.2}, selected contribution is {selected:.2}"
+        );
+    }
+    let mut calibrated = weights;
+    family.scale_weights(&mut calibrated, multiplier)?;
+    Ok(Calibration {
+        family,
+        before,
+        target,
+        selected,
+        fixed,
+        multiplier,
+        weights: calibrated,
+    })
+}
+
+fn render_calibration(calibration: &Calibration) -> String {
+    let mut text = String::new();
+    let after = calibration
+        .selected
+        .mul_add(calibration.multiplier, calibration.fixed);
+    let _ = writeln!(text, "family: {:?}", calibration.family);
+    let _ = writeln!(text, "before difficulty: {:.2}", calibration.before);
+    let _ = writeln!(text, "target difficulty: {:.2}", calibration.target);
+    let _ = writeln!(
+        text,
+        "selected/fixed contribution: {:.2} / {:.2}",
+        calibration.selected, calibration.fixed
     );
+    let _ = writeln!(text, "weight multiplier: {:.6}", calibration.multiplier);
+    let _ = writeln!(text, "projected difficulty: {after:.2}");
+    let _ = writeln!(text, "\n{}", difficulty_toml(calibration.weights));
+    text
+}
+
+fn difficulty_toml(difficulty: DifficultyWeights) -> String {
+    toml::to_string_pretty(&DifficultySnippet { difficulty })
+        .expect("serializing difficulty snippet must not fail")
+}
+
+impl CalibrationFamily {
+    fn contribution(self, breakdown: DifficultyBreakdown) -> f64 {
+        match self {
+            Self::All => breakdown.total(),
+            Self::Distance => breakdown.distance,
+            Self::Elevation => breakdown.ascent + breakdown.descent,
+            Self::Ascent => breakdown.ascent,
+            Self::Descent => breakdown.descent,
+            Self::Grade => breakdown.grade,
+            Self::Terrain => breakdown.terrain,
+            Self::Road => breakdown.road,
+            Self::Confidence => breakdown.confidence,
+            Self::Access => breakdown.access,
+        }
+    }
+
+    fn scale_weights(self, weights: &mut DifficultyWeights, multiplier: f64) -> Result<()> {
+        match self {
+            Self::All => {
+                scale_global_weights(weights, multiplier);
+            }
+            Self::Distance => weights.distance_per_km *= multiplier,
+            Self::Elevation => {
+                weights.ascent_per_m *= multiplier;
+                weights.descent_per_m *= multiplier;
+            }
+            Self::Ascent => weights.ascent_per_m *= multiplier,
+            Self::Descent => weights.descent_per_m *= multiplier,
+            Self::Grade => weights.grade_per_abs_fraction *= multiplier,
+            Self::Terrain => scale_terrain_offsets(weights, multiplier),
+            Self::Road => weights.road_penalty *= multiplier,
+            Self::Confidence => weights.low_confidence_penalty *= multiplier,
+            Self::Access => weights.closed_access_penalty *= multiplier,
+        }
+        ensure_valid_difficulty_weights(*weights)
+    }
+}
+
+fn scale_global_weights(weights: &mut DifficultyWeights, multiplier: f64) {
+    weights.distance_per_km *= multiplier;
+    weights.ascent_per_m *= multiplier;
+    weights.descent_per_m *= multiplier;
+    weights.grade_per_abs_fraction *= multiplier;
+    weights.low_confidence_penalty *= multiplier;
+    weights.closed_access_penalty *= multiplier;
+}
+
+fn scale_terrain_offsets(weights: &mut DifficultyWeights, multiplier: f64) {
+    macro_rules! scale {
+        ($field:ident) => {
+            weights.terrain_multipliers.$field =
+                (weights.terrain_multipliers.$field - 1.0).mul_add(multiplier, 1.0);
+        };
+    }
+    scale!(unknown);
+    scale!(trail);
+    scale!(forest);
+    scale!(alpine);
+    scale!(talus);
+    scale!(scramble);
+    scale!(pavement);
+    scale!(road);
+    scale!(water);
+}
+
+fn ensure_valid_difficulty_weights(weights: DifficultyWeights) -> Result<()> {
+    let scalar_weights = [
+        ("distance_per_km", weights.distance_per_km),
+        ("ascent_per_m", weights.ascent_per_m),
+        ("descent_per_m", weights.descent_per_m),
+        ("grade_per_abs_fraction", weights.grade_per_abs_fraction),
+        ("road_penalty", weights.road_penalty),
+        ("low_confidence_penalty", weights.low_confidence_penalty),
+        ("closed_access_penalty", weights.closed_access_penalty),
+        (
+            "terrain_multipliers.unknown",
+            weights.terrain_multipliers.unknown,
+        ),
+        (
+            "terrain_multipliers.trail",
+            weights.terrain_multipliers.trail,
+        ),
+        (
+            "terrain_multipliers.forest",
+            weights.terrain_multipliers.forest,
+        ),
+        (
+            "terrain_multipliers.alpine",
+            weights.terrain_multipliers.alpine,
+        ),
+        (
+            "terrain_multipliers.talus",
+            weights.terrain_multipliers.talus,
+        ),
+        (
+            "terrain_multipliers.scramble",
+            weights.terrain_multipliers.scramble,
+        ),
+        (
+            "terrain_multipliers.pavement",
+            weights.terrain_multipliers.pavement,
+        ),
+        ("terrain_multipliers.road", weights.terrain_multipliers.road),
+        (
+            "terrain_multipliers.water",
+            weights.terrain_multipliers.water,
+        ),
+    ];
+    for (name, value) in scalar_weights {
+        if !value.is_finite() || value <= 0.0 {
+            bail!("calibration produced invalid {name}={value}");
+        }
+    }
     Ok(())
 }
 
@@ -1034,12 +1309,38 @@ fn load_config(project: &Path) -> Result<ProjectConfig> {
     Ok(toml::from_str(&raw)?)
 }
 
+fn save_config(project: &Path, config: &ProjectConfig) -> Result<()> {
+    fs::write(
+        project.join("trailgen.toml"),
+        toml::to_string_pretty(config)?,
+    )
+    .with_context(|| format!("write {}", project.join("trailgen.toml").display()))
+}
+
 fn load_graph(project: &Path) -> Result<TrailGraph> {
     let raw = fs::read_to_string(project.join("cache/graph.json"))
         .with_context(|| "read cache/graph.json; run `trailgen build` first")?;
     let mut graph: TrailGraph = serde_json::from_str(&raw)?;
     graph.rebuild_adjacency();
     Ok(graph)
+}
+
+fn save_graph(project: &Path, graph: &TrailGraph) -> Result<()> {
+    write_json(project.join("cache/graph.json"), graph)?;
+    write_json(
+        project.join("cache/graph.geojson"),
+        &geojson::graph_to_geojson(graph),
+    )
+}
+
+fn rerate_cached_graph(project: &Path, weights: DifficultyWeights) -> Result<usize> {
+    let mut graph = load_graph(project)?;
+    for edge in &mut graph.edges {
+        weights.apply_edge(edge);
+    }
+    let count = graph.edges.len();
+    save_graph(project, &graph)?;
+    Ok(count)
 }
 
 fn load_route_line(path: &Path) -> Result<LineString> {
@@ -1843,6 +2144,83 @@ mod tests {
         assert!(report.contains("sha256 "));
 
         Ok(())
+    }
+
+    #[test]
+    fn calibration_write_updates_config_and_rerates_cached_graph() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../trailgen-core/tests/fixtures/mini_network.geojson");
+
+        init(project, "Calibration Test".to_owned(), None)?;
+        build(project, &fixture)?;
+        generate(
+            project,
+            &GenerateOptions {
+                start: "-105.0000,40.0000".to_owned(),
+                min_km: 3.0,
+                max_km: 8.0,
+                count: 1,
+                seed: 0,
+                min_difficulty: None,
+                max_difficulty: Some(10_000.0),
+                min_ascent_m: None,
+                max_ascent_m: None,
+                min_descent_m: None,
+                max_descent_m: None,
+                max_road_fraction: None,
+                max_low_confidence_fraction: None,
+                max_restricted_access_fraction: None,
+                shape: Vec::new(),
+                max_repeated_edge_fraction: None,
+                forbidden_terrain: Vec::new(),
+                min_terrain: Vec::new(),
+                max_terrain: Vec::new(),
+            },
+        )?;
+
+        let route_path = project.join("routes/candidate-1.gpx");
+        let before_config = load_config(project)?;
+        let before_weight = before_config.difficulty.distance_per_km;
+        let before_graph = load_graph(project)?;
+        let before_route = snapped_route(
+            &before_graph,
+            &route_path,
+            &before_config.constraints,
+            "rated",
+        )?;
+        let target = before_route.metrics.difficulty * 1.25;
+        calibrate(project, &route_path, target, CalibrationFamily::All, true)?;
+        let config = load_config(project)?;
+        assert!(config.difficulty.distance_per_km > before_weight);
+
+        let graph = load_graph(project)?;
+        let rated = snapped_route(&graph, &route_path, &config.constraints, "rated")?;
+        assert!(
+            (rated.metrics.difficulty - target).abs() <= 1.0e-6,
+            "rated {} target {}",
+            rated.metrics.difficulty,
+            target
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn calibration_rejects_zero_contribution_family() {
+        let error = calibrate_weights(
+            DifficultyWeights::default(),
+            DifficultyBreakdown {
+                distance: 10.0,
+                ..DifficultyBreakdown::default()
+            },
+            20.0,
+            CalibrationFamily::Grade,
+        )
+        .expect_err("zero selected contribution should fail");
+
+        assert!(format!("{error:#}").contains("zero contribution"));
     }
 
     #[test]

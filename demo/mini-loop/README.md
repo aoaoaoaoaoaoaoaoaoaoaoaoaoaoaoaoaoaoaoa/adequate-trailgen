@@ -15,6 +15,8 @@ cargo run -p trailgen -- generate demo/mini-loop --start=-105.0000,40.0000 --min
 cargo run -p trailgen -- export demo/mini-loop --route candidate-1 --format geojson --output demo/mini-loop/routes/candidate-1.selected.geojson
 cargo run -p trailgen -- report demo/mini-loop --route candidate-1 --output demo/mini-loop/reports/candidate-1.md
 cargo run -p trailgen -- rate demo/mini-loop --route demo/mini-loop/routes/candidate-1.kmz
+cargo run -p trailgen -- calibrate demo/mini-loop --route demo/mini-loop/routes/candidate-1.gpx --target-difficulty 1020 --family elevation
+cargo run -p trailgen -- rerate demo/mini-loop
 ```
 
 Optional shape smoke:
