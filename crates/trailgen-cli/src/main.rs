@@ -1976,8 +1976,10 @@ function routeDiagnostics(p) {{
   const dubious = edges.slice().sort((a, b) => Number(a.confidence || 0) - Number(b.confidence || 0)).slice(0, 5);
   const brutal = edges.slice().sort((a, b) => Number(b.difficulty || 0) - Number(a.difficulty || 0)).slice(0, 5);
   const routeDubious = (p.dubious_edges || []).map(e => `edge ${{e.edge_id}} ${{pct(e.confidence)}} ${{e.terrain || 'unknown'}}`);
+  const routeLowConfidence = (p.low_confidence_edges || []).map(e => `edge ${{e.edge_id}} ${{pct(e.confidence)}} ${{e.terrain || 'unknown'}}`);
   const routeHotspots = (p.difficulty_hotspots || []).map(e => `edge ${{e.edge_id}} ${{e.factor}} ${{scalar(e.value)}} ${{e.terrain || 'unknown'}}`);
   return {{
+    lowConfidence: routeLowConfidence.join(', ') || 'none',
     dubious: routeDubious.join(', ') || dubious.map(e => `edge ${{e.edge_id}} ${{pct(e.confidence)}} ${{e.terrain || 'unknown'}}`).join(', ') || 'none',
     brutal: routeHotspots.join(', ') || brutal.map(e => `edge ${{e.edge_id}} ${{scalar(e.difficulty)}} ${{e.terrain || 'unknown'}}`).join(', ') || 'none'
   }};
@@ -2001,6 +2003,7 @@ function routeSummary(p) {{
     ${{metricRow('terrain mix', mixText(p.terrain_fraction))}}
     ${{metricRow('access mix', mixText(p.access_fraction))}}
     ${{metricRow('violations', (p.violations || []).join(' | ') || 'none')}}
+    ${{metricRow('low-confidence segments', d.lowConfidence)}}
     ${{metricRow('dubious segments', d.dubious)}}
     ${{metricRow('largest difficulty contributors', d.brutal)}}
   </dl>${{rawBlock('route', p)}}`;
@@ -4518,6 +4521,7 @@ mod tests {
         assert!(generated_map.contains("const graph = {"));
         assert!(generated_map.contains("edge width"));
         assert!(generated_map.contains("difficulty factors"));
+        assert!(generated_map.contains("low-confidence segments"));
         assert!(generated_map.contains("dubious segments"));
         assert!(generated_map.contains("restricted access"));
         assert!(generated_map.contains("terrain mix"));
