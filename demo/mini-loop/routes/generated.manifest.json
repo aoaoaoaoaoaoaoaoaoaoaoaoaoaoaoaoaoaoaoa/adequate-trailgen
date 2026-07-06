@@ -231,7 +231,7 @@
           "sampled elevation profile",
           "edge ascent/descent"
         ],
-        "note": "Affine WGS84 or EPSG:3857 single-band GeoTIFF DEM sampling."
+        "note": "Affine WGS84/NAD83, EPSG:3857, or WGS84/NAD83 UTM single-band GeoTIFF DEM sampling."
       },
       {
         "id": "vrt-elevation",
@@ -244,7 +244,7 @@
           "sampled elevation profile",
           "edge ascent/descent"
         ],
-        "note": "GDAL VRT SimpleSource DEM wrapper with affine WGS84 or EPSG:3857 GeoTransform sampling."
+        "note": "GDAL VRT SimpleSource DEM wrapper with affine WGS84/NAD83, EPSG:3857, or WGS84/NAD83 UTM GeoTransform sampling."
       },
       {
         "id": "geojson-terrain-overlay",
@@ -594,7 +594,7 @@
               "Shapefile",
               "Feature Service"
             ],
-            "note": "Use current official closure/restriction features; preserve dates and alert provenance in cached overlays."
+            "note": "Use current official closure/restriction features; preserve dates, weekdays, hours, direction rules, and alert provenance in cached overlays."
           },
           {
             "label": "Local park or forest alerts",
@@ -612,7 +612,7 @@
           "park access restriction GIS",
           "seasonal closure boundary GeoJSON"
         ],
-        "acceptance": "Closure, private, restricted, and open statuses can be attached to graph edges with dated provenance.",
+        "acceptance": "Closure, private, restricted, open, and directional statuses can be attached to graph edges with temporal provenance.",
         "rationale": "A beautiful generated loop is trash if it crosses a closed trail or forbidden parcel.",
         "area": {
           "west": -105.02,
@@ -1089,7 +1089,7 @@
         "distance_m": 4712.831226933267,
         "ascent_m": 136.9999999999991,
         "descent_m": 136.9999999999991,
-        "difficulty": 1014.0688608129841,
+        "difficulty": 1014.068860812984,
         "difficulty_breakdown": {
           "distance": 4.712831226933266,
           "ascent": 1.643999999999989,
@@ -1137,7 +1137,7 @@
       "score": 5236.90607844989,
       "metrics": {
         "shape": "loop",
-        "distance_m": 4037.3095376140213,
+        "distance_m": 4037.309537614022,
         "ascent_m": 96.19999999999914,
         "descent_m": 96.19999999999914,
         "difficulty": 1010.865710812353,
@@ -1146,9 +1146,9 @@
           "ascent": 1.1543999999999897,
           "descent": 0.2885999999999974,
           "grade": 0.332473760877784,
-          "terrain": 1.1698663629272041,
+          "terrain": 1.169866362927204,
           "road": 0.16217811448869457,
-          "technical": 2.1761471789958278,
+          "technical": 2.176147178995828,
           "navigation": 0.7197358574494941,
           "confidence": 0.8250000000000001,
           "access": 1000.0
@@ -1196,11 +1196,11 @@
         "difficulty_breakdown": {
           "distance": 4.037129879381636,
           "ascent": 2.222399999999957,
-          "descent": 0.12239999999999987,
+          "descent": 0.12239999999999988,
           "grade": 0.40215347197082063,
-          "terrain": 1.1698663629272041,
+          "terrain": 1.169866362927204,
           "road": 0.16216733499475147,
-          "technical": 2.1761471789958278,
+          "technical": 2.176147178995828,
           "navigation": 0.7197229220567624,
           "confidence": 0.8250000000000001,
           "access": 2000.0
@@ -1261,15 +1261,15 @@
     {
       "path": "routes/generated.geojson",
       "fingerprint": {
-        "bytes": 126971,
-        "sha256": "9972004c2146fae0ea929598cff5a059836dad5c84d226f7f0fdebc9556180fe"
+        "bytes": 148828,
+        "sha256": "aa4c3f1319cb091331dc5080fa484965b3c60dec8dd03f9707b19b48fabae286"
       }
     },
     {
       "path": "routes/generated.graph.json",
       "fingerprint": {
         "bytes": 72315,
-        "sha256": "197c22ed474cd889218c8b37f92301f97cc62709e8527e6a04fce1647303a80d"
+        "sha256": "3d17b3572fe6dc1044182dad58c9638d94a30ca9bba2a1135a9d30a56398b427"
       }
     },
     {
@@ -1282,141 +1282,141 @@
     {
       "path": "reports/generated.md",
       "fingerprint": {
-        "bytes": 15127,
-        "sha256": "f9109af88eac24c61900d88b3bd2457655a245de2a7509affb6ddc2cc8fb3b51"
+        "bytes": 16455,
+        "sha256": "17c2fdc311dd1ebc7d7bc72450e95a2807b305d196818360a6aa9090aade60c8"
       }
     },
     {
       "path": "reports/map.html",
       "fingerprint": {
-        "bytes": 106679,
-        "sha256": "0104fd22d27a9dc64ffc3627e9ac1f13b84ca6d915a499b54cf9d44d6a5d4b6b"
+        "bytes": 117699,
+        "sha256": "f7b5fccbf4e11d73ce35bad795768c5d70a379f3b22f15cebc494e7092934e5d"
       }
     },
     {
       "path": "routes/candidate-1.geojson",
       "fingerprint": {
-        "bytes": 45123,
-        "sha256": "c098de32dd5c7eec223fb3277db333ba618d7d08562dbea7593c0e2f9f6aac7a"
+        "bytes": 53443,
+        "sha256": "ea6c285a4a35fa2d5d87e4389763c892fb52425c5ea988f71cab084f749d26d4"
       }
     },
     {
       "path": "routes/candidate-1.gpx",
       "fingerprint": {
-        "bytes": 24233,
-        "sha256": "aa020e4b300d952cc8e647bb3244be92389aa612f9454f1ba1c9a19bc40a1199"
+        "bytes": 24583,
+        "sha256": "0e9f8cf72b07f49b056a3f9af656e646a1bbd30f3117b305a3ae56b2d1421651"
       }
     },
     {
       "path": "routes/candidate-1.csv",
       "fingerprint": {
-        "bytes": 10195,
-        "sha256": "3126939cc50c09ef42731e0cc19032392a5076fa946c022dc29ce19893c5f5df"
+        "bytes": 10558,
+        "sha256": "c7a94ff87a05279df79140087e3b977c6cead0a546180ee99ec369a2e9bc20fc"
       }
     },
     {
       "path": "routes/candidate-1.kml",
       "fingerprint": {
-        "bytes": 13853,
-        "sha256": "53bcae5ca05408f05b38af031f35dad5a02798641f6fccd9e3d5cbd884f8726a"
+        "bytes": 14195,
+        "sha256": "6e02d1b77fe51d49aa0849604cc0b85b2a12725f77c95bf1727a02a963a8754a"
       }
     },
     {
       "path": "routes/candidate-1.kmz",
       "fingerprint": {
-        "bytes": 2040,
-        "sha256": "c4cc6ef457687665c65f34ceb78575ee99b35f24ac87584ada694cee6f34a121"
+        "bytes": 2268,
+        "sha256": "e34c10ca358a58d00598b52154ee9e5fd364cace7789430dac6f4a0623e362c3"
       }
     },
     {
       "path": "reports/candidate-1.md",
       "fingerprint": {
-        "bytes": 7803,
-        "sha256": "d890441870a943a464c42ac5861f5e0ae9ff44b03661e32a0724b6b903c29a6e"
+        "bytes": 8343,
+        "sha256": "4603eb50988a39aef7c0efe558e786e8eaeca467f821eb48e09f7e9e6f76b2ac"
       }
     },
     {
       "path": "routes/candidate-2.geojson",
       "fingerprint": {
-        "bytes": 40358,
-        "sha256": "f9bb0469b31997f7d02c81012d4b60caca8ddf5cc03106b2e2b1b1c5d4b54763"
+        "bytes": 46497,
+        "sha256": "f5b2c3548021ea6ca8667a1604eb36f225ff99847b47d6ed7b3a5bbb2cf086a5"
       }
     },
     {
       "path": "routes/candidate-2.gpx",
       "fingerprint": {
-        "bytes": 20255,
-        "sha256": "51bbec509d518bdf12f40234ff7fcc84bad8a8852ddca19829c8d1d4fbb08272"
+        "bytes": 20603,
+        "sha256": "966da2860ce75f28ece9a9d065c951b3d7470de2b0bdb33d3b6e71a1e773ecb2"
       }
     },
     {
       "path": "routes/candidate-2.csv",
       "fingerprint": {
-        "bytes": 8512,
-        "sha256": "0d805d581d835cc5e1cf4113adc6dca7b27fb50b602ae323fa6e766587549a5e"
+        "bytes": 8873,
+        "sha256": "30ad43222b5603ce26700e1a2b74a50ef46224c769efba575236fb4076c068eb"
       }
     },
     {
       "path": "routes/candidate-2.kml",
       "fingerprint": {
-        "bytes": 11609,
-        "sha256": "ba8846d49fc890cd0333564257ca9da85b0af38699a128d8fe9e400542693688"
+        "bytes": 11949,
+        "sha256": "4ab9e3838cb01b3cc916d916fae0ffdbf57eb4b54aaa216be62f52dcf46df7ee"
       }
     },
     {
       "path": "routes/candidate-2.kmz",
       "fingerprint": {
-        "bytes": 2212,
-        "sha256": "17c6047f650547ea35616aa88cdfdd0d487876d782e78a86cfe0d1b9c23a7186"
+        "bytes": 2434,
+        "sha256": "d6dd26729101aba27a330ede5445a1e105c97080fe1ce221ec614ee56a9a5438"
       }
     },
     {
       "path": "reports/candidate-2.md",
       "fingerprint": {
-        "bytes": 7446,
-        "sha256": "06fdb3f642a6bf28e57e4cded2872648cc87807e05aba0f696fb5fbcb0cd322e"
+        "bytes": 7871,
+        "sha256": "e761ee337f008ed08eeff4621be8221d7b6a46b2e7c7a438ec3e4913327d0b12"
       }
     },
     {
       "path": "routes/candidate-3.geojson",
       "fingerprint": {
-        "bytes": 41596,
-        "sha256": "1e3b9a39f07c9e1072125321c08d883f84d23e8009152b76bb3909117db6113a"
+        "bytes": 48994,
+        "sha256": "412f0ee0cbc04a325b2464a8d32a2a4ace9bf29efa783ecfdbaf2b7661ec0ade"
       }
     },
     {
       "path": "routes/candidate-3.gpx",
       "fingerprint": {
-        "bytes": 20177,
-        "sha256": "1d0ad387cb2aa166fdd22d3160e738a58c58b6abd7239185ee7a78692547f5cd"
+        "bytes": 20527,
+        "sha256": "576753a6923db9bc7f002883d257ae58ecf8a26a468c372623be0f34b3ccca02"
       }
     },
     {
       "path": "routes/candidate-3.csv",
       "fingerprint": {
-        "bytes": 8479,
-        "sha256": "ed326f5671e6241995d2c684bb954f0c1ff93108f3d1d8d391522c96bd1fb2f4"
+        "bytes": 8842,
+        "sha256": "1f633703ab0394b761c5a2c5a9f4e1ef50e994617312b0a4069fdfbbf553c268"
       }
     },
     {
       "path": "routes/candidate-3.kml",
       "fingerprint": {
-        "bytes": 11565,
-        "sha256": "ddf420c7d3ca3b4177dd6c74bb19588b46aa875738be13ce02610b4e5fd4da05"
+        "bytes": 11907,
+        "sha256": "328144f72ee567df57a2ade303673ca532af6792bd3760d2832a52523abe945b"
       }
     },
     {
       "path": "routes/candidate-3.kmz",
       "fingerprint": {
-        "bytes": 2206,
-        "sha256": "6533931fb732d2cd3c2992aabad16680ebad571fc742a58295d911d12666aec6"
+        "bytes": 2432,
+        "sha256": "322c690b89cf7e53eaf72f8d36d226194bb5e83a4768df5226218daddd326e03"
       }
     },
     {
       "path": "reports/candidate-3.md",
       "fingerprint": {
-        "bytes": 7471,
-        "sha256": "a374760d92af5ddb241a678cfb5709579078cadce0aa258412fba67ed963a121"
+        "bytes": 7834,
+        "sha256": "792a16cbba80fcc3b7ebe0dae9ba8fc947967425acb83e1f20c4ab2b4779eeb9"
       }
     }
   ]

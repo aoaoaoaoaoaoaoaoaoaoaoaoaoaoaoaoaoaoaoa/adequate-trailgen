@@ -1,3 +1,6 @@
+# name: candidate-3
+# description: score 9704.50; pareto rank 2; shape Loop; distance 4.04 km; ascent/descent 113/113 m; difficulty 2011.84; road 2.0%; low-confidence 0.0%; restricted-access 74.7%; repeated-edge 0.0%; constraints violated; violations difficulty 2011.84 above maximum 90.00 | restricted-access fraction 74.7% above maximum 0.0%
+# activity: hiking
 longitude,latitude,elevation_m
 -105.0000000,40.0000000,1640.000
 -105.0000000,40.0002248,1642.248

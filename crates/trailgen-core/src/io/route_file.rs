@@ -1,5 +1,7 @@
 use crate::geo::LineString;
+use crate::route::Route;
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RouteFileMetadata {
@@ -46,4 +48,31 @@ impl RouteFile {
 pub fn clean_text(raw: &str) -> Option<String> {
     let s = raw.trim();
     (!s.is_empty()).then(|| s.to_owned())
+}
+
+#[must_use]
+pub fn export_summary(route: &Route) -> String {
+    let verdict = if route.verdict.satisfied {
+        "satisfied"
+    } else {
+        "violated"
+    };
+    let mut s = format!(
+        "score {:.2}; pareto rank {}; shape {:?}; distance {:.2} km; ascent/descent {:.0}/{:.0} m; difficulty {:.2}; road {:.1}%; low-confidence {:.1}%; restricted-access {:.1}%; repeated-edge {:.1}%; constraints {verdict}",
+        route.computed_score(),
+        route.pareto_rank,
+        route.metrics.shape,
+        route.metrics.distance_m / 1_000.0,
+        route.metrics.ascent_m,
+        route.metrics.descent_m,
+        route.metrics.difficulty,
+        route.metrics.road_fraction * 100.0,
+        route.metrics.low_confidence_fraction * 100.0,
+        route.metrics.restricted_access_fraction * 100.0,
+        route.metrics.repeated_edge_fraction * 100.0,
+    );
+    if !route.verdict.violations.is_empty() {
+        let _ = write!(s, "; violations {}", route.verdict.violations.join(" | "));
+    }
+    s
 }

@@ -2580,12 +2580,11 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
     fs::create_dir_all(project.join("routes"))?;
     fs::create_dir_all(project.join("reports"))?;
     let previous_artifacts = previous_generated_artifacts(project)?;
+    let (graph, routes) = write_generated_snapshots(project, &graph, &routes)?;
     write_json(
         project.join("routes/generated.geojson"),
         &geojson::routes_to_geojson(&graph, &routes),
     )?;
-    write_json(project.join("routes/generated.graph.json"), &graph)?;
-    write_json(project.join("routes/generated.routes.json"), &routes)?;
     let mut manifest = generation_manifest(GenerationManifestInput {
         project,
         options,
@@ -2611,6 +2610,19 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
     remove_obsolete_generation_artifacts(project, previous_artifacts, &manifest.artifacts)?;
     println!("generated {} route(s)", routes.len());
     Ok(())
+}
+
+fn write_generated_snapshots(
+    project: &Path,
+    graph: &TrailGraph,
+    routes: &[Route],
+) -> Result<(TrailGraph, Vec<Route>)> {
+    write_json(project.join("routes/generated.graph.json"), graph)?;
+    write_json(project.join("routes/generated.routes.json"), routes)?;
+    Ok((
+        load_generated_graph(project)?,
+        load_generated_routes(project)?,
+    ))
 }
 
 fn formulate_milp(project: &Path, options: &MilpFormulationOptions) -> Result<()> {
@@ -2688,12 +2700,11 @@ fn import_milp_solution(project: &Path, options: &MilpIncumbentOptions) -> Resul
     fs::create_dir_all(project.join("routes"))?;
     fs::create_dir_all(project.join("reports"))?;
     let previous_artifacts = previous_generated_artifacts(project)?;
+    let (graph, routes) = write_generated_snapshots(project, &graph, &routes)?;
     write_json(
         project.join("routes/generated.geojson"),
         &geojson::routes_to_geojson(&graph, &routes),
     )?;
-    write_json(project.join("routes/generated.graph.json"), &graph)?;
-    write_json(project.join("routes/generated.routes.json"), &routes)?;
     let incumbent_options = milp_incumbent_generate_options(options, &config);
     let mut manifest = generation_manifest(GenerationManifestInput {
         project,
@@ -6116,7 +6127,7 @@ fn parse_terrain_fraction(raw: &str) -> Result<TerrainFraction, String> {
     }
 }
 
-fn write_json(path: impl AsRef<Path>, value: &impl Serialize) -> Result<()> {
+fn write_json<T: Serialize + ?Sized>(path: impl AsRef<Path>, value: &T) -> Result<()> {
     let path = path.as_ref();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -7383,7 +7394,9 @@ mod tests {
     ) -> Result<()> {
         assert!(fs::read_to_string(gpx)?.contains("<gpx"));
         let csv_text = fs::read_to_string(csv)?;
-        assert!(csv_text.starts_with("longitude,latitude,elevation_m\n"));
+        assert!(csv_text.starts_with("# name: candidate-1\n"));
+        assert!(csv_text.contains("# description: score "));
+        assert!(csv_text.contains("\nlongitude,latitude,elevation_m\n"));
         assert!(csv::route_line_from_str(&csv_text)?.length_m() > 3_000.0);
         let selected_geojson = serde_json::from_str::<Value>(&fs::read_to_string(geojson)?)?;
         assert_eq!(selected_geojson["type"], "FeatureCollection");

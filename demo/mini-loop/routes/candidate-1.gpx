@@ -2,6 +2,8 @@
 <gpx version="1.1" creator="adequate-trailgen" xmlns="http://www.topografix.com/GPX/1/1">
   <trk>
     <name>candidate-1</name>
+    <desc>score 3908.74; pareto rank 1; shape Loop; distance 4.71 km; ascent/descent 137/137 m; difficulty 1014.07; road 1.3%; low-confidence 0.0%; restricted-access 28.3%; repeated-edge 0.0%; constraints violated; violations difficulty 1014.07 above maximum 90.00 | restricted-access fraction 28.3% above maximum 0.0%</desc>
+    <type>hiking</type>
     <trkseg>
       <trkpt lat="40.00000000" lon="-105.00000000"><ele>1640.00</ele></trkpt>
       <trkpt lat="40.00000000" lon="-104.99973979"><ele>1639.48</ele></trkpt>

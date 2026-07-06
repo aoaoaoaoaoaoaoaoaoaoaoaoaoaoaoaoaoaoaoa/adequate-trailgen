@@ -2451,8 +2451,13 @@ fn gpx_round_trip_reads_exported_route() {
         .next()
         .unwrap();
     let xml = gpx::route_to_gpx(&graph, &route);
+    assert!(xml.contains("<desc>score "));
+    assert!(xml.contains("constraints "));
     let line = gpx::route_line_from_str(&xml).unwrap();
     assert!(line.length_m() > 3_000.0);
+    let file = gpx::route_file_from_str(&xml).unwrap();
+    assert_eq!(file.metadata.title.as_deref(), Some(route.name.as_str()));
+    assert_eq!(file.metadata.activity_type.as_deref(), Some("hiking"));
 }
 
 #[test]
@@ -2475,8 +2480,18 @@ fn kml_round_trip_reads_exported_route() {
         .next()
         .unwrap();
     let xml = kml::route_to_kml(&graph, &route);
+    assert!(xml.contains("<description>score "));
+    assert!(xml.contains("low-confidence"));
     let line = kml::route_line_from_str(&xml).unwrap();
     assert!(line.length_m() > 3_000.0);
+    let file = kml::route_file_from_str(&xml).unwrap();
+    assert_eq!(file.metadata.title.as_deref(), Some(route.name.as_str()));
+    assert!(
+        file.metadata
+            .description
+            .as_deref()
+            .is_some_and(|description| description.contains("constraints "))
+    );
 }
 
 #[test]
@@ -2597,9 +2612,14 @@ fn csv_round_trip_reads_exported_route() {
         .next()
         .unwrap();
     let text = csv::route_to_csv(&graph, &route);
-    assert!(text.starts_with("longitude,latitude,elevation_m\n"));
+    assert!(text.starts_with("# name: "));
+    assert!(text.contains("# description: score "));
+    assert!(text.contains("\nlongitude,latitude,elevation_m\n"));
     let line = csv::route_line_from_str(&text).unwrap();
     assert!(line.length_m() > 3_000.0);
+    let file = csv::route_file_from_str(&text).unwrap();
+    assert_eq!(file.metadata.title.as_deref(), Some(route.name.as_str()));
+    assert_eq!(file.metadata.activity_type.as_deref(), Some("hiking"));
 }
 
 #[test]

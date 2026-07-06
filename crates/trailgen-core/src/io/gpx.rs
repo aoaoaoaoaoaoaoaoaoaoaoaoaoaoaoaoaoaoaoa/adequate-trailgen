@@ -1,5 +1,5 @@
 use crate::geo::{Coord, LineString};
-use crate::io::route_file::{RouteFile, RouteFileMetadata, clean_text};
+use crate::io::route_file::{RouteFile, RouteFileMetadata, clean_text, export_summary};
 use crate::model::TrailGraph;
 use crate::route::Route;
 use crate::{Result, TrailgenError};
@@ -50,7 +50,9 @@ pub fn route_to_gpx(graph: &TrailGraph, route: &Route) -> String {
     );
     s.push_str("    <name>");
     escape_xml(&route.name, &mut s);
-    s.push_str("</name>\n    <trkseg>\n");
+    s.push_str("</name>\n    <desc>");
+    escape_xml(&export_summary(route), &mut s);
+    s.push_str("</desc>\n    <type>hiking</type>\n    <trkseg>\n");
     for c in line.points {
         let _ = write!(s, r#"      <trkpt lat="{:.8}" lon="{:.8}">"#, c.lat, c.lon);
         if let Some(ele) = c.ele {

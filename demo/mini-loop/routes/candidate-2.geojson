@@ -1293,8 +1293,8 @@
       },
       "properties": {
         "access_fraction": {
-          "closed": 0.4163178669784435,
-          "open": 0.5836821330215566
+          "closed": 0.4163178669784434,
+          "open": 0.5836821330215565
         },
         "access_m": {
           "closed": 1680.8040950311952,
@@ -1330,7 +1330,27 @@
                 }
               }
             ],
+            "difficulty": 1004.316918574848,
+            "difficulty_breakdown": {
+              "access": 1000.0,
+              "ascent": 0.8663999999999787,
+              "confidence": 0.2849999999999999,
+              "descent": 0.0,
+              "distance": 1.680804095031195,
+              "grade": 0.10309351370111916,
+              "navigation": 0.3899465500472372,
+              "road": 0.1008482457018717,
+              "technical": 0.5882814332609182,
+              "terrain": 0.302544737105615
+            },
             "edge_id": 4,
+            "elevation_provenance": [
+              {
+                "layer": "arc-ascii",
+                "source": "arc-ascii-grid",
+                "source_id": "mini_dem.asc"
+              }
+            ],
             "grade_abs_max": 0.05711527963281148,
             "grade_distribution": {
               "flat_m": 980.7908188546152,
@@ -1340,10 +1360,29 @@
             },
             "length_m": 1680.8040950311952,
             "provenance": "fixture:diagonal",
+            "road_exposure": 0.03,
             "seed_count": 0,
+            "seed_provenance": [],
+            "source_provenance": [
+              {
+                "source": "fixture",
+                "source_id": "diagonal"
+              }
+            ],
             "surface": null,
             "terrain": "alpine",
             "terrain_confidence": 0.9,
+            "terrain_evidence": [
+              {
+                "confidence": 0.9,
+                "provenance": {
+                  "source": "fixture",
+                  "source_id": "diagonal"
+                },
+                "rationale": "explicit source terrain tag",
+                "terrain": "alpine"
+              }
+            ],
             "travel": "both"
           }
         ],
@@ -1457,8 +1496,8 @@
           "grade": 0.332473760877784,
           "navigation": 0.7197358574494941,
           "road": 0.16217811448869457,
-          "technical": 2.1761471789958278,
-          "terrain": 1.1698663629272041
+          "technical": 2.176147178995828,
+          "terrain": 1.169866362927204
         },
         "difficulty_hotspots": [
           {
@@ -1487,9 +1526,9 @@
             "edge_id": 1,
             "factor": "technical",
             "length_m": 1334.340962802445,
-            "route_fraction": 0.0015707979099012738,
+            "route_fraction": 0.001570797909901274,
             "terrain": "talus",
-            "value": 1.5878657457349095
+            "value": 1.5878657457349097
           },
           {
             "access": "open",
@@ -1513,7 +1552,7 @@
           }
         ],
         "directed_travel_edges": [],
-        "distance_m": 4037.3095376140213,
+        "distance_m": 4037.309537614022,
         "dubious_edges": [
           {
             "access": "closed",
@@ -1544,7 +1583,27 @@
                 }
               }
             ],
+            "difficulty": 1004.316918574848,
+            "difficulty_breakdown": {
+              "access": 1000.0,
+              "ascent": 0.8663999999999787,
+              "confidence": 0.2849999999999999,
+              "descent": 0.0,
+              "distance": 1.680804095031195,
+              "grade": 0.10309351370111916,
+              "navigation": 0.3899465500472372,
+              "road": 0.1008482457018717,
+              "technical": 0.5882814332609182,
+              "terrain": 0.302544737105615
+            },
             "edge_id": 4,
+            "elevation_provenance": [
+              {
+                "layer": "arc-ascii",
+                "source": "arc-ascii-grid",
+                "source_id": "mini_dem.asc"
+              }
+            ],
             "grade_abs_max": 0.05711527963281148,
             "grade_distribution": {
               "flat_m": 980.7908188546152,
@@ -1554,10 +1613,29 @@
             },
             "length_m": 1680.8040950311952,
             "provenance": "fixture:diagonal",
+            "road_exposure": 0.03,
             "seed_count": 0,
+            "seed_provenance": [],
+            "source_provenance": [
+              {
+                "source": "fixture",
+                "source_id": "diagonal"
+              }
+            ],
             "surface": null,
             "terrain": "alpine",
             "terrain_confidence": 0.9,
+            "terrain_evidence": [
+              {
+                "confidence": 0.9,
+                "provenance": {
+                  "source": "fixture",
+                  "source_id": "diagonal"
+                },
+                "rationale": "explicit source terrain tag",
+                "terrain": "alpine"
+              }
+            ],
             "travel": "both"
           },
           {
@@ -1575,7 +1653,27 @@
                 }
               }
             ],
+            "difficulty": 4.777351037197604,
+            "difficulty_breakdown": {
+              "access": 0.0,
+              "ascent": 0.0,
+              "confidence": 0.2700000000000001,
+              "descent": 0.2885999999999974,
+              "distance": 1.334340962802445,
+              "grade": 0.17302923798059308,
+              "navigation": 0.25619346485806943,
+              "road": 0.0,
+              "technical": 1.5878657457349097,
+              "terrain": 0.8673216258215891
+            },
             "edge_id": 1,
+            "elevation_provenance": [
+              {
+                "layer": "arc-ascii",
+                "source": "arc-ascii-grid",
+                "source_id": "mini_dem.asc"
+              }
+            ],
             "grade_abs_max": 0.09007592763064971,
             "grade_distribution": {
               "flat_m": 0.0,
@@ -1585,10 +1683,50 @@
             },
             "length_m": 1334.340962802445,
             "provenance": "fixture:east",
+            "road_exposure": 0.0,
             "seed_count": 2,
+            "seed_provenance": [
+              {
+                "layer": "kmz",
+                "source": "seed-route",
+                "source_id": "Known Good KMZ Loop"
+              },
+              {
+                "layer": "gpx",
+                "source": "seed-route",
+                "source_id": "Known Good Loop"
+              }
+            ],
+            "source_provenance": [
+              {
+                "source": "fixture",
+                "source_id": "east"
+              }
+            ],
             "surface": null,
             "terrain": "talus",
             "terrain_confidence": 0.9,
+            "terrain_evidence": [
+              {
+                "confidence": 0.9,
+                "provenance": {
+                  "source": "fixture",
+                  "source_id": "east"
+                },
+                "rationale": "explicit source terrain tag",
+                "terrain": "forest"
+              },
+              {
+                "confidence": 0.87,
+                "provenance": {
+                  "layer": "synthetic-terrain",
+                  "source": "fixture-landcover",
+                  "source_id": "talus-basin"
+                },
+                "rationale": "terrain overlay",
+                "terrain": "talus"
+              }
+            ],
             "travel": "both"
           },
           {
@@ -1606,7 +1744,27 @@
                 }
               }
             ],
+            "difficulty": 1.771441200307474,
+            "difficulty_breakdown": {
+              "access": 0.0,
+              "ascent": 0.2880000000000109,
+              "confidence": 0.2700000000000001,
+              "descent": 0.0,
+              "distance": 1.022164479780381,
+              "grade": 0.05635100919607176,
+              "navigation": 0.07359584254418743,
+              "road": 0.06132986878682286,
+              "technical": 0.0,
+              "terrain": 0.0
+            },
             "edge_id": 2,
+            "elevation_provenance": [
+              {
+                "layer": "arc-ascii",
+                "source": "arc-ascii-grid",
+                "source_id": "mini_dem.asc"
+              }
+            ],
             "grade_abs_max": 0.02347958716502997,
             "grade_distribution": {
               "flat_m": 1022.1644797803812,
@@ -1616,10 +1774,40 @@
             },
             "length_m": 1022.1644797803812,
             "provenance": "fixture:south",
+            "road_exposure": 0.03,
             "seed_count": 2,
+            "seed_provenance": [
+              {
+                "layer": "kmz",
+                "source": "seed-route",
+                "source_id": "Known Good KMZ Loop"
+              },
+              {
+                "layer": "gpx",
+                "source": "seed-route",
+                "source_id": "Known Good Loop"
+              }
+            ],
+            "source_provenance": [
+              {
+                "source": "fixture",
+                "source_id": "south"
+              }
+            ],
             "surface": null,
             "terrain": "trail",
             "terrain_confidence": 0.9,
+            "terrain_evidence": [
+              {
+                "confidence": 0.9,
+                "provenance": {
+                  "source": "fixture",
+                  "source_id": "south"
+                },
+                "rationale": "explicit source terrain tag",
+                "terrain": "trail"
+              }
+            ],
             "travel": "both"
           }
         ],
@@ -1654,9 +1842,9 @@
           }
         ],
         "terrain_fraction": {
-          "alpine": 0.4163178669784435,
-          "talus": 0.33050251668119973,
-          "trail": 0.2531796163403568
+          "alpine": 0.4163178669784434,
+          "talus": 0.3305025166811997,
+          "trail": 0.25317961634035674
         },
         "terrain_m": {
           "alpine": 1680.8040950311952,

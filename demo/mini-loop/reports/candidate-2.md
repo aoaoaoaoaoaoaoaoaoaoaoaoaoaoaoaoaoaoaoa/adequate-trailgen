@@ -82,9 +82,9 @@ Low-confidence segments:
 - none
 
 Most dubious segments:
-- edge 4: 1681 m, Alpine, surface unknown, grade max 5.7%, grade bins flat 58% / rolling 42% / steep 0% / savage 0%, crossings 2, confidence 0.81, seed count 0, provenance fixture:diagonal
-- edge 2: 1022 m, Trail, surface unknown, grade max 2.3%, grade bins flat 100% / rolling 0% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:south
-- edge 1: 1334 m, Talus, surface unknown, grade max 9.0%, grade bins flat 0% / rolling 100% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:east
+- edge 4: 1681 m, Alpine, surface unknown, grade max 5.7%, grade bins flat 58% / rolling 42% / steep 0% / savage 0%, crossings 2, confidence 0.81, seed count 0, provenance fixture:diagonal, terrain evidence Alpine 90%: explicit source terrain tag (fixture:diagonal), elevation sources arc-ascii-grid:mini_dem.asc
+- edge 2: 1022 m, Trail, surface unknown, grade max 2.3%, grade bins flat 100% / rolling 0% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:south, terrain evidence Trail 90%: explicit source terrain tag (fixture:south), elevation sources arc-ascii-grid:mini_dem.asc
+- edge 1: 1334 m, Talus, surface unknown, grade max 9.0%, grade bins flat 0% / rolling 100% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:east, terrain evidence Forest 90%: explicit source terrain tag (fixture:east) | Talus 87%: terrain overlay (fixture-landcover:talus-basin), elevation sources arc-ascii-grid:mini_dem.asc
 
 Terrain/elevation evidence:
 - edge 2: current Trail; terrain evidence Trail 90%: explicit source terrain tag (fixture:south); surface unknown; elevation sources arc-ascii-grid:mini_dem.asc

@@ -1577,7 +1577,27 @@
                 }
               }
             ],
+            "difficulty": 1005.8749682014188,
+            "difficulty_breakdown": {
+              "access": 1000.0,
+              "ascent": 1.355999999999978,
+              "confidence": 0.2700000000000001,
+              "descent": 0.0,
+              "distance": 1.334340962802445,
+              "grade": 0.2032464022017347,
+              "navigation": 0.25619346485806943,
+              "road": 0.0,
+              "technical": 1.5878657457349097,
+              "terrain": 0.8673216258215891
+            },
             "edge_id": 3,
+            "elevation_provenance": [
+              {
+                "layer": "arc-ascii",
+                "source": "arc-ascii-grid",
+                "source_id": "mini_dem.asc"
+              }
+            ],
             "grade_abs_max": 0.09007592763064971,
             "grade_distribution": {
               "flat_m": 0.0,
@@ -1587,10 +1607,40 @@
             },
             "length_m": 1334.340962802445,
             "provenance": "fixture:west",
+            "road_exposure": 0.0,
             "seed_count": 2,
+            "seed_provenance": [
+              {
+                "layer": "kmz",
+                "source": "seed-route",
+                "source_id": "Known Good KMZ Loop"
+              },
+              {
+                "layer": "gpx",
+                "source": "seed-route",
+                "source_id": "Known Good Loop"
+              }
+            ],
+            "source_provenance": [
+              {
+                "source": "fixture",
+                "source_id": "west"
+              }
+            ],
             "surface": null,
             "terrain": "talus",
             "terrain_confidence": 0.9,
+            "terrain_evidence": [
+              {
+                "confidence": 0.9,
+                "provenance": {
+                  "source": "fixture",
+                  "source_id": "west"
+                },
+                "rationale": "explicit source terrain tag",
+                "terrain": "talus"
+              }
+            ],
             "travel": "both"
           }
         ],
@@ -1777,7 +1827,27 @@
                 }
               }
             ],
+            "difficulty": 4.777351037197604,
+            "difficulty_breakdown": {
+              "access": 0.0,
+              "ascent": 0.0,
+              "confidence": 0.2700000000000001,
+              "descent": 0.2885999999999974,
+              "distance": 1.334340962802445,
+              "grade": 0.17302923798059308,
+              "navigation": 0.25619346485806943,
+              "road": 0.0,
+              "technical": 1.5878657457349097,
+              "terrain": 0.8673216258215891
+            },
             "edge_id": 1,
+            "elevation_provenance": [
+              {
+                "layer": "arc-ascii",
+                "source": "arc-ascii-grid",
+                "source_id": "mini_dem.asc"
+              }
+            ],
             "grade_abs_max": 0.09007592763064971,
             "grade_distribution": {
               "flat_m": 0.0,
@@ -1787,10 +1857,50 @@
             },
             "length_m": 1334.340962802445,
             "provenance": "fixture:east",
+            "road_exposure": 0.0,
             "seed_count": 2,
+            "seed_provenance": [
+              {
+                "layer": "kmz",
+                "source": "seed-route",
+                "source_id": "Known Good KMZ Loop"
+              },
+              {
+                "layer": "gpx",
+                "source": "seed-route",
+                "source_id": "Known Good Loop"
+              }
+            ],
+            "source_provenance": [
+              {
+                "source": "fixture",
+                "source_id": "east"
+              }
+            ],
             "surface": null,
             "terrain": "talus",
             "terrain_confidence": 0.9,
+            "terrain_evidence": [
+              {
+                "confidence": 0.9,
+                "provenance": {
+                  "source": "fixture",
+                  "source_id": "east"
+                },
+                "rationale": "explicit source terrain tag",
+                "terrain": "forest"
+              },
+              {
+                "confidence": 0.87,
+                "provenance": {
+                  "layer": "synthetic-terrain",
+                  "source": "fixture-landcover",
+                  "source_id": "talus-basin"
+                },
+                "rationale": "terrain overlay",
+                "terrain": "talus"
+              }
+            ],
             "travel": "both"
           },
           {
@@ -1814,7 +1924,27 @@
                 }
               }
             ],
+            "difficulty": 1005.8749682014188,
+            "difficulty_breakdown": {
+              "access": 1000.0,
+              "ascent": 1.355999999999978,
+              "confidence": 0.2700000000000001,
+              "descent": 0.0,
+              "distance": 1.334340962802445,
+              "grade": 0.2032464022017347,
+              "navigation": 0.25619346485806943,
+              "road": 0.0,
+              "technical": 1.5878657457349097,
+              "terrain": 0.8673216258215891
+            },
             "edge_id": 3,
+            "elevation_provenance": [
+              {
+                "layer": "arc-ascii",
+                "source": "arc-ascii-grid",
+                "source_id": "mini_dem.asc"
+              }
+            ],
             "grade_abs_max": 0.09007592763064971,
             "grade_distribution": {
               "flat_m": 0.0,
@@ -1824,10 +1954,40 @@
             },
             "length_m": 1334.340962802445,
             "provenance": "fixture:west",
+            "road_exposure": 0.0,
             "seed_count": 2,
+            "seed_provenance": [
+              {
+                "layer": "kmz",
+                "source": "seed-route",
+                "source_id": "Known Good KMZ Loop"
+              },
+              {
+                "layer": "gpx",
+                "source": "seed-route",
+                "source_id": "Known Good Loop"
+              }
+            ],
+            "source_provenance": [
+              {
+                "source": "fixture",
+                "source_id": "west"
+              }
+            ],
             "surface": null,
             "terrain": "talus",
             "terrain_confidence": 0.9,
+            "terrain_evidence": [
+              {
+                "confidence": 0.9,
+                "provenance": {
+                  "source": "fixture",
+                  "source_id": "west"
+                },
+                "rationale": "explicit source terrain tag",
+                "terrain": "talus"
+              }
+            ],
             "travel": "both"
           },
           {
@@ -1845,7 +2005,27 @@
                 }
               }
             ],
+            "difficulty": 1.771441200307474,
+            "difficulty_breakdown": {
+              "access": 0.0,
+              "ascent": 0.2880000000000109,
+              "confidence": 0.2700000000000001,
+              "descent": 0.0,
+              "distance": 1.022164479780381,
+              "grade": 0.05635100919607176,
+              "navigation": 0.07359584254418743,
+              "road": 0.06132986878682286,
+              "technical": 0.0,
+              "terrain": 0.0
+            },
             "edge_id": 2,
+            "elevation_provenance": [
+              {
+                "layer": "arc-ascii",
+                "source": "arc-ascii-grid",
+                "source_id": "mini_dem.asc"
+              }
+            ],
             "grade_abs_max": 0.02347958716502997,
             "grade_distribution": {
               "flat_m": 1022.1644797803812,
@@ -1855,10 +2035,40 @@
             },
             "length_m": 1022.1644797803812,
             "provenance": "fixture:south",
+            "road_exposure": 0.03,
             "seed_count": 2,
+            "seed_provenance": [
+              {
+                "layer": "kmz",
+                "source": "seed-route",
+                "source_id": "Known Good KMZ Loop"
+              },
+              {
+                "layer": "gpx",
+                "source": "seed-route",
+                "source_id": "Known Good Loop"
+              }
+            ],
+            "source_provenance": [
+              {
+                "source": "fixture",
+                "source_id": "south"
+              }
+            ],
             "surface": null,
             "terrain": "trail",
             "terrain_confidence": 0.9,
+            "terrain_evidence": [
+              {
+                "confidence": 0.9,
+                "provenance": {
+                  "source": "fixture",
+                  "source_id": "south"
+                },
+                "rationale": "explicit source terrain tag",
+                "terrain": "trail"
+              }
+            ],
             "travel": "both"
           },
           {
@@ -1876,7 +2086,27 @@
                 }
               }
             ],
+            "difficulty": 1.645100374060298,
+            "difficulty_breakdown": {
+              "access": 0.0,
+              "ascent": 0.0,
+              "confidence": 0.2700000000000001,
+              "descent": 0.12239999999999988,
+              "distance": 1.021984821547996,
+              "grade": 0.09581355606796677,
+              "navigation": 0.07358290715145571,
+              "road": 0.06131908929287976,
+              "technical": 0.0,
+              "terrain": 0.0
+            },
             "edge_id": 0,
+            "elevation_provenance": [
+              {
+                "layer": "arc-ascii",
+                "source": "arc-ascii-grid",
+                "source_id": "mini_dem.asc"
+              }
+            ],
             "grade_abs_max": 0.03992857735222904,
             "grade_distribution": {
               "flat_m": 1021.984821547996,
@@ -1886,10 +2116,40 @@
             },
             "length_m": 1021.984821547996,
             "provenance": "fixture:north",
+            "road_exposure": 0.03,
             "seed_count": 2,
+            "seed_provenance": [
+              {
+                "layer": "kmz",
+                "source": "seed-route",
+                "source_id": "Known Good KMZ Loop"
+              },
+              {
+                "layer": "gpx",
+                "source": "seed-route",
+                "source_id": "Known Good Loop"
+              }
+            ],
+            "source_provenance": [
+              {
+                "source": "fixture",
+                "source_id": "north"
+              }
+            ],
             "surface": null,
             "terrain": "trail",
             "terrain_confidence": 0.9,
+            "terrain_evidence": [
+              {
+                "confidence": 0.9,
+                "provenance": {
+                  "source": "fixture",
+                  "source_id": "north"
+                },
+                "rationale": "explicit source terrain tag",
+                "terrain": "trail"
+              }
+            ],
             "travel": "both"
           }
         ],

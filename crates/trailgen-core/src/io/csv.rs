@@ -1,5 +1,5 @@
 use crate::geo::{Coord, LineString};
-use crate::io::route_file::{RouteFile, RouteFileMetadata, clean_text};
+use crate::io::route_file::{RouteFile, RouteFileMetadata, clean_text, export_summary};
 use crate::model::TrailGraph;
 use crate::route::Route;
 use crate::{Result, TrailgenError};
@@ -92,11 +92,19 @@ fn field_f64(fields: &[&str], index: usize, name: &str) -> Result<f64> {
 
 #[must_use]
 pub fn route_to_csv(graph: &TrailGraph, route: &Route) -> String {
-    let mut out = String::from("longitude,latitude,elevation_m\n");
+    let mut out = format!(
+        "# name: {}\n# description: {}\n# activity: hiking\nlongitude,latitude,elevation_m\n",
+        csv_comment(&route.name),
+        csv_comment(&export_summary(route))
+    );
     for Coord { lon, lat, ele } in route.geometry(graph).points {
         writeln!(out, "{lon:.7},{lat:.7},{}", csv_ele(ele)).expect("write to string");
     }
     out
+}
+
+fn csv_comment(raw: &str) -> String {
+    raw.replace(['\n', '\r'], " ")
 }
 
 fn csv_ele(ele: Option<f64>) -> String {

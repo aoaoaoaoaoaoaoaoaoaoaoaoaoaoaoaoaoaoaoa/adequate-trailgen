@@ -3,6 +3,7 @@
   <Document>
     <Placemark>
       <name>candidate-3</name>
+      <description>score 9704.50; pareto rank 2; shape Loop; distance 4.04 km; ascent/descent 113/113 m; difficulty 2011.84; road 2.0%; low-confidence 0.0%; restricted-access 74.7%; repeated-edge 0.0%; constraints violated; violations difficulty 2011.84 above maximum 90.00 | restricted-access fraction 74.7% above maximum 0.0%</description>
       <LineString>
         <tessellate>1</tessellate>
         <coordinates>

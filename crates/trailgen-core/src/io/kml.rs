@@ -1,5 +1,5 @@
 use crate::geo::{Coord, LineString};
-use crate::io::route_file::{RouteFile, RouteFileMetadata, clean_text};
+use crate::io::route_file::{RouteFile, RouteFileMetadata, clean_text, export_summary};
 use crate::model::TrailGraph;
 use crate::route::Route;
 use crate::{Result, TrailgenError};
@@ -51,8 +51,10 @@ pub fn route_to_kml(graph: &TrailGraph, route: &Route) -> String {
     );
     s.push_str("    <Placemark>\n      <name>");
     escape_xml(&route.name, &mut s);
+    s.push_str("</name>\n      <description>");
+    escape_xml(&export_summary(route), &mut s);
     s.push_str(
-        "</name>\n      <LineString>\n        <tessellate>1</tessellate>\n        <coordinates>\n",
+        "</description>\n      <LineString>\n        <tessellate>1</tessellate>\n        <coordinates>\n",
     );
     for c in line.points {
         let _ = match c.ele {
