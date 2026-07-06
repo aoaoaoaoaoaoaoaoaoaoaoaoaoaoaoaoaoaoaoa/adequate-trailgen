@@ -67,7 +67,7 @@ enum Cmd {
         #[arg(long, value_parser = parse_positive_f64)]
         snap_tolerance_m: Option<f64>,
     },
-    /// Print graph terrain, access, provenance, confidence, crossing, and seed statistics.
+    /// Print graph terrain, access, provenance, confidence, direction, turn-ban, crossing, and seed statistics.
     Stats {
         /// Project directory containing cache/graph.json.
         project: PathBuf,
@@ -1180,6 +1180,12 @@ fn stats_text(graph: &TrailGraph) -> String {
         .sum::<f64>();
     let _ = writeln!(text, "vertices: {}", graph.vertices.len());
     let _ = writeln!(text, "edges: {}", graph.edges.len());
+    let _ = writeln!(
+        text,
+        "directed-travel edges: {}",
+        directed_travel_edge_count(graph)
+    );
+    let _ = writeln!(text, "turn bans: {}", graph.turn_bans.len());
     let _ = writeln!(text, "edge-km: {:.2}", total_m / 1_000.0);
     let _ = writeln!(
         text,
@@ -1220,16 +1226,33 @@ fn stats_text(graph: &TrailGraph) -> String {
     write_meter_mix(&mut text, "Access mix", &access_m, total_m);
     write_labeled_meter_mix(&mut text, "Source mix", &source_m, total_m);
     write_labeled_meter_mix(&mut text, "Confidence mix", &confidence_m, total_m);
+    write_turn_ban_provenance(&mut text, graph);
+    write_crossing_totals(&mut text, graph);
+    text
+}
+
+fn write_turn_ban_provenance(text: &mut String, graph: &TrailGraph) {
+    text.push_str("Turn-ban provenance:\n");
+    let sources = turn_ban_sources(graph);
+    if sources.is_empty() {
+        text.push_str("- none\n");
+        return;
+    }
+    for (source, count) in sources {
+        let _ = writeln!(text, "- {source}: {count}");
+    }
+}
+
+fn write_crossing_totals(text: &mut String, graph: &TrailGraph) {
     text.push_str("Crossings:\n");
     let crossings = crossing_totals(graph);
     if crossings.is_empty() {
         text.push_str("- none\n");
-    } else {
-        for (kind, count) in crossings {
-            let _ = writeln!(text, "- {kind:?}: {count}");
-        }
+        return;
     }
-    text
+    for (kind, count) in crossings {
+        let _ = writeln!(text, "- {kind:?}: {count}");
+    }
 }
 
 const fn edge_road_pavement_exposure(terrain: Terrain, road_exposure: f64) -> f64 {
@@ -2435,9 +2458,17 @@ struct GraphManifest {
     vertices: usize,
     edges: usize,
     edge_km: f64,
+    directed_travel_edges: usize,
+    turn_bans: TurnBanManifest,
     low_confidence_edges: usize,
     crossings: BTreeMap<CrossingKind, u32>,
     terrain_km: BTreeMap<Terrain, f64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct TurnBanManifest {
+    count: usize,
+    provenance: BTreeMap<String, usize>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -3641,13 +3672,17 @@ fn render_report(
     source_manifest: Option<&SourceManifest>,
 ) -> String {
     let mut text = report::render_titled(title, graph, routes);
-    render_generation_ledger_section(&mut text, ledger);
+    render_generation_ledger_section(&mut text, ledger, graph);
     render_constraints_section(&mut text, constraints);
     render_source_manifest_section(&mut text, source_manifest);
     text
 }
 
-fn render_generation_ledger_section(text: &mut String, ledger: Option<&GenerationLedger>) {
+fn render_generation_ledger_section(
+    text: &mut String,
+    ledger: Option<&GenerationLedger>,
+    graph: &TrailGraph,
+) {
     let Some(ledger) = ledger else {
         return;
     };
@@ -3672,6 +3707,26 @@ fn render_generation_ledger_section(text: &mut String, ledger: Option<&Generatio
         ledger.snapped_start_coord.lat,
         ledger.start_snap_m
     );
+    let _ = writeln!(
+        text,
+        "- graph: {} vertices, {} edges, {:.2} km, {} directed-travel edge(s), {} turn ban(s)",
+        graph.vertices.len(),
+        graph.edges.len(),
+        graph
+            .edges
+            .iter()
+            .map(|edge| edge.attr.length_m)
+            .sum::<f64>()
+            / 1_000.0,
+        directed_travel_edge_count(graph),
+        graph.turn_bans.len()
+    );
+    if !graph.turn_bans.is_empty() {
+        text.push_str("- turn-ban provenance:\n");
+        for (source, count) in turn_ban_sources(graph) {
+            let _ = writeln!(text, "  - {source}: {count}");
+        }
+    }
     let _ = writeln!(text, "- emitted artifacts: {}", ledger.artifacts.len());
     if ledger.forbidden_areas.is_empty() {
         text.push_str("- forbidden areas: none\n");
@@ -5624,6 +5679,11 @@ fn graph_manifest(graph: &TrailGraph) -> GraphManifest {
             .map(|edge| edge.attr.length_m)
             .sum::<f64>()
             / 1_000.0,
+        directed_travel_edges: directed_travel_edge_count(graph),
+        turn_bans: TurnBanManifest {
+            count: graph.turn_bans.len(),
+            provenance: turn_ban_sources(graph),
+        },
         low_confidence_edges: graph
             .edges
             .iter()
@@ -5632,6 +5692,24 @@ fn graph_manifest(graph: &TrailGraph) -> GraphManifest {
         crossings: crossing_totals(graph),
         terrain_km,
     }
+}
+
+fn directed_travel_edge_count(graph: &TrailGraph) -> usize {
+    graph
+        .edges
+        .iter()
+        .filter(|edge| edge.attr.travel != EdgeTravel::Both)
+        .count()
+}
+
+fn turn_ban_sources(graph: &TrailGraph) -> BTreeMap<String, usize> {
+    graph
+        .turn_bans
+        .iter()
+        .fold(BTreeMap::new(), |mut counts, ban| {
+            *counts.entry(provenance_label(&ban.provenance)).or_default() += 1;
+            counts
+        })
 }
 
 fn route_manifest_entry(route: &Route) -> RouteManifestEntry {
@@ -6309,10 +6387,22 @@ mod tests {
 
     #[test]
     fn graph_stats_report_attributed_exposure() -> Result<()> {
+        let turn_source = Provenance {
+            source: "fixture-turns".to_owned(),
+            layer: Some("turn-restriction".to_owned()),
+            source_id: Some("forbidden-corner".to_owned()),
+            license: None,
+        };
         let graph = GraphBuilder::default().build(&[
             SegmentDraft {
-                turn_ref: None,
-                turn_restrictions: Vec::new(),
+                turn_ref: Some("trail".to_owned()),
+                turn_restrictions: vec![trailgen_core::TurnRestrictionDraft {
+                    from: "trail".to_owned(),
+                    via: Coord::new(0.01, 0.0),
+                    to: "restricted-road".to_owned(),
+                    rule: trailgen_core::TurnRestrictionRule::No,
+                    provenance: turn_source,
+                }],
                 geometry: LineString::new(vec![
                     Coord::with_ele(0.0, 0.0, 1_000.0),
                     Coord::with_ele(0.01, 0.0, 1_030.0),
@@ -6328,7 +6418,7 @@ mod tests {
                 provenance: Provenance::fixture("trail"),
             },
             SegmentDraft {
-                turn_ref: None,
+                turn_ref: Some("restricted-road".to_owned()),
                 turn_restrictions: Vec::new(),
                 geometry: LineString::new(vec![Coord::new(0.01, 0.0), Coord::new(0.02, 0.0)])
                     .unwrap(),
@@ -6345,6 +6435,8 @@ mod tests {
 
         let text = stats_text(&graph);
         assert!(text.contains("mean difficulty per km:"));
+        assert!(text.contains("directed-travel edges: 0"));
+        assert!(text.contains("turn bans: 1"));
         assert!(text.contains("low-confidence edge-km:"));
         assert!(text.contains("restricted-access edge-km:"));
         assert!(text.contains("road/pavement edge-km:"));
@@ -6361,7 +6453,19 @@ mod tests {
         assert!(text.contains("Confidence mix:"));
         assert!(text.contains("- low <0.60:"));
         assert!(text.contains("- high ≥0.80:"));
+        assert!(text.contains("Turn-ban provenance:"));
+        assert!(text.contains("- fixture-turns:forbidden-corner: 1"));
         assert!(text.contains("Crossings:"));
+        let manifest = graph_manifest(&graph);
+        assert_eq!(manifest.directed_travel_edges, 0);
+        assert_eq!(manifest.turn_bans.count, 1);
+        assert_eq!(
+            manifest
+                .turn_bans
+                .provenance
+                .get("fixture-turns:forbidden-corner"),
+            Some(&1)
+        );
         Ok(())
     }
 
@@ -6887,7 +6991,7 @@ mod tests {
                     .as_u64()
                     .is_some_and(|n| n > 0)
         }));
-        assert!(manifest["graph"]["edges"].as_u64().is_some_and(|n| n > 0));
+        assert_generation_graph_manifest(&manifest);
         assert!(
             manifest["routes"]
                 .as_array()
@@ -6905,8 +7009,20 @@ mod tests {
         assert!(generated_report.contains("- solver: requested Exact, concrete exact-enumerator"));
         assert!(generated_report.contains("- random seed: 77"));
         assert!(generated_report.contains("- snapped start: vertex"));
+        assert!(generated_report.contains("directed-travel edge(s), 0 turn ban(s)"));
 
         Ok(())
+    }
+
+    fn assert_generation_graph_manifest(manifest: &Value) {
+        assert!(manifest["graph"]["edges"].as_u64().is_some_and(|n| n > 0));
+        assert_eq!(manifest["graph"]["directed_travel_edges"], 0);
+        assert_eq!(manifest["graph"]["turn_bans"]["count"], 0);
+        assert!(
+            manifest["graph"]["turn_bans"]["provenance"]
+                .as_object()
+                .is_some_and(serde_json::Map::is_empty)
+        );
     }
 
     #[test]

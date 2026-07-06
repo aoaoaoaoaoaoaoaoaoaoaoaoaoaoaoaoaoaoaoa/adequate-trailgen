@@ -1061,6 +1061,11 @@
     "vertices": 5,
     "edges": 6,
     "edge_km": 7.075078308484313,
+    "directed_travel_edges": 0,
+    "turn_bans": {
+      "count": 0,
+      "provenance": {}
+    },
     "low_confidence_edges": 0,
     "crossings": {
       "road": 3,
@@ -1282,8 +1287,8 @@
     {
       "path": "reports/generated.md",
       "fingerprint": {
-        "bytes": 16455,
-        "sha256": "2418958a73c81328bfded2a70f1e1c2de678001b4d3f91efa7e6be0fbc23f517"
+        "bytes": 16535,
+        "sha256": "41fb535c9f79ad3e01f42459058488af1f5beefbc8ba1abcbe697723e75f6e4c"
       }
     },
     {
@@ -1331,8 +1336,8 @@
     {
       "path": "reports/candidate-1.md",
       "fingerprint": {
-        "bytes": 8343,
-        "sha256": "2a95dba54b821e8bc5e6339da03700dd42657c8631bb0557289e7b61c30bfb3c"
+        "bytes": 8423,
+        "sha256": "16133141dfd19093bbbae80ccd2c8d675d79fadacc601dcf6da1d39f80c6063a"
       }
     },
     {
@@ -1373,8 +1378,8 @@
     {
       "path": "reports/candidate-2.md",
       "fingerprint": {
-        "bytes": 7871,
-        "sha256": "eeafd261ba48c4c5138861a4edf465861b6a580755b66fc2189a4238fda10664"
+        "bytes": 7951,
+        "sha256": "d3c7e22933cc5827b5adaea424b6da6f8167ca6465babfaadf49758c58d17712"
       }
     },
     {
@@ -1415,8 +1420,8 @@
     {
       "path": "reports/candidate-3.md",
       "fingerprint": {
-        "bytes": 7834,
-        "sha256": "accec46374335c0bff1ad75169ba08272d3752bc7bed03e4a46e48942b12333c"
+        "bytes": 7914,
+        "sha256": "25c9e8279a706bbafa867725cf996bd875614f699b681aeedd21a31c4fb6d6a5"
       }
     }
   ]
