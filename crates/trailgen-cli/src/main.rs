@@ -183,6 +183,9 @@ enum Cmd {
         /// Number of legal return paths tried from each outward heuristic frontier.
         #[arg(long, value_parser = parse_positive_usize)]
         closure_paths: Option<usize>,
+        /// Source coverage gate enforced before generation: off, required, or recommended.
+        #[arg(long, value_enum)]
+        source_gate: Option<GenerationSourceGate>,
         /// Planning date used to materialize dated access/closure overlays.
         #[arg(long, value_parser = parse_planning_date)]
         date: Option<PlanningDate>,
@@ -445,6 +448,8 @@ struct ProjectConfig {
     max_route_snap_m: f64,
     #[serde(default)]
     solver: SolverKind,
+    #[serde(default)]
+    generation_source_gate: GenerationSourceGate,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     planning_date: Option<PlanningDate>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -464,6 +469,7 @@ impl ProjectConfig {
             max_start_snap_m: default_max_start_snap_m(),
             max_route_snap_m: default_max_route_snap_m(),
             solver: SolverKind::default(),
+            generation_source_gate: GenerationSourceGate::default(),
             planning_date: None,
             planning_time: None,
         }
@@ -512,6 +518,33 @@ enum CalibrationFamily {
 enum SourceGateLevel {
     Required,
     Recommended,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+enum GenerationSourceGate {
+    #[default]
+    Off,
+    Required,
+    Recommended,
+}
+
+impl GenerationSourceGate {
+    const fn level(self) -> Option<SourceGateLevel> {
+        match self {
+            Self::Off => None,
+            Self::Required => Some(SourceGateLevel::Required),
+            Self::Recommended => Some(SourceGateLevel::Recommended),
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Required => "required",
+            Self::Recommended => "recommended",
+        }
+    }
 }
 
 impl SourceGateLevel {
@@ -636,6 +669,7 @@ fn main() -> Result<()> {
             max_frontier,
             keep,
             closure_paths,
+            source_gate,
             date,
             time,
             min_difficulty,
@@ -667,6 +701,7 @@ fn main() -> Result<()> {
                 max_frontier,
                 keep,
                 closure_paths,
+                source_gate,
                 date,
                 time,
                 min_difficulty,
@@ -1613,6 +1648,32 @@ fn vet_sources(project: &Path, level: SourceGateLevel, require: &[SourceKind]) -
     Ok(())
 }
 
+fn enforce_generation_source_gate(project: &Path, gate: GenerationSourceGate) -> Result<()> {
+    let Some(level) = gate.level() else {
+        return Ok(());
+    };
+    let mut manifest = load_source_manifest(project)?.with_context(|| {
+        format!(
+            "generation source gate {gate:?} requires sources/manifest.json; run `trailgen discover` or `trailgen cache-source` first"
+        )
+    })?;
+    let checked = verify_source_fingerprints(project, &manifest)?;
+    refresh_source_coverage(&mut manifest);
+    let failures = source_gate_failures(&manifest, level, &[]);
+    if failures.is_empty() {
+        return Ok(());
+    }
+    bail!(
+        "generation source gate {} failed after verifying {checked} candidate(s):\n{}",
+        gate.label(),
+        failures
+            .iter()
+            .map(|entry| source_gate_failure_line(entry))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
+}
+
 fn source_gate_failures<'a>(
     manifest: &'a SourceManifest,
     level: SourceGateLevel,
@@ -1784,6 +1845,7 @@ struct GenerateOptions {
     max_frontier: Option<usize>,
     keep: Option<usize>,
     closure_paths: Option<usize>,
+    source_gate: Option<GenerationSourceGate>,
     date: Option<PlanningDate>,
     time: Option<PlanningTime>,
     min_difficulty: Option<f64>,
@@ -2018,9 +2080,13 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
     if let Some(max_start_snap_m) = options.max_start_snap_m {
         config.max_start_snap_m = max_start_snap_m;
     }
+    if let Some(source_gate) = options.source_gate {
+        config.generation_source_gate = source_gate;
+    }
     config.search.seed = options.seed;
     apply_generate_search_options(&mut config.search, options);
     apply_generate_options(&mut config.constraints, options);
+    enforce_generation_source_gate(project, config.generation_source_gate)?;
     let mut graph = materialize_effective_graph(project, &config)?;
     let forbidden_areas =
         apply_forbidden_area_sources(&mut graph, &options.forbidden_area, config.difficulty)?;
@@ -2206,6 +2272,7 @@ fn milp_incumbent_generate_options(
         max_frontier: None,
         keep: None,
         closure_paths: None,
+        source_gate: None,
         date: config.planning_date,
         time: config.planning_time,
         min_difficulty: None,
@@ -5347,6 +5414,7 @@ mod tests {
             max_frontier: None,
             keep: None,
             closure_paths: None,
+            source_gate: None,
             date: None,
             time: None,
             min_difficulty: None,
@@ -5390,6 +5458,7 @@ mod tests {
         assert!(generate_help.contains("Allowed measured route shape"));
         assert!(generate_help.contains("Maximum expanded solver states"));
         assert!(generate_help.contains("legal return paths"));
+        assert!(generate_help.contains("Source coverage gate enforced before generation"));
 
         let mut access = Cli::command();
         let access_help = access
@@ -5418,6 +5487,7 @@ mod tests {
                 max_frontier: None,
                 keep: None,
                 closure_paths: None,
+                source_gate: None,
                 date: None,
                 time: None,
                 min_difficulty: None,
@@ -5933,6 +6003,7 @@ mod tests {
             max_frontier: Some(1_234),
             keep: Some(7),
             closure_paths: Some(3),
+            source_gate: None,
             date: Some("2026-05-15".parse().unwrap()),
             time: None,
             forbidden_terrain: vec![Terrain::Road],
@@ -6017,6 +6088,36 @@ mod tests {
     }
 
     #[test]
+    fn generation_source_gate_rejects_missing_required_sources_and_records_policy() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path();
+        let fixture_dir =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../trailgen-core/tests/fixtures");
+        let network = fixture_dir.join("mini_network.geojson");
+        let dem = fixture_dir.join("mini_dem.asc");
+
+        init(project, "Generation Source Gate Test".to_owned(), None)?;
+        build(project, &network)?;
+        let mut options = mini_generate_options();
+        options.source_gate = Some(GenerationSourceGate::Required);
+        let error = generate(project, &options).expect_err("missing DEM should fail source gate");
+        assert!(format!("{error:#}").contains("generation source gate required failed"));
+        assert!(format!("{error:#}").contains("elevation"));
+
+        apply_elevation(project, &dem, 0.81)?;
+        generate(project, &options)?;
+        let manifest: Value = serde_json::from_str(&fs::read_to_string(
+            project.join("routes/generated.manifest.json"),
+        )?)?;
+        assert_eq!(
+            manifest["effective_config"]["generation_source_gate"],
+            "required"
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn generation_rejects_remote_start_without_explicit_snap_override() -> Result<()> {
         let tmp = tempfile::tempdir()?;
         let project = tmp.path();
@@ -6037,6 +6138,7 @@ mod tests {
             max_frontier: None,
             keep: None,
             closure_paths: None,
+            source_gate: None,
             date: None,
             time: None,
             min_difficulty: None,
@@ -6102,6 +6204,7 @@ mod tests {
                 max_frontier: None,
                 keep: None,
                 closure_paths: None,
+                source_gate: None,
                 date: None,
                 time: None,
                 min_difficulty: None,
@@ -6299,6 +6402,7 @@ mod tests {
                 max_frontier: None,
                 keep: None,
                 closure_paths: None,
+                source_gate: None,
                 date: None,
                 time: None,
                 min_difficulty: None,
@@ -6721,6 +6825,7 @@ mod tests {
                 max_frontier: None,
                 keep: None,
                 closure_paths: None,
+                source_gate: None,
                 date: Some("2026-07-15".parse().unwrap()),
                 time: None,
                 min_difficulty: None,
@@ -6826,6 +6931,7 @@ mod tests {
                 max_frontier: None,
                 keep: None,
                 closure_paths: None,
+                source_gate: None,
                 date: Some("2026-07-06".parse().unwrap()),
                 time: Some("18:00".parse().unwrap()),
                 min_difficulty: None,
@@ -6909,6 +7015,7 @@ mod tests {
                 max_frontier: None,
                 keep: None,
                 closure_paths: None,
+                source_gate: None,
                 date: Some("2026-07-15".parse().unwrap()),
                 time: None,
                 min_difficulty: None,
@@ -6992,6 +7099,7 @@ mod tests {
                 max_frontier: None,
                 keep: None,
                 closure_paths: None,
+                source_gate: None,
                 date: None,
                 time: None,
                 min_difficulty: None,

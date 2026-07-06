@@ -80,6 +80,7 @@
     "max_start_snap_m": 500.0,
     "max_route_snap_m": 100.0,
     "solver": "auto",
+    "generation_source_gate": "recommended",
     "planning_date": "2026-05-15"
   },
   "source_manifest": {
