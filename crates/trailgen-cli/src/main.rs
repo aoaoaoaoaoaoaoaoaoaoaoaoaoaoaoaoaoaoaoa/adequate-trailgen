@@ -14,6 +14,7 @@ use trailgen_core::alltrails::{
 };
 use trailgen_core::io::route_file::RouteFile;
 use trailgen_core::io::{csv, geojson, gpx, json_route, kml, kmz, osm, report, shapefile as shp};
+use trailgen_core::model::TerrainEvidence;
 use trailgen_core::source::{
     GeoBounds, SourceCandidate, SourceCoverage, SourceCoverageStatus, SourceCoverageSummary,
     SourceFingerprint, SourceKind, SourceManifest, SourcePriority, adapter_registry, classify_path,
@@ -4794,13 +4795,13 @@ fn graph_vertices_csv(graph: &TrailGraph) -> String {
 
 fn graph_edges_csv(graph: &TrailGraph) -> String {
     let mut out = String::from(
-        "edge_id,from_vertex,to_vertex,travel,length_m,ascent_m,descent_m,grade_abs_mean,grade_abs_max,sustained_steep_m,terrain,surface,access,road_exposure,confidence,difficulty,seed_count,road_crossings,water_crossings,provenance,wkt\n",
+        "edge_id,from_vertex,to_vertex,travel,length_m,ascent_m,descent_m,grade_abs_mean,grade_abs_max,sustained_steep_m,terrain,surface,terrain_confidence,terrain_evidence,access,access_confidence,access_provenance,road_exposure,confidence,difficulty,seed_count,seed_provenance,elevation_provenance,road_crossings,water_crossings,provenance,wkt\n",
     );
     for edge in &graph.edges {
         let crossings = edge_crossing_counts(edge);
         writeln!(
             out,
-            "{},{},{},{},{:.3},{:.3},{:.3},{:.6},{:.6},{:.3},{},{},{},{:.6},{:.6},{:.6},{},{},{},{},{}",
+            "{},{},{},{},{:.3},{:.3},{:.3},{:.6},{:.6},{:.3},{},{},{:.6},{},{},{:.6},{},{:.6},{:.6},{:.6},{},{},{},{},{},{},{}",
             edge.id.0,
             edge.a.0,
             edge.b.0,
@@ -4813,11 +4814,17 @@ fn graph_edges_csv(graph: &TrailGraph) -> String {
             edge.attr.sustained_steep_m,
             terrain_tag(edge.attr.terrain),
             csv_cell(edge.attr.surface.as_deref().unwrap_or("")),
+            edge.attr.terrain_confidence,
+            csv_cell(&terrain_evidence_summary(&edge.attr.terrain_evidence)),
             access_tag(edge.attr.access),
+            edge.attr.access_confidence,
+            csv_cell(&provenance_summary(&edge.attr.access_provenance)),
             edge.attr.road_exposure,
             edge.attr.confidence,
             edge.attr.difficulty,
             edge.attr.seed_count,
+            csv_cell(&provenance_summary(&edge.attr.seed_provenance)),
+            csv_cell(&provenance_summary(&edge.attr.elevation_provenance)),
             crossings.road,
             crossings.water,
             csv_cell(&provenance_summary(&edge.attr.provenance)),
@@ -4826,6 +4833,25 @@ fn graph_edges_csv(graph: &TrailGraph) -> String {
         .expect("write to string");
     }
     out
+}
+
+fn terrain_evidence_summary(evidence: &[TerrainEvidence]) -> String {
+    evidence
+        .iter()
+        .map(|e| {
+            let mut s = format!(
+                "{}:{:.0}%:{}",
+                terrain_tag(e.terrain),
+                e.confidence * 100.0,
+                e.rationale
+            );
+            if let Some(provenance) = &e.provenance {
+                write!(s, ":{}", provenance_csv_label(provenance)).expect("write to string");
+            }
+            s
+        })
+        .collect::<Vec<_>>()
+        .join("|")
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -4850,18 +4876,20 @@ fn edge_crossing_counts(edge: &trailgen_core::Edge) -> CrossingCounts {
 fn provenance_summary(provenance: &[Provenance]) -> String {
     provenance
         .iter()
-        .map(|p| {
-            let mut s = p.source.clone();
-            if let Some(layer) = &p.layer {
-                write!(s, ":{layer}").expect("write to string");
-            }
-            if let Some(source_id) = &p.source_id {
-                write!(s, ":{source_id}").expect("write to string");
-            }
-            s
-        })
+        .map(provenance_csv_label)
         .collect::<Vec<_>>()
         .join("|")
+}
+
+fn provenance_csv_label(p: &Provenance) -> String {
+    let mut s = p.source.clone();
+    if let Some(layer) = &p.layer {
+        write!(s, ":{layer}").expect("write to string");
+    }
+    if let Some(source_id) = &p.source_id {
+        write!(s, ":{source_id}").expect("write to string");
+    }
+    s
 }
 
 fn line_wkt(line: &LineString) -> String {
@@ -6310,9 +6338,16 @@ mod tests {
 
         let edges = fs::read_to_string(project.join("cache/edges.csv"))?;
         assert!(edges.starts_with("edge_id,from_vertex,to_vertex,travel,length_m,"));
+        assert!(edges.contains("terrain_confidence,terrain_evidence,access,access_confidence"));
+        assert!(edges.contains("access_provenance,road_exposure,confidence,difficulty"));
+        assert!(edges.contains("seed_provenance,elevation_provenance"));
         assert!(edges.contains("LINESTRING Z ("));
         assert!(edges.contains("fixture:north"));
         assert!(edges.contains(",trail,"));
+        assert!(edges.contains(
+            ",0.900000,trail:90%:explicit source terrain tag:fixture:north,open,0.900000,"
+        ));
+        assert!(edges.contains(",embedded-geometry-elevation,"));
 
         Ok(())
     }

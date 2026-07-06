@@ -37,7 +37,7 @@ Generated artifacts land in the project directory:
 
 - `cache/graph.json`: normalized attributed graph
 - `cache/graph.geojson`: edge geometry and attribution as GeoJSON
-- `cache/edges.csv` and `cache/vertices.csv`: deterministic graph tables with WKT geometry for spreadsheet/GIS inspection
+- `cache/edges.csv` and `cache/vertices.csv`: deterministic graph tables with WKT geometry plus terrain/access confidence and compact source, terrain, access, elevation, and seed provenance summaries for spreadsheet/GIS inspection
 - `sources/manifest.json`: source adapter registry, AOI-bound acquisition recommendations, and discovered/used source files with byte counts and SHA-256 fingerprints
 - `sources/discovery.md`: human-readable source coverage, acquisition plan, copyable cache command sketches, official/practical source hints, local candidates, and adapter registry
 - `sources/elevation-arc-ascii.json`, `sources/elevation-geotiff.json`, `sources/elevation-vrt.json`, or `sources/elevation-mosaic.json`: applied local DEM sampler metadata
