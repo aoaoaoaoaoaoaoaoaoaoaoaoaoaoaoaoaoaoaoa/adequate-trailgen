@@ -1794,6 +1794,62 @@ fn exact_solver_accepts_two_edge_multiedge_loops() {
 }
 
 #[test]
+fn solvers_collapse_reversed_equivalent_edge_sets() {
+    let graph = GraphBuilder::default()
+        .build(&[
+            SegmentDraft {
+                geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)])
+                    .unwrap(),
+                terrain: Terrain::Trail,
+                surface: None,
+                access: Access::Open,
+                travel: EdgeTravel::Both,
+                road_exposure: 0.0,
+                confidence: 1.0,
+                provenance: Provenance::fixture("braid-a"),
+            },
+            SegmentDraft {
+                geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)])
+                    .unwrap(),
+                terrain: Terrain::Trail,
+                surface: None,
+                access: Access::Open,
+                travel: EdgeTravel::Both,
+                road_exposure: 0.0,
+                confidence: 1.0,
+                provenance: Provenance::fixture("braid-b"),
+            },
+        ])
+        .unwrap();
+    let start = graph.nearest_vertex(Coord::new(0.0, 0.0)).unwrap();
+    let routes = ExactLoopSolver {
+        params: SearchParams {
+            max_hops: 2,
+            max_frontier: 100,
+            keep: 8,
+            ..SearchParams::default()
+        },
+    }
+    .enumerate(
+        &graph,
+        start,
+        &LoopConstraints {
+            min_distance_m: 0.0,
+            max_distance_m: 10_000.0,
+            max_difficulty: 10_000.0,
+            allowed_shapes: vec![RouteShape::Loop],
+            ..LoopConstraints::default()
+        },
+        8,
+    );
+
+    assert_eq!(routes.len(), 1);
+    assert_eq!(routes[0].metrics.shape, RouteShape::Loop);
+    assert_eq!(routes[0].edges.len(), 2);
+    assert!(routes[0].metrics.repeated_edge_fraction <= f64::EPSILON);
+}
+
+#[test]
 fn directed_travel_diagnostics_are_exported() {
     let graph = GraphBuilder::default()
         .build(&[

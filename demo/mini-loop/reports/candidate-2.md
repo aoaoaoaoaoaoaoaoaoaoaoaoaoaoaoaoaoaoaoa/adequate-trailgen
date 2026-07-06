@@ -98,7 +98,7 @@ Terrain/elevation evidence:
 - random seed: 0
 - requested start: -105.000000,40.000000
 - snapped start: vertex 3, -105.000000,40.000000 (0 m)
-- emitted artifacts: 30
+- emitted artifacts: 24
 - forbidden areas: none
 
 ## Constraint Envelope

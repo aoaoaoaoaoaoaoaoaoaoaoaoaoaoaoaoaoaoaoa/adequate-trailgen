@@ -301,189 +301,41 @@
     "edges": [
       3,
       0,
-      1,
-      2
+      4
     ],
     "pareto_rank": 2,
     "metrics": {
       "shape": "loop",
-      "distance_m": 4712.831226933266,
-      "ascent_m": 136.9999999999991,
-      "descent_m": 136.9999999999991,
-      "difficulty": 1014.0688608129841,
+      "distance_m": 4037.129879381636,
+      "ascent_m": 112.99999999999818,
+      "descent_m": 112.99999999999818,
+      "difficulty": 2011.8369871503269,
       "difficulty_breakdown": {
-        "distance": 4.712831226933267,
-        "ascent": 1.643999999999989,
-        "descent": 0.41099999999999726,
-        "grade": 0.5284402054463663,
-        "terrain": 1.7346432516431782,
-        "road": 0.12264895807970262,
-        "technical": 3.175731491469819,
-        "navigation": 0.6595656794117819,
-        "confidence": 1.0800000000000003,
-        "access": 1000.0
-      },
-      "road_fraction": 0.013012237461292748,
-      "low_confidence_fraction": 0.0,
-      "restricted_access_fraction": 0.2831293756451209,
-      "repeated_edge_fraction": 0.0,
-      "crossings": {
-        "road": 2,
-        "water": 2
-      },
-      "access_m": {
-        "open": 3378.4902641308217,
-        "closed": 1334.340962802445
-      },
-      "terrain_m": {
-        "trail": 2044.149301328377,
-        "talus": 2668.68192560489
-      }
-    },
-    "verdict": {
-      "satisfied": false,
-      "violations": [
-        "difficulty 1014.07 above maximum 90.00",
-        "restricted-access fraction 28.3% above maximum 0.0%"
-      ],
-      "audit": [
-        {
-          "metric": "minimum distance",
-          "measured": "4.71 km",
-          "requirement": "≥ 3.00 km",
-          "margin": "+1.71 km",
-          "satisfied": true
-        },
-        {
-          "metric": "maximum distance",
-          "measured": "4.71 km",
-          "requirement": "≤ 8.00 km",
-          "margin": "+3.29 km",
-          "satisfied": true
-        },
-        {
-          "metric": "minimum difficulty",
-          "measured": "1014.07",
-          "requirement": "≥ 0.00",
-          "margin": "+1014.07",
-          "satisfied": true
-        },
-        {
-          "metric": "maximum difficulty",
-          "measured": "1014.07",
-          "requirement": "≤ 90.00",
-          "margin": "-924.07",
-          "satisfied": false
-        },
-        {
-          "metric": "minimum ascent",
-          "measured": "137 m",
-          "requirement": "≥ 0 m",
-          "margin": "+137 m",
-          "satisfied": true
-        },
-        {
-          "metric": "maximum ascent",
-          "measured": "137 m",
-          "requirement": "≤ 3000 m",
-          "margin": "+2863 m",
-          "satisfied": true
-        },
-        {
-          "metric": "minimum descent",
-          "measured": "137 m",
-          "requirement": "≥ 0 m",
-          "margin": "+137 m",
-          "satisfied": true
-        },
-        {
-          "metric": "maximum descent",
-          "measured": "137 m",
-          "requirement": "≤ 3000 m",
-          "margin": "+2863 m",
-          "satisfied": true
-        },
-        {
-          "metric": "maximum road/pavement exposure",
-          "measured": "1.3%",
-          "requirement": "≤ 12.0%",
-          "margin": "+10.7%",
-          "satisfied": true
-        },
-        {
-          "metric": "maximum low-confidence exposure",
-          "measured": "0.0%",
-          "requirement": "≤ 20.0%",
-          "margin": "+20.0%",
-          "satisfied": true
-        },
-        {
-          "metric": "maximum restricted-access exposure",
-          "measured": "28.3%",
-          "requirement": "≤ 0.0%",
-          "margin": "-28.3%",
-          "satisfied": false
-        },
-        {
-          "metric": "maximum repeated-edge exposure",
-          "measured": "0.0%",
-          "requirement": "≤ 0.0%",
-          "margin": "+0.0%",
-          "satisfied": true
-        },
-        {
-          "metric": "allowed shape",
-          "measured": "Loop",
-          "requirement": "one of [Loop]",
-          "margin": "allowed",
-          "satisfied": true
-        }
-      ],
-      "penalty": 3858.036935132303
-    },
-    "score": 3908.740378172952
-  },
-  {
-    "name": "candidate-4",
-    "start": 3,
-    "edges": [
-      4,
-      1,
-      2
-    ],
-    "pareto_rank": 2,
-    "metrics": {
-      "shape": "loop",
-      "distance_m": 4037.309537614021,
-      "ascent_m": 96.19999999999914,
-      "descent_m": 96.19999999999914,
-      "difficulty": 1010.865710812353,
-      "difficulty_breakdown": {
-        "distance": 4.037309537614021,
-        "ascent": 1.1543999999999897,
-        "descent": 0.2885999999999974,
-        "grade": 0.332473760877784,
+        "distance": 4.037129879381636,
+        "ascent": 2.222399999999957,
+        "descent": 0.12239999999999987,
+        "grade": 0.40215347197082063,
         "terrain": 1.1698663629272041,
-        "road": 0.16217811448869457,
+        "road": 0.16216733499475147,
         "technical": 2.1761471789958278,
-        "navigation": 0.7197358574494941,
-        "confidence": 0.825,
-        "access": 1000.0
+        "navigation": 0.7197229220567624,
+        "confidence": 0.8250000000000001,
+        "access": 2000.0
       },
-      "road_fraction": 0.02008492449956401,
+      "road_fraction": 0.020084483264084445,
       "low_confidence_fraction": 0.0,
-      "restricted_access_fraction": 0.4163178669784435,
+      "restricted_access_fraction": 0.7468536182679035,
       "repeated_edge_fraction": 0.0,
       "crossings": {
         "road": 2,
         "water": 2
       },
       "access_m": {
-        "open": 2356.505442582826,
-        "closed": 1680.8040950311952
+        "open": 1021.984821547996,
+        "closed": 3015.14505783364
       },
       "terrain_m": {
-        "trail": 1022.1644797803812,
+        "trail": 1021.984821547996,
         "alpine": 1680.8040950311952,
         "talus": 1334.340962802445
       }
@@ -491,8 +343,8 @@
     "verdict": {
       "satisfied": false,
       "violations": [
-        "difficulty 1010.87 above maximum 90.00",
-        "restricted-access fraction 41.6% above maximum 0.0%"
+        "difficulty 2011.84 above maximum 90.00",
+        "restricted-access fraction 74.7% above maximum 0.0%"
       ],
       "audit": [
         {
@@ -511,44 +363,44 @@
         },
         {
           "metric": "minimum difficulty",
-          "measured": "1010.87",
+          "measured": "2011.84",
           "requirement": "≥ 0.00",
-          "margin": "+1010.87",
+          "margin": "+2011.84",
           "satisfied": true
         },
         {
           "metric": "maximum difficulty",
-          "measured": "1010.87",
+          "measured": "2011.84",
           "requirement": "≤ 90.00",
-          "margin": "-920.87",
+          "margin": "-1921.84",
           "satisfied": false
         },
         {
           "metric": "minimum ascent",
-          "measured": "96 m",
+          "measured": "113 m",
           "requirement": "≥ 0 m",
-          "margin": "+96 m",
+          "margin": "+113 m",
           "satisfied": true
         },
         {
           "metric": "maximum ascent",
-          "measured": "96 m",
+          "measured": "113 m",
           "requirement": "≤ 3000 m",
-          "margin": "+2904 m",
+          "margin": "+2887 m",
           "satisfied": true
         },
         {
           "metric": "minimum descent",
-          "measured": "96 m",
+          "measured": "113 m",
           "requirement": "≥ 0 m",
-          "margin": "+96 m",
+          "margin": "+113 m",
           "satisfied": true
         },
         {
           "metric": "maximum descent",
-          "measured": "96 m",
+          "measured": "113 m",
           "requirement": "≤ 3000 m",
-          "margin": "+2904 m",
+          "margin": "+2887 m",
           "satisfied": true
         },
         {
@@ -567,9 +419,9 @@
         },
         {
           "metric": "maximum restricted-access exposure",
-          "measured": "41.6%",
+          "measured": "74.7%",
           "requirement": "≤ 0.0%",
-          "margin": "-41.6%",
+          "margin": "-74.7%",
           "satisfied": false
         },
         {
@@ -587,8 +439,8 @@
           "satisfied": true
         }
       ],
-      "penalty": 5186.362792909272
+      "penalty": 9603.910612846066
     },
-    "score": 5236.90607844989
+    "score": 9704.502462203582
   }
 ]

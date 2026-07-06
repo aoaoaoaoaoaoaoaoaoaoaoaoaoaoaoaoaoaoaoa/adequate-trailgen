@@ -4,7 +4,7 @@ use crate::model::{EdgeId, TrailGraph, VertexId};
 use crate::route::{Route, rank_routes};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::collections::{BTreeSet, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SearchParams {
@@ -339,13 +339,30 @@ fn finish_routes(
     keep: usize,
 ) -> Vec<Route> {
     let mut seen = BTreeSet::new();
-    routes.retain(|route| seen.insert(route.edges.clone()));
+    routes.retain(|route| seen.insert(route_signature(route)));
     rank_routes(&mut routes, constraints);
     routes.truncate(count.max(1).min(keep));
     for (i, route) in routes.iter_mut().enumerate() {
         route.name = format!("candidate-{}", i + 1);
     }
     routes
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct RouteSignature {
+    shape: RouteShape,
+    edge_counts: Vec<(EdgeId, usize)>,
+}
+
+fn route_signature(route: &Route) -> RouteSignature {
+    let mut edge_counts = BTreeMap::<EdgeId, usize>::new();
+    for edge in &route.edges {
+        *edge_counts.entry(*edge).or_default() += 1;
+    }
+    RouteSignature {
+        shape: route.metrics.shape,
+        edge_counts: edge_counts.into_iter().collect(),
+    }
 }
 
 fn route_distance(graph: &TrailGraph, edges: &[EdgeId]) -> f64 {

@@ -1184,101 +1184,49 @@
       "edges": [
         3,
         0,
-        1,
-        2
+        4
       ],
-      "score": 3908.740378172952,
+      "score": 9704.502462203582,
       "metrics": {
         "shape": "loop",
-        "distance_m": 4712.831226933266,
-        "ascent_m": 136.9999999999991,
-        "descent_m": 136.9999999999991,
-        "difficulty": 1014.0688608129841,
+        "distance_m": 4037.129879381636,
+        "ascent_m": 112.99999999999818,
+        "descent_m": 112.99999999999818,
+        "difficulty": 2011.8369871503269,
         "difficulty_breakdown": {
-          "distance": 4.712831226933267,
-          "ascent": 1.643999999999989,
-          "descent": 0.41099999999999726,
-          "grade": 0.5284402054463663,
-          "terrain": 1.7346432516431782,
-          "road": 0.12264895807970262,
-          "technical": 3.175731491469819,
-          "navigation": 0.6595656794117819,
-          "confidence": 1.0800000000000003,
-          "access": 1000.0
-        },
-        "road_fraction": 0.013012237461292748,
-        "low_confidence_fraction": 0.0,
-        "restricted_access_fraction": 0.2831293756451209,
-        "repeated_edge_fraction": 0.0,
-        "crossings": {
-          "road": 2,
-          "water": 2
-        },
-        "access_m": {
-          "open": 3378.4902641308217,
-          "closed": 1334.340962802445
-        },
-        "terrain_m": {
-          "trail": 2044.149301328377,
-          "talus": 2668.68192560489
-        }
-      },
-      "satisfied": false,
-      "violations": [
-        "difficulty 1014.07 above maximum 90.00",
-        "restricted-access fraction 28.3% above maximum 0.0%"
-      ],
-      "rank": 2
-    },
-    {
-      "name": "candidate-4",
-      "start": 3,
-      "edges": [
-        4,
-        1,
-        2
-      ],
-      "score": 5236.90607844989,
-      "metrics": {
-        "shape": "loop",
-        "distance_m": 4037.309537614021,
-        "ascent_m": 96.19999999999914,
-        "descent_m": 96.19999999999914,
-        "difficulty": 1010.865710812353,
-        "difficulty_breakdown": {
-          "distance": 4.037309537614021,
-          "ascent": 1.1543999999999897,
-          "descent": 0.2885999999999974,
-          "grade": 0.332473760877784,
+          "distance": 4.037129879381636,
+          "ascent": 2.222399999999957,
+          "descent": 0.12239999999999987,
+          "grade": 0.40215347197082063,
           "terrain": 1.1698663629272041,
-          "road": 0.16217811448869457,
+          "road": 0.16216733499475147,
           "technical": 2.1761471789958278,
-          "navigation": 0.7197358574494941,
-          "confidence": 0.825,
-          "access": 1000.0
+          "navigation": 0.7197229220567624,
+          "confidence": 0.8250000000000001,
+          "access": 2000.0
         },
-        "road_fraction": 0.02008492449956401,
+        "road_fraction": 0.020084483264084445,
         "low_confidence_fraction": 0.0,
-        "restricted_access_fraction": 0.4163178669784435,
+        "restricted_access_fraction": 0.7468536182679035,
         "repeated_edge_fraction": 0.0,
         "crossings": {
           "road": 2,
           "water": 2
         },
         "access_m": {
-          "open": 2356.505442582826,
-          "closed": 1680.8040950311952
+          "open": 1021.984821547996,
+          "closed": 3015.14505783364
         },
         "terrain_m": {
-          "trail": 1022.1644797803812,
+          "trail": 1021.984821547996,
           "alpine": 1680.8040950311952,
           "talus": 1334.340962802445
         }
       },
       "satisfied": false,
       "violations": [
-        "difficulty 1010.87 above maximum 90.00",
-        "restricted-access fraction 41.6% above maximum 0.0%"
+        "difficulty 2011.84 above maximum 90.00",
+        "restricted-access fraction 74.7% above maximum 0.0%"
       ],
       "rank": 2
     }
@@ -1307,20 +1255,14 @@
     "routes/candidate-3.csv",
     "routes/candidate-3.kml",
     "routes/candidate-3.kmz",
-    "reports/candidate-3.md",
-    "routes/candidate-4.geojson",
-    "routes/candidate-4.gpx",
-    "routes/candidate-4.csv",
-    "routes/candidate-4.kml",
-    "routes/candidate-4.kmz",
-    "reports/candidate-4.md"
+    "reports/candidate-3.md"
   ],
   "artifact_fingerprints": [
     {
       "path": "routes/generated.geojson",
       "fingerprint": {
-        "bytes": 170787,
-        "sha256": "4b926e9d62b2457c3173d9bea5041dbfcd30e5729898c64899f5d12361b8d869"
+        "bytes": 126971,
+        "sha256": "9972004c2146fae0ea929598cff5a059836dad5c84d226f7f0fdebc9556180fe"
       }
     },
     {
@@ -1333,22 +1275,22 @@
     {
       "path": "routes/generated.routes.json",
       "fingerprint": {
-        "bytes": 16023,
-        "sha256": "0b8f328c01041f334d8847d36fca731b3ed493a6b190f283f5f4235a5ff8b28b"
+        "bytes": 12050,
+        "sha256": "e5590086c51ccd11ab50c0cb361806b3140d1addac63792bf3d520db2f78dc12"
       }
     },
     {
       "path": "reports/generated.md",
       "fingerprint": {
-        "bytes": 19108,
-        "sha256": "3a39e7fa0e9c073b053e7fcba58bc38666873cc4e9788d60e3181e4b7a416e27"
+        "bytes": 15127,
+        "sha256": "f9109af88eac24c61900d88b3bd2457655a245de2a7509affb6ddc2cc8fb3b51"
       }
     },
     {
       "path": "reports/map.html",
       "fingerprint": {
-        "bytes": 126928,
-        "sha256": "d08f2834ecb847003c17ee2fea81805c8f17428a797320dad55447f0968625d7"
+        "bytes": 106679,
+        "sha256": "0104fd22d27a9dc64ffc3627e9ac1f13b84ca6d915a499b54cf9d44d6a5d4b6b"
       }
     },
     {
@@ -1390,7 +1332,7 @@
       "path": "reports/candidate-1.md",
       "fingerprint": {
         "bytes": 7803,
-        "sha256": "0efd7b3926a716a164b954f3974886c15b241a37a7f56a854bba9b4c100ca4e5"
+        "sha256": "d890441870a943a464c42ac5861f5e0ae9ff44b03661e32a0724b6b903c29a6e"
       }
     },
     {
@@ -1432,91 +1374,49 @@
       "path": "reports/candidate-2.md",
       "fingerprint": {
         "bytes": 7446,
-        "sha256": "019313dcde70dfa0cf2fdcb896a336673fa17a6657e76c16d9119051eadc17e7"
+        "sha256": "06fdb3f642a6bf28e57e4cded2872648cc87807e05aba0f696fb5fbcb0cd322e"
       }
     },
     {
       "path": "routes/candidate-3.geojson",
       "fingerprint": {
-        "bytes": 45123,
-        "sha256": "56598ce52bbe2e6d37fe15a8ec5f1d8cc8b63949a3328b1b2c9b4a19a4062a8d"
+        "bytes": 41596,
+        "sha256": "1e3b9a39f07c9e1072125321c08d883f84d23e8009152b76bb3909117db6113a"
       }
     },
     {
       "path": "routes/candidate-3.gpx",
       "fingerprint": {
-        "bytes": 24233,
-        "sha256": "d06ae98ea41bb2ca44fb306d160b52fdf03ee9fdee4e0d52a9d98581fd500658"
+        "bytes": 20177,
+        "sha256": "1d0ad387cb2aa166fdd22d3160e738a58c58b6abd7239185ee7a78692547f5cd"
       }
     },
     {
       "path": "routes/candidate-3.csv",
       "fingerprint": {
-        "bytes": 10195,
-        "sha256": "efcf16973bd8c7d03e4943f71976b306726bcf3212cafe6e4d9b253bc38ee04b"
+        "bytes": 8479,
+        "sha256": "ed326f5671e6241995d2c684bb954f0c1ff93108f3d1d8d391522c96bd1fb2f4"
       }
     },
     {
       "path": "routes/candidate-3.kml",
       "fingerprint": {
-        "bytes": 13853,
-        "sha256": "05d5a9ba5fd79b81d11ba89075149fc75c120ae3d686d3a2755ef86c1fe87069"
+        "bytes": 11565,
+        "sha256": "ddf420c7d3ca3b4177dd6c74bb19588b46aa875738be13ce02610b4e5fd4da05"
       }
     },
     {
       "path": "routes/candidate-3.kmz",
       "fingerprint": {
-        "bytes": 2076,
-        "sha256": "c843456cbaa4da399eeac2be44d23d9d8e18a798c100645d08d991e6a0d0a02a"
+        "bytes": 2206,
+        "sha256": "6533931fb732d2cd3c2992aabad16680ebad571fc742a58295d911d12666aec6"
       }
     },
     {
       "path": "reports/candidate-3.md",
       "fingerprint": {
-        "bytes": 7803,
-        "sha256": "b2212ac7fc208cabc5cf1491f09fa9ed445e9078fd2bc2d8594a13704fc61a3b"
-      }
-    },
-    {
-      "path": "routes/candidate-4.geojson",
-      "fingerprint": {
-        "bytes": 40342,
-        "sha256": "3e0e949289a432b2a1fb9a961756f502c8a67554ddb2b180e768ec6f3596de06"
-      }
-    },
-    {
-      "path": "routes/candidate-4.gpx",
-      "fingerprint": {
-        "bytes": 20255,
-        "sha256": "d99bbdd42dd9849ed91efe4268902089f71329396bcc22e8781d9074972607ea"
-      }
-    },
-    {
-      "path": "routes/candidate-4.csv",
-      "fingerprint": {
-        "bytes": 8512,
-        "sha256": "11d95a177b9a2f625af034f871fa4648d888b5b76a5b9722e357002bf6b4e943"
-      }
-    },
-    {
-      "path": "routes/candidate-4.kml",
-      "fingerprint": {
-        "bytes": 11609,
-        "sha256": "0fd37bf373c5e1dda9dfe5f822df7d1ec76bc1c1766968b2e7c4b78628dc9c98"
-      }
-    },
-    {
-      "path": "routes/candidate-4.kmz",
-      "fingerprint": {
-        "bytes": 2232,
-        "sha256": "56a790dd445eed2515123b12c677d5d7e4e0f5401b62757484f7699909d6f517"
-      }
-    },
-    {
-      "path": "reports/candidate-4.md",
-      "fingerprint": {
-        "bytes": 7446,
-        "sha256": "4620e1a97446955f35c648d12b449607258b527e31a7bcba4ed997c06aba8502"
+        "bytes": 7471,
+        "sha256": "a374760d92af5ddb241a678cfb5709579078cadce0aa258412fba67ed963a121"
       }
     }
   ]
