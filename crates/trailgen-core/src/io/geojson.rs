@@ -4,8 +4,8 @@ use crate::geo::{Coord, LineString};
 use crate::io::route_file::{RouteFile, RouteFileMetadata};
 use crate::model::{Access, CrossingKind, Edge, EdgeTravel, Provenance, Terrain, TrailGraph};
 use crate::overlay::{
-    AccessOverlay, AccessWindow, ContextOverlay, MonthDay, OverlayGeometry, PlanningDate,
-    SeasonalWindow, TerrainOverlay, WeekdaySet, polygon,
+    AccessOverlay, AccessWindow, ContextOverlay, DailyTimeWindow, MonthDay, OverlayGeometry,
+    PlanningDate, PlanningTime, SeasonalWindow, TerrainOverlay, WeekdaySet, polygon,
 };
 use crate::route::{LOW_CONFIDENCE_THRESHOLD, Route, is_restricted_access};
 use crate::{Result, TrailgenError};
@@ -554,6 +554,7 @@ fn access_window_from_properties(properties: &Map<String, Value>) -> Result<Acce
                 "active_days",
             ],
         )?,
+        time: time_window_from_properties(properties)?,
     })
 }
 
@@ -585,6 +586,38 @@ fn seasonal_window_from_properties(
         (Some(from), Some(to)) => Ok(Some(SeasonalWindow::new(from, to))),
         _ => Err(TrailgenError::InvalidData(
             "recurring seasonal access windows require both from and to month-days".to_owned(),
+        )),
+    }
+}
+
+fn time_window_from_properties(properties: &Map<String, Value>) -> Result<Option<DailyTimeWindow>> {
+    let from = prop_time(
+        properties,
+        &[
+            "time_from",
+            "active_time_from",
+            "start_time",
+            "starts_at",
+            "hour_from",
+            "hours_from",
+        ],
+    )?;
+    let to = prop_time(
+        properties,
+        &[
+            "time_to",
+            "active_time_to",
+            "end_time",
+            "ends_at",
+            "hour_to",
+            "hours_to",
+        ],
+    )?;
+    match (from, to) {
+        (None, None) => Ok(None),
+        (Some(from), Some(to)) => Ok(Some(DailyTimeWindow::new(from, to))),
+        _ => Err(TrailgenError::InvalidData(
+            "hourly access windows require both from and to times".to_owned(),
         )),
     }
 }
@@ -859,6 +892,14 @@ fn prop_month_day(props: &Map<String, Value>, keys: &[&str]) -> Result<Option<Mo
     keys.iter()
         .find_map(|key| prop_str(props, key))
         .map(str::parse::<MonthDay>)
+        .transpose()
+        .map_err(TrailgenError::InvalidData)
+}
+
+fn prop_time(props: &Map<String, Value>, keys: &[&str]) -> Result<Option<PlanningTime>> {
+    keys.iter()
+        .find_map(|key| prop_str(props, key))
+        .map(str::parse::<PlanningTime>)
         .transpose()
         .map_err(TrailgenError::InvalidData)
 }

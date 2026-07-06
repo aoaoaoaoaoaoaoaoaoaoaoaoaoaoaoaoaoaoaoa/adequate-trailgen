@@ -14,16 +14,17 @@ use trailgen_core::source::{
     source_coverage,
 };
 use trailgen_core::{
-    Access, ArcAsciiGrid, CrossingKind, EdgeId, EdgeTravel, ElevationSampler, ExactLoopSolver,
-    GeoTiffDem, LoopMilpFormulation, MilpSelectedArc, MonthDay, PlanningDate, RasterCrs, Route,
-    RouteMetrics, RouteShape, SearchParams, SeasonalWindow, SolverKind, VertexId, VrtDem, Weekday,
-    WeekdaySet,
+    Access, ArcAsciiGrid, CrossingKind, DailyTimeWindow, EdgeId, EdgeTravel, ElevationSampler,
+    ExactLoopSolver, GeoTiffDem, LoopMilpFormulation, MilpSelectedArc, MonthDay, PlanningDate,
+    PlanningMoment, PlanningTime, RasterCrs, Route, RouteMetrics, RouteShape, SearchParams,
+    SeasonalWindow, SolverKind, VertexId, VrtDem, Weekday, WeekdaySet,
 };
 use trailgen_core::{
     Coord, DifficultyWeights, EnrichmentConfig, GraphBuilder, LineString, LoopConstraints,
     LoopHunter, OverlayGeometry, PlaneElevation, Provenance, SeedRoute, SegmentDraft, Terrain,
-    TerrainMultipliers, apply_access_overlays, apply_context_overlays, apply_terrain_overlays,
-    enrich_graph, rank_routes, route_edges_from_selected_arcs, route_edges_from_solution,
+    TerrainMultipliers, apply_access_overlays, apply_access_overlays_at, apply_context_overlays,
+    apply_terrain_overlays, enrich_graph, rank_routes, route_edges_from_selected_arcs,
+    route_edges_from_solution,
 };
 
 const WGS84_PRJ: &str = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["Degree",0.0174532925199433]]"#;
@@ -738,6 +739,105 @@ fn weekday_sets_parse_shortcuts_and_ranges() {
     assert!(weekend.contains(Weekday::Saturday));
     assert!(weekend.contains(Weekday::Sunday));
     assert!(!weekend.contains(Weekday::Wednesday));
+}
+
+#[test]
+fn daily_time_window_parses_and_wraps_midnight() {
+    let daytime = DailyTimeWindow::new(
+        "08:00".parse::<PlanningTime>().unwrap(),
+        "17:30".parse::<PlanningTime>().unwrap(),
+    );
+    assert!(daytime.contains("12:00".parse().unwrap()));
+    assert!(!daytime.contains("18:00".parse().unwrap()));
+
+    let overnight = DailyTimeWindow::new(
+        "22:00".parse::<PlanningTime>().unwrap(),
+        "05:00".parse::<PlanningTime>().unwrap(),
+    );
+    assert!(overnight.contains("23:30".parse().unwrap()));
+    assert!(overnight.contains("04:30".parse().unwrap()));
+    assert!(!overnight.contains("12:00".parse().unwrap()));
+}
+
+#[test]
+fn hourly_access_overlay_only_bites_inside_daily_window() {
+    let drafts = geojson::network_from_str(include_str!("fixtures/mini_network.geojson")).unwrap();
+    let overlays = geojson::access_overlays_from_str(
+        r#"{
+          "type": "FeatureCollection",
+          "features": [{
+            "type": "Feature",
+            "properties": {
+              "id": "midday-reservation",
+              "source": "fixture-closure",
+              "access": "closed",
+              "active_from": "2026-07-01",
+              "active_to": "2026-07-31",
+              "time_from": "08:00",
+              "time_to": "17:30"
+            },
+            "geometry": {
+              "type": "Polygon",
+              "coordinates": [[
+                [-105.0000, 40.0020],
+                [-104.9900, 40.0020],
+                [-104.9900, 40.0100],
+                [-105.0000, 40.0100],
+                [-105.0000, 40.0020]
+              ]]
+            }
+          }]
+        }"#,
+    )
+    .unwrap();
+
+    let date = PlanningDate::new(2026, 7, 6).unwrap();
+    let mut midday = GraphBuilder::default().build(&drafts).unwrap();
+    let mut evening = GraphBuilder::default().build(&drafts).unwrap();
+    let mut time_only_evening = GraphBuilder::default().build(&drafts).unwrap();
+    let midday_hits = apply_access_overlays_at(
+        &mut midday,
+        &overlays,
+        Some(PlanningMoment::new(
+            Some(date),
+            Some("12:00".parse::<PlanningTime>().unwrap()),
+        )),
+        DifficultyWeights::default(),
+    );
+    let evening_hits = apply_access_overlays_at(
+        &mut evening,
+        &overlays,
+        Some(PlanningMoment::new(
+            Some(date),
+            Some("18:00".parse::<PlanningTime>().unwrap()),
+        )),
+        DifficultyWeights::default(),
+    );
+    let time_only_evening_hits = apply_access_overlays_at(
+        &mut time_only_evening,
+        &overlays,
+        Some(PlanningMoment::new(
+            None,
+            Some("18:00".parse::<PlanningTime>().unwrap()),
+        )),
+        DifficultyWeights::default(),
+    );
+
+    assert!(midday_hits > 0);
+    assert_eq!(evening_hits, 0);
+    assert_eq!(time_only_evening_hits, 0);
+    assert!(
+        midday
+            .edges
+            .iter()
+            .any(|edge| edge.attr.access == Access::Closed)
+    );
+    assert!(
+        !evening
+            .edges
+            .iter()
+            .any(|edge| edge.attr.access == Access::Closed)
+    );
 }
 
 #[test]
@@ -2328,8 +2428,18 @@ fn shapefile_adapters_normalize_networks_and_overlays() {
     assert_eq!(overlays.len(), 1);
     assert_eq!(overlays[0].access, Access::Closed);
     assert_eq!(overlays[0].name, "closure-1");
-    assert!(overlays[0].active_on(Some(PlanningDate::new(2026, 7, 4).unwrap())));
-    assert!(!overlays[0].active_on(Some(PlanningDate::new(2026, 7, 6).unwrap())));
+    assert!(overlays[0].active_at(Some(PlanningMoment::new(
+        Some(PlanningDate::new(2026, 7, 4).unwrap()),
+        Some("12:00".parse().unwrap())
+    ))));
+    assert!(!overlays[0].active_at(Some(PlanningMoment::new(
+        Some(PlanningDate::new(2026, 7, 4).unwrap()),
+        Some("18:00".parse().unwrap())
+    ))));
+    assert!(!overlays[0].active_at(Some(PlanningMoment::new(
+        Some(PlanningDate::new(2026, 7, 6).unwrap()),
+        Some("12:00".parse().unwrap())
+    ))));
     assert!(matches!(
         overlays[0].geometry,
         trailgen_core::OverlayGeometry::Polygon(_)
@@ -2573,6 +2683,8 @@ fn write_access_shapefile(path: &std::path::Path) {
         .add_character_field("name".try_into().unwrap(), 32)
         .add_character_field("status".try_into().unwrap(), 16)
         .add_character_field("weekdays".try_into().unwrap(), 16)
+        .add_character_field("time_from".try_into().unwrap(), 8)
+        .add_character_field("time_to".try_into().unwrap(), 8)
         .add_character_field("source".try_into().unwrap(), 32);
     let mut writer = ::shapefile::Writer::from_path(path, table).unwrap();
     let polygon = ::shapefile::Polygon::with_rings(vec![::shapefile::PolygonRing::Outer(vec![
@@ -2586,6 +2698,8 @@ fn write_access_shapefile(path: &std::path::Path) {
     record.insert("name".to_owned(), "closure-1".to_owned().into());
     record.insert("status".to_owned(), "closed".to_owned().into());
     record.insert("weekdays".to_owned(), "weekends".to_owned().into());
+    record.insert("time_from".to_owned(), "08:00".to_owned().into());
+    record.insert("time_to".to_owned(), "17:00".to_owned().into());
     record.insert("source".to_owned(), "agency".to_owned().into());
     writer.write_shape_and_record(&polygon, &record).unwrap();
 }

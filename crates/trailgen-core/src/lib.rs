@@ -39,9 +39,10 @@ pub use model::{
 };
 pub use optimizer::{ExactLoopSolver, LoopHunter, RouteSolver, SearchParams, SolverKind};
 pub use overlay::{
-    AccessOverlay, AccessWindow, ContextOverlay, MonthDay, OverlayGeometry, PlanningDate,
-    SeasonalWindow, TerrainOverlay, Weekday, WeekdaySet, apply_access_overlays,
-    apply_context_overlays, apply_terrain_overlays,
+    AccessOverlay, AccessWindow, ContextOverlay, DailyTimeWindow, MonthDay, OverlayGeometry,
+    PlanningDate, PlanningMoment, PlanningTime, SeasonalWindow, TerrainOverlay, Weekday,
+    WeekdaySet, apply_access_overlays, apply_access_overlays_at, apply_context_overlays,
+    apply_terrain_overlays,
 };
 pub use raster::{ArcAsciiGrid, GeoTiffDem, RasterCrs, RasterDem, RasterTransform, VrtDem};
 pub use route::{

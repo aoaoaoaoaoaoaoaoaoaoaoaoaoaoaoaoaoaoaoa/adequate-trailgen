@@ -22,10 +22,11 @@ use trailgen_core::{
     Access, AccessOverlay, AccessWindow, ArcAsciiGrid, Coord, CrossingKind, DifficultyBreakdown,
     DifficultyWeights, EdgeAttr, EdgeId, EdgeTravel, ElevationMosaic, EnrichmentConfig, GeoTiffDem,
     GraphBuilder, LOW_CONFIDENCE_THRESHOLD, LineString, LoopConstraints, LoopMilpFormulation,
-    PlanningDate, Provenance, RasterDem, Route, RouteMetrics, RouteShape, RouteSnapStats,
-    SearchParams, SeedRoute, SegmentDraft, SolverKind, Terrain, TrailGraph, VertexId, VrtDem,
-    apply_access_overlays, apply_context_overlays, apply_terrain_overlays, enrich_graph,
-    rank_routes, route_edges_from_solution, slug,
+    PlanningDate, PlanningMoment, PlanningTime, Provenance, RasterDem, Route, RouteMetrics,
+    RouteShape, RouteSnapStats, SearchParams, SeedRoute, SegmentDraft, SolverKind, Terrain,
+    TrailGraph, VertexId, VrtDem, apply_access_overlays, apply_access_overlays_at,
+    apply_context_overlays, apply_terrain_overlays, enrich_graph, rank_routes,
+    route_edges_from_solution, slug,
 };
 
 #[derive(Parser)]
@@ -126,6 +127,9 @@ enum Cmd {
         /// Planning date used while applying access/closure overlays.
         #[arg(long, value_parser = parse_planning_date)]
         date: Option<PlanningDate>,
+        /// Planning local time used while applying hourly access/closure overlays.
+        #[arg(long, value_parser = parse_planning_time)]
+        time: Option<PlanningTime>,
         /// Confidence assigned to DEM samples during manifest elevation application.
         #[arg(long, default_value_t = 0.80)]
         elevation_confidence: f64,
@@ -170,6 +174,9 @@ enum Cmd {
         /// Planning date used to materialize dated access/closure overlays.
         #[arg(long, value_parser = parse_planning_date)]
         date: Option<PlanningDate>,
+        /// Planning local time used to materialize hourly access/closure overlays.
+        #[arg(long, value_parser = parse_planning_time)]
+        time: Option<PlanningTime>,
         /// Minimum scalar route difficulty.
         #[arg(long)]
         min_difficulty: Option<f64>,
@@ -238,6 +245,9 @@ enum Cmd {
         /// Planning date used to materialize dated access/closure overlays.
         #[arg(long, value_parser = parse_planning_date)]
         date: Option<PlanningDate>,
+        /// Planning local time used to materialize hourly access/closure overlays.
+        #[arg(long, value_parser = parse_planning_time)]
+        time: Option<PlanningTime>,
     },
     /// Import an external MILP solver incumbent into normal generated route artifacts.
     ImportMilpSolution {
@@ -264,6 +274,9 @@ enum Cmd {
         /// Planning date used to materialize dated access/closure overlays.
         #[arg(long, value_parser = parse_planning_date)]
         date: Option<PlanningDate>,
+        /// Planning local time used to materialize hourly access/closure overlays.
+        #[arg(long, value_parser = parse_planning_time)]
+        time: Option<PlanningTime>,
     },
     /// Export one generated candidate route to `GPX`, `GeoJSON`, `CSV`, `KML`, or `KMZ`.
     Export {
@@ -364,6 +377,9 @@ enum Cmd {
         /// Persisted planning date for `active_from`/`active_to` overlay filtering.
         #[arg(long, value_parser = parse_planning_date)]
         date: Option<PlanningDate>,
+        /// Persisted local planning time for hourly overlay filtering.
+        #[arg(long, value_parser = parse_planning_time)]
+        time: Option<PlanningTime>,
     },
     /// Apply terrain, surface, or land-cover overlays and rerate touched edges.
     ApplyTerrain {
@@ -419,6 +435,8 @@ struct ProjectConfig {
     solver: SolverKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     planning_date: Option<PlanningDate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    planning_time: Option<PlanningTime>,
 }
 
 impl ProjectConfig {
@@ -435,7 +453,13 @@ impl ProjectConfig {
             max_route_snap_m: default_max_route_snap_m(),
             solver: SolverKind::default(),
             planning_date: None,
+            planning_time: None,
         }
+    }
+
+    fn planning_moment(&self) -> Option<PlanningMoment> {
+        (self.planning_date.is_some() || self.planning_time.is_some())
+            .then(|| PlanningMoment::new(self.planning_date, self.planning_time))
     }
 }
 
@@ -552,8 +576,9 @@ fn main() -> Result<()> {
         Cmd::Assemble {
             project,
             date,
+            time,
             elevation_confidence,
-        } => assemble_sources(&project, date, elevation_confidence),
+        } => assemble_sources(&project, date, time, elevation_confidence),
         Cmd::Generate {
             project,
             start,
@@ -568,6 +593,7 @@ fn main() -> Result<()> {
             keep,
             closure_paths,
             date,
+            time,
             min_difficulty,
             max_difficulty,
             min_ascent_m,
@@ -598,6 +624,7 @@ fn main() -> Result<()> {
                 keep,
                 closure_paths,
                 date,
+                time,
                 min_difficulty,
                 max_difficulty,
                 min_ascent_m,
@@ -623,6 +650,7 @@ fn main() -> Result<()> {
             max_km,
             max_start_snap_m,
             date,
+            time,
         } => formulate_milp(
             &project,
             &MilpFormulationOptions {
@@ -632,6 +660,7 @@ fn main() -> Result<()> {
                 max_km,
                 max_start_snap_m,
                 date,
+                time,
             },
         ),
         Cmd::ImportMilpSolution {
@@ -643,6 +672,7 @@ fn main() -> Result<()> {
             max_km,
             max_start_snap_m,
             date,
+            time,
         } => import_milp_solution(
             &project,
             &MilpIncumbentOptions {
@@ -653,6 +683,7 @@ fn main() -> Result<()> {
                 max_km,
                 max_start_snap_m,
                 date,
+                time,
             },
         ),
         Cmd::Export {
@@ -700,7 +731,8 @@ fn main() -> Result<()> {
             project,
             source,
             date,
-        } => apply_access(&project, &source, date),
+            time,
+        } => apply_access(&project, &source, date, time),
         Cmd::ApplyTerrain { project, source } => apply_terrain(&project, &source),
         Cmd::ApplyElevation {
             project,
@@ -1507,6 +1539,7 @@ fn verify_sources(project: &Path) -> Result<()> {
 fn assemble_sources(
     project: &Path,
     date: Option<PlanningDate>,
+    time: Option<PlanningTime>,
     elevation_confidence: f64,
 ) -> Result<()> {
     if !(0.0..=1.0).contains(&elevation_confidence) {
@@ -1561,7 +1594,7 @@ fn assemble_sources(
         &[SourceKind::Access, SourceKind::Closure],
     );
     if !access_sources.is_empty() {
-        apply_access(project, &access_sources, date)
+        apply_access(project, &access_sources, date, time)
             .with_context(|| "assemble access/closure overlays")?;
     }
 
@@ -1624,6 +1657,7 @@ struct GenerateOptions {
     keep: Option<usize>,
     closure_paths: Option<usize>,
     date: Option<PlanningDate>,
+    time: Option<PlanningTime>,
     min_difficulty: Option<f64>,
     max_difficulty: Option<f64>,
     min_ascent_m: Option<f64>,
@@ -1648,6 +1682,7 @@ struct MilpFormulationOptions {
     max_km: Option<f64>,
     max_start_snap_m: Option<f64>,
     date: Option<PlanningDate>,
+    time: Option<PlanningTime>,
 }
 
 struct MilpIncumbentOptions {
@@ -1658,6 +1693,7 @@ struct MilpIncumbentOptions {
     max_km: Option<f64>,
     max_start_snap_m: Option<f64>,
     date: Option<PlanningDate>,
+    time: Option<PlanningTime>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1811,6 +1847,9 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
     if let Some(date) = options.date {
         config.planning_date = Some(date);
     }
+    if let Some(time) = options.time {
+        config.planning_time = Some(time);
+    }
     if let Some(max_start_snap_m) = options.max_start_snap_m {
         config.max_start_snap_m = max_start_snap_m;
     }
@@ -1885,6 +1924,9 @@ fn formulate_milp(project: &Path, options: &MilpFormulationOptions) -> Result<()
     if let Some(date) = options.date {
         config.planning_date = Some(date);
     }
+    if let Some(time) = options.time {
+        config.planning_time = Some(time);
+    }
     if let Some(max_start_snap_m) = options.max_start_snap_m {
         config.max_start_snap_m = max_start_snap_m;
     }
@@ -1918,6 +1960,9 @@ fn import_milp_solution(project: &Path, options: &MilpIncumbentOptions) -> Resul
     let mut config = load_config(project)?;
     if let Some(date) = options.date {
         config.planning_date = Some(date);
+    }
+    if let Some(time) = options.time {
+        config.planning_time = Some(time);
     }
     if let Some(max_start_snap_m) = options.max_start_snap_m {
         config.max_start_snap_m = max_start_snap_m;
@@ -2010,6 +2055,7 @@ fn milp_incumbent_generate_options(
         keep: None,
         closure_paths: None,
         date: config.planning_date,
+        time: config.planning_time,
         min_difficulty: None,
         max_difficulty: None,
         min_ascent_m: None,
@@ -3289,14 +3335,22 @@ struct AccessOverlayBundle<'a> {
     overlays: Vec<AccessOverlay>,
 }
 
-fn apply_access(project: &Path, sources: &[PathBuf], date: Option<PlanningDate>) -> Result<()> {
+fn apply_access(
+    project: &Path,
+    sources: &[PathBuf],
+    date: Option<PlanningDate>,
+    time: Option<PlanningTime>,
+) -> Result<()> {
     if sources.is_empty() {
         bail!("apply-access requires at least one --source");
     }
     let mut config = load_config(project)?;
-    let date_override = date.is_some();
+    let temporal_override = date.is_some() || time.is_some();
     if let Some(date) = date {
         config.planning_date = Some(date);
+    }
+    if let Some(time) = time {
+        config.planning_time = Some(time);
     }
     let mut graph = load_graph(project)?;
     let bundles = sources
@@ -3313,16 +3367,16 @@ fn apply_access(project: &Path, sources: &[PathBuf], date: Option<PlanningDate>)
         .flat_map(|bundle| bundle.overlays.iter().cloned())
         .collect::<Vec<_>>();
     restore_or_capture_access_baseline(project, &mut graph, &overlays, config.difficulty)?;
-    let touched = apply_access_overlays(
+    let touched = apply_access_overlays_at(
         &mut graph,
         &overlays,
-        config.planning_date,
+        config.planning_moment(),
         config.difficulty,
     );
     save_graph(project, &graph)?;
     fs::create_dir_all(project.join("sources"))?;
     write_json(project.join("sources/access-overlays.json"), &overlays)?;
-    if date_override {
+    if temporal_override {
         save_config(project, &config)?;
     }
     register_access_sources(project, &bundles)?;
@@ -3380,10 +3434,10 @@ fn materialize_effective_graph(project: &Path, config: &ProjectConfig) -> Result
             "cached graph contains access-overlay provenance but sources/access-baseline.json is missing; rebuild graph and rerun apply-access before date-specific generation"
         );
     }
-    apply_access_overlays(
+    apply_access_overlays_at(
         &mut graph,
         &overlays,
-        config.planning_date,
+        config.planning_moment(),
         config.difficulty,
     );
     Ok(graph)
@@ -4882,6 +4936,10 @@ fn parse_planning_date(raw: &str) -> Result<PlanningDate, String> {
     raw.parse()
 }
 
+fn parse_planning_time(raw: &str) -> Result<PlanningTime, String> {
+    raw.parse()
+}
+
 fn parse_terrain(raw: &str) -> Result<Terrain, String> {
     let terrain = Terrain::from_tag(raw);
     if terrain == Terrain::Unknown && !raw.trim().eq_ignore_ascii_case("unknown") {
@@ -4951,6 +5009,7 @@ mod tests {
             keep: None,
             closure_paths: None,
             date: None,
+            time: None,
             min_difficulty: None,
             max_difficulty: None,
             min_ascent_m: None,
@@ -5020,6 +5079,7 @@ mod tests {
                 keep: None,
                 closure_paths: None,
                 date: None,
+                time: None,
                 min_difficulty: None,
                 max_difficulty: None,
                 min_ascent_m: None,
@@ -5161,6 +5221,7 @@ mod tests {
                 max_km: Some(8.0),
                 max_start_snap_m: None,
                 date: None,
+                time: None,
             },
         )?;
 
@@ -5208,6 +5269,7 @@ mod tests {
                 max_km: Some(8.0),
                 max_start_snap_m: None,
                 date: None,
+                time: None,
             },
         )?;
 
@@ -5495,6 +5557,7 @@ mod tests {
             keep: Some(7),
             closure_paths: Some(3),
             date: Some("2026-05-15".parse().unwrap()),
+            time: None,
             forbidden_terrain: vec![Terrain::Road],
             min_terrain: vec![TerrainFraction {
                 terrain: Terrain::Trail,
@@ -5592,6 +5655,7 @@ mod tests {
             keep: None,
             closure_paths: None,
             date: None,
+            time: None,
             min_difficulty: None,
             max_difficulty: None,
             min_ascent_m: None,
@@ -5656,6 +5720,7 @@ mod tests {
                 keep: None,
                 closure_paths: None,
                 date: None,
+                time: None,
                 min_difficulty: None,
                 max_difficulty: Some(10_000.0),
                 min_ascent_m: None,
@@ -5821,6 +5886,7 @@ mod tests {
                 keep: None,
                 closure_paths: None,
                 date: None,
+                time: None,
                 min_difficulty: None,
                 max_difficulty: None,
                 min_ascent_m: None,
@@ -6202,6 +6268,7 @@ mod tests {
             project,
             std::slice::from_ref(&closure),
             Some("2026-05-15".parse().unwrap()),
+            None,
         )?;
         assert!(
             load_graph(project)?
@@ -6225,6 +6292,7 @@ mod tests {
                 keep: None,
                 closure_paths: None,
                 date: Some("2026-07-15".parse().unwrap()),
+                time: None,
                 min_difficulty: None,
                 max_difficulty: None,
                 min_ascent_m: None,
@@ -6264,6 +6332,107 @@ mod tests {
     }
 
     #[test]
+    fn generation_time_materializes_hourly_access_from_baseline_snapshot() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../trailgen-core/tests/fixtures/mini_network.geojson");
+        let closure = project.join("hourly-closure.geojson");
+        fs::write(
+            &closure,
+            r#"{
+              "type": "FeatureCollection",
+              "features": [{
+                "type": "Feature",
+                "properties": {
+                  "id": "midday-reservation",
+                  "source": "fixture-closure",
+                  "access": "closed",
+                  "active_from": "2026-07-01",
+                  "active_to": "2026-07-31",
+                  "time_from": "08:00",
+                  "time_to": "17:00"
+                },
+                "geometry": {
+                  "type": "Polygon",
+                  "coordinates": [[
+                    [-105.0000, 40.0020],
+                    [-104.9900, 40.0020],
+                    [-104.9900, 40.0100],
+                    [-105.0000, 40.0100],
+                    [-105.0000, 40.0020]
+                  ]]
+                }
+              }]
+            }"#,
+        )?;
+
+        init(project, "Hourly Access Test".to_owned(), None)?;
+        build(project, &fixture)?;
+        apply_access(
+            project,
+            std::slice::from_ref(&closure),
+            Some("2026-07-06".parse().unwrap()),
+            Some("12:00".parse().unwrap()),
+        )?;
+        assert!(
+            load_graph(project)?
+                .edges
+                .iter()
+                .any(|edge| edge.attr.access == Access::Closed)
+        );
+
+        generate(
+            project,
+            &GenerateOptions {
+                start: "-105.0000,40.0000".to_owned(),
+                min_km: 3.0,
+                max_km: 8.0,
+                count: 2,
+                seed: 0,
+                max_start_snap_m: None,
+                solver: Some(SolverKind::Exact),
+                max_hops: None,
+                max_frontier: None,
+                keep: None,
+                closure_paths: None,
+                date: Some("2026-07-06".parse().unwrap()),
+                time: Some("18:00".parse().unwrap()),
+                min_difficulty: None,
+                max_difficulty: None,
+                min_ascent_m: None,
+                max_ascent_m: None,
+                min_descent_m: None,
+                max_descent_m: None,
+                max_road_fraction: None,
+                max_low_confidence_fraction: None,
+                max_restricted_access_fraction: None,
+                shape: Vec::new(),
+                max_repeated_edge_fraction: None,
+                forbidden_terrain: Vec::new(),
+                forbidden_area: Vec::new(),
+                min_terrain: Vec::new(),
+                max_terrain: Vec::new(),
+            },
+        )?;
+
+        let generated_graph = load_generated_graph(project)?;
+        assert!(
+            !generated_graph
+                .edges
+                .iter()
+                .any(|edge| edge.attr.access == Access::Closed)
+        );
+        let manifest: Value = serde_json::from_str(&fs::read_to_string(
+            project.join("routes/generated.manifest.json"),
+        )?)?;
+        assert_eq!(manifest["effective_config"]["planning_date"], "2026-07-06");
+        assert_eq!(manifest["effective_config"]["planning_time"], "18:00");
+
+        Ok(())
+    }
+
+    #[test]
     fn access_and_closure_sources_compose_from_one_baseline() -> Result<()> {
         let tmp = tempfile::tempdir()?;
         let project = tmp.path();
@@ -6280,6 +6449,7 @@ mod tests {
             project,
             &[access, closure],
             Some("2026-05-15".parse().unwrap()),
+            None,
         )?;
         let graph = load_graph(project)?;
         assert!(
@@ -6310,6 +6480,7 @@ mod tests {
                 keep: None,
                 closure_paths: None,
                 date: Some("2026-07-15".parse().unwrap()),
+                time: None,
                 min_difficulty: None,
                 max_difficulty: None,
                 min_ascent_m: None,
@@ -6392,6 +6563,7 @@ mod tests {
                 keep: None,
                 closure_paths: None,
                 date: None,
+                time: None,
                 min_difficulty: None,
                 max_difficulty: Some(10_000.0),
                 min_ascent_m: None,
@@ -6533,7 +6705,7 @@ mod tests {
         )?;
 
         discover(&project, None)?;
-        assemble_sources(&project, None, 0.82)?;
+        assemble_sources(&project, None, None, 0.82)?;
 
         let graph = load_graph(&project)?;
         assert!(
@@ -6588,7 +6760,7 @@ mod tests {
         )?;
 
         discover(&project, None)?;
-        assemble_sources(&project, None, 0.83)?;
+        assemble_sources(&project, None, None, 0.83)?;
 
         let graph = load_graph(&project)?;
         let source_ids = graph
@@ -6859,7 +7031,7 @@ mod tests {
 
         init(&project, "Shapefile Apply Test".to_owned(), None)?;
         build(&project, &fixture)?;
-        apply_access(&project, std::slice::from_ref(&closure), None)?;
+        apply_access(&project, std::slice::from_ref(&closure), None, None)?;
         apply_terrain(&project, &terrain)?;
         apply_context(&project, &roads)?;
 

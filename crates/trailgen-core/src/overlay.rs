@@ -119,6 +119,136 @@ impl<'de> Deserialize<'de> for PlanningDate {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct PlanningTime {
+    pub hour: u8,
+    pub minute: u8,
+}
+
+impl PlanningTime {
+    #[must_use]
+    pub const fn new(hour: u8, minute: u8) -> Option<Self> {
+        if hour < 24 && minute < 60 {
+            Some(Self { hour, minute })
+        } else {
+            None
+        }
+    }
+
+    const fn minute_of_day(self) -> u16 {
+        self.hour as u16 * 60 + self.minute as u16
+    }
+}
+
+impl Display for PlanningTime {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:02}:{:02}", self.hour, self.minute)
+    }
+}
+
+impl FromStr for PlanningTime {
+    type Err = String;
+
+    fn from_str(raw: &str) -> std::result::Result<Self, Self::Err> {
+        let mut parts = raw.trim().split(':');
+        let hour = parts
+            .next()
+            .ok_or_else(|| "time must be HH:MM".to_owned())?
+            .parse::<u8>()
+            .map_err(|error| error.to_string())?;
+        let minute = parts
+            .next()
+            .ok_or_else(|| "time must be HH:MM".to_owned())?
+            .parse::<u8>()
+            .map_err(|error| error.to_string())?;
+        match parts.next() {
+            None => {}
+            Some("00") if parts.next().is_none() => {}
+            _ => return Err("time must be HH:MM or HH:MM:00".to_owned()),
+        }
+        Self::new(hour, minute).ok_or_else(|| "invalid civil time".to_owned())
+    }
+}
+
+impl Serialize for PlanningTime {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for PlanningTime {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct TimeVisitor;
+
+        impl Visitor<'_> for TimeVisitor {
+            type Value = PlanningTime;
+
+            fn expecting(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+                f.write_str("an HH:MM civil time")
+            }
+
+            fn visit_str<E>(self, v: &str) -> std::result::Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                v.parse::<PlanningTime>().map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_str(TimeVisitor)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct DailyTimeWindow {
+    pub from: PlanningTime,
+    pub to: PlanningTime,
+}
+
+impl DailyTimeWindow {
+    #[must_use]
+    pub const fn new(from: PlanningTime, to: PlanningTime) -> Self {
+        Self { from, to }
+    }
+
+    #[must_use]
+    pub const fn contains(self, time: PlanningTime) -> bool {
+        let from = self.from.minute_of_day();
+        let to = self.to.minute_of_day();
+        let time = time.minute_of_day();
+        if from <= to {
+            from <= time && time <= to
+        } else {
+            from <= time || time <= to
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PlanningMoment {
+    pub date: Option<PlanningDate>,
+    pub time: Option<PlanningTime>,
+}
+
+impl PlanningMoment {
+    #[must_use]
+    pub const fn new(date: Option<PlanningDate>, time: Option<PlanningTime>) -> Self {
+        Self { date, time }
+    }
+
+    #[must_use]
+    pub const fn on(date: PlanningDate) -> Self {
+        Self::new(Some(date), None)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct MonthDay {
     pub month: u8,
     pub day: u8,
@@ -525,6 +655,8 @@ pub struct AccessWindow {
     pub seasonal: Option<SeasonalWindow>,
     #[serde(default, skip_serializing_if = "WeekdaySet::is_empty")]
     pub weekdays: WeekdaySet,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time: Option<DailyTimeWindow>,
 }
 
 impl AccessWindow {
@@ -534,17 +666,27 @@ impl AccessWindow {
             && self.to.is_none()
             && self.seasonal.is_none()
             && self.weekdays.is_empty()
+            && self.time.is_none()
     }
 
     #[must_use]
     pub fn contains(self, date: Option<PlanningDate>) -> bool {
-        let Some(date) = date else {
+        self.contains_at(Some(PlanningMoment::new(date, None)))
+    }
+
+    #[must_use]
+    pub fn contains_at(self, moment: Option<PlanningMoment>) -> bool {
+        let Some(moment) = moment else {
             return true;
         };
-        self.from.is_none_or(|from| from <= date)
-            && self.to.is_none_or(|to| date <= to)
-            && self.seasonal.is_none_or(|season| season.contains(date))
-            && (self.weekdays.is_empty() || self.weekdays.contains(date.weekday()))
+        moment.date.is_none_or(|date| {
+            self.from.is_none_or(|from| from <= date)
+                && self.to.is_none_or(|to| date <= to)
+                && self.seasonal.is_none_or(|season| season.contains(date))
+                && (self.weekdays.is_empty() || self.weekdays.contains(date.weekday()))
+        }) && self
+            .time
+            .is_none_or(|time_window| moment.time.is_none_or(|time| time_window.contains(time)))
     }
 }
 
@@ -615,6 +757,11 @@ impl AccessOverlay {
     pub fn active_on(&self, date: Option<PlanningDate>) -> bool {
         self.active.contains(date)
     }
+
+    #[must_use]
+    pub fn active_at(&self, moment: Option<PlanningMoment>) -> bool {
+        self.active.contains_at(moment)
+    }
 }
 
 impl TerrainOverlay {
@@ -630,10 +777,24 @@ pub fn apply_access_overlays(
     planning_date: Option<PlanningDate>,
     weights: DifficultyWeights,
 ) -> usize {
+    apply_access_overlays_at(
+        graph,
+        overlays,
+        Some(PlanningMoment::new(planning_date, None)),
+        weights,
+    )
+}
+
+pub fn apply_access_overlays_at(
+    graph: &mut TrailGraph,
+    overlays: &[AccessOverlay],
+    planning_moment: Option<PlanningMoment>,
+    weights: DifficultyWeights,
+) -> usize {
     let mut touched = 0usize;
     for edge in &mut graph.edges {
         for overlay in overlays {
-            if !overlay.active_on(planning_date) || !overlay.affects(edge) {
+            if !overlay.active_at(planning_moment) || !overlay.affects(edge) {
                 continue;
             }
             touched += 1;

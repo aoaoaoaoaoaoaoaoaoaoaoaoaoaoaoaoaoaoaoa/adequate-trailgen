@@ -3,8 +3,8 @@ use crate::crs::{CoordProjector, CrsVerdict, projector, validate_prj_wkt};
 use crate::geo::{Coord, LineString};
 use crate::model::{Access, CrossingKind, EdgeTravel, Provenance, Terrain};
 use crate::overlay::{
-    AccessOverlay, AccessWindow, ContextOverlay, MonthDay, OverlayGeometry, PlanningDate,
-    SeasonalWindow, TerrainOverlay, WeekdaySet,
+    AccessOverlay, AccessWindow, ContextOverlay, DailyTimeWindow, MonthDay, OverlayGeometry,
+    PlanningDate, PlanningTime, SeasonalWindow, TerrainOverlay, WeekdaySet,
 };
 use crate::{Result, TrailgenError};
 use ::shapefile::dbase::{FieldValue, Record};
@@ -106,6 +106,7 @@ fn access_window_from_props(props: &ShpProps<'_>) -> Result<AccessWindow> {
         to: props.date(&["active_to", "end_date", "ends_on", "to"])?,
         seasonal: props.seasonal_window()?,
         weekdays: props.weekdays()?,
+        time: props.time_window()?,
     })
 }
 
@@ -444,6 +445,14 @@ impl<'a> ShpProps<'a> {
             .map_err(TrailgenError::InvalidData)
     }
 
+    fn time(&self, keys: &[&str]) -> Result<Option<PlanningTime>> {
+        keys.iter()
+            .find_map(|key| self.str(key))
+            .map(str::parse::<PlanningTime>)
+            .transpose()
+            .map_err(TrailgenError::InvalidData)
+    }
+
     fn seasonal_window(&self) -> Result<Option<SeasonalWindow>> {
         let from = self.month_day(&[
             "seasonal_from",
@@ -464,6 +473,32 @@ impl<'a> ShpProps<'a> {
             (Some(from), Some(to)) => Ok(Some(SeasonalWindow::new(from, to))),
             _ => Err(TrailgenError::InvalidData(
                 "recurring seasonal access windows require both from and to month-days".to_owned(),
+            )),
+        }
+    }
+
+    fn time_window(&self) -> Result<Option<DailyTimeWindow>> {
+        let from = self.time(&[
+            "time_from",
+            "active_time_from",
+            "start_time",
+            "starts_at",
+            "hour_from",
+            "hours_from",
+        ])?;
+        let to = self.time(&[
+            "time_to",
+            "active_time_to",
+            "end_time",
+            "ends_at",
+            "hour_to",
+            "hours_to",
+        ])?;
+        match (from, to) {
+            (None, None) => Ok(None),
+            (Some(from), Some(to)) => Ok(Some(DailyTimeWindow::new(from, to))),
+            _ => Err(TrailgenError::InvalidData(
+                "hourly access windows require both from and to times".to_owned(),
             )),
         }
     }
