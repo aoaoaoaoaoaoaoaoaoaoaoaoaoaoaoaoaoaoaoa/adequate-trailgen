@@ -2534,6 +2534,7 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
     routes.truncate(options.count);
     fs::create_dir_all(project.join("routes"))?;
     fs::create_dir_all(project.join("reports"))?;
+    let previous_artifacts = previous_generated_artifacts(project)?;
     write_json(
         project.join("routes/generated.geojson"),
         &geojson::routes_to_geojson(&graph, &routes),
@@ -2562,6 +2563,7 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
         render_map_html(&config.name, &graph, &routes)?,
     )?;
     finalize_generation_manifest(project, &mut manifest)?;
+    remove_obsolete_generation_artifacts(project, previous_artifacts, &manifest.artifacts)?;
     println!("generated {} route(s)", routes.len());
     Ok(())
 }
@@ -2640,6 +2642,7 @@ fn import_milp_solution(project: &Path, options: &MilpIncumbentOptions) -> Resul
     rank_routes(&mut routes, &config.constraints);
     fs::create_dir_all(project.join("routes"))?;
     fs::create_dir_all(project.join("reports"))?;
+    let previous_artifacts = previous_generated_artifacts(project)?;
     write_json(
         project.join("routes/generated.geojson"),
         &geojson::routes_to_geojson(&graph, &routes),
@@ -2669,6 +2672,7 @@ fn import_milp_solution(project: &Path, options: &MilpIncumbentOptions) -> Resul
         render_map_html(&config.name, &graph, &routes)?,
     )?;
     finalize_generation_manifest(project, &mut manifest)?;
+    remove_obsolete_generation_artifacts(project, previous_artifacts, &manifest.artifacts)?;
     println!(
         "imported MILP incumbent {} as {} with {:.2} km and {} edge(s)",
         options.solution.display(),
@@ -5375,6 +5379,36 @@ fn generation_artifact_fingerprints(
         .collect()
 }
 
+fn previous_generated_artifacts(project: &Path) -> Result<BTreeSet<String>> {
+    Ok(load_generated_run_ledger(project)?
+        .map(|ledger| ledger.artifacts.into_iter().collect())
+        .unwrap_or_default())
+}
+
+fn remove_obsolete_generation_artifacts(
+    project: &Path,
+    previous: BTreeSet<String>,
+    current: &[String],
+) -> Result<()> {
+    let current = current.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    for artifact in previous {
+        if artifact == "routes/generated.manifest.json" || current.contains(artifact.as_str()) {
+            continue;
+        }
+        let path = resolve_generated_artifact_path(project, &artifact)?;
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("remove obsolete generated artifact {}", path.display())
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 fn graph_manifest(graph: &TrailGraph) -> GraphManifest {
     let mut terrain_km = BTreeMap::<Terrain, f64>::new();
     for edge in &graph.edges {
@@ -6689,6 +6723,47 @@ mod tests {
             verify_generation(project).expect_err("artifact drift should fail run verification");
         assert!(format!("{artifact_error:#}").contains("generated artifact verification failed"));
         assert!(format!("{artifact_error:#}").contains("reports/generated.md drifted"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn generation_prunes_obsolete_recorded_artifacts() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../trailgen-core/tests/fixtures/mini_network.geojson");
+
+        init(project, "Artifact Prune Test".to_owned(), None)?;
+        build(project, &fixture)?;
+        let mut options = GenerateOptions {
+            solver: Some(SolverKind::Exact),
+            max_hops: Some(8),
+            ..mini_generate_options()
+        };
+        generate(project, &options)?;
+        assert!(project.join("routes/candidate-2.gpx").exists());
+        assert!(project.join("reports/candidate-2.md").exists());
+        fs::write(project.join("routes/manual.gpx"), "manual route export")?;
+
+        options.count = 1;
+        generate(project, &options)?;
+        verify_generation(project)?;
+        assert!(project.join("routes/candidate-1.gpx").exists());
+        assert!(!project.join("routes/candidate-2.gpx").exists());
+        assert!(!project.join("reports/candidate-2.md").exists());
+        assert!(project.join("routes/manual.gpx").exists());
+
+        let manifest: Value = serde_json::from_str(&fs::read_to_string(
+            project.join("routes/generated.manifest.json"),
+        )?)?;
+        assert!(
+            manifest["artifacts"]
+                .as_array()
+                .expect("artifacts")
+                .iter()
+                .all(|artifact| artifact != "routes/candidate-2.gpx")
+        );
 
         Ok(())
     }
