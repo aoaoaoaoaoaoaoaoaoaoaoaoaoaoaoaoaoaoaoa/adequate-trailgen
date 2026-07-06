@@ -11,7 +11,7 @@ use trailgen_core::alltrails::{
     RouteExchangeFormat,
 };
 use trailgen_core::io::route_file::RouteFile;
-use trailgen_core::io::{csv, geojson, gpx, json_route, kml, kmz, report, shapefile as shp};
+use trailgen_core::io::{csv, geojson, gpx, json_route, kml, kmz, osm, report, shapefile as shp};
 use trailgen_core::source::{
     GeoBounds, SourceCandidate, SourceFingerprint, SourceKind, SourceManifest, adapter_registry,
     classify_path, discovery_recommendations, source_coverage,
@@ -54,7 +54,7 @@ enum Cmd {
     Build {
         /// Project directory containing trailgen.toml.
         project: PathBuf,
-        /// `GeoJSON`, shapefile, `GPX`, `KML`/`KMZ`, `CSV`, or route `JSON` source; repeat to merge sources.
+        /// `GeoJSON`, OSM XML, shapefile, `GPX`, `KML`/`KMZ`, `CSV`, or route `JSON` source; repeat to merge sources.
         #[arg(long, required = true)]
         source: Vec<PathBuf>,
     },
@@ -715,13 +715,21 @@ fn build_source(source: &Path) -> Result<BuildSource> {
             kind: SourceKind::SeedRoute,
             adapter_id: route_adapter_id(source),
         }),
+        Some("osm") => Ok(BuildSource {
+            drafts: osm::network_from_str(
+                &fs::read_to_string(source)
+                    .with_context(|| format!("read {}", source.display()))?,
+            )?,
+            kind: SourceKind::TrailNetwork,
+            adapter_id: "osm-xml-network",
+        }),
         Some("shp") => Ok(BuildSource {
             drafts: shp::network_from_path(source)?,
             kind: SourceKind::TrailNetwork,
             adapter_id: "shapefile-network",
         }),
         Some(ext) => bail!(
-            "unsupported build source extension {ext:?}; expected geojson, json, shp, gpx, csv, kml, or kmz"
+            "unsupported build source extension {ext:?}; expected geojson, json, osm, shp, gpx, csv, kml, or kmz"
         ),
         None => bail!("build source has no extension"),
     }
@@ -4872,6 +4880,67 @@ mod tests {
             candidate["path"].as_str() == Some(spur.to_str().unwrap())
                 && candidate["adapter_id"] == "geojson-network"
         }));
+        assert!(
+            manifest["coverage"]
+                .as_array()
+                .expect("coverage")
+                .iter()
+                .any(|entry| entry["kind"] == "trail-network" && entry["status"] == "satisfied")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn build_accepts_osm_xml_network_sources() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path();
+        let osm = tmp.path().join("osm-trails.osm");
+        fs::write(
+            &osm,
+            r#"<osm version="0.6">
+  <node id="1" lat="40.0" lon="-105.0"/>
+  <node id="2" lat="40.0" lon="-104.99"/>
+  <node id="3" lat="40.01" lon="-104.99"/>
+  <way id="trail-10">
+    <nd ref="1"/><nd ref="2"/>
+    <tag k="highway" v="path"/>
+    <tag k="surface" v="dirt"/>
+    <tag k="foot" v="designated"/>
+  </way>
+  <way id="service-11">
+    <nd ref="2"/><nd ref="3"/>
+    <tag k="highway" v="service"/>
+    <tag k="access" v="private"/>
+  </way>
+</osm>"#,
+        )?;
+
+        init(project, "OSM Build Test".to_owned(), None)?;
+        build(project, &osm)?;
+
+        let graph = load_graph(project)?;
+        assert_eq!(graph.edges.len(), 2);
+        assert!(graph.edges.iter().any(|edge| {
+            edge.attr
+                .provenance
+                .iter()
+                .any(|p| p.source == "osm-xml" && p.source_id.as_deref() == Some("trail-10"))
+        }));
+        assert!(graph.edges.iter().any(|edge| {
+            edge.attr.access == Access::Private
+                && (edge.attr.road_exposure - 1.0).abs() <= f64::EPSILON
+        }));
+
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(project.join("sources/manifest.json"))?)?;
+        let candidate = manifest["candidates"]
+            .as_array()
+            .expect("candidates")
+            .iter()
+            .find(|candidate| candidate["path"].as_str() == Some(osm.to_str().unwrap()))
+            .expect("OSM source candidate");
+        assert_eq!(candidate["kind"], "trail-network");
+        assert_eq!(candidate["adapter_id"], "osm-xml-network");
         assert!(
             manifest["coverage"]
                 .as_array()

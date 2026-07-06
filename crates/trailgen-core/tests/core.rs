@@ -3,7 +3,9 @@ use trailgen_core::alltrails::{
     ALLTRAILS_POLICY_VERIFIED_ON, AllTrailsBridge, AllTrailsExchange, AllTrailsRequest,
     BridgeStatus, ManualAllTrailsBridge, RouteExchangeFormat, TrailgenExchangeAction,
 };
-use trailgen_core::io::{csv, geojson, gpx, json_route, kml, kmz, report, shapefile as shp_io};
+use trailgen_core::io::{
+    csv, geojson, gpx, json_route, kml, kmz, osm, report, shapefile as shp_io,
+};
 use trailgen_core::source::{
     SourceCoverageStatus, SourceKind, adapter_registry, classify_path, discovery_recommendations,
     source_coverage,
@@ -299,6 +301,67 @@ fn geojson_network_normalizes_one_way_tags() {
     .unwrap();
 
     assert_eq!(drafts[0].travel, EdgeTravel::Backward);
+}
+
+#[test]
+fn osm_xml_network_normalizes_walkable_ways() {
+    let drafts = osm::network_from_str(
+        r#"<osm version="0.6">
+  <node id="1" lat="40.0" lon="-105.0"/>
+  <node id="2" lat="40.0" lon="-104.99"/>
+  <node id="3" lat="40.01" lon="-104.99"/>
+  <node id="4" lat="40.01" lon="-105.0"/>
+  <way id="10">
+    <nd ref="1"/><nd ref="2"/>
+    <tag k="highway" v="path"/>
+    <tag k="surface" v="asphalt"/>
+    <tag k="foot" v="designated"/>
+    <tag k="oneway:foot" v="yes"/>
+  </way>
+  <way id="11">
+    <nd ref="2"/><nd ref="3"/>
+    <tag k="highway" v="track"/>
+    <tag k="access" v="private"/>
+  </way>
+  <way id="12">
+    <nd ref="3"/><nd ref="4"/>
+    <tag k="highway" v="motorway"/>
+  </way>
+</osm>"#,
+    )
+    .unwrap();
+
+    assert_eq!(drafts.len(), 2);
+    assert_eq!(drafts[0].terrain, Terrain::Pavement);
+    assert_eq!(drafts[0].surface.as_deref(), Some("asphalt"));
+    assert_eq!(drafts[0].access, Access::Open);
+    assert_eq!(drafts[0].travel, EdgeTravel::Forward);
+    assert_eq!(drafts[0].provenance.source, "osm-xml");
+    assert_eq!(drafts[0].provenance.source_id.as_deref(), Some("10"));
+    assert_eq!(drafts[1].terrain, Terrain::Road);
+    assert_eq!(drafts[1].access, Access::Private);
+    assert!((drafts[1].road_exposure - 1.0).abs() <= f64::EPSILON);
+
+    let graph = GraphBuilder::default().build(&drafts).unwrap();
+    assert_eq!(graph.edges.len(), 2);
+    assert!(
+        graph
+            .edges
+            .iter()
+            .any(|edge| edge.attr.provenance[0].source == "osm-xml")
+    );
+}
+
+#[test]
+fn osm_xml_network_rejects_missing_way_nodes() {
+    let error = osm::network_from_str(
+        r#"<osm version="0.6">
+  <node id="1" lat="40.0" lon="-105.0"/>
+  <way id="10"><nd ref="1"/><nd ref="missing"/><tag k="highway" v="path"/></way>
+</osm>"#,
+    )
+    .unwrap_err();
+    assert!(format!("{error}").contains("references missing node missing"));
 }
 
 #[test]
@@ -1716,6 +1779,9 @@ fn source_registry_classifies_local_inputs() {
     let shp_network = classify_path(std::path::Path::new("sources/trails.shp")).unwrap();
     assert_eq!(shp_network.kind, SourceKind::TrailNetwork);
     assert_eq!(shp_network.adapter_id, "shapefile-network");
+    let osm_network = classify_path(std::path::Path::new("sources/osm-trails.osm")).unwrap();
+    assert_eq!(osm_network.kind, SourceKind::TrailNetwork);
+    assert_eq!(osm_network.adapter_id, "osm-xml-network");
     let shp_access = classify_path(std::path::Path::new("sources/ownership-access.shp")).unwrap();
     assert_eq!(shp_access.kind, SourceKind::Access);
     assert_eq!(shp_access.adapter_id, "shapefile-access-overlay");

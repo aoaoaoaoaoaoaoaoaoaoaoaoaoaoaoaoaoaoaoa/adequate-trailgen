@@ -30,6 +30,19 @@
       "note": "Official/agency polyline shapefile trail-network ingestion with DBF attribute normalization."
     },
     {
+      "id": "osm-xml-network",
+      "kind": "trail-network",
+      "status": "implemented",
+      "consumes": [
+        "osm"
+      ],
+      "produces": [
+        "SegmentDraft",
+        "TrailGraph"
+      ],
+      "note": "OSM XML walkable-way trail-network ingestion with access, surface, direction, and provenance normalization."
+    },
+    {
       "id": "geojson-route",
       "kind": "seed-route",
       "status": "implemented",
@@ -285,12 +298,14 @@
       "priority": "required",
       "adapter_ids": [
         "geojson-network",
-        "shapefile-network"
+        "shapefile-network",
+        "osm-xml-network"
       ],
       "suggested_paths": [
         "sources/trails.geojson",
         "sources/network.geojson",
-        "sources/trails.shp"
+        "sources/trails.shp",
+        "sources/osm-trails.osm"
       ],
       "acquisition_hints": [
         {
@@ -318,9 +333,10 @@
           "url": "https://download.geofabrik.de/",
           "formats": [
             "OSM PBF",
+            "OSM XML after conversion",
             "Shapefile"
           ],
-          "note": "Use as a broad fallback extract, then filter hiking paths/tracks and normalize to GeoJSON or shapefile."
+          "note": "Use as a broad fallback extract, then filter hiking paths/tracks and cache as OSM XML, GeoJSON, or shapefile."
         }
       ],
       "search_terms": [

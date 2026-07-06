@@ -264,6 +264,14 @@ fn network_adapters() -> Vec<SourceAdapter> {
             ["SegmentDraft", "TrailGraph"],
             "Official/agency polyline shapefile trail-network ingestion with DBF attribute normalization.",
         ),
+        adapter(
+            "osm-xml-network",
+            SourceKind::TrailNetwork,
+            AdapterStatus::Implemented,
+            ["osm"],
+            ["SegmentDraft", "TrailGraph"],
+            "OSM XML walkable-way trail-network ingestion with access, surface, direction, and provenance normalization.",
+        ),
     ]
 }
 
@@ -521,8 +529,8 @@ const TRAIL_NETWORK_HINTS: &[AcquisitionHintSpec] = &[
     AcquisitionHintSpec {
         label: "Geofabrik OpenStreetMap extracts",
         url: "https://download.geofabrik.de/",
-        formats: &["OSM PBF", "Shapefile"],
-        note: "Use as a broad fallback extract, then filter hiking paths/tracks and normalize to GeoJSON or shapefile.",
+        formats: &["OSM PBF", "OSM XML after conversion", "Shapefile"],
+        note: "Use as a broad fallback extract, then filter hiking paths/tracks and cache as OSM XML, GeoJSON, or shapefile.",
     },
 ];
 
@@ -641,11 +649,12 @@ const RECOMMENDATION_SPECS: &[RecommendationSpec] = &[
     RecommendationSpec {
         kind: SourceKind::TrailNetwork,
         priority: SourcePriority::Required,
-        adapter_ids: &["geojson-network", "shapefile-network"],
+        adapter_ids: &["geojson-network", "shapefile-network", "osm-xml-network"],
         suggested_paths: &[
             "sources/trails.geojson",
             "sources/network.geojson",
             "sources/trails.shp",
+            "sources/osm-trails.osm",
         ],
         acquisition_hints: TRAIL_NETWORK_HINTS,
         search_terms: &[
@@ -831,6 +840,7 @@ pub fn classify_path(path: &Path) -> Option<SourceCandidate> {
             (SourceKind::Hydrology, "geojson-hydrology-context")
         }
         "geojson" | "json" => (SourceKind::TrailNetwork, "geojson-network"),
+        "osm" => (SourceKind::TrailNetwork, "osm-xml-network"),
         "asc" => (SourceKind::Elevation, "arc-ascii-elevation"),
         "tif" | "tiff" => (SourceKind::Elevation, "geotiff-elevation"),
         "vrt" => (SourceKind::Elevation, "vrt-elevation"),
