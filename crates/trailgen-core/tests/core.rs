@@ -387,6 +387,12 @@ fn osm_xml_network_preserves_hiking_route_relation_evidence() {
     <tag k="route" v="hiking"/>
     <tag k="name" v="Ridge Route"/>
   </relation>
+  <relation id="30">
+    <member type="way" ref="10" role="from"/>
+    <member type="way" ref="10" role="to"/>
+    <tag k="type" v="restriction"/>
+    <tag k="restriction" v="no_right_turn"/>
+  </relation>
 </osm>"#,
     )
     .unwrap();
@@ -394,21 +400,17 @@ fn osm_xml_network_preserves_hiking_route_relation_evidence() {
     assert_eq!(drafts.len(), 1);
     assert_eq!(
         drafts[0].provenance.layer.as_deref(),
-        Some("way+route-relation")
+        Some("way+route-relation+turn-restriction")
     );
-    assert!(
-        drafts[0]
-            .provenance
-            .source_id
-            .as_deref()
-            .is_some_and(|id| id.contains("way 10; route relations 20:ridge route"))
-    );
+    let source_id = drafts[0].provenance.source_id.as_deref().unwrap();
+    assert!(source_id.contains("way 10; route relations 20:ridge route"));
+    assert!(source_id.contains("turn restrictions 30:from:no_right_turn,30:to:no_right_turn"));
     assert!(drafts[0].confidence >= 0.82);
 
     let graph = GraphBuilder::default().build(&drafts).unwrap();
     assert_eq!(
         graph.edges[0].attr.provenance[0].layer.as_deref(),
-        Some("way+route-relation")
+        Some("way+route-relation+turn-restriction")
     );
 }
 
@@ -423,15 +425,11 @@ fn osm_pbf_network_normalizes_walkable_ways() {
     assert_eq!(drafts[0].provenance.source, "osm-pbf");
     assert_eq!(
         drafts[0].provenance.layer.as_deref(),
-        Some("way+route-relation")
+        Some("way+route-relation+turn-restriction")
     );
-    assert!(
-        drafts[0]
-            .provenance
-            .source_id
-            .as_deref()
-            .is_some_and(|id| id.contains("way 10; route relations 20:ridge route"))
-    );
+    let source_id = drafts[0].provenance.source_id.as_deref().unwrap();
+    assert!(source_id.contains("way 10; route relations 20:ridge route"));
+    assert!(source_id.contains("turn restrictions 30:from:no_right_turn,30:to:no_right_turn"));
     assert!(drafts[0].confidence >= 0.82);
     assert_eq!(drafts[1].terrain, Terrain::Road);
     assert_eq!(drafts[1].access, Access::Private);
@@ -4055,6 +4053,10 @@ fn tiny_osm_pbf() -> Vec<u8> {
         "hiking",
         "name",
         "ridge route",
+        "restriction",
+        "no_right_turn",
+        "from",
+        "to",
     ]
     .into_iter()
     .map(|s| s.as_bytes().to_vec())
@@ -4073,7 +4075,10 @@ fn tiny_osm_pbf() -> Vec<u8> {
         pbf_way(12, &[(1, 10)], &[3, 1]),
         pbf_way(13, &[(11, 12)], &[4, -3]),
     ];
-    group.relations = vec![pbf_relation(20, &[(13, 14), (14, 15), (16, 17)], &[10])];
+    group.relations = vec![
+        pbf_relation(20, &[(13, 14), (14, 15), (16, 17)], &[10]),
+        pbf_relation_with_roles(30, &[(13, 18), (18, 19)], &[(10, 20), (10, 21)]),
+    ];
 
     let mut block = PrimitiveBlock::new();
     block.stringtable = MessageField::some(table);
@@ -4103,18 +4108,27 @@ fn pbf_relation(
     tags: &[(u32, u32)],
     way_refs: &[i64],
 ) -> osmpbfreader::osmformat::Relation {
+    let refs = way_refs.iter().map(|way| (*way, 0)).collect::<Vec<_>>();
+    pbf_relation_with_roles(id, tags, &refs)
+}
+
+fn pbf_relation_with_roles(
+    id: i64,
+    tags: &[(u32, u32)],
+    way_refs: &[(i64, i32)],
+) -> osmpbfreader::osmformat::Relation {
     use osmpbfreader::osmformat::relation::MemberType;
 
     let mut relation = osmpbfreader::osmformat::Relation::new();
     relation.set_id(id);
     relation.keys = tags.iter().map(|(key, _)| *key).collect();
     relation.vals = tags.iter().map(|(_, value)| *value).collect();
-    relation.roles_sid = vec![0; way_refs.len()];
+    relation.roles_sid = way_refs.iter().map(|(_, role)| *role).collect();
     relation.memids = way_refs
         .iter()
         .scan(0, |last, reference| {
-            let delta = *reference - *last;
-            *last = *reference;
+            let delta = reference.0 - *last;
+            *last = reference.0;
             Some(delta)
         })
         .collect();

@@ -610,6 +610,8 @@ const OSM_TRAIL_SELECTORS: &[&str] = &[
     r#"way["highway"~"^(path|footway|track|service|pedestrian|steps|bridleway|unclassified|residential|tertiary|road)$"]"#,
     r#"way["route"~"^(hiking|foot|walking)$"]"#,
     r#"relation["type"="route"]["route"~"^(hiking|foot|walking)$"]"#,
+    r#"relation["type"="restriction"]["restriction"]"#,
+    r#"relation["type"="restriction"]["restriction:foot"]"#,
 ];
 const OSM_ROAD_SELECTORS: &[&str] = &[
     r#"way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|track|road)$"]"#,
@@ -6571,6 +6573,12 @@ mod tests {
         assert!(trails.contains(&format!(r#"way["route"~"^(hiking|foot|walking)$"]{bbox};"#)));
         assert!(trails.contains(&format!(
             r#"relation["type"="route"]["route"~"^(hiking|foot|walking)$"]{bbox};"#
+        )));
+        assert!(trails.contains(&format!(
+            r#"relation["type"="restriction"]["restriction"]{bbox};"#
+        )));
+        assert!(trails.contains(&format!(
+            r#"relation["type"="restriction"]["restriction:foot"]{bbox};"#
         )));
         assert!(trails.ends_with("(._;>;);\nout body;\n"));
 

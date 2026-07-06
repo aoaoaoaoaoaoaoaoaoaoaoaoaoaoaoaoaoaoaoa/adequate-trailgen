@@ -24,10 +24,10 @@ pub fn network_from_str(s: &str) -> Result<Vec<SegmentDraft>> {
         .filter(|node| node.has_tag_name("node"))
         .map(parse_node)
         .collect::<Result<BTreeMap<_, _>>>()?;
-    let route_relations = xml_route_relations(root)?;
+    let relations = xml_relation_evidence(root)?;
     root.children()
         .filter(|node| node.has_tag_name("way"))
-        .filter_map(|way| draft_from_xml_way(way, &nodes, &route_relations).transpose())
+        .filter_map(|way| draft_from_xml_way(way, &nodes, &relations).transpose())
         .collect()
 }
 
@@ -36,11 +36,11 @@ pub fn network_from_pbf_reader<R: Read + Seek>(reader: R) -> Result<Vec<SegmentD
     let objects = pbf
         .get_objs_and_deps(pbf_network_object)
         .map_err(|error| TrailgenError::InvalidData(format!("parse OSM PBF: {error}")))?;
-    let route_relations = pbf_route_relations(&objects);
+    let relations = pbf_relation_evidence(&objects);
     objects
         .values()
         .filter_map(|object| match object {
-            OsmObj::Way(way) => draft_from_pbf_way(way, &objects, &route_relations).transpose(),
+            OsmObj::Way(way) => draft_from_pbf_way(way, &objects, &relations).transpose(),
             OsmObj::Node(_) | OsmObj::Relation(_) => None,
         })
         .collect()
@@ -103,7 +103,7 @@ fn parse_node(node: roxmltree::Node<'_, '_>) -> Result<(String, Coord)> {
 fn draft_from_xml_way(
     way: roxmltree::Node<'_, '_>,
     nodes: &BTreeMap<String, Coord>,
-    route_relations: &BTreeMap<String, Vec<RouteRelationEvidence>>,
+    relations: &OsmRelationEvidence,
 ) -> Result<Option<SegmentDraft>> {
     let tags = xml_tags(way);
     let Some(walkway) = Walkway::from_tags(&tags) else {
@@ -132,9 +132,9 @@ fn draft_from_xml_way(
         road_exposure: walkway.road_exposure,
         confidence: relation_boosted_confidence(
             walkway.confidence,
-            route_relations.get(&id).map_or(0, Vec::len),
+            relations.route_by_way.get(&id).map_or(0, Vec::len),
         ),
-        provenance: osm_way_provenance("osm-xml", &id, route_relations),
+        provenance: osm_way_provenance("osm-xml", &id, relations),
     }))
 }
 
@@ -167,13 +167,21 @@ fn pbf_walkable_way(object: &OsmObj) -> bool {
 }
 
 fn pbf_network_object(object: &OsmObj) -> bool {
-    pbf_walkable_way(object) || pbf_hiking_route_relation(object)
+    pbf_walkable_way(object)
+        || pbf_hiking_route_relation(object)
+        || pbf_turn_restriction_relation(object)
 }
 
 fn pbf_hiking_route_relation(object: &OsmObj) -> bool {
     object
         .relation()
         .is_some_and(|relation| route_relation_from_tags(&pbf_tags(&relation.tags)).is_some())
+}
+
+fn pbf_turn_restriction_relation(object: &OsmObj) -> bool {
+    object
+        .relation()
+        .is_some_and(|relation| turn_restriction_from_tags(&pbf_tags(&relation.tags)).is_some())
 }
 
 fn pbf_context_way(object: &OsmObj) -> bool {
@@ -185,7 +193,7 @@ fn pbf_context_way(object: &OsmObj) -> bool {
 fn draft_from_pbf_way(
     way: &PbfWay,
     objects: &BTreeMap<OsmId, OsmObj>,
-    route_relations: &BTreeMap<String, Vec<RouteRelationEvidence>>,
+    relations: &OsmRelationEvidence,
 ) -> Result<Option<SegmentDraft>> {
     let tags = pbf_tags(&way.tags);
     let Some(walkway) = Walkway::from_tags(&tags) else {
@@ -213,11 +221,12 @@ fn draft_from_pbf_way(
         road_exposure: walkway.road_exposure,
         confidence: relation_boosted_confidence(
             walkway.confidence,
-            route_relations
+            relations
+                .route_by_way
                 .get(&way.id.0.to_string())
                 .map_or(0, Vec::len),
         ),
-        provenance: osm_way_provenance("osm-pbf", &way.id.0.to_string(), route_relations),
+        provenance: osm_way_provenance("osm-pbf", &way.id.0.to_string(), relations),
     }))
 }
 
@@ -260,18 +269,29 @@ struct RouteRelationEvidence {
     label: String,
 }
 
-fn xml_route_relations(
-    root: roxmltree::Node<'_, '_>,
-) -> Result<BTreeMap<String, Vec<RouteRelationEvidence>>> {
-    let mut by_way = BTreeMap::<String, Vec<RouteRelationEvidence>>::new();
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TurnRestrictionEvidence {
+    id: String,
+    restriction: String,
+    role: String,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct OsmRelationEvidence {
+    route_by_way: BTreeMap<String, Vec<RouteRelationEvidence>>,
+    turn_restriction_by_way: BTreeMap<String, Vec<TurnRestrictionEvidence>>,
+}
+
+fn xml_relation_evidence(root: roxmltree::Node<'_, '_>) -> Result<OsmRelationEvidence> {
+    let mut evidence = OsmRelationEvidence::default();
     for relation in root.children().filter(|node| node.has_tag_name("relation")) {
         let tags = xml_tags(relation);
-        let Some(evidence) = route_relation_from_tags(&tags).map(|label| RouteRelationEvidence {
-            id: relation_id(relation),
+        let id = relation_id(relation);
+        let route = route_relation_from_tags(&tags).map(|label| RouteRelationEvidence {
+            id: id.clone(),
             label,
-        }) else {
-            continue;
-        };
+        });
+        let turn_restriction = turn_restriction_from_tags(&tags);
         for member in relation
             .children()
             .filter(|node| node.has_tag_name("member"))
@@ -279,33 +299,64 @@ fn xml_route_relations(
             if required_attr(member, "type")? != "way" {
                 continue;
             }
-            by_way
-                .entry(required_attr(member, "ref")?.to_owned())
-                .or_default()
-                .push(evidence.clone());
-        }
-    }
-    Ok(by_way)
-}
-
-fn pbf_route_relations(
-    objects: &BTreeMap<OsmId, OsmObj>,
-) -> BTreeMap<String, Vec<RouteRelationEvidence>> {
-    let mut by_way = BTreeMap::<String, Vec<RouteRelationEvidence>>::new();
-    for relation in objects.values().filter_map(OsmObj::relation) {
-        let Some(evidence) = pbf_route_relation_evidence(relation) else {
-            continue;
-        };
-        for reference in &relation.refs {
-            if let OsmId::Way(WayId(id)) = reference.member {
-                by_way
-                    .entry(id.to_string())
+            let way = required_attr(member, "ref")?.to_owned();
+            if let Some(route) = &route {
+                evidence
+                    .route_by_way
+                    .entry(way.clone())
                     .or_default()
-                    .push(evidence.clone());
+                    .push(route.clone());
+            }
+            if let Some(restriction) = &turn_restriction {
+                let role = required_attr(member, "role")?;
+                if matches!(role, "from" | "to") {
+                    evidence
+                        .turn_restriction_by_way
+                        .entry(way)
+                        .or_default()
+                        .push(TurnRestrictionEvidence {
+                            id: id.clone(),
+                            restriction: restriction.clone(),
+                            role: role.to_owned(),
+                        });
+                }
             }
         }
     }
-    by_way
+    Ok(evidence)
+}
+
+fn pbf_relation_evidence(objects: &BTreeMap<OsmId, OsmObj>) -> OsmRelationEvidence {
+    let mut evidence = OsmRelationEvidence::default();
+    for relation in objects.values().filter_map(OsmObj::relation) {
+        let route = pbf_route_relation_evidence(relation);
+        let turn_restriction = pbf_turn_restriction_evidence(relation);
+        for reference in &relation.refs {
+            if let OsmId::Way(WayId(id)) = reference.member {
+                if let Some(route) = &route {
+                    evidence
+                        .route_by_way
+                        .entry(id.to_string())
+                        .or_default()
+                        .push(route.clone());
+                }
+                if let Some(restriction) = &turn_restriction
+                    && matches!(reference.role.as_str(), "from" | "to")
+                {
+                    evidence
+                        .turn_restriction_by_way
+                        .entry(id.to_string())
+                        .or_default()
+                        .push(TurnRestrictionEvidence {
+                            id: restriction.id.clone(),
+                            restriction: restriction.restriction.clone(),
+                            role: reference.role.to_string(),
+                        });
+                }
+            }
+        }
+    }
+    evidence
 }
 
 fn pbf_route_relation_evidence(relation: &PbfRelation) -> Option<RouteRelationEvidence> {
@@ -330,37 +381,87 @@ fn route_relation_from_tags(tags: &BTreeMap<String, String>) -> Option<String> {
     )
 }
 
-fn osm_way_provenance(
-    source: &str,
-    way_id: &str,
-    route_relations: &BTreeMap<String, Vec<RouteRelationEvidence>>,
-) -> Provenance {
-    let relation_label = route_relations.get(way_id).map(|relations| {
+fn pbf_turn_restriction_evidence(relation: &PbfRelation) -> Option<TurnRestrictionEvidence> {
+    turn_restriction_from_tags(&pbf_tags(&relation.tags)).map(|restriction| {
+        TurnRestrictionEvidence {
+            id: relation.id.0.to_string(),
+            restriction,
+            role: String::new(),
+        }
+    })
+}
+
+fn turn_restriction_from_tags(tags: &BTreeMap<String, String>) -> Option<String> {
+    if tags.get("type").is_none_or(|value| value != "restriction") {
+        return None;
+    }
+    tags.get("restriction")
+        .or_else(|| tags.get("restriction:foot"))
+        .filter(|restriction| !restriction.is_empty())
+        .cloned()
+}
+
+fn osm_way_provenance(source: &str, way_id: &str, relations: &OsmRelationEvidence) -> Provenance {
+    let route_label = relations.route_by_way.get(way_id).map(|relations| {
         relations
             .iter()
             .map(RouteRelationEvidence::slug)
             .collect::<Vec<_>>()
             .join(",")
     });
-    let source_id = relation_label.as_ref().map_or_else(
-        || way_id.to_owned(),
-        |relations| format!("way {way_id}; route relations {relations}"),
-    );
+    let turn_restriction_label =
+        relations
+            .turn_restriction_by_way
+            .get(way_id)
+            .map(|restrictions| {
+                restrictions
+                    .iter()
+                    .map(TurnRestrictionEvidence::slug)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            });
+    let source_id = match (&route_label, &turn_restriction_label) {
+        (None, None) => way_id.to_owned(),
+        (routes, restrictions) => {
+            let mut id = format!("way {way_id}");
+            if let Some(routes) = routes {
+                id.push_str("; route relations ");
+                id.push_str(routes);
+            }
+            if let Some(restrictions) = restrictions {
+                id.push_str("; turn restrictions ");
+                id.push_str(restrictions);
+            }
+            id
+        }
+    };
+    let layer = relation_layer(route_label.is_some(), turn_restriction_label.is_some());
     Provenance {
         source: source.to_owned(),
-        layer: Some(if relation_label.is_none() {
-            "way".to_owned()
-        } else {
-            "way+route-relation".to_owned()
-        }),
+        layer: Some(layer.to_owned()),
         source_id: Some(source_id),
         license: Some("ODbL-1.0".to_owned()),
+    }
+}
+
+const fn relation_layer(has_route: bool, has_turn_restriction: bool) -> &'static str {
+    match (has_route, has_turn_restriction) {
+        (false, false) => "way",
+        (true, false) => "way+route-relation",
+        (false, true) => "way+turn-restriction",
+        (true, true) => "way+route-relation+turn-restriction",
     }
 }
 
 impl RouteRelationEvidence {
     fn slug(&self) -> String {
         format!("{}:{}", self.id, self.label)
+    }
+}
+
+impl TurnRestrictionEvidence {
+    fn slug(&self) -> String {
+        format!("{}:{}:{}", self.id, self.role, self.restriction)
     }
 }
 
