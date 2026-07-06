@@ -14,10 +14,10 @@ use trailgen_core::source::{
     source_coverage, summarize_source_coverage,
 };
 use trailgen_core::{
-    Access, ArcAsciiGrid, CrossingKind, DailyTimeWindow, EdgeId, EdgeTravel, ElevationSampler,
-    ExactLoopSolver, GeoTiffDem, LoopMilpFormulation, MilpSelectedArc, MonthDay, PlanningDate,
-    PlanningMoment, PlanningTime, RasterCrs, Route, RouteMetrics, RouteShape, SearchParams,
-    SeasonalWindow, SolverKind, VertexId, VrtDem, Weekday, WeekdaySet,
+    Access, ArcAsciiGrid, CrossingKind, DailyTimeWindow, EdgeId, EdgeTravel, ElevationSample,
+    ElevationSampler, ExactLoopSolver, GeoTiffDem, LoopMilpFormulation, MilpSelectedArc, MonthDay,
+    PlanningDate, PlanningMoment, PlanningTime, RasterCrs, Route, RouteMetrics, RouteShape,
+    SearchParams, SeasonalWindow, SolverKind, VertexId, VrtDem, Weekday, WeekdaySet,
 };
 use trailgen_core::{
     Coord, DifficultyWeights, EnrichmentConfig, GraphBuilder, LineString, LoopConstraints,
@@ -3487,6 +3487,86 @@ fn enrich_with_north_plane(graph: &mut TrailGraph, north_gain_m_per_degree: f64,
         DifficultyWeights::default(),
     )
     .unwrap();
+}
+
+#[test]
+fn partial_elevation_sampling_does_not_invent_flat_grade() {
+    let draft = SegmentDraft {
+        turn_ref: None,
+        turn_restrictions: Vec::new(),
+        geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.0, 0.01)]).unwrap(),
+        terrain: Terrain::Unknown,
+        terrain_confidence: None,
+        surface: None,
+        access: Access::Open,
+        travel: EdgeTravel::Both,
+        road_exposure: 0.0,
+        confidence: 0.9,
+        provenance: Provenance::fixture("partial-dem"),
+    };
+    let mut graph = GraphBuilder::default().build(&[draft]).unwrap();
+    enrich_with_north_plane(&mut graph, 10_000.0, 0.90);
+    assert!(
+        graph.edges[0]
+            .geometry
+            .points
+            .iter()
+            .all(|point| point.ele.is_some())
+    );
+
+    enrich_graph(
+        &mut graph,
+        &PartialNorthPlane {
+            max_lat: 0.005,
+            north_gain_m_per_degree: 10_000.0,
+        },
+        EnrichmentConfig {
+            sample_spacing_m: 125.0,
+            steep_grade_threshold: 0.05,
+        },
+        DifficultyWeights::default(),
+    )
+    .unwrap();
+
+    let edge = &graph.edges[0];
+    let graded_m = edge.attr.grade_distribution.total_m();
+    assert!(
+        edge.geometry
+            .points
+            .last()
+            .is_some_and(|point| point.ele.is_none())
+    );
+    assert!(graded_m > edge.attr.length_m * 0.40);
+    assert!(graded_m < edge.attr.length_m * 0.65);
+    assert!((0.085..=0.095).contains(&edge.attr.grade_abs_mean));
+    assert!(edge.attr.sustained_steep_m > graded_m - 1.0);
+    assert!((0.45..=0.65).contains(&edge.attr.confidence));
+    assert!(
+        edge.attr
+            .elevation_provenance
+            .iter()
+            .any(|p| p.source == "partial-plane-elevation")
+    );
+}
+
+struct PartialNorthPlane {
+    max_lat: f64,
+    north_gain_m_per_degree: f64,
+}
+
+impl ElevationSampler for PartialNorthPlane {
+    fn sample(&self, coord: Coord) -> Option<ElevationSample> {
+        (coord.lat <= self.max_lat).then(|| ElevationSample {
+            ele_m: self.north_gain_m_per_degree.mul_add(coord.lat, 1_000.0),
+            confidence: 0.90,
+            provenance: Provenance {
+                source: "partial-plane-elevation".to_owned(),
+                layer: Some("fixture".to_owned()),
+                source_id: None,
+                license: Some("CC0-fixture".to_owned()),
+            },
+        })
+    }
 }
 
 #[test]

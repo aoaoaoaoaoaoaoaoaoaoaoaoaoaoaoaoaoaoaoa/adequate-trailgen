@@ -151,11 +151,20 @@ fn densify_and_sample<S: ElevationSampler>(
     let mut points = Vec::new();
     let mut provenance = Vec::new();
     let mut confidence = 1.0;
+    let mut sample_count = 0u32;
+    let mut sample_attempts = 0u32;
     for segment in line.points.windows(2) {
         let a = segment[0];
         let b = segment[1];
         if points.is_empty() {
-            points.push(sample_coord(a, sampler, &mut provenance, &mut confidence));
+            points.push(sample_coord(
+                a,
+                sampler,
+                &mut provenance,
+                &mut confidence,
+                &mut sample_count,
+                &mut sample_attempts,
+            ));
         }
         let length_m = a.haversine_m(b);
         for distance_m in std::iter::successors(Some(spacing_m), move |d| Some(d + spacing_m))
@@ -166,9 +175,21 @@ fn densify_and_sample<S: ElevationSampler>(
                 sampler,
                 &mut provenance,
                 &mut confidence,
+                &mut sample_count,
+                &mut sample_attempts,
             ));
         }
-        points.push(sample_coord(b, sampler, &mut provenance, &mut confidence));
+        points.push(sample_coord(
+            b,
+            sampler,
+            &mut provenance,
+            &mut confidence,
+            &mut sample_count,
+            &mut sample_attempts,
+        ));
+    }
+    if sample_count > 0 && sample_count < sample_attempts {
+        confidence = confidence.min(f64::from(sample_count) / f64::from(sample_attempts));
     }
     Ok((LineString::new(points)?, provenance, confidence))
 }
@@ -178,17 +199,23 @@ fn sample_coord<S: ElevationSampler>(
     sampler: &S,
     provenance: &mut Vec<Provenance>,
     confidence: &mut f64,
+    sample_count: &mut u32,
+    sample_attempts: &mut u32,
 ) -> Coord {
-    sampler.sample(coord).map_or(coord, |sample| {
-        *confidence = confidence.min(sample.confidence);
-        if !provenance.contains(&sample.provenance) {
-            provenance.push(sample.provenance);
-        }
-        Coord {
-            ele: Some(sample.ele_m),
-            ..coord
-        }
-    })
+    *sample_attempts += 1;
+    sampler
+        .sample(coord)
+        .map_or(Coord { ele: None, ..coord }, |sample| {
+            *sample_count += 1;
+            *confidence = confidence.min(sample.confidence);
+            if !provenance.contains(&sample.provenance) {
+                provenance.push(sample.provenance);
+            }
+            Coord {
+                ele: Some(sample.ele_m),
+                ..coord
+            }
+        })
 }
 
 #[derive(Clone, Copy)]
@@ -204,7 +231,7 @@ struct GradeProfile {
 fn grade_profile(line: &LineString, steep_grade_threshold: f64) -> GradeProfile {
     let mut ascent_m = 0.0;
     let mut descent_m = 0.0;
-    let mut length_m = 0.0;
+    let mut graded_m = 0.0;
     let mut weighted_abs_grade = 0.0;
     let mut grade_abs_max = 0.0;
     let mut sustained_steep_m = 0.0;
@@ -214,7 +241,6 @@ fn grade_profile(line: &LineString, steep_grade_threshold: f64) -> GradeProfile 
         let a = segment[0];
         let b = segment[1];
         let distance = a.haversine_m(b);
-        length_m += distance;
         let Some(ele_a) = a.ele else {
             continue;
         };
@@ -229,6 +255,7 @@ fn grade_profile(line: &LineString, steep_grade_threshold: f64) -> GradeProfile 
         }
         if distance > 0.0 {
             let abs_grade = (rise / distance).abs();
+            graded_m += distance;
             weighted_abs_grade = abs_grade.mul_add(distance, weighted_abs_grade);
             if abs_grade > grade_abs_max {
                 grade_abs_max = abs_grade;
@@ -243,7 +270,7 @@ fn grade_profile(line: &LineString, steep_grade_threshold: f64) -> GradeProfile 
     GradeProfile {
         ascent_m,
         descent_m,
-        grade_abs_mean: weighted_abs_grade / length_m.max(1.0),
+        grade_abs_mean: weighted_abs_grade / graded_m.max(1.0),
         grade_abs_max,
         sustained_steep_m,
         grade_distribution,
