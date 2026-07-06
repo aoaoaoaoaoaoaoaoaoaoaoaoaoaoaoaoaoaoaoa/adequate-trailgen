@@ -19,7 +19,7 @@ pub mod source;
 pub mod units;
 
 pub use builder::{GraphBuilder, SegmentDraft, TurnRestrictionDraft, TurnRestrictionRule};
-pub use constraints::{ConstraintVerdict, LoopConstraints};
+pub use constraints::{ConstraintAudit, ConstraintVerdict, LoopConstraints};
 pub use difficulty::{
     DifficultyBreakdown, DifficultyFactor, DifficultyWeights, TerrainMultipliers,
 };

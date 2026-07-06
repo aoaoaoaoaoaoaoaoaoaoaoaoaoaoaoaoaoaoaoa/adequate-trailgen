@@ -21,14 +21,14 @@ use trailgen_core::source::{
     discovery_recommendations, source_coverage, summarize_source_coverage,
 };
 use trailgen_core::{
-    Access, AccessOverlay, AccessWindow, ArcAsciiGrid, Coord, CrossingKind, DifficultyBreakdown,
-    DifficultyWeights, EdgeAttr, EdgeId, EdgeTravel, ElevationMosaic, EnrichmentConfig, GeoTiffDem,
-    GradeDistribution, GraphBuilder, LOW_CONFIDENCE_THRESHOLD, LineString, LoopConstraints,
-    LoopMilpFormulation, PlanningDate, PlanningMoment, PlanningTime, Provenance, RasterDem, Route,
-    RouteMetrics, RouteShape, RouteSnapStats, SearchParams, SeedRoute, SegmentDraft, SolverKind,
-    Terrain, TrailGraph, VertexId, VrtDem, apply_access_overlays, apply_access_overlays_at,
-    apply_context_overlays, apply_terrain_overlays, enrich_graph, rank_routes,
-    route_edges_from_solution, slug,
+    Access, AccessOverlay, AccessWindow, ArcAsciiGrid, ConstraintAudit, Coord, CrossingKind,
+    DifficultyBreakdown, DifficultyWeights, EdgeAttr, EdgeId, EdgeTravel, ElevationMosaic,
+    EnrichmentConfig, GeoTiffDem, GradeDistribution, GraphBuilder, LOW_CONFIDENCE_THRESHOLD,
+    LineString, LoopConstraints, LoopMilpFormulation, PlanningDate, PlanningMoment, PlanningTime,
+    Provenance, RasterDem, Route, RouteMetrics, RouteShape, RouteSnapStats, SearchParams,
+    SeedRoute, SegmentDraft, SolverKind, Terrain, TrailGraph, VertexId, VrtDem,
+    apply_access_overlays, apply_access_overlays_at, apply_context_overlays,
+    apply_terrain_overlays, enrich_graph, rank_routes, route_edges_from_solution, slug,
 };
 
 #[derive(Parser)]
@@ -2421,6 +2421,12 @@ fn verify_generated_route_record(
             entry.name
         ));
     }
+    if route.verdict.audit != entry.audit {
+        failures.push(format!(
+            "{} constraint audit differs from manifest",
+            entry.name
+        ));
+    }
     verify_route_metrics(
         &format!("{} manifest metrics", entry.name),
         &entry.metrics,
@@ -3097,6 +3103,8 @@ struct RouteManifestEntry {
     metrics: RouteMetrics,
     satisfied: bool,
     violations: Vec<String>,
+    #[serde(default)]
+    audit: Vec<ConstraintAudit>,
     rank: u32,
 }
 
@@ -6436,6 +6444,7 @@ fn route_manifest_entry(route: &Route) -> RouteManifestEntry {
         metrics: route.metrics.clone(),
         satisfied: route.verdict.satisfied,
         violations: route.verdict.violations.clone(),
+        audit: route.verdict.audit.clone(),
         rank: route.pareto_rank,
     }
 }
@@ -7736,6 +7745,11 @@ mod tests {
                 .as_array()
                 .is_some_and(|xs| !xs.is_empty())
         );
+        assert!(
+            manifest["routes"][0]["audit"]
+                .as_array()
+                .is_some_and(|xs| !xs.is_empty())
+        );
         assert_generation_artifacts_manifest(&manifest);
         let generated_report = fs::read_to_string(project.join("reports/generated.md"))?;
         assert!(generated_report.contains("## Generation Ledger"));
@@ -7903,6 +7917,12 @@ mod tests {
             },
             "generated route verification failed",
             "manifest metrics.grade_distribution.flat_m mismatch",
+        )?;
+        expect_generated_manifest_drift(
+            project,
+            |manifest| manifest["routes"][0]["audit"][0]["margin"] = serde_json::json!("rotted"),
+            "generated route verification failed",
+            "constraint audit differs from manifest",
         )?;
         expect_generated_artifact_drift(project)?;
 

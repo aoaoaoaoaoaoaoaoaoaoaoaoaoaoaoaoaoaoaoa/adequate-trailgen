@@ -47,7 +47,7 @@ Generated artifacts land in the project directory:
 - `sources/context-overlays.json`: applied road/hydrology context overlays from GeoJSON, shapefile, or OSM XML/PBF linework
 - `routes/generated.geojson`: Pareto-ranked generated loops with persisted route scores, constraint penalties, constraint-audit margins, terrain/access fractions, evidence-bearing edge diagnostics, difficulty hotspots, and source provenance summaries
 - `routes/generated.graph.json`: effective graph snapshot used by generated route exports, reports, and maps
-- `routes/generated.manifest.json`: app version, random seed, requested/concrete solver, requested/snapped start, effective config, fingerprinted source manifest plus coverage summary, fingerprinted seed-route ledger state, one-run forbidden-area sources, graph topology/elevation summary, exact route edge sequences, emitted artifact list, and artifact fingerprints for reproducing a generation run
+- `routes/generated.manifest.json`: app version, random seed, requested/concrete solver, requested/snapped start, effective config, fingerprinted source manifest plus coverage summary, fingerprinted seed-route ledger state, one-run forbidden-area sources, graph topology/elevation summary, exact route edge sequences, route metrics/verdict/audit snapshots, emitted artifact list, and artifact fingerprints for reproducing a generation run
 - `routes/candidate-*.geojson`: per-route GeoJSON exports with the same diagnostics as `routes/generated.geojson`
 - `routes/candidate-*.gpx`: GPX exports with name, hike type, and compact route diagnostics in the track description
 - `routes/candidate-*.csv`: lon/lat/elevation CSV exports with comment-header route diagnostics
