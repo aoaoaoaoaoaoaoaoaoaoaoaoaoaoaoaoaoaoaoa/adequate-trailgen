@@ -18,6 +18,7 @@ cargo run -p trailgen -- apply-context demo/mini-loop --source crates/trailgen-c
 cargo run -p trailgen -- import-seed demo/mini-loop --route demo/mini-loop/routes/candidate-1.gpx --name "Known Good Loop"
 cargo run -p trailgen -- apply-access demo/mini-loop --source crates/trailgen-core/tests/fixtures/access_overlay.geojson --source crates/trailgen-core/tests/fixtures/closure_overlay.geojson --date 2026-05-15
 cargo run -p trailgen -- verify-sources demo/mini-loop
+cargo run -p trailgen -- vet-sources demo/mini-loop --level recommended
 cargo run -p trailgen -- stats demo/mini-loop
 cargo run -p trailgen -- generate demo/mini-loop --start=-105.0000,40.0000 --min-km 4 --max-km 9 --count 4 --seed 0
 cargo run -p trailgen -- export demo/mini-loop --route candidate-1 --format gpx --output /tmp/candidate-1.gpx --report-output /tmp/candidate-1.md
@@ -66,7 +67,7 @@ Use `trailgen cache-source <project> --input URL_OR_PATH --output trails.geojson
 
 For a bbox-scoped OSM fallback, `trailgen acquire-osm <project> --profile all|trails|roads|hydrology` posts an Overpass query for the project AOI, caches OSM XML under `sources/`, writes the exact `.overpassql` sidecar, validates the response against the implemented OSM adapters, fingerprints the cached XML, and registers matching trail-network, road-context, or hydrology-context candidates. Trail profiles fetch walkable ways plus hiking/foot/walking route relations; relation membership is preserved as way provenance and confidence evidence. `--profile all` writes one coherent XML extract and registers every source class the returned ways can satisfy. Use `--print-query` to audit the query before contacting an endpoint, or `--endpoint` to choose another Overpass instance.
 
-Use `trailgen verify-sources <project>` before reproduction-sensitive generation runs; it recomputes source byte counts and SHA-256 hashes from `sources/manifest.json` and fails on missing, unfingerprinted, or drifted inputs. `trailgen stats <project>` audits graph terrain, access, source/provenance, confidence, seed attribution, elevation attribution, road/pavement exposure, and crossings. Generated and selected route reports include the same source manifest summary for human review.
+Use `trailgen verify-sources <project>` before reproduction-sensitive generation runs; it recomputes source byte counts and SHA-256 hashes from `sources/manifest.json` and fails on missing, unfingerprinted, or drifted inputs. Use `trailgen vet-sources <project> [--level required|recommended] [--require KIND]` as the pre-generation source-coverage gate: `required` demands trail-network plus elevation coverage, `recommended` also demands terrain, access, closure, road, and hydrology candidates, and repeated `--require` can harden any class such as `seed-route`. `trailgen stats <project>` audits graph terrain, access, source/provenance, confidence, seed attribution, elevation attribution, road/pavement exposure, and crossings. Generated and selected route reports include the same source manifest summary for human review.
 
 Use `trailgen alltrails-status` to print the current manual AllTrails exchange contract. The machine-readable section exposes typed, verification-dated bridge plans for import, manual custom-route upload, manual activity upload, and the intentionally unsupported direct-write API.
 

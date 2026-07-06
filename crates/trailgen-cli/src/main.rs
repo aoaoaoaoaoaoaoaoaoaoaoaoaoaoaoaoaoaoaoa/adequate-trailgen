@@ -15,9 +15,9 @@ use trailgen_core::alltrails::{
 use trailgen_core::io::route_file::RouteFile;
 use trailgen_core::io::{csv, geojson, gpx, json_route, kml, kmz, osm, report, shapefile as shp};
 use trailgen_core::source::{
-    GeoBounds, SourceCandidate, SourceCoverageSummary, SourceFingerprint, SourceKind,
-    SourceManifest, adapter_registry, classify_path, discovery_recommendations, source_coverage,
-    summarize_source_coverage,
+    GeoBounds, SourceCandidate, SourceCoverage, SourceCoverageStatus, SourceCoverageSummary,
+    SourceFingerprint, SourceKind, SourceManifest, SourcePriority, adapter_registry, classify_path,
+    discovery_recommendations, source_coverage, summarize_source_coverage,
 };
 use trailgen_core::{
     Access, AccessOverlay, AccessWindow, ArcAsciiGrid, Coord, CrossingKind, DifficultyBreakdown,
@@ -120,6 +120,17 @@ enum Cmd {
     VerifySources {
         /// Project directory containing sources/manifest.json.
         project: PathBuf,
+    },
+    /// Verify fingerprints and fail unless source coverage satisfies a planning gate.
+    VetSources {
+        /// Project directory containing sources/manifest.json.
+        project: PathBuf,
+        /// Coverage gate: required, or required plus recommended.
+        #[arg(long, value_enum, default_value = "required")]
+        level: SourceGateLevel,
+        /// Additional source class that must be satisfied; repeatable.
+        #[arg(long = "require", value_parser = parse_source_kind)]
+        require: Vec<SourceKind>,
     },
     /// Build and enrich cache/graph.json from sources/manifest.json.
     Assemble {
@@ -497,6 +508,33 @@ enum CalibrationFamily {
     Access,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum SourceGateLevel {
+    Required,
+    Recommended,
+}
+
+impl SourceGateLevel {
+    const fn admits(self, priority: SourcePriority) -> bool {
+        match self {
+            Self::Required => matches!(priority, SourcePriority::Required),
+            Self::Recommended => {
+                matches!(
+                    priority,
+                    SourcePriority::Required | SourcePriority::Recommended
+                )
+            }
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Required => "required",
+            Self::Recommended => "recommended",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct TerrainFraction {
     terrain: Terrain,
@@ -574,6 +612,11 @@ fn main() -> Result<()> {
             },
         ),
         Cmd::VerifySources { project } => verify_sources(&project),
+        Cmd::VetSources {
+            project,
+            level,
+            require,
+        } => vet_sources(&project, level, &require),
         Cmd::Assemble {
             project,
             date,
@@ -1513,6 +1556,12 @@ fn verify_sources(project: &Path) -> Result<()> {
     let manifest = load_source_manifest(project)?.with_context(
         || "read sources/manifest.json; run `trailgen discover` or ingest sources first",
     )?;
+    let checked = verify_source_fingerprints(project, &manifest)?;
+    println!("verified {checked} source candidate(s)");
+    Ok(())
+}
+
+fn verify_source_fingerprints(project: &Path, manifest: &SourceManifest) -> Result<usize> {
     let mut failures = Vec::new();
     let mut checked = 0usize;
     for candidate in &manifest.candidates {
@@ -1533,8 +1582,86 @@ fn verify_sources(project: &Path) -> Result<()> {
     if !failures.is_empty() {
         bail!("source verification failed:\n{}", failures.join("\n"));
     }
-    println!("verified {checked} source candidate(s)");
+    Ok(checked)
+}
+
+fn vet_sources(project: &Path, level: SourceGateLevel, require: &[SourceKind]) -> Result<()> {
+    let mut manifest = load_source_manifest(project)?.with_context(
+        || "read sources/manifest.json; run `trailgen discover` or ingest sources first",
+    )?;
+    let checked = verify_source_fingerprints(project, &manifest)?;
+    refresh_source_coverage(&mut manifest);
+    let failures = source_gate_failures(&manifest, level, require);
+    if !failures.is_empty() {
+        bail!(
+            "source coverage gate failed after verifying {checked} candidate(s):\n{}",
+            failures
+                .iter()
+                .map(|entry| source_gate_failure_line(entry))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+    let summary = summarize_source_coverage(&manifest.coverage);
+    println!(
+        "source coverage gate passed: level={}, explicit={}, verified={}, {}",
+        level.label(),
+        render_required_source_kinds(require),
+        checked,
+        source_coverage_summary_line(&summary)
+    );
     Ok(())
+}
+
+fn source_gate_failures<'a>(
+    manifest: &'a SourceManifest,
+    level: SourceGateLevel,
+    require: &[SourceKind],
+) -> Vec<&'a SourceCoverage> {
+    let explicitly_required = require.iter().copied().collect::<BTreeSet<_>>();
+    manifest
+        .coverage
+        .iter()
+        .filter(|entry| {
+            entry.status != SourceCoverageStatus::Satisfied
+                && (level.admits(entry.priority) || explicitly_required.contains(&entry.kind))
+        })
+        .collect()
+}
+
+fn source_gate_failure_line(entry: &SourceCoverage) -> String {
+    format!(
+        "- {} priority={} status={}: {}",
+        source_kind_arg(entry.kind),
+        source_priority_arg(entry.priority),
+        source_coverage_status_arg(entry.status),
+        entry.message
+    )
+}
+
+fn source_coverage_summary_line(summary: &SourceCoverageSummary) -> String {
+    format!(
+        "required {}/{} satisfied, recommended {}/{} satisfied",
+        summary.required.satisfied,
+        summary.required.total,
+        summary.recommended.satisfied,
+        summary.recommended.total
+    )
+}
+
+fn render_required_source_kinds(require: &[SourceKind]) -> String {
+    if require.is_empty() {
+        "none".to_owned()
+    } else {
+        require
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .map(source_kind_arg)
+            .collect::<Vec<_>>()
+            .join(",")
+    }
 }
 
 fn assemble_sources(
@@ -5098,6 +5225,22 @@ const fn source_kind_arg(kind: SourceKind) -> &'static str {
     }
 }
 
+const fn source_priority_arg(priority: SourcePriority) -> &'static str {
+    match priority {
+        SourcePriority::Required => "required",
+        SourcePriority::Recommended => "recommended",
+        SourcePriority::Optional => "optional",
+    }
+}
+
+const fn source_coverage_status_arg(status: SourceCoverageStatus) -> &'static str {
+    match status {
+        SourceCoverageStatus::Satisfied => "satisfied",
+        SourceCoverageStatus::Missing => "missing",
+        SourceCoverageStatus::PlannedAdapterOnly => "planned-adapter-only",
+    }
+}
+
 fn parse_shape(raw: &str) -> Result<RouteShape, String> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "loop" => Ok(RouteShape::Loop),
@@ -5233,6 +5376,7 @@ mod tests {
         assert!(help.contains("deterministic LP/MILP loop formulation"));
         assert!(help.contains("external MILP solver incumbent"));
         assert!(help.contains("Fetch bbox-scoped OSM XML"));
+        assert!(help.contains("source coverage satisfies a planning gate"));
         assert!(help.contains("AllTrails"));
 
         let mut generate = Cli::command();
@@ -5572,6 +5716,41 @@ mod tests {
                         && candidate["adapter_id"] == "geojson-network"
                 })
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn source_coverage_gate_enforces_required_recommended_and_explicit_classes() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path();
+        let fixture_dir =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../trailgen-core/tests/fixtures");
+        let network = fixture_dir.join("mini_network.geojson");
+        let dem = fixture_dir.join("mini_dem.asc");
+
+        init(project, "Source Gate Test".to_owned(), None)?;
+        discover(project, None)?;
+        let empty_error = vet_sources(project, SourceGateLevel::Required, &[])
+            .expect_err("empty discovery cannot pass required gate");
+        assert!(format!("{empty_error:#}").contains("trail-network"));
+        assert!(format!("{empty_error:#}").contains("elevation"));
+
+        build(project, &network)?;
+        let trail_only_error = vet_sources(project, SourceGateLevel::Required, &[])
+            .expect_err("trail-only project cannot pass required gate");
+        assert!(format!("{trail_only_error:#}").contains("elevation"));
+
+        apply_elevation(project, &dem, 0.81)?;
+        vet_sources(project, SourceGateLevel::Required, &[])?;
+        let recommended_error = vet_sources(project, SourceGateLevel::Recommended, &[])
+            .expect_err("recommended gate needs terrain/access/context coverage");
+        assert!(format!("{recommended_error:#}").contains("terrain"));
+        assert!(format!("{recommended_error:#}").contains("hydrology"));
+
+        let seed_error = vet_sources(project, SourceGateLevel::Required, &[SourceKind::SeedRoute])
+            .expect_err("explicit seed-route gate needs a seed candidate");
+        assert!(format!("{seed_error:#}").contains("seed-route"));
 
         Ok(())
     }
