@@ -1313,5 +1313,210 @@
     "routes/candidate-4.kml",
     "routes/candidate-4.kmz",
     "reports/candidate-4.md"
+  ],
+  "artifact_fingerprints": [
+    {
+      "path": "routes/generated.geojson",
+      "fingerprint": {
+        "bytes": 170787,
+        "sha256": "4b926e9d62b2457c3173d9bea5041dbfcd30e5729898c64899f5d12361b8d869"
+      }
+    },
+    {
+      "path": "routes/generated.graph.json",
+      "fingerprint": {
+        "bytes": 72315,
+        "sha256": "197c22ed474cd889218c8b37f92301f97cc62709e8527e6a04fce1647303a80d"
+      }
+    },
+    {
+      "path": "routes/generated.routes.json",
+      "fingerprint": {
+        "bytes": 16023,
+        "sha256": "0b8f328c01041f334d8847d36fca731b3ed493a6b190f283f5f4235a5ff8b28b"
+      }
+    },
+    {
+      "path": "reports/generated.md",
+      "fingerprint": {
+        "bytes": 19108,
+        "sha256": "3a39e7fa0e9c073b053e7fcba58bc38666873cc4e9788d60e3181e4b7a416e27"
+      }
+    },
+    {
+      "path": "reports/map.html",
+      "fingerprint": {
+        "bytes": 126928,
+        "sha256": "d08f2834ecb847003c17ee2fea81805c8f17428a797320dad55447f0968625d7"
+      }
+    },
+    {
+      "path": "routes/candidate-1.geojson",
+      "fingerprint": {
+        "bytes": 45123,
+        "sha256": "c098de32dd5c7eec223fb3277db333ba618d7d08562dbea7593c0e2f9f6aac7a"
+      }
+    },
+    {
+      "path": "routes/candidate-1.gpx",
+      "fingerprint": {
+        "bytes": 24233,
+        "sha256": "aa020e4b300d952cc8e647bb3244be92389aa612f9454f1ba1c9a19bc40a1199"
+      }
+    },
+    {
+      "path": "routes/candidate-1.csv",
+      "fingerprint": {
+        "bytes": 10195,
+        "sha256": "3126939cc50c09ef42731e0cc19032392a5076fa946c022dc29ce19893c5f5df"
+      }
+    },
+    {
+      "path": "routes/candidate-1.kml",
+      "fingerprint": {
+        "bytes": 13853,
+        "sha256": "53bcae5ca05408f05b38af031f35dad5a02798641f6fccd9e3d5cbd884f8726a"
+      }
+    },
+    {
+      "path": "routes/candidate-1.kmz",
+      "fingerprint": {
+        "bytes": 2040,
+        "sha256": "c4cc6ef457687665c65f34ceb78575ee99b35f24ac87584ada694cee6f34a121"
+      }
+    },
+    {
+      "path": "reports/candidate-1.md",
+      "fingerprint": {
+        "bytes": 7803,
+        "sha256": "0efd7b3926a716a164b954f3974886c15b241a37a7f56a854bba9b4c100ca4e5"
+      }
+    },
+    {
+      "path": "routes/candidate-2.geojson",
+      "fingerprint": {
+        "bytes": 40358,
+        "sha256": "f9bb0469b31997f7d02c81012d4b60caca8ddf5cc03106b2e2b1b1c5d4b54763"
+      }
+    },
+    {
+      "path": "routes/candidate-2.gpx",
+      "fingerprint": {
+        "bytes": 20255,
+        "sha256": "51bbec509d518bdf12f40234ff7fcc84bad8a8852ddca19829c8d1d4fbb08272"
+      }
+    },
+    {
+      "path": "routes/candidate-2.csv",
+      "fingerprint": {
+        "bytes": 8512,
+        "sha256": "0d805d581d835cc5e1cf4113adc6dca7b27fb50b602ae323fa6e766587549a5e"
+      }
+    },
+    {
+      "path": "routes/candidate-2.kml",
+      "fingerprint": {
+        "bytes": 11609,
+        "sha256": "ba8846d49fc890cd0333564257ca9da85b0af38699a128d8fe9e400542693688"
+      }
+    },
+    {
+      "path": "routes/candidate-2.kmz",
+      "fingerprint": {
+        "bytes": 2212,
+        "sha256": "17c6047f650547ea35616aa88cdfdd0d487876d782e78a86cfe0d1b9c23a7186"
+      }
+    },
+    {
+      "path": "reports/candidate-2.md",
+      "fingerprint": {
+        "bytes": 7446,
+        "sha256": "019313dcde70dfa0cf2fdcb896a336673fa17a6657e76c16d9119051eadc17e7"
+      }
+    },
+    {
+      "path": "routes/candidate-3.geojson",
+      "fingerprint": {
+        "bytes": 45123,
+        "sha256": "56598ce52bbe2e6d37fe15a8ec5f1d8cc8b63949a3328b1b2c9b4a19a4062a8d"
+      }
+    },
+    {
+      "path": "routes/candidate-3.gpx",
+      "fingerprint": {
+        "bytes": 24233,
+        "sha256": "d06ae98ea41bb2ca44fb306d160b52fdf03ee9fdee4e0d52a9d98581fd500658"
+      }
+    },
+    {
+      "path": "routes/candidate-3.csv",
+      "fingerprint": {
+        "bytes": 10195,
+        "sha256": "efcf16973bd8c7d03e4943f71976b306726bcf3212cafe6e4d9b253bc38ee04b"
+      }
+    },
+    {
+      "path": "routes/candidate-3.kml",
+      "fingerprint": {
+        "bytes": 13853,
+        "sha256": "05d5a9ba5fd79b81d11ba89075149fc75c120ae3d686d3a2755ef86c1fe87069"
+      }
+    },
+    {
+      "path": "routes/candidate-3.kmz",
+      "fingerprint": {
+        "bytes": 2076,
+        "sha256": "c843456cbaa4da399eeac2be44d23d9d8e18a798c100645d08d991e6a0d0a02a"
+      }
+    },
+    {
+      "path": "reports/candidate-3.md",
+      "fingerprint": {
+        "bytes": 7803,
+        "sha256": "b2212ac7fc208cabc5cf1491f09fa9ed445e9078fd2bc2d8594a13704fc61a3b"
+      }
+    },
+    {
+      "path": "routes/candidate-4.geojson",
+      "fingerprint": {
+        "bytes": 40342,
+        "sha256": "3e0e949289a432b2a1fb9a961756f502c8a67554ddb2b180e768ec6f3596de06"
+      }
+    },
+    {
+      "path": "routes/candidate-4.gpx",
+      "fingerprint": {
+        "bytes": 20255,
+        "sha256": "d99bbdd42dd9849ed91efe4268902089f71329396bcc22e8781d9074972607ea"
+      }
+    },
+    {
+      "path": "routes/candidate-4.csv",
+      "fingerprint": {
+        "bytes": 8512,
+        "sha256": "11d95a177b9a2f625af034f871fa4648d888b5b76a5b9722e357002bf6b4e943"
+      }
+    },
+    {
+      "path": "routes/candidate-4.kml",
+      "fingerprint": {
+        "bytes": 11609,
+        "sha256": "0fd37bf373c5e1dda9dfe5f822df7d1ec76bc1c1766968b2e7c4b78628dc9c98"
+      }
+    },
+    {
+      "path": "routes/candidate-4.kmz",
+      "fingerprint": {
+        "bytes": 2232,
+        "sha256": "56a790dd445eed2515123b12c677d5d7e4e0f5401b62757484f7699909d6f517"
+      }
+    },
+    {
+      "path": "reports/candidate-4.md",
+      "fingerprint": {
+        "bytes": 7446,
+        "sha256": "4620e1a97446955f35c648d12b449607258b527e31a7bcba4ed997c06aba8502"
+      }
+    }
   ]
 }

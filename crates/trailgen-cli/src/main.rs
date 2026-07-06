@@ -1715,6 +1715,7 @@ struct GenerationManifest {
     graph: GraphManifest,
     routes: Vec<RouteManifestEntry>,
     artifacts: Vec<String>,
+    artifact_fingerprints: Vec<GeneratedArtifactFingerprint>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1740,6 +1741,12 @@ struct ForbiddenAreaManifest {
     fingerprint: SourceFingerprint,
     overlays: usize,
     touched_edges: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct GeneratedArtifactFingerprint {
+    path: String,
+    fingerprint: SourceFingerprint,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1917,19 +1924,17 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
     )?;
     write_json(project.join("routes/generated.graph.json"), &graph)?;
     write_json(project.join("routes/generated.routes.json"), &routes)?;
-    write_json(
-        project.join("routes/generated.manifest.json"),
-        &generation_manifest(GenerationManifestInput {
-            project,
-            options,
-            config: &config,
-            forbidden_areas: &forbidden_areas,
-            graph: &graph,
-            start,
-            routes: &routes,
-            solver_label: solver.label(),
-        })?,
-    )?;
+    let mut manifest = generation_manifest(GenerationManifestInput {
+        project,
+        options,
+        config: &config,
+        forbidden_areas: &forbidden_areas,
+        graph: &graph,
+        start,
+        routes: &routes,
+        solver_label: solver.label(),
+    })?;
+    write_generation_manifest(project, &manifest)?;
     write_route_artifacts(project, &graph, &routes)?;
     fs::write(
         project.join("reports/generated.md"),
@@ -1940,6 +1945,7 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
         project.join("reports/map.html"),
         render_map_html(&config.name, &graph, &routes)?,
     )?;
+    finalize_generation_manifest(project, &mut manifest)?;
     println!("generated {} route(s)", routes.len());
     Ok(())
 }
@@ -2024,19 +2030,18 @@ fn import_milp_solution(project: &Path, options: &MilpIncumbentOptions) -> Resul
     )?;
     write_json(project.join("routes/generated.graph.json"), &graph)?;
     write_json(project.join("routes/generated.routes.json"), &routes)?;
-    write_json(
-        project.join("routes/generated.manifest.json"),
-        &generation_manifest(GenerationManifestInput {
-            project,
-            options: &milp_incumbent_generate_options(options, &config),
-            config: &config,
-            forbidden_areas: &[],
-            graph: &graph,
-            start,
-            routes: &routes,
-            solver_label: "milp-incumbent-import",
-        })?,
-    )?;
+    let incumbent_options = milp_incumbent_generate_options(options, &config);
+    let mut manifest = generation_manifest(GenerationManifestInput {
+        project,
+        options: &incumbent_options,
+        config: &config,
+        forbidden_areas: &[],
+        graph: &graph,
+        start,
+        routes: &routes,
+        solver_label: "milp-incumbent-import",
+    })?;
+    write_generation_manifest(project, &manifest)?;
     write_route_artifacts(project, &graph, &routes)?;
     fs::write(
         project.join("reports/generated.md"),
@@ -2047,6 +2052,7 @@ fn import_milp_solution(project: &Path, options: &MilpIncumbentOptions) -> Resul
         project.join("reports/map.html"),
         render_map_html(&config.name, &graph, &routes)?,
     )?;
+    finalize_generation_manifest(project, &mut manifest)?;
     println!(
         "imported MILP incumbent {} as {} with {:.2} km and {} edge(s)",
         options.solution.display(),
@@ -4713,7 +4719,37 @@ fn generation_manifest(input: GenerationManifestInput<'_>) -> Result<GenerationM
         graph: graph_manifest(graph),
         routes: routes.iter().map(route_manifest_entry).collect(),
         artifacts: generation_artifacts(routes),
+        artifact_fingerprints: Vec::new(),
     })
+}
+
+fn write_generation_manifest(project: &Path, manifest: &GenerationManifest) -> Result<()> {
+    write_json(project.join("routes/generated.manifest.json"), manifest)
+}
+
+fn finalize_generation_manifest(project: &Path, manifest: &mut GenerationManifest) -> Result<()> {
+    manifest.artifact_fingerprints =
+        generation_artifact_fingerprints(project, &manifest.artifacts)?;
+    write_generation_manifest(project, manifest)
+}
+
+fn generation_artifact_fingerprints(
+    project: &Path,
+    artifacts: &[String],
+) -> Result<Vec<GeneratedArtifactFingerprint>> {
+    artifacts
+        .iter()
+        .filter(|artifact| artifact.as_str() != "routes/generated.manifest.json")
+        .map(|artifact| {
+            let path = project.join(artifact);
+            Ok(GeneratedArtifactFingerprint {
+                path: artifact.clone(),
+                fingerprint: source_fingerprint(&path).with_context(|| {
+                    format!("fingerprint generated artifact {}", path.display())
+                })?,
+            })
+        })
+        .collect()
 }
 
 fn graph_manifest(graph: &TrailGraph) -> GraphManifest {
@@ -6041,6 +6077,24 @@ mod tests {
         ] {
             assert!(artifacts.iter().any(|x| x == artifact), "{artifact}");
         }
+        let fingerprints = manifest["artifact_fingerprints"]
+            .as_array()
+            .expect("artifact fingerprints");
+        assert_eq!(fingerprints.len(), artifacts.len() - 1);
+        assert!(fingerprints.iter().all(|entry| {
+            entry["path"] != "routes/generated.manifest.json"
+                && entry["fingerprint"]["sha256"]
+                    .as_str()
+                    .is_some_and(|hash| hash.len() == 64)
+                && entry["fingerprint"]["bytes"]
+                    .as_u64()
+                    .is_some_and(|n| n > 0)
+        }));
+        assert!(
+            fingerprints
+                .iter()
+                .any(|entry| entry["path"] == "reports/generated.md")
+        );
     }
 
     #[test]
