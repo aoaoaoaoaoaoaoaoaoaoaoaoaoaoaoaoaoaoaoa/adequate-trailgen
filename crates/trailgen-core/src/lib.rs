@@ -8,6 +8,7 @@ pub mod difficulty;
 pub mod enrich;
 pub mod geo;
 pub mod io;
+pub mod milp;
 pub mod model;
 pub mod optimizer;
 pub mod overlay;
@@ -27,6 +28,7 @@ pub use enrich::{
     PlaneElevation, enrich_graph,
 };
 pub use geo::{Coord, LineString};
+pub use milp::{LinearRow, LinearSense, LinearTerm, LoopMilpFormulation, VariableBound};
 pub use model::{
     Access, CrossingEvidence, CrossingKind, Edge, EdgeAttr, EdgeId, EdgeTravel, GradeDistribution,
     Provenance, RouteSnapStats, Terrain, TrailGraph, Vertex, VertexId,

@@ -21,10 +21,11 @@ use trailgen_core::source::{
 use trailgen_core::{
     Access, AccessOverlay, AccessWindow, ArcAsciiGrid, Coord, CrossingKind, DifficultyBreakdown,
     DifficultyWeights, EdgeAttr, EdgeId, EdgeTravel, ElevationMosaic, EnrichmentConfig, GeoTiffDem,
-    GraphBuilder, LOW_CONFIDENCE_THRESHOLD, LineString, LoopConstraints, PlanningDate, Provenance,
-    RasterDem, Route, RouteMetrics, RouteShape, RouteSnapStats, SearchParams, SeedRoute,
-    SegmentDraft, SolverKind, Terrain, TrailGraph, VertexId, VrtDem, apply_access_overlays,
-    apply_context_overlays, apply_terrain_overlays, enrich_graph, rank_routes, slug,
+    GraphBuilder, LOW_CONFIDENCE_THRESHOLD, LineString, LoopConstraints, LoopMilpFormulation,
+    PlanningDate, Provenance, RasterDem, Route, RouteMetrics, RouteShape, RouteSnapStats,
+    SearchParams, SeedRoute, SegmentDraft, SolverKind, Terrain, TrailGraph, VertexId, VrtDem,
+    apply_access_overlays, apply_context_overlays, apply_terrain_overlays, enrich_graph,
+    rank_routes, slug,
 };
 
 #[derive(Parser)]
@@ -214,6 +215,29 @@ enum Cmd {
         /// Required maximum terrain fraction as terrain:fraction or terrain=fraction.
         #[arg(long = "max-terrain", value_parser = parse_terrain_fraction)]
         max_terrain: Vec<TerrainFraction>,
+    },
+    /// Write a deterministic LP/MILP loop formulation for the current graph.
+    FormulateMilp {
+        /// Project directory with a cached graph.
+        project: PathBuf,
+        /// Requested trailhead/start coordinate as lon,lat.
+        #[arg(long, allow_hyphen_values = true)]
+        start: String,
+        /// Destination .lp file.
+        #[arg(long)]
+        output: PathBuf,
+        /// Minimum route distance in kilometers for this formulation.
+        #[arg(long)]
+        min_km: Option<f64>,
+        /// Maximum route distance in kilometers for this formulation.
+        #[arg(long)]
+        max_km: Option<f64>,
+        /// Maximum allowed trailhead snap distance in meters.
+        #[arg(long)]
+        max_start_snap_m: Option<f64>,
+        /// Planning date used to materialize dated access/closure overlays.
+        #[arg(long, value_parser = parse_planning_date)]
+        date: Option<PlanningDate>,
     },
     /// Export one generated candidate route to `GPX`, `GeoJSON`, `CSV`, `KML`, or `KMZ`.
     Export {
@@ -562,6 +586,25 @@ fn main() -> Result<()> {
                 forbidden_area,
                 min_terrain,
                 max_terrain,
+            },
+        ),
+        Cmd::FormulateMilp {
+            project,
+            start,
+            output,
+            min_km,
+            max_km,
+            max_start_snap_m,
+            date,
+        } => formulate_milp(
+            &project,
+            &MilpFormulationOptions {
+                start,
+                output,
+                min_km,
+                max_km,
+                max_start_snap_m,
+                date,
             },
         ),
         Cmd::Export {
@@ -1550,6 +1593,15 @@ struct GenerateOptions {
     max_terrain: Vec<TerrainFraction>,
 }
 
+struct MilpFormulationOptions {
+    start: String,
+    output: PathBuf,
+    min_km: Option<f64>,
+    max_km: Option<f64>,
+    max_start_snap_m: Option<f64>,
+    date: Option<PlanningDate>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 struct GenerationManifest {
     schema_version: u32,
@@ -1767,6 +1819,40 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
         render_map_html(&config.name, &graph, &routes)?,
     )?;
     println!("generated {} route(s)", routes.len());
+    Ok(())
+}
+
+fn formulate_milp(project: &Path, options: &MilpFormulationOptions) -> Result<()> {
+    let mut config = load_config(project)?;
+    if let Some(date) = options.date {
+        config.planning_date = Some(date);
+    }
+    if let Some(max_start_snap_m) = options.max_start_snap_m {
+        config.max_start_snap_m = max_start_snap_m;
+    }
+    if let Some(min_km) = options.min_km {
+        config.constraints.min_distance_m = min_km * 1_000.0;
+    }
+    if let Some(max_km) = options.max_km {
+        config.constraints.max_distance_m = max_km * 1_000.0;
+    }
+    if !config.constraints.allows_shape(RouteShape::Loop) {
+        bail!(
+            "MILP formulation currently encodes connected simple loops; allow shape loop before formulating"
+        );
+    }
+    let graph = materialize_effective_graph(project, &config)?;
+    let start_coord = parse_coord(&options.start)?;
+    let start = snap_generation_start(&graph, start_coord, config.max_start_snap_m)?;
+    let formulation = LoopMilpFormulation::formulate(&graph, start.snapped, &config.constraints);
+    write_bytes(&options.output, formulation.to_lp())?;
+    println!(
+        "wrote MILP loop formulation with {} binary variable(s), {} row(s), and {} flow bound(s) to {}",
+        formulation.binaries.len(),
+        formulation.rows.len(),
+        formulation.bounds.len(),
+        options.output.display()
+    );
     Ok(())
 }
 
@@ -4716,6 +4802,7 @@ mod tests {
         let help = root.render_help().to_string();
         assert!(help.contains("Create a project directory"));
         assert!(help.contains("Generate ranked candidate routes"));
+        assert!(help.contains("deterministic LP/MILP loop formulation"));
         assert!(help.contains("Fetch bbox-scoped OSM XML"));
         assert!(help.contains("AllTrails"));
 
@@ -4878,6 +4965,37 @@ mod tests {
         assert!(edges.contains("fixture:north"));
         assert!(edges.contains(",trail,"));
 
+        Ok(())
+    }
+
+    #[test]
+    fn milp_formulation_command_writes_lp_artifact() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../trailgen-core/tests/fixtures/mini_network.geojson");
+        let output = project.join("routes/loop.lp");
+
+        init(project, "MILP Test".to_owned(), None)?;
+        build(project, &fixture)?;
+        formulate_milp(
+            project,
+            &MilpFormulationOptions {
+                start: "-105.0000,40.0000".to_owned(),
+                output: output.clone(),
+                min_km: Some(3.0),
+                max_km: Some(8.0),
+                max_start_snap_m: None,
+                date: None,
+            },
+        )?;
+
+        let lp = fs::read_to_string(output)?;
+        assert!(lp.contains("Minimize\n obj:"));
+        assert!(lp.contains("flow_start_supplies_visited_vertices"));
+        assert!(lp.contains("distance_min:"));
+        assert!(lp.contains("distance_max:"));
+        assert!(lp.contains("Binary\n"));
         Ok(())
     }
 

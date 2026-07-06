@@ -15,8 +15,8 @@ use trailgen_core::source::{
 };
 use trailgen_core::{
     Access, ArcAsciiGrid, CrossingKind, EdgeId, EdgeTravel, ElevationSampler, ExactLoopSolver,
-    GeoTiffDem, MonthDay, PlanningDate, RasterCrs, Route, RouteMetrics, RouteShape, SearchParams,
-    SeasonalWindow, SolverKind, VertexId, VrtDem,
+    GeoTiffDem, LoopMilpFormulation, MonthDay, PlanningDate, RasterCrs, Route, RouteMetrics,
+    RouteShape, SearchParams, SeasonalWindow, SolverKind, VertexId, VrtDem,
 };
 use trailgen_core::{
     Coord, DifficultyWeights, EnrichmentConfig, GraphBuilder, LineString, LoopConstraints,
@@ -1547,6 +1547,80 @@ fn exact_solver_accepts_two_edge_multiedge_loops() {
             && r.edges.len() == 2
             && r.metrics.repeated_edge_fraction == 0.0
     }));
+}
+
+#[test]
+fn milp_formulation_exports_connected_loop_model() {
+    let graph = GraphBuilder::default().build(&square_drafts()).unwrap();
+    let start = graph.nearest_vertex(Coord::new(0.0, 0.0)).unwrap();
+    let constraints = LoopConstraints {
+        min_distance_m: 0.0,
+        max_distance_m: 10_000.0,
+        min_terrain_fraction: BTreeMap::from([(Terrain::Trail, 0.50)]),
+        forbidden_terrain: vec![Terrain::Road],
+        ..LoopConstraints::default()
+    };
+    let formulation = LoopMilpFormulation::formulate(&graph, start, &constraints);
+    let lp = formulation.to_lp();
+
+    assert!(formulation.binaries.iter().any(|var| var == "y_v0"));
+    assert!(
+        formulation
+            .binaries
+            .iter()
+            .any(|var| var.starts_with("z_e0_v"))
+    );
+    assert!(
+        formulation
+            .rows
+            .iter()
+            .any(|row| row.name == "flow_start_supplies_visited_vertices")
+    );
+    assert!(
+        formulation
+            .rows
+            .iter()
+            .any(|row| row.name == "distance_min")
+    );
+    assert!(
+        formulation
+            .rows
+            .iter()
+            .any(|row| row.name == "road_fraction_max")
+    );
+    assert!(lp.contains("Minimize\n obj:"));
+    assert!(lp.contains("Subject To\n"));
+    assert!(lp.contains("force_start: + 1 y_v0 = 1"));
+    assert!(lp.contains("Binary\n"));
+    assert!(lp.ends_with("End\n"));
+}
+
+#[test]
+fn milp_formulation_respects_one_way_arc_feasibility() {
+    let graph = GraphBuilder::default()
+        .build(&[SegmentDraft {
+            geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
+            terrain: Terrain::Trail,
+            surface: None,
+            access: Access::Open,
+            travel: EdgeTravel::Forward,
+            road_exposure: 0.0,
+            confidence: 1.0,
+            provenance: Provenance::fixture("one-way"),
+        }])
+        .unwrap();
+    let formulation = LoopMilpFormulation::formulate(
+        &graph,
+        graph.vertices[0].id,
+        &LoopConstraints {
+            min_distance_m: 0.0,
+            max_distance_m: 10_000.0,
+            ..LoopConstraints::default()
+        },
+    );
+
+    assert!(formulation.binaries.iter().any(|var| var == "z_e0_v0_v1"));
+    assert!(formulation.binaries.iter().all(|var| var != "z_e0_v1_v0"));
 }
 
 #[test]
