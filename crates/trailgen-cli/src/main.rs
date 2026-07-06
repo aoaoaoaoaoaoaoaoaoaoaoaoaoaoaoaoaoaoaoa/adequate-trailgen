@@ -136,7 +136,7 @@ enum Cmd {
         /// Project directory containing sources/manifest.json.
         project: PathBuf,
     },
-    /// Verify generated route artifacts and snapshotted source inputs against the generation manifest.
+    /// Verify generated artifacts, source snapshots, run metadata, routes, and native solver replay.
     VerifyGeneration {
         /// Project directory containing routes/generated.manifest.json.
         project: PathBuf,
@@ -6940,7 +6940,7 @@ mod tests {
         assert!(help.contains("Fetch bbox-scoped OSM XML"));
         assert!(help.contains("Print concrete next source-acquisition actions"));
         assert!(help.contains("source coverage satisfies a planning gate"));
-        assert!(help.contains("Verify generated route artifacts"));
+        assert!(help.contains("native solver replay"));
         assert!(help.contains("AllTrails"));
 
         let mut build = Cli::command();
