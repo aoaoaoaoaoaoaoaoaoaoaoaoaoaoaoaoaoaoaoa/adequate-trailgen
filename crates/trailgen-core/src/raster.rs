@@ -1,4 +1,4 @@
-use crate::crs::{wgs84_to_utm, wgs84_to_web_mercator};
+use crate::crs::{UtmCrs, wgs84_to_utm_crs, wgs84_to_web_mercator};
 use crate::enrich::{ElevationSample, ElevationSampler};
 use crate::geo::Coord;
 use crate::model::Provenance;
@@ -134,7 +134,7 @@ impl RasterTransform {
 pub enum RasterCrs {
     Wgs84Degrees,
     WebMercatorMeters,
-    Wgs84UtmMeters { zone: u8, north: bool },
+    Wgs84UtmMeters(UtmCrs),
 }
 
 impl RasterCrs {
@@ -142,7 +142,7 @@ impl RasterCrs {
         match self {
             Self::Wgs84Degrees => Some((coord.lon, coord.lat)),
             Self::WebMercatorMeters => Some(wgs84_to_web_mercator(coord)),
-            Self::Wgs84UtmMeters { zone, north } => wgs84_to_utm(coord, zone, north),
+            Self::Wgs84UtmMeters(crs) => wgs84_to_utm_crs(coord, crs),
         }
     }
 }
@@ -667,8 +667,8 @@ fn parse_vrt_srs(srs: &str) -> Result<RasterCrs> {
         || normalized.contains("PSEUDOMERCATOR")
     {
         Ok(RasterCrs::WebMercatorMeters)
-    } else if let Some(crs) = utm_from_normalized_srs(&normalized) {
-        Ok(crs)
+    } else if let Some(crs) = UtmCrs::from_normalized_srs(&normalized) {
+        Ok(RasterCrs::Wgs84UtmMeters(crs))
     } else if normalized.contains("PROJCS")
         || normalized.contains("PROJCRS")
         || normalized.contains("PROJECTION")
@@ -691,43 +691,6 @@ fn parse_vrt_srs(srs: &str) -> Result<RasterCrs> {
                 .to_owned(),
         ))
     }
-}
-
-fn utm_from_normalized_srs(normalized: &str) -> Option<RasterCrs> {
-    (1_u16..=60).find_map(|zone| {
-        [
-            (
-                format!("EPSG326{zone:02}"),
-                RasterCrs::Wgs84UtmMeters {
-                    zone: u8::try_from(zone).ok()?,
-                    north: true,
-                },
-            ),
-            (
-                format!("EPSG327{zone:02}"),
-                RasterCrs::Wgs84UtmMeters {
-                    zone: u8::try_from(zone).ok()?,
-                    north: false,
-                },
-            ),
-            (
-                format!("WGS84UTMZONE{zone}N"),
-                RasterCrs::Wgs84UtmMeters {
-                    zone: u8::try_from(zone).ok()?,
-                    north: true,
-                },
-            ),
-            (
-                format!("WGS84UTMZONE{zone}S"),
-                RasterCrs::Wgs84UtmMeters {
-                    zone: u8::try_from(zone).ok()?,
-                    north: false,
-                },
-            ),
-        ]
-        .into_iter()
-        .find_map(|(needle, crs)| normalized.contains(&needle).then_some(crs))
-    })
 }
 
 fn required_attr<T>(node: roxmltree::Node<'_, '_>, key: &str) -> Result<T>
@@ -915,14 +878,7 @@ fn validate_geokeys<R: std::io::Read + std::io::Seek>(
 fn projected_raster_crs(epsg: u16) -> Option<RasterCrs> {
     match epsg {
         3857 => Some(RasterCrs::WebMercatorMeters),
-        32601..=32660 => Some(RasterCrs::Wgs84UtmMeters {
-            zone: u8::try_from(epsg - 32600).ok()?,
-            north: true,
-        }),
-        32701..=32760 => Some(RasterCrs::Wgs84UtmMeters {
-            zone: u8::try_from(epsg - 32700).ok()?,
-            north: false,
-        }),
+        32601..=32760 => Some(RasterCrs::Wgs84UtmMeters(UtmCrs::from_epsg(epsg)?)),
         _ => None,
     }
 }

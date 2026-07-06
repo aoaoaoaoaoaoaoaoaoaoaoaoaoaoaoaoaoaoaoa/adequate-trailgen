@@ -28,6 +28,7 @@ use trailgen_core::{
 const WGS84_PRJ: &str = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["Degree",0.0174532925199433]]"#;
 const WEB_MERCATOR_PRJ: &str = r#"PROJCS["WGS 84 / Pseudo-Mercator",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PROJECTION["Mercator_1SP"],UNIT["metre",1],AUTHORITY["EPSG","3857"]]"#;
 const UTM_PRJ: &str = r#"PROJCS["WGS 84 / UTM zone 13N",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PROJECTION["Transverse_Mercator"],UNIT["metre",1],AUTHORITY["EPSG","32613"]]"#;
+const NAD83_UTM_PRJ: &str = r#"PROJCS["NAD83 / UTM zone 13N",GEOGCS["NAD83",DATUM["North_American_Datum_1983",SPHEROID["GRS 1980",6378137,298.257222101]],PROJECTION["Transverse_Mercator"],UNIT["metre",1],AUTHORITY["EPSG","26913"]]"#;
 const WEB_MERCATOR_0_01_LON_M: f64 = 1_113.194_907_932_735_8;
 
 #[test]
@@ -2270,7 +2271,7 @@ fn shapefile_adapters_normalize_networks_and_overlays() {
 }
 
 #[test]
-fn vector_adapters_reproject_web_mercator_and_reject_other_projected_crs() {
+fn vector_adapters_reproject_declared_projected_crs_and_reject_foreign_datums() {
     let web_mercator_geojson = r#"{
       "type": "FeatureCollection",
       "crs": {"type": "name", "properties": {"name": "EPSG:3857"}},
@@ -2284,9 +2285,30 @@ fn vector_adapters_reproject_web_mercator_and_reject_other_projected_crs() {
     assert!((drafts[0].geometry.points[1].lon - 0.01).abs() < 1.0e-12);
     assert!(drafts[0].geometry.points[1].lat.abs() < 1.0e-12);
 
+    let utm_start =
+        trailgen_core::crs::wgs84_to_utm(Coord::new(-104.995, 40.005), 13, true).unwrap();
+    let utm_end = trailgen_core::crs::wgs84_to_utm(Coord::new(-104.985, 40.005), 13, true).unwrap();
+    let utm_geojson = format!(
+        r#"{{
+      "type": "FeatureCollection",
+      "crs": {{"type": "name", "properties": {{"name": "EPSG:32613"}}}},
+      "features": [{{
+        "type": "Feature",
+        "properties": {{"terrain": "trail"}},
+        "geometry": {{"type": "LineString", "coordinates": [[{},{}], [{},{}]]}}
+      }}]
+    }}"#,
+        utm_start.0, utm_start.1, utm_end.0, utm_end.1
+    );
+    let drafts = geojson::network_from_str(&utm_geojson).unwrap();
+    assert!((drafts[0].geometry.points[0].lon + 104.995).abs() < 1.0e-7);
+    assert!((drafts[0].geometry.points[0].lat - 40.005).abs() < 1.0e-7);
+    assert!((drafts[0].geometry.points[1].lon + 104.985).abs() < 1.0e-7);
+    assert!((drafts[0].geometry.points[1].lat - 40.005).abs() < 1.0e-7);
+
     let unsupported_geojson = r#"{
       "type": "FeatureCollection",
-      "crs": {"type": "name", "properties": {"name": "EPSG:32613"}},
+      "crs": {"type": "name", "properties": {"name": "EPSG:26913"}},
       "features": []
     }"#;
     let error = geojson::network_from_str(unsupported_geojson).unwrap_err();
@@ -2303,9 +2325,22 @@ fn vector_adapters_reproject_web_mercator_and_reject_other_projected_crs() {
     let drafts = shp_io::network_from_path(&network).unwrap();
     assert!((drafts[0].geometry.points[1].lon - 0.01).abs() < 1.0e-12);
 
-    let unsupported = tmp.path().join("utm-trails.shp");
+    let utm = tmp.path().join("utm-trails.shp");
+    write_network_shapefile_points(
+        &utm,
+        ::shapefile::Point::new(utm_start.0, utm_start.1),
+        ::shapefile::Point::new(utm_end.0, utm_end.1),
+    );
+    std::fs::write(utm.with_extension("prj"), UTM_PRJ).unwrap();
+    let drafts = shp_io::network_from_path(&utm).unwrap();
+    assert!((drafts[0].geometry.points[0].lon + 104.995).abs() < 1.0e-7);
+    assert!((drafts[0].geometry.points[0].lat - 40.005).abs() < 1.0e-7);
+    assert!((drafts[0].geometry.points[1].lon + 104.985).abs() < 1.0e-7);
+    assert!((drafts[0].geometry.points[1].lat - 40.005).abs() < 1.0e-7);
+
+    let unsupported = tmp.path().join("nad83-utm-trails.shp");
     write_network_shapefile(&unsupported);
-    std::fs::write(unsupported.with_extension("prj"), UTM_PRJ).unwrap();
+    std::fs::write(unsupported.with_extension("prj"), NAD83_UTM_PRJ).unwrap();
     let error = shp_io::network_from_path(&unsupported).unwrap_err();
     assert!(format!("{error}").contains("unsupported projected CRS"));
 }
@@ -2764,10 +2799,7 @@ fn utm_geotiff_dem_samples_projected_source() {
     .unwrap();
     assert_eq!(
         raster.crs,
-        RasterCrs::Wgs84UtmMeters {
-            zone: 13,
-            north: true
-        }
+        RasterCrs::Wgs84UtmMeters(trailgen_core::crs::UtmCrs::from_epsg(32613).unwrap())
     );
     let sample = raster.sample(Coord::new(-104.995, 40.005)).unwrap();
     assert!((sample.ele_m - 1_600.0).abs() <= 1.0e-9);
@@ -2898,10 +2930,7 @@ fn utm_vrt_dem_samples_projected_source() {
     .unwrap();
     assert_eq!(
         raster.crs,
-        RasterCrs::Wgs84UtmMeters {
-            zone: 13,
-            north: true
-        }
+        RasterCrs::Wgs84UtmMeters(trailgen_core::crs::UtmCrs::from_epsg(32613).unwrap())
     );
     let sample = raster.sample(Coord::new(-104.995, 40.005)).unwrap();
     assert!((sample.ele_m - 1_600.0).abs() <= 1.0e-9);
