@@ -25,7 +25,7 @@ use trailgen_core::{
     PlanningDate, Provenance, RasterDem, Route, RouteMetrics, RouteShape, RouteSnapStats,
     SearchParams, SeedRoute, SegmentDraft, SolverKind, Terrain, TrailGraph, VertexId, VrtDem,
     apply_access_overlays, apply_context_overlays, apply_terrain_overlays, enrich_graph,
-    rank_routes, slug,
+    rank_routes, route_edges_from_solution, slug,
 };
 
 #[derive(Parser)]
@@ -230,6 +230,32 @@ enum Cmd {
         #[arg(long)]
         min_km: Option<f64>,
         /// Maximum route distance in kilometers for this formulation.
+        #[arg(long)]
+        max_km: Option<f64>,
+        /// Maximum allowed trailhead snap distance in meters.
+        #[arg(long)]
+        max_start_snap_m: Option<f64>,
+        /// Planning date used to materialize dated access/closure overlays.
+        #[arg(long, value_parser = parse_planning_date)]
+        date: Option<PlanningDate>,
+    },
+    /// Import an external MILP solver incumbent into normal generated route artifacts.
+    ImportMilpSolution {
+        /// Project directory with a cached graph.
+        project: PathBuf,
+        /// Requested trailhead/start coordinate used by the formulation, as lon,lat.
+        #[arg(long, allow_hyphen_values = true)]
+        start: String,
+        /// Solver solution text containing selected `z_eN_vFROM_vTO` variables.
+        #[arg(long)]
+        solution: PathBuf,
+        /// Generated candidate name.
+        #[arg(long, default_value = "candidate-1")]
+        name: String,
+        /// Minimum route distance in kilometers for this import audit.
+        #[arg(long)]
+        min_km: Option<f64>,
+        /// Maximum route distance in kilometers for this import audit.
         #[arg(long)]
         max_km: Option<f64>,
         /// Maximum allowed trailhead snap distance in meters.
@@ -601,6 +627,27 @@ fn main() -> Result<()> {
             &MilpFormulationOptions {
                 start,
                 output,
+                min_km,
+                max_km,
+                max_start_snap_m,
+                date,
+            },
+        ),
+        Cmd::ImportMilpSolution {
+            project,
+            start,
+            solution,
+            name,
+            min_km,
+            max_km,
+            max_start_snap_m,
+            date,
+        } => import_milp_solution(
+            &project,
+            &MilpIncumbentOptions {
+                start,
+                solution,
+                name,
                 min_km,
                 max_km,
                 max_start_snap_m,
@@ -1602,11 +1649,21 @@ struct MilpFormulationOptions {
     date: Option<PlanningDate>,
 }
 
+struct MilpIncumbentOptions {
+    start: String,
+    solution: PathBuf,
+    name: String,
+    min_km: Option<f64>,
+    max_km: Option<f64>,
+    max_start_snap_m: Option<f64>,
+    date: Option<PlanningDate>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 struct GenerationManifest {
     schema_version: u32,
     app_version: &'static str,
-    solver: &'static str,
+    solver: String,
     requested_solver: SolverKind,
     random_seed: u64,
     requested_start: Coord,
@@ -1799,7 +1856,7 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
             graph: &graph,
             start,
             routes: &routes,
-            solver,
+            solver_label: solver.label(),
         })?,
     )?;
     write_route_artifacts(project, &graph, &routes, &config.constraints)?;
@@ -1854,6 +1911,120 @@ fn formulate_milp(project: &Path, options: &MilpFormulationOptions) -> Result<()
         options.output.display()
     );
     Ok(())
+}
+
+fn import_milp_solution(project: &Path, options: &MilpIncumbentOptions) -> Result<()> {
+    let mut config = load_config(project)?;
+    if let Some(date) = options.date {
+        config.planning_date = Some(date);
+    }
+    if let Some(max_start_snap_m) = options.max_start_snap_m {
+        config.max_start_snap_m = max_start_snap_m;
+    }
+    if let Some(min_km) = options.min_km {
+        config.constraints.min_distance_m = min_km * 1_000.0;
+    }
+    if let Some(max_km) = options.max_km {
+        config.constraints.max_distance_m = max_km * 1_000.0;
+    }
+    if !config.constraints.allows_shape(RouteShape::Loop) {
+        bail!("MILP incumbent import expects a connected simple loop; allow shape loop first");
+    }
+    let graph = materialize_effective_graph(project, &config)?;
+    let start_coord = parse_coord(&options.start)?;
+    let start = snap_generation_start(&graph, start_coord, config.max_start_snap_m)?;
+    let raw = fs::read_to_string(&options.solution)
+        .with_context(|| format!("read {}", options.solution.display()))?;
+    let edges = route_edges_from_solution(&graph, start.snapped, &raw)
+        .with_context(|| format!("import MILP incumbent {}", options.solution.display()))?;
+    let mut routes = vec![Route::from_edges(
+        options.name.clone(),
+        &graph,
+        start.snapped,
+        edges,
+        &config.constraints,
+    )];
+    rank_routes(&mut routes, &config.constraints);
+    fs::create_dir_all(project.join("routes"))?;
+    fs::create_dir_all(project.join("reports"))?;
+    write_json(
+        project.join("routes/generated.geojson"),
+        &geojson::routes_to_geojson(&graph, &routes),
+    )?;
+    write_json(project.join("routes/generated.graph.json"), &graph)?;
+    write_json(project.join("routes/generated.routes.json"), &routes)?;
+    write_json(
+        project.join("routes/generated.manifest.json"),
+        &generation_manifest(GenerationManifestInput {
+            project,
+            options: &milp_incumbent_generate_options(options, &config),
+            config: &config,
+            forbidden_areas: &[],
+            graph: &graph,
+            start,
+            routes: &routes,
+            solver_label: "milp-incumbent-import",
+        })?,
+    )?;
+    write_route_artifacts(project, &graph, &routes, &config.constraints)?;
+    fs::write(
+        project.join("reports/generated.md"),
+        render_project_report(
+            project,
+            "Generated Hiking Routes",
+            &graph,
+            &routes,
+            &config.constraints,
+        )?,
+    )
+    .with_context(|| "write generated report")?;
+    write_bytes(
+        project.join("reports/map.html"),
+        render_map_html(&config.name, &graph, &routes)?,
+    )?;
+    println!(
+        "imported MILP incumbent {} as {} with {:.2} km and {} edge(s)",
+        options.solution.display(),
+        routes[0].name,
+        routes[0].metrics.distance_m / 1_000.0,
+        routes[0].edges.len()
+    );
+    Ok(())
+}
+
+fn milp_incumbent_generate_options(
+    options: &MilpIncumbentOptions,
+    config: &ProjectConfig,
+) -> GenerateOptions {
+    GenerateOptions {
+        start: options.start.clone(),
+        min_km: config.constraints.min_distance_m / 1_000.0,
+        max_km: config.constraints.max_distance_m / 1_000.0,
+        count: 1,
+        seed: 0,
+        max_start_snap_m: Some(config.max_start_snap_m),
+        solver: None,
+        max_hops: None,
+        max_frontier: None,
+        keep: None,
+        closure_paths: None,
+        date: config.planning_date,
+        min_difficulty: None,
+        max_difficulty: None,
+        min_ascent_m: None,
+        max_ascent_m: None,
+        min_descent_m: None,
+        max_descent_m: None,
+        max_road_fraction: None,
+        max_low_confidence_fraction: None,
+        max_restricted_access_fraction: None,
+        shape: vec![RouteShape::Loop],
+        max_repeated_edge_fraction: None,
+        forbidden_terrain: Vec::new(),
+        forbidden_area: Vec::new(),
+        min_terrain: Vec::new(),
+        max_terrain: Vec::new(),
+    }
 }
 
 fn write_route_artifacts(
@@ -4297,7 +4468,7 @@ struct GenerationManifestInput<'a> {
     graph: &'a TrailGraph,
     start: StartSnap,
     routes: &'a [Route],
-    solver: SolverKind,
+    solver_label: &'static str,
 }
 
 fn generation_manifest(input: GenerationManifestInput<'_>) -> Result<GenerationManifest> {
@@ -4309,12 +4480,12 @@ fn generation_manifest(input: GenerationManifestInput<'_>) -> Result<GenerationM
         graph,
         start,
         routes,
-        solver,
+        solver_label,
     } = input;
     Ok(GenerationManifest {
         schema_version: 1,
         app_version: env!("CARGO_PKG_VERSION"),
-        solver: solver.label(),
+        solver: solver_label.to_owned(),
         requested_solver: config.solver,
         random_seed: options.seed,
         requested_start: start.requested,
@@ -4760,6 +4931,7 @@ mod tests {
     use clap::CommandFactory as _;
     use protobuf::{Message, MessageField};
     use serde_json::Value;
+    use trailgen_core::ExactLoopSolver;
 
     const WGS84_PRJ: &str = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["Degree",0.0174532925199433]]"#;
     const UTM_PRJ: &str = r#"PROJCS["WGS 84 / UTM zone 13N",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PROJECTION["Transverse_Mercator"],UNIT["metre",1],AUTHORITY["EPSG","32613"]]"#;
@@ -4803,6 +4975,7 @@ mod tests {
         assert!(help.contains("Create a project directory"));
         assert!(help.contains("Generate ranked candidate routes"));
         assert!(help.contains("deterministic LP/MILP loop formulation"));
+        assert!(help.contains("external MILP solver incumbent"));
         assert!(help.contains("Fetch bbox-scoped OSM XML"));
         assert!(help.contains("AllTrails"));
 
@@ -4997,6 +5170,78 @@ mod tests {
         assert!(lp.contains("distance_max:"));
         assert!(lp.contains("Binary\n"));
         Ok(())
+    }
+
+    #[test]
+    fn milp_solution_import_writes_generated_route_artifacts() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../trailgen-core/tests/fixtures/mini_network.geojson");
+        let solution = project.join("routes/loop.sol");
+
+        init(project, "MILP Import Test".to_owned(), None)?;
+        build(project, &fixture)?;
+        let graph = load_graph(project)?;
+        let start = graph.nearest_vertex(Coord::new(-105.0, 40.0)).unwrap();
+        let constraints = LoopConstraints {
+            min_distance_m: 3_000.0,
+            max_distance_m: 8_000.0,
+            ..LoopConstraints::default()
+        };
+        let route = ExactLoopSolver {
+            params: SearchParams::default(),
+        }
+        .enumerate(&graph, start, &constraints, 1)
+        .pop()
+        .expect("fixture has an exact loop");
+        write_bytes(&solution, milp_solution_from_route(&graph, &route))?;
+
+        import_milp_solution(
+            project,
+            &MilpIncumbentOptions {
+                start: "-105.0000,40.0000".to_owned(),
+                solution,
+                name: "candidate-1".to_owned(),
+                min_km: Some(3.0),
+                max_km: Some(8.0),
+                max_start_snap_m: None,
+                date: None,
+            },
+        )?;
+
+        let routes: Vec<Route> = serde_json::from_str(&fs::read_to_string(
+            project.join("routes/generated.routes.json"),
+        )?)?;
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].name, "candidate-1");
+        assert!(project.join("routes/candidate-1.gpx").exists());
+        assert!(project.join("routes/candidate-1.kmz").exists());
+        assert!(project.join("reports/candidate-1.md").exists());
+        let manifest: Value = serde_json::from_str(&fs::read_to_string(
+            project.join("routes/generated.manifest.json"),
+        )?)?;
+        assert_eq!(manifest["solver"], "milp-incumbent-import");
+        assert!(
+            manifest["artifacts"]
+                .as_array()
+                .expect("artifacts")
+                .iter()
+                .any(|artifact| artifact == "routes/candidate-1.kmz")
+        );
+        Ok(())
+    }
+
+    fn milp_solution_from_route(graph: &TrailGraph, route: &Route) -> String {
+        let mut at = route.start;
+        let mut out = String::new();
+        for edge_id in &route.edges {
+            let edge = &graph.edges[edge_id.0];
+            let to = edge.traverse(at).expect("test route is traversable");
+            let _ = writeln!(out, "z_e{}_v{}_v{} 1", edge_id.0, at.0, to.0);
+            at = to;
+        }
+        out
     }
 
     #[test]

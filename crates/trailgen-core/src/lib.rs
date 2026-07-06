@@ -28,7 +28,11 @@ pub use enrich::{
     PlaneElevation, enrich_graph,
 };
 pub use geo::{Coord, LineString};
-pub use milp::{LinearRow, LinearSense, LinearTerm, LoopMilpFormulation, VariableBound};
+pub use milp::{
+    LinearRow, LinearSense, LinearTerm, LoopMilpFormulation, MilpIncumbentError, MilpSelectedArc,
+    VariableBound, route_edges_from_selected_arcs, route_edges_from_solution,
+    selected_arcs_from_solution,
+};
 pub use model::{
     Access, CrossingEvidence, CrossingKind, Edge, EdgeAttr, EdgeId, EdgeTravel, GradeDistribution,
     Provenance, RouteSnapStats, Terrain, TrailGraph, Vertex, VertexId,

@@ -2,7 +2,7 @@ use crate::constraints::LoopConstraints;
 use crate::model::{Edge, EdgeId, Terrain, TrailGraph, VertexId};
 use crate::route::{LOW_CONFIDENCE_THRESHOLD, is_restricted_access};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -53,6 +53,41 @@ pub struct LoopMilpFormulation {
     pub rows: Vec<LinearRow>,
     pub bounds: Vec<VariableBound>,
     pub binaries: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
+pub struct MilpSelectedArc {
+    pub edge: EdgeId,
+    pub from: VertexId,
+    pub to: VertexId,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum MilpIncumbentError {
+    #[error("MILP incumbent selects no directed arc variables")]
+    Empty,
+    #[error("MILP solution variable {0:?} is not a trailgen directed-arc variable")]
+    InvalidArcVariable(String),
+    #[error("MILP incumbent selects duplicate outgoing arcs from vertex {0}")]
+    DuplicateOutgoingArc(usize),
+    #[error("MILP incumbent selects duplicate incoming arcs to vertex {0}")]
+    DuplicateIncomingArc(usize),
+    #[error("MILP incumbent has no selected outgoing arc from start vertex {0}")]
+    MissingStartArc(usize),
+    #[error("MILP incumbent selected edge {edge} is missing from the graph")]
+    MissingEdge { edge: usize },
+    #[error(
+        "MILP incumbent selected arc z_e{edge}_v{from}_v{to}, but graph edge {edge} does not connect those directed vertices"
+    )]
+    ImpossibleArc { edge: usize, from: usize, to: usize },
+    #[error(
+        "MILP incumbent path hits vertex {0} with no outgoing selected arc before returning to start"
+    )]
+    OpenWalk(usize),
+    #[error("MILP incumbent path revisits vertex {0} before closing at the requested start")]
+    Subtour(usize),
+    #[error("MILP incumbent leaves {0} selected arc(s) outside the reconstructed start loop")]
+    DisconnectedArcs(usize),
 }
 
 #[derive(Clone, Copy)]
@@ -192,6 +227,68 @@ impl LoopMilpFormulation {
     }
 }
 
+pub fn selected_arcs_from_solution(raw: &str) -> Result<Vec<MilpSelectedArc>, MilpIncumbentError> {
+    let mut arcs = raw
+        .lines()
+        .flat_map(solution_line_assignment)
+        .filter(|(var, value)| value.abs() > 0.5 && var.starts_with("z_e"))
+        .map(|(var, _)| parse_arc_var(var))
+        .collect::<Result<Vec<_>, _>>()?;
+    arcs.sort_unstable();
+    arcs.dedup();
+    Ok(arcs)
+}
+
+pub fn route_edges_from_solution(
+    graph: &TrailGraph,
+    start: VertexId,
+    raw: &str,
+) -> Result<Vec<EdgeId>, MilpIncumbentError> {
+    route_edges_from_selected_arcs(graph, start, selected_arcs_from_solution(raw)?)
+}
+
+pub fn route_edges_from_selected_arcs(
+    graph: &TrailGraph,
+    start: VertexId,
+    arcs: Vec<MilpSelectedArc>,
+) -> Result<Vec<EdgeId>, MilpIncumbentError> {
+    if arcs.is_empty() {
+        return Err(MilpIncumbentError::Empty);
+    }
+    let mut out = BTreeMap::<VertexId, MilpSelectedArc>::new();
+    let mut ins = BTreeMap::<VertexId, MilpSelectedArc>::new();
+    for arc in arcs {
+        validate_selected_arc(graph, arc)?;
+        if out.insert(arc.from, arc).is_some() {
+            return Err(MilpIncumbentError::DuplicateOutgoingArc(arc.from.0));
+        }
+        if ins.insert(arc.to, arc).is_some() {
+            return Err(MilpIncumbentError::DuplicateIncomingArc(arc.to.0));
+        }
+    }
+    if !out.contains_key(&start) {
+        return Err(MilpIncumbentError::MissingStartArc(start.0));
+    }
+    let mut at = start;
+    let mut seen_vertices = BTreeSet::from([start]);
+    let mut edges = Vec::new();
+    loop {
+        let arc = out.remove(&at).ok_or(MilpIncumbentError::OpenWalk(at.0))?;
+        edges.push(arc.edge);
+        at = arc.to;
+        if at == start {
+            break;
+        }
+        if !seen_vertices.insert(at) {
+            return Err(MilpIncumbentError::Subtour(at.0));
+        }
+    }
+    if !out.is_empty() {
+        return Err(MilpIncumbentError::DisconnectedArcs(out.len()));
+    }
+    Ok(edges)
+}
+
 #[derive(Clone, Copy)]
 enum Direction {
     In,
@@ -219,6 +316,66 @@ fn allowed_arcs(edge: &Edge) -> Vec<ArcVar> {
             })
         })
         .collect()
+}
+
+fn validate_selected_arc(
+    graph: &TrailGraph,
+    arc: MilpSelectedArc,
+) -> Result<(), MilpIncumbentError> {
+    let edge = graph
+        .edges
+        .get(arc.edge.0)
+        .ok_or(MilpIncumbentError::MissingEdge { edge: arc.edge.0 })?;
+    if edge.id != arc.edge || edge.traverse(arc.from) != Some(arc.to) {
+        return Err(MilpIncumbentError::ImpossibleArc {
+            edge: arc.edge.0,
+            from: arc.from.0,
+            to: arc.to.0,
+        });
+    }
+    Ok(())
+}
+
+fn solution_line_assignment(line: &str) -> impl Iterator<Item = (&str, f64)> {
+    let line = line.split('#').next().unwrap_or_default();
+    let tokens = line
+        .split(|c: char| c.is_whitespace() || matches!(c, '=' | ',' | ';'))
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    let assignments = tokens.windows(2).filter_map(|pair| {
+        parse_value(pair[1])
+            .map(|value| (pair[0], value))
+            .or_else(|| parse_value(pair[0]).map(|value| (pair[1], value)))
+    });
+    assignments.collect::<Vec<_>>().into_iter()
+}
+
+fn parse_value(token: &str) -> Option<f64> {
+    token.parse::<f64>().ok()
+}
+
+fn parse_arc_var(var: &str) -> Result<MilpSelectedArc, MilpIncumbentError> {
+    let rest = var
+        .strip_prefix("z_e")
+        .ok_or_else(|| MilpIncumbentError::InvalidArcVariable(var.to_owned()))?;
+    let mut xs = rest.split("_v");
+    let edge = parse_id(xs.next(), var)?;
+    let from = parse_id(xs.next(), var)?;
+    let to = parse_id(xs.next(), var)?;
+    if xs.next().is_some() {
+        return Err(MilpIncumbentError::InvalidArcVariable(var.to_owned()));
+    }
+    Ok(MilpSelectedArc {
+        edge: EdgeId(edge),
+        from: VertexId(from),
+        to: VertexId(to),
+    })
+}
+
+fn parse_id(token: Option<&str>, var: &str) -> Result<usize, MilpIncumbentError> {
+    token
+        .and_then(|x| x.parse::<usize>().ok())
+        .ok_or_else(|| MilpIncumbentError::InvalidArcVariable(var.to_owned()))
 }
 
 fn arc_objective(edge: &Edge) -> f64 {

@@ -15,14 +15,14 @@ use trailgen_core::source::{
 };
 use trailgen_core::{
     Access, ArcAsciiGrid, CrossingKind, EdgeId, EdgeTravel, ElevationSampler, ExactLoopSolver,
-    GeoTiffDem, LoopMilpFormulation, MonthDay, PlanningDate, RasterCrs, Route, RouteMetrics,
-    RouteShape, SearchParams, SeasonalWindow, SolverKind, VertexId, VrtDem,
+    GeoTiffDem, LoopMilpFormulation, MilpSelectedArc, MonthDay, PlanningDate, RasterCrs, Route,
+    RouteMetrics, RouteShape, SearchParams, SeasonalWindow, SolverKind, VertexId, VrtDem,
 };
 use trailgen_core::{
     Coord, DifficultyWeights, EnrichmentConfig, GraphBuilder, LineString, LoopConstraints,
     LoopHunter, OverlayGeometry, PlaneElevation, Provenance, SeedRoute, SegmentDraft, Terrain,
     TerrainMultipliers, apply_access_overlays, apply_context_overlays, apply_terrain_overlays,
-    enrich_graph, rank_routes,
+    enrich_graph, rank_routes, route_edges_from_selected_arcs, route_edges_from_solution,
 };
 
 const WGS84_PRJ: &str = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["Degree",0.0174532925199433]]"#;
@@ -1621,6 +1621,92 @@ fn milp_formulation_respects_one_way_arc_feasibility() {
 
     assert!(formulation.binaries.iter().any(|var| var == "z_e0_v0_v1"));
     assert!(formulation.binaries.iter().all(|var| var != "z_e0_v1_v0"));
+}
+
+#[test]
+fn milp_incumbent_solution_reconstructs_directed_start_loop() {
+    let graph = GraphBuilder::default().build(&square_drafts()).unwrap();
+    let start = graph.nearest_vertex(Coord::new(0.0, 0.0)).unwrap();
+    let edges = [0, 1, 2, 3]
+        .into_iter()
+        .map(|i| &graph.edges[i])
+        .collect::<Vec<_>>();
+    let raw = format!(
+        "# HiGHS-style and value-first assignments are both accepted\n\
+         z_e{}_v{}_v{} 1\n\
+         1 z_e{}_v{}_v{}\n\
+         z_e{}_v{}_v{} = 0\n\
+         z_e{}_v{}_v{} 1\n\
+         z_e{}_v{}_v{} 1\n",
+        edges[0].id.0,
+        edges[0].a.0,
+        edges[0].b.0,
+        edges[1].id.0,
+        edges[1].a.0,
+        edges[1].b.0,
+        edges[1].id.0,
+        edges[1].b.0,
+        edges[1].a.0,
+        edges[2].id.0,
+        edges[2].a.0,
+        edges[2].b.0,
+        edges[3].id.0,
+        edges[3].a.0,
+        edges[3].b.0
+    );
+
+    assert_eq!(
+        route_edges_from_solution(&graph, start, &raw).unwrap(),
+        vec![EdgeId(0), EdgeId(1), EdgeId(2), EdgeId(3)]
+    );
+}
+
+#[test]
+fn milp_incumbent_rejects_disconnected_subtours() {
+    let mut drafts = square_drafts();
+    let detached_a = Coord::new(1.0, 1.0);
+    let detached_b = Coord::new(1.01, 1.0);
+    drafts.extend([
+        SegmentDraft {
+            geometry: LineString::new(vec![detached_a, detached_b]).unwrap(),
+            terrain: Terrain::Trail,
+            surface: None,
+            access: Access::Open,
+            travel: EdgeTravel::Forward,
+            road_exposure: 0.0,
+            confidence: 1.0,
+            provenance: Provenance::fixture("detached-out"),
+        },
+        SegmentDraft {
+            geometry: LineString::new(vec![detached_b, detached_a]).unwrap(),
+            terrain: Terrain::Trail,
+            surface: None,
+            access: Access::Open,
+            travel: EdgeTravel::Forward,
+            road_exposure: 0.0,
+            confidence: 1.0,
+            provenance: Provenance::fixture("detached-back"),
+        },
+    ]);
+    let graph = GraphBuilder::default().build(&drafts).unwrap();
+    let start = graph.nearest_vertex(Coord::new(0.0, 0.0)).unwrap();
+    let selected = graph
+        .edges
+        .iter()
+        .map(|edge| MilpSelectedArc {
+            edge: edge.id,
+            from: edge.a,
+            to: edge.b,
+        })
+        .collect::<Vec<_>>();
+
+    let err = route_edges_from_selected_arcs(&graph, start, selected)
+        .expect_err("disconnected incumbent must fail");
+
+    assert!(
+        err.to_string()
+            .contains("outside the reconstructed start loop")
+    );
 }
 
 #[test]
