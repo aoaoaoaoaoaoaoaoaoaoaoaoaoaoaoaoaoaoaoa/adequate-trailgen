@@ -15,8 +15,9 @@ use trailgen_core::alltrails::{
 use trailgen_core::io::route_file::RouteFile;
 use trailgen_core::io::{csv, geojson, gpx, json_route, kml, kmz, osm, report, shapefile as shp};
 use trailgen_core::source::{
-    GeoBounds, SourceCandidate, SourceFingerprint, SourceKind, SourceManifest, adapter_registry,
-    classify_path, discovery_recommendations, source_coverage,
+    GeoBounds, SourceCandidate, SourceCoverageSummary, SourceFingerprint, SourceKind,
+    SourceManifest, adapter_registry, classify_path, discovery_recommendations, source_coverage,
+    summarize_source_coverage,
 };
 use trailgen_core::{
     Access, AccessOverlay, AccessWindow, ArcAsciiGrid, Coord, CrossingKind, DifficultyBreakdown,
@@ -1709,6 +1710,7 @@ struct GenerationManifest {
     start_snap_m: f64,
     effective_config: ProjectConfig,
     source_manifest: Option<SourceManifest>,
+    source_coverage_summary: Option<SourceCoverageSummary>,
     forbidden_areas: Vec<ForbiddenAreaManifest>,
     graph: GraphManifest,
     routes: Vec<RouteManifestEntry>,
@@ -2592,7 +2594,17 @@ fn render_generated_report_with_title(
             .map(|config| config.constraints)
             .unwrap_or_default()
     });
-    render_project_report(project, title, graph, routes, &constraints)
+    let source_manifest = match load_generated_source_manifest(project)? {
+        Some(manifest) => Some(manifest),
+        None => load_source_manifest(project)?,
+    };
+    Ok(render_report_with_source_manifest(
+        title,
+        graph,
+        routes,
+        &constraints,
+        source_manifest.as_ref(),
+    ))
 }
 
 fn map_html(project: &Path, output: Option<&Path>) -> Result<()> {
@@ -2912,10 +2924,27 @@ fn render_project_report(
     routes: &[Route],
     constraints: &LoopConstraints,
 ) -> Result<String> {
+    let source_manifest = load_source_manifest(project)?;
+    Ok(render_report_with_source_manifest(
+        title,
+        graph,
+        routes,
+        constraints,
+        source_manifest.as_ref(),
+    ))
+}
+
+fn render_report_with_source_manifest(
+    title: &str,
+    graph: &TrailGraph,
+    routes: &[Route],
+    constraints: &LoopConstraints,
+    source_manifest: Option<&SourceManifest>,
+) -> String {
     let mut text = report::render_titled(title, graph, routes);
     render_constraints_section(&mut text, constraints);
-    render_source_manifest_section(&mut text, load_source_manifest(project)?.as_ref());
-    Ok(text)
+    render_source_manifest_section(&mut text, source_manifest);
+    text
 }
 
 fn render_constraints_section(text: &mut String, constraints: &LoopConstraints) {
@@ -2984,6 +3013,7 @@ fn render_source_manifest_section(text: &mut String, manifest: Option<&SourceMan
         text.push_str("No source manifest found.\n");
         return;
     };
+    render_source_coverage_summary(text, manifest);
     render_source_coverage(text, manifest);
     if manifest.candidates.is_empty() {
         text.push_str("No source candidates recorded.\n");
@@ -2992,10 +3022,57 @@ fn render_source_manifest_section(text: &mut String, manifest: Option<&SourceMan
     render_source_candidates(text, manifest);
 }
 
+fn render_source_coverage_summary(text: &mut String, manifest: &SourceManifest) {
+    let summary = summarize_source_coverage(&manifest.coverage);
+    let required = if summary.required_complete() {
+        "complete"
+    } else {
+        "incomplete"
+    };
+    let recommended = if summary.recommended_complete() {
+        "complete"
+    } else {
+        "incomplete"
+    };
+    let _ = writeln!(
+        text,
+        "Coverage summary: required {required} ({}/{} satisfied), recommended {recommended} ({}/{} satisfied), optional {}/{} satisfied.",
+        summary.required.satisfied,
+        summary.required.total,
+        summary.recommended.satisfied,
+        summary.recommended.total,
+        summary.optional.satisfied,
+        summary.optional.total
+    );
+    render_kind_list(text, "Missing required", &summary.missing_required);
+    render_kind_list(text, "Planned-only required", &summary.planned_required);
+    render_kind_list(text, "Missing recommended", &summary.missing_recommended);
+    render_kind_list(
+        text,
+        "Planned-only recommended",
+        &summary.planned_recommended,
+    );
+    text.push('\n');
+}
+
+fn render_kind_list(text: &mut String, label: &str, kinds: &[SourceKind]) {
+    if kinds.is_empty() {
+        let _ = writeln!(text, "{label}: none");
+        return;
+    }
+    let rendered = kinds
+        .iter()
+        .map(|kind| format!("{kind:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let _ = writeln!(text, "{label}: {rendered}");
+}
+
 fn render_discovery_report(manifest: &SourceManifest) -> String {
     let mut text = "# Source Discovery\n\n".to_owned();
     render_discovery_area(&mut text, manifest);
     text.push_str("## Coverage\n\n");
+    render_source_coverage_summary(&mut text, manifest);
     render_source_coverage(&mut text, manifest);
     text.push_str("## Acquisition Plan\n\n");
     render_acquisition_plan(&mut text, manifest);
@@ -4164,18 +4241,26 @@ fn load_generated_constraints(project: &Path) -> Result<Option<LoopConstraints>>
 }
 
 fn load_generated_config(project: &Path) -> Result<Option<ProjectConfig>> {
+    Ok(load_generated_manifest_value(project)?
+        .and_then(|manifest| manifest.get("effective_config").cloned())
+        .map(serde_json::from_value)
+        .transpose()?)
+}
+
+fn load_generated_source_manifest(project: &Path) -> Result<Option<SourceManifest>> {
+    Ok(load_generated_manifest_value(project)?
+        .and_then(|manifest| manifest.get("source_manifest").cloned())
+        .map(serde_json::from_value)
+        .transpose()?)
+}
+
+fn load_generated_manifest_value(project: &Path) -> Result<Option<serde_json::Value>> {
     let path = project.join("routes/generated.manifest.json");
     if !path.exists() {
         return Ok(None);
     }
     let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
-    let manifest = serde_json::from_str::<serde_json::Value>(&raw)?;
-    manifest
-        .get("effective_config")
-        .cloned()
-        .map(serde_json::from_value)
-        .transpose()
-        .map_err(Into::into)
+    Ok(Some(serde_json::from_str(&raw)?))
 }
 
 fn select_route<'a>(routes: &'a [Route], name: &str) -> Result<&'a Route> {
@@ -4549,6 +4634,10 @@ fn generation_manifest(input: GenerationManifestInput<'_>) -> Result<GenerationM
         routes,
         solver_label,
     } = input;
+    let source_manifest = load_source_manifest(project)?;
+    let source_coverage_summary = source_manifest
+        .as_ref()
+        .map(|manifest| summarize_source_coverage(&manifest.coverage));
     Ok(GenerationManifest {
         schema_version: 1,
         app_version: env!("CARGO_PKG_VERSION"),
@@ -4560,7 +4649,8 @@ fn generation_manifest(input: GenerationManifestInput<'_>) -> Result<GenerationM
         snapped_start_coord: start.snapped_coord,
         start_snap_m: start.distance_m,
         effective_config: config.clone(),
-        source_manifest: load_source_manifest(project)?,
+        source_manifest,
+        source_coverage_summary,
         forbidden_areas: forbidden_areas.to_vec(),
         graph: graph_manifest(graph),
         routes: routes.iter().map(route_manifest_entry).collect(),
@@ -5353,6 +5443,8 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(project.join("sources/manifest.json"))?)?;
         let discovery = fs::read_to_string(project.join("sources/discovery.md"))?;
         assert!(discovery.starts_with("# Source Discovery"));
+        assert!(discovery.contains("Coverage summary: required incomplete"));
+        assert!(discovery.contains("Missing recommended:"));
         assert!(discovery.contains("## Acquisition Plan"));
         assert!(discovery.contains("## Cache Command Sketches"));
         assert!(discovery.contains("NPS official GIS open data"));
@@ -5860,6 +5952,19 @@ mod tests {
                 .iter()
                 .any(|entry| { entry["kind"] == "elevation" && entry["status"] == "missing" })
         );
+        assert_eq!(
+            manifest["source_coverage_summary"]["required"]["satisfied"],
+            1
+        );
+        assert_eq!(
+            manifest["source_coverage_summary"]["recommended"]["missing"],
+            5
+        );
+        assert!(
+            manifest["source_coverage_summary"]["missing_recommended"]
+                .as_array()
+                .is_some_and(|kinds| kinds.iter().any(|kind| kind == "hydrology"))
+        );
     }
 
     fn assert_generation_artifacts_manifest(manifest: &Value) {
@@ -5926,6 +6031,10 @@ mod tests {
         let generated_candidate_report = fs::read_to_string(&md)?;
         assert!(generated_candidate_report.starts_with("# Generated Hiking Route"));
         assert!(generated_candidate_report.contains("Source provenance:"));
+        fs::write(
+            project.join("sources/manifest.json"),
+            "{live manifest is stale",
+        )?;
         export_route(
             project,
             "candidate-1",
@@ -5993,12 +6102,15 @@ mod tests {
         assert!(report.contains("Access mix"));
         assert!(report.contains("restricted-access fraction"));
         assert!(report.contains("## Source Manifest"));
+        assert!(report.contains("Coverage summary:"));
+        assert!(report.contains("Missing required: Elevation"));
         assert!(report.contains("sha256 "));
         let sidecar_report = fs::read_to_string(sidecar)?;
         assert!(sidecar_report.starts_with("# Generated Hiking Route"));
         assert!(sidecar_report.contains("candidate-1"));
         assert!(sidecar_report.contains("Difficulty decomposition"));
         assert!(sidecar_report.contains("Source provenance:"));
+        assert!(sidecar_report.contains("Coverage summary:"));
         Ok(())
     }
 

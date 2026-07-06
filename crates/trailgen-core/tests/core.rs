@@ -11,7 +11,7 @@ use trailgen_core::io::{
 };
 use trailgen_core::source::{
     SourceCoverageStatus, SourceKind, adapter_registry, classify_path, discovery_recommendations,
-    source_coverage,
+    source_coverage, summarize_source_coverage,
 };
 use trailgen_core::{
     Access, ArcAsciiGrid, CrossingKind, DailyTimeWindow, EdgeId, EdgeTravel, ElevationSampler,
@@ -2793,6 +2793,14 @@ fn source_coverage_evaluates_recommendations_against_candidates() {
         .expect("hydrology coverage");
     assert_eq!(hydrology.status, SourceCoverageStatus::Missing);
     assert!(hydrology.message.contains("sources/hydrology.geojson"));
+
+    let summary = summarize_source_coverage(&coverage);
+    assert!(summary.required_complete());
+    assert!(!summary.recommended_complete());
+    assert_eq!(summary.required.satisfied, 2);
+    assert_eq!(summary.recommended.satisfied, 0);
+    assert!(summary.missing_required.is_empty());
+    assert!(summary.missing_recommended.contains(&SourceKind::Hydrology));
 }
 
 const fn trailhead_bounds() -> trailgen_core::source::GeoBounds {

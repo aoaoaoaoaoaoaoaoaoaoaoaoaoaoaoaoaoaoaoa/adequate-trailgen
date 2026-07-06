@@ -129,6 +129,49 @@ pub struct SourceCoverage {
     pub message: String,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SourceCoverageTally {
+    pub total: usize,
+    pub satisfied: usize,
+    pub missing: usize,
+    pub planned_adapter_only: usize,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SourceCoverageSummary {
+    pub total: SourceCoverageTally,
+    pub required: SourceCoverageTally,
+    pub recommended: SourceCoverageTally,
+    pub optional: SourceCoverageTally,
+    pub missing_required: Vec<SourceKind>,
+    pub planned_required: Vec<SourceKind>,
+    pub missing_recommended: Vec<SourceKind>,
+    pub planned_recommended: Vec<SourceKind>,
+}
+
+impl SourceCoverageTally {
+    const fn record(&mut self, status: SourceCoverageStatus) {
+        self.total += 1;
+        match status {
+            SourceCoverageStatus::Satisfied => self.satisfied += 1,
+            SourceCoverageStatus::Missing => self.missing += 1,
+            SourceCoverageStatus::PlannedAdapterOnly => self.planned_adapter_only += 1,
+        }
+    }
+}
+
+impl SourceCoverageSummary {
+    #[must_use]
+    pub const fn required_complete(&self) -> bool {
+        self.required.missing == 0 && self.required.planned_adapter_only == 0
+    }
+
+    #[must_use]
+    pub const fn recommended_complete(&self) -> bool {
+        self.recommended.missing == 0 && self.recommended.planned_adapter_only == 0
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SourceManifest {
     pub adapters: Vec<SourceAdapter>,
@@ -137,6 +180,50 @@ pub struct SourceManifest {
     #[serde(default)]
     pub coverage: Vec<SourceCoverage>,
     pub candidates: Vec<SourceCandidate>,
+}
+
+#[must_use]
+pub fn summarize_source_coverage(coverage: &[SourceCoverage]) -> SourceCoverageSummary {
+    let mut summary = SourceCoverageSummary::default();
+    for entry in coverage {
+        summary.total.record(entry.status);
+        match entry.priority {
+            SourcePriority::Required => {
+                summary.required.record(entry.status);
+                record_gap(
+                    entry,
+                    &mut summary.missing_required,
+                    &mut summary.planned_required,
+                );
+            }
+            SourcePriority::Recommended => {
+                summary.recommended.record(entry.status);
+                record_gap(
+                    entry,
+                    &mut summary.missing_recommended,
+                    &mut summary.planned_recommended,
+                );
+            }
+            SourcePriority::Optional => summary.optional.record(entry.status),
+        }
+    }
+    summary.missing_required.sort();
+    summary.planned_required.sort();
+    summary.missing_recommended.sort();
+    summary.planned_recommended.sort();
+    summary
+}
+
+fn record_gap(
+    entry: &SourceCoverage,
+    missing: &mut Vec<SourceKind>,
+    planned: &mut Vec<SourceKind>,
+) {
+    match entry.status {
+        SourceCoverageStatus::Satisfied => {}
+        SourceCoverageStatus::Missing => missing.push(entry.kind),
+        SourceCoverageStatus::PlannedAdapterOnly => planned.push(entry.kind),
+    }
 }
 
 #[must_use]

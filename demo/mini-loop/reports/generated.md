@@ -362,6 +362,12 @@ Terrain/elevation evidence:
 
 ## Source Manifest
 
+Coverage summary: required complete (2/2 satisfied), recommended complete (5/5 satisfied), optional 1/1 satisfied.
+Missing required: none
+Planned-only required: none
+Missing recommended: none
+Planned-only recommended: none
+
 Coverage:
 - TrailNetwork (Required): Satisfied; candidates: crates/trailgen-core/tests/fixtures/mini_network.geojson; TrailNetwork source requirement has implemented candidate(s).
 - Elevation (Required): Satisfied; candidates: crates/trailgen-core/tests/fixtures/mini_dem.asc; Elevation source requirement has implemented candidate(s).

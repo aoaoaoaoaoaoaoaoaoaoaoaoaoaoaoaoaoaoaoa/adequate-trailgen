@@ -1590,7 +1590,8 @@
             "seed_count": 2,
             "surface": null,
             "terrain": "talus",
-            "terrain_confidence": 0.9
+            "terrain_confidence": 0.9,
+            "travel": "both"
           }
         ],
         "ascent_m": 136.9999999999991,
@@ -1758,6 +1759,7 @@
             "value": 1.334340962802445
           }
         ],
+        "directed_travel_edges": [],
         "distance_m": 4712.831226933267,
         "dubious_edges": [
           {
@@ -1788,7 +1790,8 @@
             "seed_count": 2,
             "surface": null,
             "terrain": "talus",
-            "terrain_confidence": 0.9
+            "terrain_confidence": 0.9,
+            "travel": "both"
           },
           {
             "access": "closed",
@@ -1824,7 +1827,8 @@
             "seed_count": 2,
             "surface": null,
             "terrain": "talus",
-            "terrain_confidence": 0.9
+            "terrain_confidence": 0.9,
+            "travel": "both"
           },
           {
             "access": "open",
@@ -1854,7 +1858,8 @@
             "seed_count": 2,
             "surface": null,
             "terrain": "trail",
-            "terrain_confidence": 0.9
+            "terrain_confidence": 0.9,
+            "travel": "both"
           },
           {
             "access": "open",
@@ -1884,7 +1889,8 @@
             "seed_count": 2,
             "surface": null,
             "terrain": "trail",
-            "terrain_confidence": 0.9
+            "terrain_confidence": 0.9,
+            "travel": "both"
           }
         ],
         "edge_count": 4,
@@ -3280,7 +3286,8 @@
             "seed_count": 0,
             "surface": null,
             "terrain": "alpine",
-            "terrain_confidence": 0.9
+            "terrain_confidence": 0.9,
+            "travel": "both"
           }
         ],
         "ascent_m": 96.19999999999914,
@@ -3448,6 +3455,7 @@
             "value": 1.022164479780381
           }
         ],
+        "directed_travel_edges": [],
         "distance_m": 4037.3095376140213,
         "dubious_edges": [
           {
@@ -3492,7 +3500,8 @@
             "seed_count": 0,
             "surface": null,
             "terrain": "alpine",
-            "terrain_confidence": 0.9
+            "terrain_confidence": 0.9,
+            "travel": "both"
           },
           {
             "access": "open",
@@ -3522,7 +3531,8 @@
             "seed_count": 2,
             "surface": null,
             "terrain": "talus",
-            "terrain_confidence": 0.9
+            "terrain_confidence": 0.9,
+            "travel": "both"
           },
           {
             "access": "open",
@@ -3552,7 +3562,8 @@
             "seed_count": 2,
             "surface": null,
             "terrain": "trail",
-            "terrain_confidence": 0.9
+            "terrain_confidence": 0.9,
+            "travel": "both"
           }
         ],
         "edge_count": 3,
@@ -5192,7 +5203,8 @@
             "seed_count": 2,
             "surface": null,
             "terrain": "talus",
-            "terrain_confidence": 0.9
+            "terrain_confidence": 0.9,
+            "travel": "both"
           }
         ],
         "ascent_m": 136.9999999999991,
@@ -5360,6 +5372,7 @@
             "value": 1.334340962802445
           }
         ],
+        "directed_travel_edges": [],
         "distance_m": 4712.831226933266,
         "dubious_edges": [
           {
@@ -5396,7 +5409,8 @@
             "seed_count": 2,
             "surface": null,
             "terrain": "talus",
-            "terrain_confidence": 0.9
+            "terrain_confidence": 0.9,
+            "travel": "both"
           },
           {
             "access": "open",
@@ -5426,7 +5440,8 @@
             "seed_count": 2,
             "surface": null,
             "terrain": "talus",
-            "terrain_confidence": 0.9
+            "terrain_confidence": 0.9,
+            "travel": "both"
           },
           {
             "access": "open",
@@ -5456,7 +5471,8 @@
             "seed_count": 2,
             "surface": null,
             "terrain": "trail",
-            "terrain_confidence": 0.9
+            "terrain_confidence": 0.9,
+            "travel": "both"
           },
           {
             "access": "open",
@@ -5486,7 +5502,8 @@
             "seed_count": 2,
             "surface": null,
             "terrain": "trail",
-            "terrain_confidence": 0.9
+            "terrain_confidence": 0.9,
+            "travel": "both"
           }
         ],
         "edge_count": 4,
@@ -6882,7 +6899,8 @@
             "seed_count": 0,
             "surface": null,
             "terrain": "alpine",
-            "terrain_confidence": 0.9
+            "terrain_confidence": 0.9,
+            "travel": "both"
           }
         ],
         "ascent_m": 96.19999999999914,
@@ -7050,6 +7068,7 @@
             "value": 1.022164479780381
           }
         ],
+        "directed_travel_edges": [],
         "distance_m": 4037.309537614021,
         "dubious_edges": [
           {
@@ -7094,7 +7113,8 @@
             "seed_count": 0,
             "surface": null,
             "terrain": "alpine",
-            "terrain_confidence": 0.9
+            "terrain_confidence": 0.9,
+            "travel": "both"
           },
           {
             "access": "open",
@@ -7124,7 +7144,8 @@
             "seed_count": 2,
             "surface": null,
             "terrain": "talus",
-            "terrain_confidence": 0.9
+            "terrain_confidence": 0.9,
+            "travel": "both"
           },
           {
             "access": "open",
@@ -7154,7 +7175,8 @@
             "seed_count": 2,
             "surface": null,
             "terrain": "trail",
-            "terrain_confidence": 0.9
+            "terrain_confidence": 0.9,
+            "travel": "both"
           }
         ],
         "edge_count": 3,

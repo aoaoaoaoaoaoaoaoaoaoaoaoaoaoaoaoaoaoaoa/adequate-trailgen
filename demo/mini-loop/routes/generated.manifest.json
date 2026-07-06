@@ -127,6 +127,19 @@
         "note": "OSM XML walkable-way trail-network ingestion with access, surface, direction, and provenance normalization."
       },
       {
+        "id": "osm-pbf-network",
+        "kind": "trail-network",
+        "status": "implemented",
+        "consumes": [
+          "osm.pbf"
+        ],
+        "produces": [
+          "SegmentDraft",
+          "TrailGraph"
+        ],
+        "note": "OSM PBF extract ingestion for walkable ways with access, surface, direction, and ODbL provenance normalization."
+      },
+      {
         "id": "geojson-route",
         "kind": "seed-route",
         "status": "implemented",
@@ -334,6 +347,20 @@
         "note": "Shapefile road/street centerlines used to infer trail crossings."
       },
       {
+        "id": "osm-road-context",
+        "kind": "road",
+        "status": "implemented",
+        "consumes": [
+          "osm",
+          "osm.pbf"
+        ],
+        "produces": [
+          "road crossings",
+          "road exposure hints"
+        ],
+        "note": "OSM XML/PBF highway centerlines used to infer trail crossings and road exposure."
+      },
+      {
         "id": "geojson-hydrology-context",
         "kind": "hydrology",
         "status": "implemented",
@@ -361,6 +388,19 @@
         "note": "Shapefile stream/river centerlines used to infer water crossings."
       },
       {
+        "id": "osm-hydrology-context",
+        "kind": "hydrology",
+        "status": "implemented",
+        "consumes": [
+          "osm",
+          "osm.pbf"
+        ],
+        "produces": [
+          "water crossings"
+        ],
+        "note": "OSM XML/PBF waterway linework used to infer stream, river, canal, drain, and ditch crossings."
+      },
+      {
         "id": "shapefile-closure-layer",
         "kind": "closure",
         "status": "implemented",
@@ -383,13 +423,15 @@
         "adapter_ids": [
           "geojson-network",
           "shapefile-network",
-          "osm-xml-network"
+          "osm-xml-network",
+          "osm-pbf-network"
         ],
         "suggested_paths": [
           "sources/trails.geojson",
           "sources/network.geojson",
           "sources/trails.shp",
-          "sources/osm-trails.osm"
+          "sources/osm-trails.osm",
+          "sources/osm-trails.osm.pbf"
         ],
         "acquisition_hints": [
           {
@@ -420,7 +462,7 @@
               "OSM XML after conversion",
               "Shapefile"
             ],
-            "note": "Use as a broad fallback extract, then filter hiking paths/tracks and cache as OSM XML, GeoJSON, or shapefile."
+            "note": "Use as a broad fallback extract, then filter hiking paths/tracks directly from OSM PBF or cache a normalized OSM XML/GeoJSON/shapefile artifact."
           }
         ],
         "search_terms": [
@@ -629,12 +671,14 @@
         "priority": "recommended",
         "adapter_ids": [
           "geojson-road-context",
-          "shapefile-road-context"
+          "shapefile-road-context",
+          "osm-road-context"
         ],
         "suggested_paths": [
           "sources/roads.geojson",
           "sources/context-roads.geojson",
-          "sources/roads.shp"
+          "sources/roads.shp",
+          "sources/roads.osm.pbf"
         ],
         "acquisition_hints": [
           {
@@ -686,12 +730,14 @@
         "priority": "recommended",
         "adapter_ids": [
           "geojson-hydrology-context",
-          "shapefile-hydrology-context"
+          "shapefile-hydrology-context",
+          "osm-hydrology-context"
         ],
         "suggested_paths": [
           "sources/hydrology.geojson",
           "sources/streams.geojson",
-          "sources/hydrology.shp"
+          "sources/hydrology.shp",
+          "sources/hydrology.osm.pbf"
         ],
         "acquisition_hints": [
           {
@@ -978,6 +1024,36 @@
         }
       }
     ]
+  },
+  "source_coverage_summary": {
+    "total": {
+      "total": 8,
+      "satisfied": 8,
+      "missing": 0,
+      "planned_adapter_only": 0
+    },
+    "required": {
+      "total": 2,
+      "satisfied": 2,
+      "missing": 0,
+      "planned_adapter_only": 0
+    },
+    "recommended": {
+      "total": 5,
+      "satisfied": 5,
+      "missing": 0,
+      "planned_adapter_only": 0
+    },
+    "optional": {
+      "total": 1,
+      "satisfied": 1,
+      "missing": 0,
+      "planned_adapter_only": 0
+    },
+    "missing_required": [],
+    "planned_required": [],
+    "missing_recommended": [],
+    "planned_recommended": []
   },
   "forbidden_areas": [],
   "graph": {
