@@ -7,16 +7,58 @@ const WEB_MERCATOR_R_M: f64 = 6_378_137.0;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CrsVerdict {
     AssumedGeographic,
-    Wgs84,
+    Geographic(GeodeticDatum),
     WebMercator,
-    Wgs84Utm(UtmCrs),
+    Utm(UtmCrs),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CoordProjector {
     Identity,
     WebMercator,
-    Wgs84Utm(UtmCrs),
+    Utm(UtmCrs),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GeodeticDatum {
+    Wgs84,
+    Nad83,
+}
+
+impl GeodeticDatum {
+    #[must_use]
+    pub fn from_normalized_geographic(normalized: &str) -> Option<Self> {
+        if normalized.contains("EPSG4326")
+            || normalized.contains("OGC13CRS84")
+            || normalized.contains("OGC14CRS84")
+            || normalized.contains("CRS84")
+            || normalized.contains("WGS84")
+            || normalized.contains("WGS1984")
+        {
+            Some(Self::Wgs84)
+        } else if normalized.contains("EPSG4269")
+            || normalized.contains("NAD83")
+            || normalized.contains("NORTHAMERICANDATUM1983")
+        {
+            Some(Self::Nad83)
+        } else {
+            None
+        }
+    }
+
+    const fn ellipsoid(self) -> Ellipsoid {
+        match self {
+            Self::Wgs84 => Ellipsoid {
+                a: 6_378_137.0,
+                inv_f: 298.257_223_563,
+            },
+            Self::Nad83 => Ellipsoid {
+                a: 6_378_137.0,
+                inv_f: 298.257_222_101,
+            },
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -28,15 +70,24 @@ pub enum UtmHemisphere {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct UtmCrs {
+    pub datum: GeodeticDatum,
     pub zone: u8,
     pub hemisphere: UtmHemisphere,
 }
 
 impl UtmCrs {
     #[must_use]
-    pub const fn from_parts(zone: u8, hemisphere: UtmHemisphere) -> Option<Self> {
+    pub const fn from_parts(
+        datum: GeodeticDatum,
+        zone: u8,
+        hemisphere: UtmHemisphere,
+    ) -> Option<Self> {
         if zone >= 1 && zone <= 60 {
-            Some(Self { zone, hemisphere })
+            Some(Self {
+                datum,
+                zone,
+                hemisphere,
+            })
         } else {
             None
         }
@@ -45,12 +96,21 @@ impl UtmCrs {
     #[must_use]
     pub fn from_epsg(epsg: u16) -> Option<Self> {
         match epsg {
-            32601..=32660 => {
-                Self::from_parts(u8::try_from(epsg - 32600).ok()?, UtmHemisphere::North)
-            }
-            32701..=32760 => {
-                Self::from_parts(u8::try_from(epsg - 32700).ok()?, UtmHemisphere::South)
-            }
+            32601..=32660 => Self::from_parts(
+                GeodeticDatum::Wgs84,
+                u8::try_from(epsg - 32600).ok()?,
+                UtmHemisphere::North,
+            ),
+            32701..=32760 => Self::from_parts(
+                GeodeticDatum::Wgs84,
+                u8::try_from(epsg - 32700).ok()?,
+                UtmHemisphere::South,
+            ),
+            26901..=26923 => Self::from_parts(
+                GeodeticDatum::Nad83,
+                u8::try_from(epsg - 26900).ok()?,
+                UtmHemisphere::North,
+            ),
             _ => None,
         }
     }
@@ -62,19 +122,27 @@ impl UtmCrs {
             [
                 (
                     format!("EPSG326{zone:02}"),
-                    Self::from_parts(zone_u8, UtmHemisphere::North)?,
+                    Self::from_parts(GeodeticDatum::Wgs84, zone_u8, UtmHemisphere::North)?,
                 ),
                 (
                     format!("EPSG327{zone:02}"),
-                    Self::from_parts(zone_u8, UtmHemisphere::South)?,
+                    Self::from_parts(GeodeticDatum::Wgs84, zone_u8, UtmHemisphere::South)?,
+                ),
+                (
+                    format!("EPSG269{zone:02}"),
+                    Self::from_parts(GeodeticDatum::Nad83, zone_u8, UtmHemisphere::North)?,
                 ),
                 (
                     format!("WGS84UTMZONE{zone}N"),
-                    Self::from_parts(zone_u8, UtmHemisphere::North)?,
+                    Self::from_parts(GeodeticDatum::Wgs84, zone_u8, UtmHemisphere::North)?,
                 ),
                 (
                     format!("WGS84UTMZONE{zone}S"),
-                    Self::from_parts(zone_u8, UtmHemisphere::South)?,
+                    Self::from_parts(GeodeticDatum::Wgs84, zone_u8, UtmHemisphere::South)?,
+                ),
+                (
+                    format!("NAD83UTMZONE{zone}N"),
+                    Self::from_parts(GeodeticDatum::Nad83, zone_u8, UtmHemisphere::North)?,
                 ),
             ]
             .into_iter()
@@ -94,6 +162,18 @@ impl UtmCrs {
     }
 }
 
+#[derive(Clone, Copy)]
+struct Ellipsoid {
+    a: f64,
+    inv_f: f64,
+}
+
+impl Ellipsoid {
+    fn f(self) -> f64 {
+        1.0 / self.inv_f
+    }
+}
+
 impl CoordProjector {
     #[must_use]
     pub fn project(self, x: f64, y: f64, ele: Option<f64>) -> Coord {
@@ -104,7 +184,7 @@ impl CoordProjector {
                 ele,
             },
             Self::WebMercator => web_mercator_to_wgs84(x, y, ele),
-            Self::Wgs84Utm(crs) => utm_to_wgs84(x, y, ele, crs),
+            Self::Utm(crs) => utm_to_geographic(x, y, ele, crs),
         }
     }
 }
@@ -126,20 +206,24 @@ pub fn wgs84_to_utm(coord: Coord, zone: u8, north: bool) -> Option<(f64, f64)> {
     } else {
         UtmHemisphere::South
     };
-    wgs84_to_utm_crs(coord, UtmCrs::from_parts(zone, hemisphere)?)
+    geographic_to_utm(
+        coord,
+        UtmCrs::from_parts(GeodeticDatum::Wgs84, zone, hemisphere)?,
+    )
 }
 
 #[must_use]
 #[allow(clippy::many_single_char_names, clippy::suboptimal_flops)]
-pub fn wgs84_to_utm_crs(coord: Coord, crs: UtmCrs) -> Option<(f64, f64)> {
+pub fn geographic_to_utm(coord: Coord, crs: UtmCrs) -> Option<(f64, f64)> {
     if !coord.lon.is_finite() || !coord.lat.is_finite() {
         return None;
     }
     let φ = coord.lat.to_radians();
     let λ = coord.lon.to_radians();
     let λ0 = crs.λ0();
-    let a = 6_378_137.0;
-    let f: f64 = 1.0 / 298.257_223_563;
+    let ellipsoid = crs.datum.ellipsoid();
+    let a = ellipsoid.a;
+    let f = ellipsoid.f();
     let k0 = 0.9996;
     let e2 = f * (2.0 - f);
     let e4 = e2 * e2;
@@ -190,11 +274,13 @@ impl VectorCrsKind {
 pub fn validate_crs_name(kind: VectorCrsKind, name: &str) -> Result<CrsVerdict> {
     let normalized = normalize(name);
     match UtmCrs::from_normalized_srs(&normalized) {
-        Some(crs) => Ok(CrsVerdict::Wgs84Utm(crs)),
-        None if is_wgs84(&normalized) => Ok(CrsVerdict::Wgs84),
+        Some(crs) => Ok(CrsVerdict::Utm(crs)),
+        None if let Some(datum) = GeodeticDatum::from_normalized_geographic(&normalized) => {
+            Ok(CrsVerdict::Geographic(datum))
+        }
         None if is_web_mercator(&normalized) => Ok(CrsVerdict::WebMercator),
         None => Err(TrailgenError::InvalidData(format!(
-            "{} {name:?} is not supported; reproject input to geographic lon/lat WGS84 (EPSG:4326/CRS84), EPSG:3857 Web Mercator, or WGS84 UTM (EPSG:326xx/327xx), before ingestion",
+            "{} {name:?} is not supported; reproject input to geographic lon/lat WGS84/NAD83 (EPSG:4326/4269/CRS84), EPSG:3857 Web Mercator, or WGS84/NAD83 UTM (EPSG:326xx/327xx/269xx), before ingestion",
             kind.label()
         ))),
     }
@@ -206,11 +292,11 @@ pub fn validate_prj_wkt(wkt: &str) -> Result<CrsVerdict> {
         return Ok(CrsVerdict::WebMercator);
     }
     if let Some(crs) = UtmCrs::from_normalized_srs(&normalized) {
-        return Ok(CrsVerdict::Wgs84Utm(crs));
+        return Ok(CrsVerdict::Utm(crs));
     }
     if is_projected(&normalized) {
         return Err(TrailgenError::InvalidData(
-            "shapefile .prj advertises an unsupported projected CRS; reproject input to geographic lon/lat WGS84 (EPSG:4326/CRS84), EPSG:3857 Web Mercator, or WGS84 UTM (EPSG:326xx/327xx), before ingestion"
+            "shapefile .prj advertises an unsupported projected CRS; reproject input to geographic lon/lat WGS84/NAD83 (EPSG:4326/4269/CRS84), EPSG:3857 Web Mercator, or WGS84/NAD83 UTM (EPSG:326xx/327xx/269xx), before ingestion"
                 .to_owned(),
         ));
     }
@@ -220,9 +306,9 @@ pub fn validate_prj_wkt(wkt: &str) -> Result<CrsVerdict> {
 #[must_use]
 pub const fn projector(verdict: CrsVerdict) -> CoordProjector {
     match verdict {
-        CrsVerdict::AssumedGeographic | CrsVerdict::Wgs84 => CoordProjector::Identity,
+        CrsVerdict::AssumedGeographic | CrsVerdict::Geographic(_) => CoordProjector::Identity,
         CrsVerdict::WebMercator => CoordProjector::WebMercator,
-        CrsVerdict::Wgs84Utm(crs) => CoordProjector::Wgs84Utm(crs),
+        CrsVerdict::Utm(crs) => CoordProjector::Utm(crs),
     }
 }
 
@@ -231,15 +317,6 @@ fn normalize(raw: &str) -> String {
         .filter(char::is_ascii_alphanumeric)
         .flat_map(char::to_uppercase)
         .collect()
-}
-
-fn is_wgs84(normalized: &str) -> bool {
-    normalized.contains("EPSG4326")
-        || normalized.contains("OGC13CRS84")
-        || normalized.contains("OGC14CRS84")
-        || normalized.contains("CRS84")
-        || normalized.contains("WGS84")
-        || normalized.contains("WGS1984")
 }
 
 fn is_web_mercator(normalized: &str) -> bool {
@@ -268,11 +345,12 @@ fn web_mercator_to_wgs84(x_m: f64, y_m: f64, ele: Option<f64>) -> Coord {
 }
 
 #[allow(clippy::many_single_char_names, clippy::suboptimal_flops)]
-fn utm_to_wgs84(easting_m: f64, northing_m: f64, ele: Option<f64>, crs: UtmCrs) -> Coord {
+fn utm_to_geographic(easting_m: f64, northing_m: f64, ele: Option<f64>, crs: UtmCrs) -> Coord {
     let x = easting_m - 500_000.0;
     let y = northing_m - crs.false_northing_m();
-    let a = 6_378_137.0;
-    let f: f64 = 1.0 / 298.257_223_563;
+    let ellipsoid = crs.datum.ellipsoid();
+    let a = ellipsoid.a;
+    let f = ellipsoid.f();
     let k0 = 0.9996;
     let e2 = f * (2.0 - f);
     let e4 = e2 * e2;

@@ -462,7 +462,7 @@ fn geojson_crs_name(crs: &Value) -> Result<&str> {
         .and_then(Value::as_str)
         .ok_or_else(|| {
             TrailgenError::InvalidData(
-                "GeoJSON CRS must be a named WGS84/CRS84, EPSG:3857, or WGS84 UTM object; linked or opaque CRS definitions are unsupported"
+                "GeoJSON CRS must be a named WGS84/NAD83/CRS84, EPSG:3857, or WGS84/NAD83 UTM object; linked or opaque CRS definitions are unsupported"
                     .to_owned(),
             )
         })

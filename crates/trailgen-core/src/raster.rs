@@ -1,4 +1,4 @@
-use crate::crs::{UtmCrs, wgs84_to_utm_crs, wgs84_to_web_mercator};
+use crate::crs::{UtmCrs, geographic_to_utm, wgs84_to_web_mercator};
 use crate::enrich::{ElevationSample, ElevationSampler};
 use crate::geo::Coord;
 use crate::model::Provenance;
@@ -133,16 +133,18 @@ impl RasterTransform {
 #[serde(rename_all = "kebab-case")]
 pub enum RasterCrs {
     Wgs84Degrees,
+    Nad83Degrees,
     WebMercatorMeters,
-    Wgs84UtmMeters(UtmCrs),
+    #[serde(alias = "wgs84-utm-meters")]
+    UtmMeters(UtmCrs),
 }
 
 impl RasterCrs {
     fn xy(self, coord: Coord) -> Option<(f64, f64)> {
         match self {
-            Self::Wgs84Degrees => Some((coord.lon, coord.lat)),
+            Self::Wgs84Degrees | Self::Nad83Degrees => Some((coord.lon, coord.lat)),
             Self::WebMercatorMeters => Some(wgs84_to_web_mercator(coord)),
-            Self::Wgs84UtmMeters(crs) => wgs84_to_utm_crs(coord, crs),
+            Self::UtmMeters(crs) => geographic_to_utm(coord, crs),
         }
     }
 }
@@ -668,13 +670,13 @@ fn parse_vrt_srs(srs: &str) -> Result<RasterCrs> {
     {
         Ok(RasterCrs::WebMercatorMeters)
     } else if let Some(crs) = UtmCrs::from_normalized_srs(&normalized) {
-        Ok(RasterCrs::Wgs84UtmMeters(crs))
+        Ok(RasterCrs::UtmMeters(crs))
     } else if normalized.contains("PROJCS")
         || normalized.contains("PROJCRS")
         || normalized.contains("PROJECTION")
     {
         Err(TrailgenError::UnsupportedFormat(
-            "projected VRT SRS must be EPSG:3857 Web Mercator or WGS84 UTM (EPSG:326xx/327xx), or reprojected before ingestion"
+            "projected VRT SRS must be EPSG:3857 Web Mercator or WGS84/NAD83 UTM (EPSG:326xx/327xx/269xx), or reprojected before ingestion"
                 .to_owned(),
         ))
     } else if normalized.contains("EPSG4326")
@@ -685,9 +687,14 @@ fn parse_vrt_srs(srs: &str) -> Result<RasterCrs> {
         || normalized.contains("WGS1984")
     {
         Ok(RasterCrs::Wgs84Degrees)
+    } else if normalized.contains("EPSG4269")
+        || normalized.contains("NAD83")
+        || normalized.contains("NORTHAMERICANDATUM1983")
+    {
+        Ok(RasterCrs::Nad83Degrees)
     } else {
         Err(TrailgenError::UnsupportedFormat(
-            "VRT SRS must declare WGS84/CRS84 geographic, EPSG:3857 Web Mercator, or WGS84 UTM (EPSG:326xx/327xx)"
+            "VRT SRS must declare WGS84/NAD83/CRS84 geographic, EPSG:3857 Web Mercator, or WGS84/NAD83 UTM (EPSG:326xx/327xx/269xx)"
                 .to_owned(),
         ))
     }
@@ -820,7 +827,7 @@ fn validate_geokeys<R: std::io::Read + std::io::Seek>(
 ) -> Result<RasterCrs> {
     let Some(keys) = optional_u16_vec(decoder, Tag::GeoKeyDirectoryTag)? else {
         return Err(TrailgenError::InvalidData(
-            "GeoTIFF DEM requires GeoKeyDirectoryTag declaring WGS84 geographic, EPSG:3857 Web Mercator, or WGS84 UTM (EPSG:326xx/327xx)"
+            "GeoTIFF DEM requires GeoKeyDirectoryTag declaring WGS84/NAD83 geographic, EPSG:3857 Web Mercator, or WGS84/NAD83 UTM (EPSG:326xx/327xx/269xx)"
                 .to_owned(),
         ));
     };
@@ -837,11 +844,13 @@ fn validate_geokeys<R: std::io::Read + std::io::Seek>(
     }
     let mut model_type = None;
     let mut angular_units = None;
+    let mut geographic_crs = None;
     let mut projected_crs = None;
     let mut linear_units = None;
     for entry in keys[4..][..count * 4].chunks_exact(4) {
         match entry[0] {
             1024 if entry[1] == 0 => model_type = Some(entry[3]),
+            2048 if entry[1] == 0 => geographic_crs = Some(entry[3]),
             2054 if entry[1] == 0 => angular_units = Some(entry[3]),
             3072 if entry[1] == 0 => projected_crs = Some(entry[3]),
             3076 if entry[1] == 0 => linear_units = Some(entry[3]),
@@ -858,7 +867,7 @@ fn validate_geokeys<R: std::io::Read + std::io::Seek>(
             return Ok(crs);
         }
         return Err(TrailgenError::UnsupportedFormat(
-            "projected GeoTIFF DEM must be EPSG:3857 Web Mercator or WGS84 UTM (EPSG:326xx/327xx), or reprojected before ingestion"
+            "projected GeoTIFF DEM must be EPSG:3857 Web Mercator or WGS84/NAD83 UTM (EPSG:326xx/327xx/269xx), or reprojected before ingestion"
                 .to_owned(),
         ));
     }
@@ -868,17 +877,27 @@ fn validate_geokeys<R: std::io::Read + std::io::Seek>(
                 "GeoTIFF DEM angular units must be degrees".to_owned(),
             ));
         }
-        return Ok(RasterCrs::Wgs84Degrees);
+        return geographic_crs.map_or(Ok(RasterCrs::Wgs84Degrees), geographic_raster_crs);
     }
     Err(TrailgenError::UnsupportedFormat(
-        "GeoTIFF DEM must declare GTModelTypeGeoKey=geographic, EPSG:3857 projected, or WGS84 UTM projected".to_owned(),
+        "GeoTIFF DEM must declare GTModelTypeGeoKey=geographic, EPSG:3857 projected, or WGS84/NAD83 UTM projected".to_owned(),
     ))
+}
+
+fn geographic_raster_crs(epsg: u16) -> Result<RasterCrs> {
+    match epsg {
+        4326 => Ok(RasterCrs::Wgs84Degrees),
+        4269 => Ok(RasterCrs::Nad83Degrees),
+        _ => Err(TrailgenError::UnsupportedFormat(
+            "GeoTIFF DEM geographic CRS must be WGS84 EPSG:4326 or NAD83 EPSG:4269".to_owned(),
+        )),
+    }
 }
 
 fn projected_raster_crs(epsg: u16) -> Option<RasterCrs> {
     match epsg {
         3857 => Some(RasterCrs::WebMercatorMeters),
-        32601..=32760 => Some(RasterCrs::Wgs84UtmMeters(UtmCrs::from_epsg(epsg)?)),
+        32601..=32760 | 26901..=26923 => Some(RasterCrs::UtmMeters(UtmCrs::from_epsg(epsg)?)),
         _ => None,
     }
 }

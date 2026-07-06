@@ -29,6 +29,7 @@ const WGS84_PRJ: &str = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",63
 const WEB_MERCATOR_PRJ: &str = r#"PROJCS["WGS 84 / Pseudo-Mercator",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PROJECTION["Mercator_1SP"],UNIT["metre",1],AUTHORITY["EPSG","3857"]]"#;
 const UTM_PRJ: &str = r#"PROJCS["WGS 84 / UTM zone 13N",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PROJECTION["Transverse_Mercator"],UNIT["metre",1],AUTHORITY["EPSG","32613"]]"#;
 const NAD83_UTM_PRJ: &str = r#"PROJCS["NAD83 / UTM zone 13N",GEOGCS["NAD83",DATUM["North_American_Datum_1983",SPHEROID["GRS 1980",6378137,298.257222101]],PROJECTION["Transverse_Mercator"],UNIT["metre",1],AUTHORITY["EPSG","26913"]]"#;
+const NAD83_LAMBERT_PRJ: &str = r#"PROJCS["NAD83 / Colorado Central",GEOGCS["NAD83",DATUM["North_American_Datum_1983",SPHEROID["GRS 1980",6378137,298.257222101]],PROJECTION["Lambert_Conformal_Conic"],UNIT["metre",1],AUTHORITY["EPSG","32154"]]"#;
 const WEB_MERCATOR_0_01_LON_M: f64 = 1_113.194_907_932_735_8;
 
 #[test]
@@ -2271,7 +2272,7 @@ fn shapefile_adapters_normalize_networks_and_overlays() {
 }
 
 #[test]
-fn vector_adapters_reproject_declared_projected_crs_and_reject_foreign_datums() {
+fn vector_adapters_reproject_declared_projected_crs_and_reject_unsupported_projections() {
     let web_mercator_geojson = r#"{
       "type": "FeatureCollection",
       "crs": {"type": "name", "properties": {"name": "EPSG:3857"}},
@@ -2306,9 +2307,32 @@ fn vector_adapters_reproject_declared_projected_crs_and_reject_foreign_datums() 
     assert!((drafts[0].geometry.points[1].lon + 104.985).abs() < 1.0e-7);
     assert!((drafts[0].geometry.points[1].lat - 40.005).abs() < 1.0e-7);
 
+    let nad83_utm = trailgen_core::crs::UtmCrs::from_epsg(26913).unwrap();
+    let nad83_utm_start =
+        trailgen_core::crs::geographic_to_utm(Coord::new(-104.995, 40.005), nad83_utm).unwrap();
+    let nad83_utm_end =
+        trailgen_core::crs::geographic_to_utm(Coord::new(-104.985, 40.005), nad83_utm).unwrap();
+    let nad83_utm_geojson = format!(
+        r#"{{
+      "type": "FeatureCollection",
+      "crs": {{"type": "name", "properties": {{"name": "EPSG:26913"}}}},
+      "features": [{{
+        "type": "Feature",
+        "properties": {{"terrain": "trail"}},
+        "geometry": {{"type": "LineString", "coordinates": [[{},{}], [{},{}]]}}
+      }}]
+    }}"#,
+        nad83_utm_start.0, nad83_utm_start.1, nad83_utm_end.0, nad83_utm_end.1
+    );
+    let drafts = geojson::network_from_str(&nad83_utm_geojson).unwrap();
+    assert!((drafts[0].geometry.points[0].lon + 104.995).abs() < 1.0e-7);
+    assert!((drafts[0].geometry.points[0].lat - 40.005).abs() < 1.0e-7);
+    assert!((drafts[0].geometry.points[1].lon + 104.985).abs() < 1.0e-7);
+    assert!((drafts[0].geometry.points[1].lat - 40.005).abs() < 1.0e-7);
+
     let unsupported_geojson = r#"{
       "type": "FeatureCollection",
-      "crs": {"type": "name", "properties": {"name": "EPSG:26913"}},
+      "crs": {"type": "name", "properties": {"name": "EPSG:32154"}},
       "features": []
     }"#;
     let error = geojson::network_from_str(unsupported_geojson).unwrap_err();
@@ -2338,9 +2362,22 @@ fn vector_adapters_reproject_declared_projected_crs_and_reject_foreign_datums() 
     assert!((drafts[0].geometry.points[1].lon + 104.985).abs() < 1.0e-7);
     assert!((drafts[0].geometry.points[1].lat - 40.005).abs() < 1.0e-7);
 
-    let unsupported = tmp.path().join("nad83-utm-trails.shp");
+    let nad83_utm = tmp.path().join("nad83-utm-trails.shp");
+    write_network_shapefile_points(
+        &nad83_utm,
+        ::shapefile::Point::new(nad83_utm_start.0, nad83_utm_start.1),
+        ::shapefile::Point::new(nad83_utm_end.0, nad83_utm_end.1),
+    );
+    std::fs::write(nad83_utm.with_extension("prj"), NAD83_UTM_PRJ).unwrap();
+    let drafts = shp_io::network_from_path(&nad83_utm).unwrap();
+    assert!((drafts[0].geometry.points[0].lon + 104.995).abs() < 1.0e-7);
+    assert!((drafts[0].geometry.points[0].lat - 40.005).abs() < 1.0e-7);
+    assert!((drafts[0].geometry.points[1].lon + 104.985).abs() < 1.0e-7);
+    assert!((drafts[0].geometry.points[1].lat - 40.005).abs() < 1.0e-7);
+
+    let unsupported = tmp.path().join("nad83-lambert-trails.shp");
     write_network_shapefile(&unsupported);
-    std::fs::write(unsupported.with_extension("prj"), NAD83_UTM_PRJ).unwrap();
+    std::fs::write(unsupported.with_extension("prj"), NAD83_LAMBERT_PRJ).unwrap();
     let error = shp_io::network_from_path(&unsupported).unwrap_err();
     assert!(format!("{error}").contains("unsupported projected CRS"));
 }
@@ -2765,20 +2802,20 @@ fn web_mercator_geotiff_dem_samples_and_rejects_other_projected_crs() {
     assert!((sample.ele_m - 1_600.0).abs() <= 1.0e-9);
     assert!(raster.sample(Coord::new(-106.0, 40.0)).is_none());
 
-    let unsupported = tmp.path().join("utm_dem.tif");
-    write_web_mercator_geotiff_dem(&unsupported, 26913);
+    let unsupported = tmp.path().join("lambert_dem.tif");
+    write_web_mercator_geotiff_dem(&unsupported, 32154);
     let error = GeoTiffDem::from_path(
         &unsupported,
         Provenance {
-            source: "fixture-utm-dem".to_owned(),
+            source: "fixture-lambert-dem".to_owned(),
             layer: Some("geotiff".to_owned()),
-            source_id: Some("utm_dem.tif".to_owned()),
+            source_id: Some("lambert_dem.tif".to_owned()),
             license: Some("CC0-fixture".to_owned()),
         },
         0.79,
     )
     .unwrap_err();
-    assert!(format!("{error}").contains("WGS84 UTM"));
+    assert!(format!("{error}").contains("WGS84/NAD83 UTM"));
 }
 
 #[test]
@@ -2799,7 +2836,32 @@ fn utm_geotiff_dem_samples_projected_source() {
     .unwrap();
     assert_eq!(
         raster.crs,
-        RasterCrs::Wgs84UtmMeters(trailgen_core::crs::UtmCrs::from_epsg(32613).unwrap())
+        RasterCrs::UtmMeters(trailgen_core::crs::UtmCrs::from_epsg(32613).unwrap())
+    );
+    let sample = raster.sample(Coord::new(-104.995, 40.005)).unwrap();
+    assert!((sample.ele_m - 1_600.0).abs() <= 1.0e-9);
+    assert!(raster.sample(Coord::new(-106.0, 40.0)).is_none());
+}
+
+#[test]
+fn nad83_utm_geotiff_dem_samples_projected_source() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dem = tmp.path().join("nad83_utm_dem.tif");
+    write_utm_geotiff_dem(&dem, 26913);
+    let raster = GeoTiffDem::from_path(
+        &dem,
+        Provenance {
+            source: "fixture-nad83-utm-dem".to_owned(),
+            layer: Some("geotiff".to_owned()),
+            source_id: Some("nad83_utm_dem.tif".to_owned()),
+            license: Some("CC0-fixture".to_owned()),
+        },
+        0.79,
+    )
+    .unwrap();
+    assert_eq!(
+        raster.crs,
+        RasterCrs::UtmMeters(trailgen_core::crs::UtmCrs::from_epsg(26913).unwrap())
     );
     let sample = raster.sample(Coord::new(-104.995, 40.005)).unwrap();
     assert!((sample.ele_m - 1_600.0).abs() <= 1.0e-9);
@@ -2909,7 +2971,7 @@ fn utm_vrt_dem_samples_projected_source() {
     let tif = tmp.path().join("utm_dem.tif");
     let vrt = tmp.path().join("utm_dem.vrt");
     write_utm_geotiff_dem(&tif, 32613);
-    let [origin_x, scale, _, origin_y, _, dy] = utm_fixture_geotransform();
+    let [origin_x, scale, _, origin_y, _, dy] = utm_fixture_geotransform(32613);
     write_vrt_dem_with_geotransform(
         &vrt,
         "utm_dem.tif",
@@ -2930,7 +2992,41 @@ fn utm_vrt_dem_samples_projected_source() {
     .unwrap();
     assert_eq!(
         raster.crs,
-        RasterCrs::Wgs84UtmMeters(trailgen_core::crs::UtmCrs::from_epsg(32613).unwrap())
+        RasterCrs::UtmMeters(trailgen_core::crs::UtmCrs::from_epsg(32613).unwrap())
+    );
+    let sample = raster.sample(Coord::new(-104.995, 40.005)).unwrap();
+    assert!((sample.ele_m - 1_600.0).abs() <= 1.0e-9);
+    assert!(raster.sample(Coord::new(-106.0, 40.0)).is_none());
+}
+
+#[test]
+fn nad83_utm_vrt_dem_samples_projected_source() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tif = tmp.path().join("nad83_utm_dem.tif");
+    let vrt = tmp.path().join("nad83_utm_dem.vrt");
+    write_utm_geotiff_dem(&tif, 26913);
+    let [origin_x, scale, _, origin_y, _, dy] = utm_fixture_geotransform(26913);
+    write_vrt_dem_with_geotransform(
+        &vrt,
+        "nad83_utm_dem.tif",
+        [origin_x, scale, 0.0, origin_y, 0.0, dy],
+        Some(NAD83_UTM_PRJ),
+    );
+
+    let raster = VrtDem::from_path(
+        &vrt,
+        Provenance {
+            source: "fixture-vrt-dem".to_owned(),
+            layer: Some("vrt".to_owned()),
+            source_id: Some("nad83_utm_dem.vrt".to_owned()),
+            license: None,
+        },
+        0.76,
+    )
+    .unwrap();
+    assert_eq!(
+        raster.crs,
+        RasterCrs::UtmMeters(trailgen_core::crs::UtmCrs::from_epsg(26913).unwrap())
     );
     let sample = raster.sample(Coord::new(-104.995, 40.005)).unwrap();
     assert!((sample.ele_m - 1_600.0).abs() <= 1.0e-9);
@@ -2961,7 +3057,7 @@ fn vrt_dem_rejects_unsupported_projected_srs_even_when_wkt_mentions_wgs84() {
         0.76,
     )
     .unwrap_err();
-    assert!(format!("{error}").contains("WGS84 UTM"));
+    assert!(format!("{error}").contains("WGS84/NAD83 UTM"));
 }
 
 fn write_geotiff_dem(path: &std::path::Path) {
@@ -3117,7 +3213,7 @@ fn write_utm_geotiff_dem(path: &std::path::Path, projected_epsg: u16) {
     use tiff::encoder::{TiffEncoder, colortype};
     use tiff::tags::Tag;
 
-    let [origin_x, scale, _, origin_y, _, _] = utm_fixture_geotransform();
+    let [origin_x, scale, _, origin_y, _, _] = utm_fixture_geotransform(projected_epsg);
     let file = std::fs::File::create(path).unwrap();
     let mut tiff = TiffEncoder::new(file).unwrap();
     let mut image = tiff.new_image::<colortype::GrayI16>(3, 3).unwrap();
@@ -3167,9 +3263,11 @@ fn write_utm_geotiff_dem(path: &std::path::Path, projected_epsg: u16) {
         .unwrap();
 }
 
-fn utm_fixture_geotransform() -> [f64; 6] {
+fn utm_fixture_geotransform(projected_epsg: u16) -> [f64; 6] {
     let scale = 30.0;
-    let (x, y) = trailgen_core::crs::wgs84_to_utm(Coord::new(-104.995, 40.005), 13, true)
+    let crs = trailgen_core::crs::UtmCrs::from_epsg(projected_epsg)
+        .expect("fixture uses supported UTM CRS");
+    let (x, y) = trailgen_core::crs::geographic_to_utm(Coord::new(-104.995, 40.005), crs)
         .expect("fixture coordinate is inside UTM zone 13N");
     [
         1.5_f64.mul_add(-scale, x),
