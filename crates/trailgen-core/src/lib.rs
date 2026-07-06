@@ -23,8 +23,8 @@ pub use difficulty::{
     DifficultyBreakdown, DifficultyFactor, DifficultyWeights, TerrainMultipliers,
 };
 pub use enrich::{
-    ElevationSample, ElevationSampler, EmbeddedElevation, EnrichmentConfig, PlaneElevation,
-    enrich_graph,
+    ElevationMosaic, ElevationSample, ElevationSampler, EmbeddedElevation, EnrichmentConfig,
+    PlaneElevation, enrich_graph,
 };
 pub use geo::{Coord, LineString};
 pub use model::{
@@ -37,7 +37,7 @@ pub use overlay::{
     SeasonalWindow, TerrainOverlay, apply_access_overlays, apply_context_overlays,
     apply_terrain_overlays,
 };
-pub use raster::{ArcAsciiGrid, GeoTiffDem, RasterCrs, RasterTransform, VrtDem};
+pub use raster::{ArcAsciiGrid, GeoTiffDem, RasterCrs, RasterDem, RasterTransform, VrtDem};
 pub use route::{
     LOW_CONFIDENCE_THRESHOLD, Route, RouteMetrics, RouteShape, is_restricted_access, rank_routes,
 };

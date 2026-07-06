@@ -173,6 +173,14 @@ pub struct VrtDem {
     values: Vec<f64>,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum RasterDem {
+    ArcAscii(ArcAsciiGrid),
+    GeoTiff(GeoTiffDem),
+    Vrt(VrtDem),
+}
+
 impl ArcAsciiGrid {
     pub fn parse(raw: &str, provenance: Provenance, confidence: f64) -> Result<Self> {
         let mut lines = raw
@@ -452,6 +460,16 @@ impl ElevationSampler for ArcAsciiGrid {
             confidence: self.confidence,
             provenance: self.provenance.clone(),
         })
+    }
+}
+
+impl ElevationSampler for RasterDem {
+    fn sample(&self, coord: Coord) -> Option<ElevationSample> {
+        match self {
+            Self::ArcAscii(raster) => raster.sample(coord),
+            Self::GeoTiff(raster) => raster.sample(coord),
+            Self::Vrt(raster) => raster.sample(coord),
+        }
     }
 }
 

@@ -18,11 +18,11 @@ use trailgen_core::source::{
 };
 use trailgen_core::{
     Access, AccessOverlay, AccessWindow, ArcAsciiGrid, Coord, CrossingKind, DifficultyBreakdown,
-    DifficultyWeights, EdgeAttr, EdgeId, EdgeTravel, EnrichmentConfig, GeoTiffDem, GraphBuilder,
-    LOW_CONFIDENCE_THRESHOLD, LineString, LoopConstraints, PlanningDate, Provenance, Route,
-    RouteMetrics, RouteShape, RouteSnapStats, SearchParams, SeedRoute, SegmentDraft, SolverKind,
-    Terrain, TrailGraph, VertexId, VrtDem, apply_access_overlays, apply_context_overlays,
-    apply_terrain_overlays, enrich_graph, rank_routes, slug,
+    DifficultyWeights, EdgeAttr, EdgeId, EdgeTravel, ElevationMosaic, EnrichmentConfig, GeoTiffDem,
+    GraphBuilder, LOW_CONFIDENCE_THRESHOLD, LineString, LoopConstraints, PlanningDate, Provenance,
+    RasterDem, Route, RouteMetrics, RouteShape, RouteSnapStats, SearchParams, SeedRoute,
+    SegmentDraft, SolverKind, Terrain, TrailGraph, VertexId, VrtDem, apply_access_overlays,
+    apply_context_overlays, apply_terrain_overlays, enrich_graph, rank_routes, slug,
 };
 
 #[derive(Parser)]
@@ -1134,9 +1134,15 @@ fn assemble_sources(
     }
 
     build_many(project, build_sources.iter().map(PathBuf::as_path))?;
-    for source in manifest_phase_paths(project, &candidates, &[SourceKind::Elevation]) {
-        apply_elevation(project, &source, elevation_confidence)
-            .with_context(|| format!("assemble elevation {}", source.display()))?;
+    let elevation_sources = manifest_phase_paths(project, &candidates, &[SourceKind::Elevation]);
+    if elevation_sources.len() > 1 {
+        apply_elevation_mosaic(project, &elevation_sources, elevation_confidence)
+            .with_context(|| "assemble elevation mosaic")?;
+    } else {
+        for source in elevation_sources {
+            apply_elevation(project, &source, elevation_confidence)
+                .with_context(|| format!("assemble elevation {}", source.display()))?;
+        }
     }
     for source in manifest_phase_paths(project, &candidates, &[SourceKind::Terrain]) {
         apply_terrain(project, &source)
@@ -2914,28 +2920,14 @@ fn apply_elevation(project: &Path, source: &Path, confidence: f64) -> Result<()>
 struct AppliedElevation {
     adapter_id: &'static str,
     metadata_path: &'static str,
-    metadata: ElevationMetadata,
+    metadata: RasterDem,
     message: String,
 }
 
 impl AppliedElevation {
     fn write_metadata(&self, project: &Path) -> Result<()> {
-        match &self.metadata {
-            ElevationMetadata::ArcAscii(raster) => {
-                write_json(project.join(self.metadata_path), raster)
-            }
-            ElevationMetadata::GeoTiff(raster) => {
-                write_json(project.join(self.metadata_path), raster)
-            }
-            ElevationMetadata::Vrt(raster) => write_json(project.join(self.metadata_path), raster),
-        }
+        write_json(project.join(self.metadata_path), &self.metadata)
     }
-}
-
-enum ElevationMetadata {
-    ArcAscii(ArcAsciiGrid),
-    GeoTiff(GeoTiffDem),
-    Vrt(VrtDem),
 }
 
 fn apply_elevation_source(
@@ -2955,34 +2947,72 @@ fn apply_elevation_source(
     }
 }
 
+struct LoadedElevation {
+    dem: RasterDem,
+    adapter_id: &'static str,
+}
+
+fn load_elevation_dem(source: &Path, confidence: f64) -> Result<LoadedElevation> {
+    match source_ext(source).as_deref() {
+        Some("asc") => Ok(LoadedElevation {
+            dem: RasterDem::ArcAscii(load_arc_ascii_grid(source, confidence)?),
+            adapter_id: "arc-ascii-elevation",
+        }),
+        Some("tif" | "tiff") => Ok(LoadedElevation {
+            dem: RasterDem::GeoTiff(load_geotiff_dem(source, confidence)?),
+            adapter_id: "geotiff-elevation",
+        }),
+        Some("vrt") => Ok(LoadedElevation {
+            dem: RasterDem::Vrt(load_vrt_dem(source, confidence)?),
+            adapter_id: "vrt-elevation",
+        }),
+        Some(ext) => {
+            bail!("unsupported elevation extension {ext:?}; expected asc, tif, tiff, or vrt")
+        }
+        None => bail!("elevation source has no file extension"),
+    }
+}
+
+fn apply_elevation_mosaic(project: &Path, sources: &[PathBuf], confidence: f64) -> Result<()> {
+    let config = load_config(project)?;
+    let mut graph = load_graph(project)?;
+    let mut rasters = Vec::new();
+    let mut candidates = Vec::new();
+    for source in sources {
+        let loaded = load_elevation_dem(source, confidence)
+            .with_context(|| format!("load elevation source {}", source.display()))?;
+        candidates.push(source_candidate(
+            source,
+            SourceKind::Elevation,
+            loaded.adapter_id,
+            source_fingerprint(source)?,
+        ));
+        rasters.push(loaded.dem);
+    }
+    let mosaic = ElevationMosaic::new(rasters)?;
+    enrich_graph(&mut graph, &mosaic, config.enrichment, config.difficulty)
+        .with_context(|| "apply elevation mosaic")?;
+    save_graph(project, &graph)?;
+    write_json(project.join("sources/elevation-mosaic.json"), &mosaic)?;
+    register_source_candidates(project, candidates)?;
+    println!("applied elevation mosaic from {} source(s)", sources.len());
+    Ok(())
+}
+
 fn apply_arc_ascii_elevation(
     graph: &mut TrailGraph,
     source: &Path,
     confidence: f64,
     config: &ProjectConfig,
 ) -> Result<AppliedElevation> {
-    let raw = fs::read_to_string(source).with_context(|| format!("read {}", source.display()))?;
-    let raster = ArcAsciiGrid::parse(
-        &raw,
-        Provenance {
-            source: "arc-ascii-grid".to_owned(),
-            layer: Some("arc-ascii".to_owned()),
-            source_id: source
-                .file_name()
-                .and_then(|x| x.to_str())
-                .map(str::to_owned),
-            license: None,
-        },
-        confidence,
-    )
-    .with_context(|| "parse Arc/Info ASCII elevation raster")?;
+    let raster = load_arc_ascii_grid(source, confidence)?;
     enrich_graph(graph, &raster, config.enrichment, config.difficulty)
         .with_context(|| "apply Arc/Info ASCII elevation raster")?;
     let (ncols, nrows) = (raster.ncols, raster.nrows);
     Ok(AppliedElevation {
         adapter_id: "arc-ascii-elevation",
         metadata_path: "sources/elevation-arc-ascii.json",
-        metadata: ElevationMetadata::ArcAscii(raster),
+        metadata: RasterDem::ArcAscii(raster),
         message: format!(
             "applied Arc/Info ASCII elevation grid {}x{} from {}",
             ncols,
@@ -2998,27 +3028,14 @@ fn apply_geotiff_elevation(
     confidence: f64,
     config: &ProjectConfig,
 ) -> Result<AppliedElevation> {
-    let raster = GeoTiffDem::from_path(
-        source,
-        Provenance {
-            source: "geotiff-dem".to_owned(),
-            layer: Some("geotiff".to_owned()),
-            source_id: source
-                .file_name()
-                .and_then(|x| x.to_str())
-                .map(str::to_owned),
-            license: None,
-        },
-        confidence,
-    )
-    .with_context(|| "parse GeoTIFF elevation raster")?;
+    let raster = load_geotiff_dem(source, confidence)?;
     enrich_graph(graph, &raster, config.enrichment, config.difficulty)
         .with_context(|| "apply GeoTIFF elevation raster")?;
     let (width, height) = (raster.width, raster.height);
     Ok(AppliedElevation {
         adapter_id: "geotiff-elevation",
         metadata_path: "sources/elevation-geotiff.json",
-        metadata: ElevationMetadata::GeoTiff(raster),
+        metadata: RasterDem::GeoTiff(raster),
         message: format!(
             "applied GeoTIFF elevation grid {}x{} from {}",
             width,
@@ -3034,7 +3051,60 @@ fn apply_vrt_elevation(
     confidence: f64,
     config: &ProjectConfig,
 ) -> Result<AppliedElevation> {
-    let raster = VrtDem::from_path(
+    let raster = load_vrt_dem(source, confidence)?;
+    enrich_graph(graph, &raster, config.enrichment, config.difficulty)
+        .with_context(|| "apply VRT elevation raster")?;
+    let (width, height) = (raster.width, raster.height);
+    Ok(AppliedElevation {
+        adapter_id: "vrt-elevation",
+        metadata_path: "sources/elevation-vrt.json",
+        metadata: RasterDem::Vrt(raster),
+        message: format!(
+            "applied VRT elevation grid {}x{} from {}",
+            width,
+            height,
+            source.display()
+        ),
+    })
+}
+
+fn load_arc_ascii_grid(source: &Path, confidence: f64) -> Result<ArcAsciiGrid> {
+    let raw = fs::read_to_string(source).with_context(|| format!("read {}", source.display()))?;
+    ArcAsciiGrid::parse(
+        &raw,
+        Provenance {
+            source: "arc-ascii-grid".to_owned(),
+            layer: Some("arc-ascii".to_owned()),
+            source_id: source
+                .file_name()
+                .and_then(|x| x.to_str())
+                .map(str::to_owned),
+            license: None,
+        },
+        confidence,
+    )
+    .with_context(|| "parse Arc/Info ASCII elevation raster")
+}
+
+fn load_geotiff_dem(source: &Path, confidence: f64) -> Result<GeoTiffDem> {
+    GeoTiffDem::from_path(
+        source,
+        Provenance {
+            source: "geotiff-dem".to_owned(),
+            layer: Some("geotiff".to_owned()),
+            source_id: source
+                .file_name()
+                .and_then(|x| x.to_str())
+                .map(str::to_owned),
+            license: None,
+        },
+        confidence,
+    )
+    .with_context(|| "parse GeoTIFF elevation raster")
+}
+
+fn load_vrt_dem(source: &Path, confidence: f64) -> Result<VrtDem> {
+    VrtDem::from_path(
         source,
         Provenance {
             source: "vrt-dem".to_owned(),
@@ -3047,21 +3117,7 @@ fn apply_vrt_elevation(
         },
         confidence,
     )
-    .with_context(|| "parse VRT elevation raster")?;
-    enrich_graph(graph, &raster, config.enrichment, config.difficulty)
-        .with_context(|| "apply VRT elevation raster")?;
-    let (width, height) = (raster.width, raster.height);
-    Ok(AppliedElevation {
-        adapter_id: "vrt-elevation",
-        metadata_path: "sources/elevation-vrt.json",
-        metadata: ElevationMetadata::Vrt(raster),
-        message: format!(
-            "applied VRT elevation grid {}x{} from {}",
-            width,
-            height,
-            source.display()
-        ),
-    })
+    .with_context(|| "parse VRT elevation raster")
 }
 
 fn apply_context(project: &Path, source: &Path) -> Result<()> {
@@ -3991,6 +4047,7 @@ fn is_generated_source_artifact(path: &Path) -> bool {
                 | "elevation-geotiff.json"
                 | "elevation-vrt.json"
                 | "elevation-raster.json"
+                | "elevation-mosaic.json"
         )
     )
 }
@@ -5443,6 +5500,45 @@ mod tests {
                 .any(|edge| edge.attr.access == Access::Closed)
         );
         assert!(project.join("seeds/seeds.json").exists());
+
+        Ok(())
+    }
+
+    #[test]
+    fn assemble_applies_multiple_dems_as_one_mosaic() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path().join("project");
+        let sources = project.join("sources");
+        fs::create_dir_all(&sources)?;
+        init(&project, "Mosaic Test".to_owned(), None)?;
+        let fixtures =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../trailgen-core/tests/fixtures");
+        fs::copy(
+            fixtures.join("mini_network.geojson"),
+            sources.join("network.geojson"),
+        )?;
+        fs::write(
+            sources.join("dem-west.asc"),
+            "ncols 3\nnrows 3\nxllcorner -105.02\nyllcorner 39.99\ncellsize 0.01\nNODATA_value -9999\n1700 1710 1720\n1600 1610 1620\n1500 1510 1520\n",
+        )?;
+        fs::write(
+            sources.join("dem-east.asc"),
+            "ncols 3\nnrows 3\nxllcorner -104.99\nyllcorner 39.99\ncellsize 0.01\nNODATA_value -9999\n1900 1910 1920\n1800 1810 1820\n1700 1710 1720\n",
+        )?;
+
+        discover(&project, None)?;
+        assemble_sources(&project, None, 0.83)?;
+
+        let graph = load_graph(&project)?;
+        let source_ids = graph
+            .edges
+            .iter()
+            .flat_map(|edge| edge.attr.elevation_provenance.iter())
+            .filter_map(|p| p.source_id.as_deref())
+            .collect::<BTreeSet<_>>();
+        assert!(source_ids.contains("dem-west.asc"));
+        assert!(source_ids.contains("dem-east.asc"));
+        assert!(project.join("sources/elevation-mosaic.json").exists());
 
         Ok(())
     }

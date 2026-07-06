@@ -30,6 +30,30 @@ pub trait ElevationSampler {
     fn sample(&self, coord: Coord) -> Option<ElevationSample>;
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ElevationMosaic<S> {
+    samplers: Vec<S>,
+}
+
+impl<S> ElevationMosaic<S> {
+    pub fn new(samplers: Vec<S>) -> Result<Self> {
+        if samplers.is_empty() {
+            return Err(TrailgenError::InvalidData(
+                "elevation mosaic requires at least one sampler".to_owned(),
+            ));
+        }
+        Ok(Self { samplers })
+    }
+}
+
+impl<S: ElevationSampler> ElevationSampler for ElevationMosaic<S> {
+    fn sample(&self, coord: Coord) -> Option<ElevationSample> {
+        self.samplers
+            .iter()
+            .find_map(|sampler| sampler.sample(coord))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct EmbeddedElevation;
 

@@ -37,7 +37,7 @@ Generated artifacts land in the project directory:
 - `cache/edges.csv` and `cache/vertices.csv`: deterministic graph tables with WKT geometry for spreadsheet/GIS inspection
 - `sources/manifest.json`: source adapter registry, AOI-bound acquisition recommendations, and discovered/used source files with byte counts and SHA-256 fingerprints
 - `sources/discovery.md`: human-readable source coverage, acquisition plan, copyable cache command sketches, official/practical source hints, local candidates, and adapter registry
-- `sources/elevation-arc-ascii.json` or `sources/elevation-geotiff.json`: applied local DEM sampler metadata
+- `sources/elevation-arc-ascii.json`, `sources/elevation-geotiff.json`, `sources/elevation-vrt.json`, or `sources/elevation-mosaic.json`: applied local DEM sampler metadata
 - `sources/terrain-overlays.json`: applied land-cover, surface, or user terrain overrides from GeoJSON or shapefile layers
 - `sources/access-overlays.json`: composed access/closure overlays from every `apply-access --source`
 - `sources/access-baseline.json`: pre-access graph state used to re-materialize dated overlays without cumulative access drift
