@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::{self, Write as _};
+use std::fmt::{self, Debug, Write as _};
 use std::fs;
 use std::io::{Cursor, Read};
 use std::path::{Component, Path, PathBuf};
@@ -1721,12 +1721,34 @@ fn resolve_generated_artifact_path(project: &Path, raw: &str) -> Result<PathBuf>
 fn verify_generated_route_sequences(project: &Path, ledger: &GeneratedRunLedger) -> Result<usize> {
     let graph = load_generated_graph(project)?;
     let routes = load_generated_routes(project)?;
+    let config = ledger
+        .effective_config
+        .as_ref()
+        .with_context(|| "generated manifest lacks effective_config snapshot")?;
     let routes_by_name = routes
         .iter()
         .map(|route| (route.name.as_str(), route))
         .collect::<BTreeMap<_, _>>();
+    let mut replayed = Vec::new();
     let mut failures = Vec::new();
     let mut seen = BTreeSet::new();
+    for route in &routes {
+        match verify_route_edge_walk(&graph, route.start, &route.edges) {
+            Ok(()) => replayed.push(Route::from_edges(
+                route.name.clone(),
+                &graph,
+                route.start,
+                route.edges.clone(),
+                &config.constraints,
+            )),
+            Err(error) => failures.push(format!("{} invalid edge walk: {error:#}", route.name)),
+        }
+    }
+    rank_routes(&mut replayed, &config.constraints);
+    let replayed_by_name = replayed
+        .iter()
+        .map(|route| (route.name.as_str(), route))
+        .collect::<BTreeMap<_, _>>();
     for entry in &ledger.routes {
         if !seen.insert(entry.name.as_str()) {
             failures.push(format!(
@@ -1742,7 +1764,12 @@ fn verify_generated_route_sequences(project: &Path, ledger: &GeneratedRunLedger)
             ));
             continue;
         };
-        verify_generated_route_record(&graph, entry, route, &mut failures);
+        verify_generated_route_record(
+            entry,
+            route,
+            replayed_by_name.get(entry.name.as_str()).copied(),
+            &mut failures,
+        );
     }
     for route in &routes {
         if !seen.contains(route.name.as_str()) {
@@ -1762,9 +1789,9 @@ fn verify_generated_route_sequences(project: &Path, ledger: &GeneratedRunLedger)
 }
 
 fn verify_generated_route_record(
-    graph: &TrailGraph,
     entry: &RouteManifestEntry,
     route: &Route,
+    replayed: Option<&Route>,
     failures: &mut Vec<String>,
 ) {
     if route.start != entry.start {
@@ -1797,9 +1824,179 @@ fn verify_generated_route_record(
             entry.name
         ));
     }
-    if let Err(error) = verify_route_edge_walk(graph, route.start, &route.edges) {
-        failures.push(format!("{} invalid edge walk: {error:#}", entry.name));
+    verify_route_metrics(
+        &format!("{} manifest metrics", entry.name),
+        &entry.metrics,
+        &route.metrics,
+        failures,
+    );
+    verify_f64(
+        &format!("{} manifest score", entry.name),
+        entry.score,
+        route.computed_score(),
+        failures,
+    );
+    if let Some(replayed) = replayed {
+        verify_route_metrics(
+            &format!("{} replayed metrics", entry.name),
+            &route.metrics,
+            &replayed.metrics,
+            failures,
+        );
+        if route.verdict.satisfied != replayed.verdict.satisfied {
+            failures.push(format!(
+                "{} replayed satisfied mismatch: route {}, replayed {}",
+                entry.name, route.verdict.satisfied, replayed.verdict.satisfied
+            ));
+        }
+        if route.verdict.violations != replayed.verdict.violations {
+            failures.push(format!(
+                "{} replayed violations differ from effective constraints",
+                entry.name
+            ));
+        }
+        if route.verdict.audit != replayed.verdict.audit {
+            failures.push(format!(
+                "{} replayed constraint audit differs from effective constraints",
+                entry.name
+            ));
+        }
+        verify_f64(
+            &format!("{} replayed penalty", entry.name),
+            route.verdict.penalty,
+            replayed.verdict.penalty,
+            failures,
+        );
+        verify_f64(
+            &format!("{} replayed score", entry.name),
+            route.score,
+            replayed.computed_score(),
+            failures,
+        );
+        if route.pareto_rank != replayed.pareto_rank {
+            failures.push(format!(
+                "{} replayed Pareto rank mismatch: route {}, replayed {}",
+                entry.name, route.pareto_rank, replayed.pareto_rank
+            ));
+        }
     }
+}
+
+macro_rules! verify_f64_fields {
+    ($label:expr, $actual:expr, $expected:expr, $failures:expr; $($field:ident),+ $(,)?) => {
+        $(
+            verify_f64(
+                &format!("{}.{}", $label, stringify!($field)),
+                $actual.$field,
+                $expected.$field,
+                $failures,
+            );
+        )+
+    };
+}
+
+fn verify_route_metrics(
+    label: &str,
+    actual: &RouteMetrics,
+    expected: &RouteMetrics,
+    failures: &mut Vec<String>,
+) {
+    if actual.shape != expected.shape {
+        failures.push(format!(
+            "{label}.shape mismatch: {:?} != {:?}",
+            actual.shape, expected.shape
+        ));
+    }
+    verify_f64_fields!(
+        label,
+        actual,
+        expected,
+        failures;
+        distance_m,
+        ascent_m,
+        descent_m,
+        difficulty,
+        road_fraction,
+        low_confidence_fraction,
+        restricted_access_fraction,
+        repeated_edge_fraction,
+    );
+    verify_difficulty_breakdown(
+        &format!("{label}.difficulty_breakdown"),
+        actual.difficulty_breakdown,
+        expected.difficulty_breakdown,
+        failures,
+    );
+    if actual.crossings != expected.crossings {
+        failures.push(format!(
+            "{label}.crossings mismatch: {:?} != {:?}",
+            actual.crossings, expected.crossings
+        ));
+    }
+    verify_f64_map(
+        &format!("{label}.access_m"),
+        &actual.access_m,
+        &expected.access_m,
+        failures,
+    );
+    verify_f64_map(
+        &format!("{label}.terrain_m"),
+        &actual.terrain_m,
+        &expected.terrain_m,
+        failures,
+    );
+}
+
+fn verify_difficulty_breakdown(
+    label: &str,
+    actual: DifficultyBreakdown,
+    expected: DifficultyBreakdown,
+    failures: &mut Vec<String>,
+) {
+    for ((factor, actual), (expected_factor, expected)) in
+        actual.factors().into_iter().zip(expected.factors())
+    {
+        debug_assert_eq!(factor, expected_factor);
+        verify_f64(&format!("{label}.{factor:?}"), actual, expected, failures);
+    }
+}
+
+fn verify_f64_map<K: Ord + Debug>(
+    label: &str,
+    actual: &BTreeMap<K, f64>,
+    expected: &BTreeMap<K, f64>,
+    failures: &mut Vec<String>,
+) {
+    let keys = actual
+        .keys()
+        .chain(expected.keys())
+        .collect::<BTreeSet<_>>();
+    for key in keys {
+        verify_f64(
+            &format!("{label}[{key:?}]"),
+            actual.get(key).copied().unwrap_or_default(),
+            expected.get(key).copied().unwrap_or_default(),
+            failures,
+        );
+    }
+}
+
+fn verify_f64(label: &str, actual: f64, expected: f64, failures: &mut Vec<String>) -> bool {
+    if nearly_equal(actual, expected) {
+        return true;
+    }
+    failures.push(format!("{label} mismatch: {actual:.12} != {expected:.12}"));
+    false
+}
+
+fn nearly_equal(a: f64, b: f64) -> bool {
+    if a.to_bits() == b.to_bits() {
+        return true;
+    }
+    if !a.is_finite() || !b.is_finite() {
+        return false;
+    }
+    (a - b).abs() <= 1.0e-7_f64.max(a.abs().max(b.abs()) * 1.0e-9)
 }
 
 fn verify_route_edge_walk(graph: &TrailGraph, start: VertexId, edges: &[EdgeId]) -> Result<()> {
@@ -2137,6 +2334,8 @@ struct GenerationLedger {
 
 #[derive(Clone, Debug, Deserialize)]
 struct GeneratedRunLedger {
+    #[serde(default)]
+    effective_config: Option<ProjectConfig>,
     #[serde(default)]
     source_manifest: Option<SourceManifest>,
     #[serde(default)]
@@ -6400,6 +6599,17 @@ mod tests {
             verify_generation(project).expect_err("route manifest drift should fail verification");
         assert!(format!("{route_error:#}").contains("generated route verification failed"));
         assert!(format!("{route_error:#}").contains("edge sequence differs"));
+        fs::write(&manifest_path, original_manifest)?;
+        verify_generation(project)?;
+
+        let original_manifest = fs::read_to_string(&manifest_path)?;
+        let mut manifest: Value = serde_json::from_str(&original_manifest)?;
+        manifest["routes"][0]["metrics"]["distance_m"] = serde_json::json!(42.0);
+        write_json(&manifest_path, &manifest)?;
+        let metric_error =
+            verify_generation(project).expect_err("route metric drift should fail verification");
+        assert!(format!("{metric_error:#}").contains("generated route verification failed"));
+        assert!(format!("{metric_error:#}").contains("manifest metrics.distance_m mismatch"));
         fs::write(&manifest_path, original_manifest)?;
         verify_generation(project)?;
 
