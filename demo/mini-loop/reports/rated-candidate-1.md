@@ -19,6 +19,21 @@ Violations:
 - difficulty 1014.07 above maximum 90.00
 - restricted-access fraction 28.3% above maximum 0.0%
 
+Constraint audit:
+- fail: minimum distance measured 4.71 km, requires ≥ 35.00 km, margin -30.29 km
+- ok: maximum distance measured 4.71 km, requires ≤ 50.00 km, margin +45.29 km
+- ok: minimum difficulty measured 1014.07, requires ≥ 0.00, margin +1014.07
+- fail: maximum difficulty measured 1014.07, requires ≤ 90.00, margin -924.07
+- ok: minimum ascent measured 137 m, requires ≥ 0 m, margin +137 m
+- ok: maximum ascent measured 137 m, requires ≤ 3000 m, margin +2863 m
+- ok: minimum descent measured 137 m, requires ≥ 0 m, margin +137 m
+- ok: maximum descent measured 137 m, requires ≤ 3000 m, margin +2863 m
+- ok: maximum road/pavement exposure measured 1.3%, requires ≤ 12.0%, margin +10.7%
+- ok: maximum low-confidence exposure measured 0.0%, requires ≤ 20.0%, margin +20.0%
+- fail: maximum restricted-access exposure measured 28.3%, requires ≤ 0.0%, margin -28.3%
+- ok: maximum repeated-edge exposure measured 0.0%, requires ≤ 0.0%, margin +0.0%
+- ok: allowed shape measured Loop, requires one of [Loop], margin allowed
+
 Difficulty decomposition:
 - access: 1000.00 (98.6%)
 - distance: 4.71 (0.5%)

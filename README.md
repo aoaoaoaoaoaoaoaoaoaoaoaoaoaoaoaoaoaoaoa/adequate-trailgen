@@ -40,7 +40,7 @@ Generated artifacts land in the project directory:
 - `sources/access-overlays.json`: composed access/closure overlays from every `apply-access --source`
 - `sources/access-baseline.json`: pre-access graph state used to re-materialize dated overlays without cumulative access drift
 - `sources/context-overlays.json`: applied road/hydrology context overlays from GeoJSON or shapefile linework
-- `routes/generated.geojson`: Pareto-ranked generated loops with persisted route scores, constraint penalties, terrain/access fractions, access-warning edges, low-confidence and dubious segments, difficulty hotspots, and source provenance summaries
+- `routes/generated.geojson`: Pareto-ranked generated loops with persisted route scores, constraint penalties, constraint-audit margins, terrain/access fractions, access-warning edges, low-confidence and dubious segments, difficulty hotspots, and source provenance summaries
 - `routes/generated.graph.json`: effective graph snapshot used by generated route exports, reports, and maps
 - `routes/generated.manifest.json`: app version, random seed, requested/concrete solver, effective config, fingerprinted source manifest, one-run forbidden-area sources, graph summary, exact route edge sequences, and artifact list for reproducing a generation run
 - `routes/candidate-*.geojson`: per-route GeoJSON exports with the same diagnostics as `routes/generated.geojson`
@@ -50,7 +50,7 @@ Generated artifacts land in the project directory:
 - `routes/candidate-*.kmz`: KMZ exports
 - `seeds/imports/`: archived copies of imported seed-route files
 - `seeds/seeds.json`: imported seed routes snapped to the graph, with original source paths and route metadata retained for traceability
-- `reports/generated.md`: route diagnostics, per-route source provenance, the generation constraint envelope, and fingerprinted source manifest summary
+- `reports/generated.md`: route diagnostics, per-route constraint verdicts and margins, source provenance, the generation constraint envelope, and fingerprinted source manifest summary
 - `reports/candidate-*.md`: one-route reports emitted during generation for direct handoff
 - `reports/map.html`: self-contained offline SVG map of graph terrain, edge difficulty, confidence, generated routes, and selected route diagnostics
 

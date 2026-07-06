@@ -335,6 +335,13 @@ fn road_fraction_counts_road_and_pavement_terrain() {
             .iter()
             .any(|v| v == "road/pavement fraction 100.0% above maximum 12.0%")
     );
+    assert!(route.verdict.audit.iter().any(|row| {
+        row.metric == "maximum road/pavement exposure"
+            && row.measured == "100.0%"
+            && row.requirement == "≤ 12.0%"
+            && row.margin == "-88.0%"
+            && !row.satisfied
+    }));
 }
 
 #[test]
@@ -606,15 +613,29 @@ fn route_geojson_exports_full_diagnostics() {
 
     let gj = geojson::routes_to_geojson(&graph, &[route.clone()]);
     let properties = &gj["features"][0]["properties"];
+    let report = report::render(&graph, &[route]);
 
     assert!(
         properties["score"]
             .as_f64()
             .is_some_and(|score| (score - expected_score).abs() <= 1.0e-9 && score > 0.0)
     );
-    assert!(report::render(&graph, &[route]).contains(&format!("- score: {expected_score:.2}")));
+    assert!(report.contains(&format!("- score: {expected_score:.2}")));
+    assert!(report.contains("Constraint audit:"));
     assert_eq!(properties["restricted_access_fraction"], 1.0);
     assert_eq!(properties["access_fraction"]["closed"], 1.0);
+    assert!(
+        properties["constraint_audit"]
+            .as_array()
+            .is_some_and(|rows| {
+                rows.iter().any(|row| {
+                    row["metric"] == "maximum restricted-access exposure"
+                        && row["measured"] == "100.0%"
+                        && row["requirement"] == "≤ 0.0%"
+                        && row["satisfied"] == false
+                })
+            })
+    );
     assert!(properties["terrain_fraction"].is_object());
     assert!(properties["terrain_m"].is_object());
     assert!(properties["access_m"].is_object());

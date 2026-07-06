@@ -1594,6 +1594,99 @@
           }
         ],
         "ascent_m": 136.9999999999991,
+        "constraint_audit": [
+          {
+            "margin": "+1.71 km",
+            "measured": "4.71 km",
+            "metric": "minimum distance",
+            "requirement": "≥ 3.00 km",
+            "satisfied": true
+          },
+          {
+            "margin": "+3.29 km",
+            "measured": "4.71 km",
+            "metric": "maximum distance",
+            "requirement": "≤ 8.00 km",
+            "satisfied": true
+          },
+          {
+            "margin": "+1014.07",
+            "measured": "1014.07",
+            "metric": "minimum difficulty",
+            "requirement": "≥ 0.00",
+            "satisfied": true
+          },
+          {
+            "margin": "-924.07",
+            "measured": "1014.07",
+            "metric": "maximum difficulty",
+            "requirement": "≤ 90.00",
+            "satisfied": false
+          },
+          {
+            "margin": "+137 m",
+            "measured": "137 m",
+            "metric": "minimum ascent",
+            "requirement": "≥ 0 m",
+            "satisfied": true
+          },
+          {
+            "margin": "+2863 m",
+            "measured": "137 m",
+            "metric": "maximum ascent",
+            "requirement": "≤ 3000 m",
+            "satisfied": true
+          },
+          {
+            "margin": "+137 m",
+            "measured": "137 m",
+            "metric": "minimum descent",
+            "requirement": "≥ 0 m",
+            "satisfied": true
+          },
+          {
+            "margin": "+2863 m",
+            "measured": "137 m",
+            "metric": "maximum descent",
+            "requirement": "≤ 3000 m",
+            "satisfied": true
+          },
+          {
+            "margin": "+10.7%",
+            "measured": "1.3%",
+            "metric": "maximum road/pavement exposure",
+            "requirement": "≤ 12.0%",
+            "satisfied": true
+          },
+          {
+            "margin": "+20.0%",
+            "measured": "0.0%",
+            "metric": "maximum low-confidence exposure",
+            "requirement": "≤ 20.0%",
+            "satisfied": true
+          },
+          {
+            "margin": "-28.3%",
+            "measured": "28.3%",
+            "metric": "maximum restricted-access exposure",
+            "requirement": "≤ 0.0%",
+            "satisfied": false
+          },
+          {
+            "margin": "+0.0%",
+            "measured": "0.0%",
+            "metric": "maximum repeated-edge exposure",
+            "requirement": "≤ 0.0%",
+            "satisfied": true
+          },
+          {
+            "margin": "allowed",
+            "measured": "Loop",
+            "metric": "allowed shape",
+            "requirement": "one of [Loop]",
+            "satisfied": true
+          }
+        ],
         "constraint_penalty": 3858.036935132302,
         "crossings": {
           "road": 2,
@@ -3191,6 +3284,99 @@
           }
         ],
         "ascent_m": 96.19999999999914,
+        "constraint_audit": [
+          {
+            "margin": "+1.04 km",
+            "measured": "4.04 km",
+            "metric": "minimum distance",
+            "requirement": "≥ 3.00 km",
+            "satisfied": true
+          },
+          {
+            "margin": "+3.96 km",
+            "measured": "4.04 km",
+            "metric": "maximum distance",
+            "requirement": "≤ 8.00 km",
+            "satisfied": true
+          },
+          {
+            "margin": "+1010.87",
+            "measured": "1010.87",
+            "metric": "minimum difficulty",
+            "requirement": "≥ 0.00",
+            "satisfied": true
+          },
+          {
+            "margin": "-920.87",
+            "measured": "1010.87",
+            "metric": "maximum difficulty",
+            "requirement": "≤ 90.00",
+            "satisfied": false
+          },
+          {
+            "margin": "+96 m",
+            "measured": "96 m",
+            "metric": "minimum ascent",
+            "requirement": "≥ 0 m",
+            "satisfied": true
+          },
+          {
+            "margin": "+2904 m",
+            "measured": "96 m",
+            "metric": "maximum ascent",
+            "requirement": "≤ 3000 m",
+            "satisfied": true
+          },
+          {
+            "margin": "+96 m",
+            "measured": "96 m",
+            "metric": "minimum descent",
+            "requirement": "≥ 0 m",
+            "satisfied": true
+          },
+          {
+            "margin": "+2904 m",
+            "measured": "96 m",
+            "metric": "maximum descent",
+            "requirement": "≤ 3000 m",
+            "satisfied": true
+          },
+          {
+            "margin": "+10.0%",
+            "measured": "2.0%",
+            "metric": "maximum road/pavement exposure",
+            "requirement": "≤ 12.0%",
+            "satisfied": true
+          },
+          {
+            "margin": "+20.0%",
+            "measured": "0.0%",
+            "metric": "maximum low-confidence exposure",
+            "requirement": "≤ 20.0%",
+            "satisfied": true
+          },
+          {
+            "margin": "-41.6%",
+            "measured": "41.6%",
+            "metric": "maximum restricted-access exposure",
+            "requirement": "≤ 0.0%",
+            "satisfied": false
+          },
+          {
+            "margin": "+0.0%",
+            "measured": "0.0%",
+            "metric": "maximum repeated-edge exposure",
+            "requirement": "≤ 0.0%",
+            "satisfied": true
+          },
+          {
+            "margin": "allowed",
+            "measured": "Loop",
+            "metric": "allowed shape",
+            "requirement": "one of [Loop]",
+            "satisfied": true
+          }
+        ],
         "constraint_penalty": 5186.362792909272,
         "crossings": {
           "road": 2,
@@ -5010,6 +5196,99 @@
           }
         ],
         "ascent_m": 136.9999999999991,
+        "constraint_audit": [
+          {
+            "margin": "+1.71 km",
+            "measured": "4.71 km",
+            "metric": "minimum distance",
+            "requirement": "≥ 3.00 km",
+            "satisfied": true
+          },
+          {
+            "margin": "+3.29 km",
+            "measured": "4.71 km",
+            "metric": "maximum distance",
+            "requirement": "≤ 8.00 km",
+            "satisfied": true
+          },
+          {
+            "margin": "+1014.07",
+            "measured": "1014.07",
+            "metric": "minimum difficulty",
+            "requirement": "≥ 0.00",
+            "satisfied": true
+          },
+          {
+            "margin": "-924.07",
+            "measured": "1014.07",
+            "metric": "maximum difficulty",
+            "requirement": "≤ 90.00",
+            "satisfied": false
+          },
+          {
+            "margin": "+137 m",
+            "measured": "137 m",
+            "metric": "minimum ascent",
+            "requirement": "≥ 0 m",
+            "satisfied": true
+          },
+          {
+            "margin": "+2863 m",
+            "measured": "137 m",
+            "metric": "maximum ascent",
+            "requirement": "≤ 3000 m",
+            "satisfied": true
+          },
+          {
+            "margin": "+137 m",
+            "measured": "137 m",
+            "metric": "minimum descent",
+            "requirement": "≥ 0 m",
+            "satisfied": true
+          },
+          {
+            "margin": "+2863 m",
+            "measured": "137 m",
+            "metric": "maximum descent",
+            "requirement": "≤ 3000 m",
+            "satisfied": true
+          },
+          {
+            "margin": "+10.7%",
+            "measured": "1.3%",
+            "metric": "maximum road/pavement exposure",
+            "requirement": "≤ 12.0%",
+            "satisfied": true
+          },
+          {
+            "margin": "+20.0%",
+            "measured": "0.0%",
+            "metric": "maximum low-confidence exposure",
+            "requirement": "≤ 20.0%",
+            "satisfied": true
+          },
+          {
+            "margin": "-28.3%",
+            "measured": "28.3%",
+            "metric": "maximum restricted-access exposure",
+            "requirement": "≤ 0.0%",
+            "satisfied": false
+          },
+          {
+            "margin": "+0.0%",
+            "measured": "0.0%",
+            "metric": "maximum repeated-edge exposure",
+            "requirement": "≤ 0.0%",
+            "satisfied": true
+          },
+          {
+            "margin": "allowed",
+            "measured": "Loop",
+            "metric": "allowed shape",
+            "requirement": "one of [Loop]",
+            "satisfied": true
+          }
+        ],
         "constraint_penalty": 3858.036935132303,
         "crossings": {
           "road": 2,
@@ -6607,6 +6886,99 @@
           }
         ],
         "ascent_m": 96.19999999999914,
+        "constraint_audit": [
+          {
+            "margin": "+1.04 km",
+            "measured": "4.04 km",
+            "metric": "minimum distance",
+            "requirement": "≥ 3.00 km",
+            "satisfied": true
+          },
+          {
+            "margin": "+3.96 km",
+            "measured": "4.04 km",
+            "metric": "maximum distance",
+            "requirement": "≤ 8.00 km",
+            "satisfied": true
+          },
+          {
+            "margin": "+1010.87",
+            "measured": "1010.87",
+            "metric": "minimum difficulty",
+            "requirement": "≥ 0.00",
+            "satisfied": true
+          },
+          {
+            "margin": "-920.87",
+            "measured": "1010.87",
+            "metric": "maximum difficulty",
+            "requirement": "≤ 90.00",
+            "satisfied": false
+          },
+          {
+            "margin": "+96 m",
+            "measured": "96 m",
+            "metric": "minimum ascent",
+            "requirement": "≥ 0 m",
+            "satisfied": true
+          },
+          {
+            "margin": "+2904 m",
+            "measured": "96 m",
+            "metric": "maximum ascent",
+            "requirement": "≤ 3000 m",
+            "satisfied": true
+          },
+          {
+            "margin": "+96 m",
+            "measured": "96 m",
+            "metric": "minimum descent",
+            "requirement": "≥ 0 m",
+            "satisfied": true
+          },
+          {
+            "margin": "+2904 m",
+            "measured": "96 m",
+            "metric": "maximum descent",
+            "requirement": "≤ 3000 m",
+            "satisfied": true
+          },
+          {
+            "margin": "+10.0%",
+            "measured": "2.0%",
+            "metric": "maximum road/pavement exposure",
+            "requirement": "≤ 12.0%",
+            "satisfied": true
+          },
+          {
+            "margin": "+20.0%",
+            "measured": "0.0%",
+            "metric": "maximum low-confidence exposure",
+            "requirement": "≤ 20.0%",
+            "satisfied": true
+          },
+          {
+            "margin": "-41.6%",
+            "measured": "41.6%",
+            "metric": "maximum restricted-access exposure",
+            "requirement": "≤ 0.0%",
+            "satisfied": false
+          },
+          {
+            "margin": "+0.0%",
+            "measured": "0.0%",
+            "metric": "maximum repeated-edge exposure",
+            "requirement": "≤ 0.0%",
+            "satisfied": true
+          },
+          {
+            "margin": "allowed",
+            "measured": "Loop",
+            "metric": "allowed shape",
+            "requirement": "one of [Loop]",
+            "satisfied": true
+          }
+        ],
         "constraint_penalty": 5186.362792909272,
         "crossings": {
           "road": 2,

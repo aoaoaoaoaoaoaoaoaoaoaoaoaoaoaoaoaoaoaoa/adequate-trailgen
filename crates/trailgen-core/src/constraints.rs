@@ -75,8 +75,142 @@ impl LoopConstraints {
         ConstraintVerdict {
             satisfied: violations.is_empty(),
             violations,
+            audit: self.audit(metrics),
             penalty: self.penalty(metrics),
         }
+    }
+
+    #[must_use]
+    pub fn audit(&self, metrics: &RouteMetrics) -> Vec<ConstraintAudit> {
+        let mut audit = self.core_audit(metrics);
+        self.append_terrain_audit(metrics, &mut audit);
+        audit
+    }
+
+    fn core_audit(&self, metrics: &RouteMetrics) -> Vec<ConstraintAudit> {
+        vec![
+            min_check(
+                "minimum distance",
+                metrics.distance_m / 1_000.0,
+                self.min_distance_m / 1_000.0,
+                "km",
+                2,
+            ),
+            max_check(
+                "maximum distance",
+                metrics.distance_m / 1_000.0,
+                self.max_distance_m / 1_000.0,
+                "km",
+                2,
+            ),
+            min_check(
+                "minimum difficulty",
+                metrics.difficulty,
+                self.min_difficulty,
+                "",
+                2,
+            ),
+            max_check(
+                "maximum difficulty",
+                metrics.difficulty,
+                self.max_difficulty,
+                "",
+                2,
+            ),
+            min_check(
+                "minimum ascent",
+                metrics.ascent_m,
+                self.min_ascent_m,
+                "m",
+                0,
+            ),
+            max_check(
+                "maximum ascent",
+                metrics.ascent_m,
+                self.max_ascent_m,
+                "m",
+                0,
+            ),
+            min_check(
+                "minimum descent",
+                metrics.descent_m,
+                self.min_descent_m,
+                "m",
+                0,
+            ),
+            max_check(
+                "maximum descent",
+                metrics.descent_m,
+                self.max_descent_m,
+                "m",
+                0,
+            ),
+            max_check(
+                "maximum road/pavement exposure",
+                metrics.road_fraction * 100.0,
+                self.max_road_fraction * 100.0,
+                "%",
+                1,
+            ),
+            max_check(
+                "maximum low-confidence exposure",
+                metrics.low_confidence_fraction * 100.0,
+                self.max_low_confidence_fraction * 100.0,
+                "%",
+                1,
+            ),
+            max_check(
+                "maximum restricted-access exposure",
+                metrics.restricted_access_fraction * 100.0,
+                self.max_restricted_access_fraction * 100.0,
+                "%",
+                1,
+            ),
+            max_check(
+                "maximum repeated-edge exposure",
+                metrics.repeated_edge_fraction * 100.0,
+                self.max_repeated_edge_fraction * 100.0,
+                "%",
+                1,
+            ),
+            shape_check(metrics.shape, &self.allowed_shapes),
+        ]
+    }
+
+    fn append_terrain_audit(&self, metrics: &RouteMetrics, audit: &mut Vec<ConstraintAudit>) {
+        let terrain_fraction = metrics.terrain_percentages();
+        audit.extend(self.forbidden_terrain.iter().map(|terrain| {
+            let fraction = terrain_fraction.get(terrain).copied().unwrap_or_default() * 100.0;
+            ConstraintAudit {
+                metric: format!("forbidden terrain {terrain:?}"),
+                measured: percent(fraction, 1),
+                requirement: "must be absent".to_owned(),
+                margin: if fraction <= f64::EPSILON {
+                    "absent".to_owned()
+                } else {
+                    format!("violates by {}", percent(fraction, 1))
+                },
+                satisfied: fraction <= f64::EPSILON,
+            }
+        }));
+        audit.extend(self.min_terrain_fraction.iter().map(|(terrain, minimum)| {
+            min_check(
+                &format!("minimum terrain {terrain:?}"),
+                terrain_fraction.get(terrain).copied().unwrap_or_default() * 100.0,
+                minimum * 100.0,
+                "%",
+                1,
+            )
+        }));
+        audit.extend(self.max_terrain_fraction.iter().map(|(terrain, maximum)| {
+            max_check(
+                &format!("maximum terrain {terrain:?}"),
+                terrain_fraction.get(terrain).copied().unwrap_or_default() * 100.0,
+                maximum * 100.0,
+                "%",
+                1,
+            )
+        }));
     }
 
     fn append_distance_violations(&self, metrics: &RouteMetrics, violations: &mut Vec<String>) {
@@ -322,11 +456,91 @@ impl LoopConstraints {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ConstraintAudit {
+    pub metric: String,
+    pub measured: String,
+    pub requirement: String,
+    pub margin: String,
+    pub satisfied: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ConstraintVerdict {
     pub satisfied: bool,
     pub violations: Vec<String>,
+    #[serde(default)]
+    pub audit: Vec<ConstraintAudit>,
     pub penalty: f64,
+}
+
+fn min_check(
+    metric: &str,
+    value: f64,
+    minimum: f64,
+    unit: &str,
+    decimals: usize,
+) -> ConstraintAudit {
+    ConstraintAudit {
+        metric: metric.to_owned(),
+        measured: measure(value, unit, decimals),
+        requirement: format!("≥ {}", measure(minimum, unit, decimals)),
+        margin: signed_measure(value - minimum, unit, decimals),
+        satisfied: value >= minimum,
+    }
+}
+
+fn max_check(
+    metric: &str,
+    value: f64,
+    maximum: f64,
+    unit: &str,
+    decimals: usize,
+) -> ConstraintAudit {
+    ConstraintAudit {
+        metric: metric.to_owned(),
+        measured: measure(value, unit, decimals),
+        requirement: format!("≤ {}", measure(maximum, unit, decimals)),
+        margin: signed_measure(maximum - value, unit, decimals),
+        satisfied: value <= maximum,
+    }
+}
+
+fn shape_check(shape: RouteShape, allowed: &[RouteShape]) -> ConstraintAudit {
+    let satisfied = allowed.contains(&shape);
+    ConstraintAudit {
+        metric: "allowed shape".to_owned(),
+        measured: format!("{shape:?}"),
+        requirement: format!("one of {allowed:?}"),
+        margin: if satisfied { "allowed" } else { "disallowed" }.to_owned(),
+        satisfied,
+    }
+}
+
+fn measure(value: f64, unit: &str, decimals: usize) -> String {
+    let value = format!("{value:.decimals$}");
+    if unit.is_empty() {
+        value
+    } else if unit == "%" {
+        format!("{value}%")
+    } else {
+        format!("{value} {unit}")
+    }
+}
+
+fn signed_measure(value: f64, unit: &str, decimals: usize) -> String {
+    let value = format!("{value:+.decimals$}");
+    if unit.is_empty() {
+        value
+    } else if unit == "%" {
+        format!("{value}%")
+    } else {
+        format!("{value} {unit}")
+    }
+}
+
+fn percent(value: f64, decimals: usize) -> String {
+    format!("{value:.decimals$}%")
 }
 
 fn push_violation(xs: &mut Vec<String>, bad: bool, msg: String) {

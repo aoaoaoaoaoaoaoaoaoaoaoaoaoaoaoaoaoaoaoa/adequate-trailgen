@@ -238,6 +238,7 @@ fn route_feature(graph: &TrailGraph, route: &Route) -> Value {
             "crossings": route.metrics.crossings,
             "satisfied": route.verdict.satisfied,
             "violations": route.verdict.violations,
+            "constraint_audit": route.verdict.audit,
             "edge_count": route.edges.len(),
             "edges": route.edges.iter().map(|id| id.0).collect::<Vec<_>>(),
             "difficulty_hotspots": route_difficulty_hotspots(graph, route),

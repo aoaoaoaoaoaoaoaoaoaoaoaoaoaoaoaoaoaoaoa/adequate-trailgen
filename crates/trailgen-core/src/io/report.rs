@@ -45,6 +45,7 @@ fn render_route(graph: &TrailGraph, route: &Route, s: &mut String) {
         },
     );
     render_violations(route, s);
+    render_constraint_audit(route, s);
     render_difficulty(route, s);
     render_access_mix(route, s);
     render_access_warnings(graph, route, s);
@@ -100,6 +101,21 @@ fn render_violations(route: &Route, s: &mut String) {
     s.push_str("\nViolations:\n");
     for violation in &route.verdict.violations {
         let _ = writeln!(s, "- {violation}");
+    }
+}
+
+fn render_constraint_audit(route: &Route, s: &mut String) {
+    if route.verdict.audit.is_empty() {
+        return;
+    }
+    s.push_str("\nConstraint audit:\n");
+    for row in &route.verdict.audit {
+        let mark = if row.satisfied { "ok" } else { "fail" };
+        let _ = writeln!(
+            s,
+            "- {mark}: {} measured {}, requires {}, margin {}",
+            row.metric, row.measured, row.requirement, row.margin
+        );
     }
 }
 
