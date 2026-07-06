@@ -149,6 +149,7 @@ impl RouteSolver for LoopHunter {
                     graph,
                     state.at,
                     start,
+                    state.edges.last().copied(),
                     &state.used,
                     max_return_m,
                     self.params.closure_paths,
@@ -172,6 +173,9 @@ impl RouteSolver for LoopHunter {
 
             for edge_id in fanout {
                 if state.used.contains(&edge_id) {
+                    continue;
+                }
+                if !graph.turn_allowed(state.edges.last().copied(), state.at, edge_id) {
                     continue;
                 }
                 let edge = &graph.edges[edge_id.0];
@@ -264,6 +268,9 @@ impl RouteSolver for ExactLoopSolver {
 
             for edge_id in fanout {
                 if state.used.contains(&edge_id) {
+                    continue;
+                }
+                if !graph.turn_allowed(state.edges.last().copied(), state.at, edge_id) {
                     continue;
                 }
                 let edge = &graph.edges[edge_id.0];
@@ -376,6 +383,7 @@ fn shortest_return_paths(
     graph: &TrailGraph,
     from: VertexId,
     target: VertexId,
+    previous: Option<EdgeId>,
     banned_edges: &BTreeSet<EdgeId>,
     max_distance_m: f64,
     keep: usize,
@@ -392,6 +400,7 @@ fn shortest_return_paths(
     heap.push(ReturnPathState {
         cost_m: 0.0,
         at: from,
+        previous,
         edges: Vec::new(),
         used: banned_edges.clone(),
     });
@@ -411,6 +420,9 @@ fn shortest_return_paths(
             if state.used.contains(edge_id) {
                 continue;
             }
+            if !graph.turn_allowed(state.previous, state.at, *edge_id) {
+                continue;
+            }
             let edge = &graph.edges[edge_id.0];
             let Some(next) = edge.traverse(state.at) else {
                 continue;
@@ -426,6 +438,7 @@ fn shortest_return_paths(
             heap.push(ReturnPathState {
                 cost_m: next_cost_m,
                 at: next,
+                previous: Some(*edge_id),
                 edges,
                 used,
             });
@@ -472,6 +485,7 @@ const fn splitmix64(mut x: u64) -> u64 {
 struct ReturnPathState {
     cost_m: f64,
     at: VertexId,
+    previous: Option<EdgeId>,
     edges: Vec<EdgeId>,
     used: BTreeSet<EdgeId>,
 }

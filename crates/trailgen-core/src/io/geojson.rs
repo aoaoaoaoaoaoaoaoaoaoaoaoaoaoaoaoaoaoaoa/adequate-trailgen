@@ -67,6 +67,8 @@ pub fn network_from_str(s: &str) -> Result<Vec<SegmentDraft>> {
         };
         for line in lines_from_geometry(geometry, crs)? {
             drafts.push(SegmentDraft {
+                turn_ref: None,
+                turn_restrictions: Vec::new(),
                 geometry: line,
                 terrain,
                 terrain_confidence: Some(terrain_confidence),

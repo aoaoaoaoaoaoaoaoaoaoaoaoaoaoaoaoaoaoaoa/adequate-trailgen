@@ -1011,8 +1011,8 @@
         "kind": "seed-route",
         "adapter_id": "kml-route",
         "fingerprint": {
-          "bytes": 2040,
-          "sha256": "c4cc6ef457687665c65f34ceb78575ee99b35f24ac87584ada694cee6f34a121"
+          "bytes": 2268,
+          "sha256": "e34c10ca358a58d00598b52154ee9e5fd364cace7789430dac6f4a0623e362c3"
         }
       },
       {
@@ -1020,8 +1020,8 @@
         "kind": "seed-route",
         "adapter_id": "gpx-route",
         "fingerprint": {
-          "bytes": 24233,
-          "sha256": "aa020e4b300d952cc8e647bb3244be92389aa612f9454f1ba1c9a19bc40a1199"
+          "bytes": 24583,
+          "sha256": "0e9f8cf72b07f49b056a3f9af656e646a1bbd30f3117b305a3ae56b2d1421651"
         }
       }
     ]
@@ -1262,14 +1262,14 @@
       "path": "routes/generated.geojson",
       "fingerprint": {
         "bytes": 148828,
-        "sha256": "aa4c3f1319cb091331dc5080fa484965b3c60dec8dd03f9707b19b48fabae286"
+        "sha256": "6af71d9fb1510f093a7f629b1b573acb53ac0205cc6bec9b12bf2500a18ef0d2"
       }
     },
     {
       "path": "routes/generated.graph.json",
       "fingerprint": {
-        "bytes": 72315,
-        "sha256": "3d17b3572fe6dc1044182dad58c9638d94a30ca9bba2a1135a9d30a56398b427"
+        "bytes": 72334,
+        "sha256": "2080bbd3d1bd4f373397fc92121c0d412df4f25e533a62e8c722df05812751c1"
       }
     },
     {
@@ -1283,21 +1283,21 @@
       "path": "reports/generated.md",
       "fingerprint": {
         "bytes": 16455,
-        "sha256": "17c2fdc311dd1ebc7d7bc72450e95a2807b305d196818360a6aa9090aade60c8"
+        "sha256": "2418958a73c81328bfded2a70f1e1c2de678001b4d3f91efa7e6be0fbc23f517"
       }
     },
     {
       "path": "reports/map.html",
       "fingerprint": {
         "bytes": 117699,
-        "sha256": "f7b5fccbf4e11d73ce35bad795768c5d70a379f3b22f15cebc494e7092934e5d"
+        "sha256": "156b647c03fa3b1ef21f5c69d039f3335c514891e0bfb5e8f01717dd2de9dee1"
       }
     },
     {
       "path": "routes/candidate-1.geojson",
       "fingerprint": {
         "bytes": 53443,
-        "sha256": "ea6c285a4a35fa2d5d87e4389763c892fb52425c5ea988f71cab084f749d26d4"
+        "sha256": "68a117549af528694a4e54f3129b01db76574cd2a398df13e8b8779fe06fada4"
       }
     },
     {
@@ -1332,14 +1332,14 @@
       "path": "reports/candidate-1.md",
       "fingerprint": {
         "bytes": 8343,
-        "sha256": "4603eb50988a39aef7c0efe558e786e8eaeca467f821eb48e09f7e9e6f76b2ac"
+        "sha256": "2a95dba54b821e8bc5e6339da03700dd42657c8631bb0557289e7b61c30bfb3c"
       }
     },
     {
       "path": "routes/candidate-2.geojson",
       "fingerprint": {
         "bytes": 46497,
-        "sha256": "f5b2c3548021ea6ca8667a1604eb36f225ff99847b47d6ed7b3a5bbb2cf086a5"
+        "sha256": "a5a6116ca71cc259554d512a8f052c860067556e2e9c5929bec485b8956f7156"
       }
     },
     {
@@ -1374,14 +1374,14 @@
       "path": "reports/candidate-2.md",
       "fingerprint": {
         "bytes": 7871,
-        "sha256": "e761ee337f008ed08eeff4621be8221d7b6a46b2e7c7a438ec3e4913327d0b12"
+        "sha256": "eeafd261ba48c4c5138861a4edf465861b6a580755b66fc2189a4238fda10664"
       }
     },
     {
       "path": "routes/candidate-3.geojson",
       "fingerprint": {
         "bytes": 48994,
-        "sha256": "412f0ee0cbc04a325b2464a8d32a2a4ace9bf29efa783ecfdbaf2b7661ec0ade"
+        "sha256": "e87f23abf484249c82daf0f51a874267511a5ccd2434e316f793aa103db0c2a6"
       }
     },
     {
@@ -1416,7 +1416,7 @@
       "path": "reports/candidate-3.md",
       "fingerprint": {
         "bytes": 7834,
-        "sha256": "792a16cbba80fcc3b7ebe0dae9ba8fc947967425acb83e1f20c4ab2b4779eeb9"
+        "sha256": "accec46374335c0bff1ad75169ba08272d3752bc7bed03e4a46e48942b12333c"
       }
     }
   ]

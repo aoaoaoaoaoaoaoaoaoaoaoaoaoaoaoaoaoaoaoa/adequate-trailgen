@@ -4,7 +4,8 @@
   "original_source_path": "demo/mini-loop/routes/candidate-1.kmz",
   "source_format": "kmz",
   "metadata": {
-    "title": "candidate-1"
+    "title": "candidate-1",
+    "description": "score 3908.74; pareto rank 1; shape Loop; distance 4.71 km; ascent/descent 137/137 m; difficulty 1014.07; road 1.3%; low-confidence 0.0%; restricted-access 28.3%; repeated-edge 0.0%; constraints violated; violations difficulty 1014.07 above maximum 90.00 | restricted-access fraction 28.3% above maximum 0.0%"
   },
   "point_count": 308,
   "snapped_edges": [
@@ -27,7 +28,7 @@
     "distance_m": 4712.831226933267,
     "ascent_m": 136.9999999999991,
     "descent_m": 136.9999999999991,
-    "difficulty": 14.2938608129841,
+    "difficulty": 14.068860812984102,
     "difficulty_breakdown": {
       "distance": 4.712831226933266,
       "ascent": 1.6439999999999888,
@@ -37,7 +38,7 @@
       "road": 0.12264895807970262,
       "technical": 3.1757314914698194,
       "navigation": 0.659565679411782,
-      "confidence": 1.3049999999999997,
+      "confidence": 1.0800000000000003,
       "access": 0.0
     },
     "road_fraction": 0.013012237461292745,

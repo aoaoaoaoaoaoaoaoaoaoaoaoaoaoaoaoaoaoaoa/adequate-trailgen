@@ -1,4 +1,4 @@
-use crate::builder::SegmentDraft;
+use crate::builder::{SegmentDraft, TurnRestrictionDraft, TurnRestrictionRule};
 use crate::geo::{Coord, LineString};
 use crate::model::{Access, CrossingKind, EdgeTravel, Provenance, Terrain};
 use crate::overlay::ContextOverlay;
@@ -24,7 +24,7 @@ pub fn network_from_str(s: &str) -> Result<Vec<SegmentDraft>> {
         .filter(|node| node.has_tag_name("node"))
         .map(parse_node)
         .collect::<Result<BTreeMap<_, _>>>()?;
-    let relations = xml_relation_evidence(root)?;
+    let relations = xml_relation_evidence(root, &nodes)?;
     root.children()
         .filter(|node| node.has_tag_name("way"))
         .filter_map(|way| draft_from_xml_way(way, &nodes, &relations).transpose())
@@ -124,6 +124,8 @@ fn draft_from_xml_way(
         return Ok(None);
     }
     Ok(Some(SegmentDraft {
+        turn_ref: Some(id.clone()),
+        turn_restrictions: relations.turn_restrictions.clone(),
         geometry: LineString::new(points)?,
         terrain: walkway.terrain,
         terrain_confidence: Some(walkway.terrain_confidence),
@@ -214,6 +216,8 @@ fn draft_from_pbf_way(
         return Ok(None);
     }
     Ok(Some(SegmentDraft {
+        turn_ref: Some(way.id.0.to_string()),
+        turn_restrictions: relations.turn_restrictions.clone(),
         geometry: LineString::new(points)?,
         terrain: walkway.terrain,
         terrain_confidence: Some(walkway.terrain_confidence),
@@ -278,13 +282,17 @@ struct TurnRestrictionEvidence {
     role: String,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 struct OsmRelationEvidence {
     route_by_way: BTreeMap<String, Vec<RouteRelationEvidence>>,
     turn_restriction_by_way: BTreeMap<String, Vec<TurnRestrictionEvidence>>,
+    turn_restrictions: Vec<TurnRestrictionDraft>,
 }
 
-fn xml_relation_evidence(root: roxmltree::Node<'_, '_>) -> Result<OsmRelationEvidence> {
+fn xml_relation_evidence(
+    root: roxmltree::Node<'_, '_>,
+    nodes: &BTreeMap<String, Coord>,
+) -> Result<OsmRelationEvidence> {
     let mut evidence = OsmRelationEvidence::default();
     for relation in root.children().filter(|node| node.has_tag_name("relation")) {
         let tags = xml_tags(relation);
@@ -294,14 +302,30 @@ fn xml_relation_evidence(root: roxmltree::Node<'_, '_>) -> Result<OsmRelationEvi
             label,
         });
         let turn_restriction = turn_restriction_from_tags(&tags);
+        let mut from_way = None::<String>;
+        let mut to_way = None::<String>;
+        let mut via = None::<Coord>;
         for member in relation
             .children()
             .filter(|node| node.has_tag_name("member"))
         {
-            if required_attr(member, "type")? != "way" {
+            let member_type = required_attr(member, "type")?;
+            let role = required_attr(member, "role")?;
+            if member_type == "node" && role == "via" {
+                if let Some(coord) = nodes.get(required_attr(member, "ref")?) {
+                    via = Some(*coord);
+                }
+                continue;
+            }
+            if member_type != "way" {
                 continue;
             }
             let way = required_attr(member, "ref")?.to_owned();
+            match role {
+                "from" => from_way = Some(way.clone()),
+                "to" => to_way = Some(way.clone()),
+                _ => {}
+            }
             if let Some(route) = &route {
                 evidence
                     .route_by_way
@@ -309,20 +333,31 @@ fn xml_relation_evidence(root: roxmltree::Node<'_, '_>) -> Result<OsmRelationEvi
                     .or_default()
                     .push(route.clone());
             }
-            if let Some(restriction) = &turn_restriction {
-                let role = required_attr(member, "role")?;
-                if matches!(role, "from" | "to") {
-                    evidence
-                        .turn_restriction_by_way
-                        .entry(way)
-                        .or_default()
-                        .push(TurnRestrictionEvidence {
-                            id: id.clone(),
-                            restriction: restriction.clone(),
-                            role: role.to_owned(),
-                        });
-                }
+            if let Some(restriction) = &turn_restriction
+                && matches!(role, "from" | "to")
+            {
+                evidence
+                    .turn_restriction_by_way
+                    .entry(way)
+                    .or_default()
+                    .push(TurnRestrictionEvidence {
+                        id: id.clone(),
+                        restriction: restriction.clone(),
+                        role: role.to_owned(),
+                    });
             }
+        }
+        if let (Some(restriction), Some(from), Some(via), Some(to)) =
+            (turn_restriction, from_way, via, to_way)
+        {
+            evidence.turn_restrictions.push(turn_restriction_draft(
+                "osm-xml",
+                &id,
+                &restriction,
+                from,
+                via,
+                to,
+            ));
         }
     }
     Ok(evidence)
@@ -333,8 +368,22 @@ fn pbf_relation_evidence(objects: &BTreeMap<OsmId, OsmObj>) -> OsmRelationEviden
     for relation in objects.values().filter_map(OsmObj::relation) {
         let route = pbf_route_relation_evidence(relation);
         let turn_restriction = pbf_turn_restriction_evidence(relation);
+        let mut from_way = None::<String>;
+        let mut to_way = None::<String>;
+        let mut via = None::<Coord>;
         for reference in &relation.refs {
+            if let OsmId::Node(node_id) = reference.member
+                && reference.role.as_str() == "via"
+                && let Some(OsmObj::Node(node)) = objects.get(&OsmId::Node(node_id))
+            {
+                via = Some(pbf_coord(node));
+            }
             if let OsmId::Way(WayId(id)) = reference.member {
+                match reference.role.as_str() {
+                    "from" => from_way = Some(id.to_string()),
+                    "to" => to_way = Some(id.to_string()),
+                    _ => {}
+                }
                 if let Some(route) = &route {
                     evidence
                         .route_by_way
@@ -356,6 +405,18 @@ fn pbf_relation_evidence(objects: &BTreeMap<OsmId, OsmObj>) -> OsmRelationEviden
                         });
                 }
             }
+        }
+        if let (Some(restriction), Some(from), Some(via), Some(to)) =
+            (turn_restriction, from_way, via, to_way)
+        {
+            evidence.turn_restrictions.push(turn_restriction_draft(
+                "osm-pbf",
+                &restriction.id,
+                &restriction.restriction,
+                from,
+                via,
+                to,
+            ));
         }
     }
     evidence
@@ -391,6 +452,33 @@ fn pbf_turn_restriction_evidence(relation: &PbfRelation) -> Option<TurnRestricti
             role: String::new(),
         }
     })
+}
+
+fn turn_restriction_draft(
+    source: &str,
+    relation_id: &str,
+    restriction: &str,
+    from: String,
+    via: Coord,
+    to: String,
+) -> TurnRestrictionDraft {
+    let rule = if restriction.starts_with("only_") {
+        TurnRestrictionRule::Only
+    } else {
+        TurnRestrictionRule::No
+    };
+    TurnRestrictionDraft {
+        from,
+        via,
+        to,
+        rule,
+        provenance: Provenance {
+            source: source.to_owned(),
+            layer: Some("turn-restriction".to_owned()),
+            source_id: Some(format!("{relation_id}:{restriction}")),
+            license: Some("ODbL-1.0".to_owned()),
+        },
+    }
 }
 
 fn turn_restriction_from_tags(tags: &BTreeMap<String, String>) -> Option<String> {

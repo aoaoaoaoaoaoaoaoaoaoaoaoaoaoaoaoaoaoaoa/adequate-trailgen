@@ -63,8 +63,13 @@ impl Route {
     #[must_use]
     pub fn geometry(&self, graph: &TrailGraph) -> LineString {
         let mut at = self.start;
+        let mut previous = None;
         let mut points = Vec::new();
         for edge_id in &self.edges {
+            assert!(
+                graph.turn_allowed(previous, at, *edge_id),
+                "route turn must be legal"
+            );
             let edge = &graph.edges[edge_id.0];
             let line = edge.oriented_geometry(at);
             if points.is_empty() {
@@ -73,6 +78,7 @@ impl Route {
                 points.extend(line.points.iter().skip(1).copied());
             }
             at = edge.traverse(at).expect("route edge must be traversable");
+            previous = Some(*edge_id);
         }
         LineString::unchecked(points)
     }
@@ -229,10 +235,16 @@ impl RouteMetrics {
         let mut low_conf_m = 0.0;
         let mut restricted_access_m = 0.0;
         let mut repeated_edge_m = 0.0;
+        let mut previous = None;
         for edge_id in edges {
+            assert!(
+                graph.turn_allowed(previous, at, *edge_id),
+                "route turn must be legal"
+            );
             let edge = &graph.edges[edge_id.0];
             let from = at;
             at = edge.traverse(from).expect("route edge must be traversable");
+            previous = Some(*edge_id);
             *vertex_visits.entry(at).or_default() += 1;
             let a = &edge.attr;
             m.distance_m += a.length_m;

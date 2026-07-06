@@ -926,8 +926,8 @@
       "kind": "seed-route",
       "adapter_id": "kml-route",
       "fingerprint": {
-        "bytes": 2040,
-        "sha256": "c4cc6ef457687665c65f34ceb78575ee99b35f24ac87584ada694cee6f34a121"
+        "bytes": 2268,
+        "sha256": "e34c10ca358a58d00598b52154ee9e5fd364cace7789430dac6f4a0623e362c3"
       }
     },
     {
@@ -935,8 +935,8 @@
       "kind": "seed-route",
       "adapter_id": "gpx-route",
       "fingerprint": {
-        "bytes": 24233,
-        "sha256": "aa020e4b300d952cc8e647bb3244be92389aa612f9454f1ba1c9a19bc40a1199"
+        "bytes": 24583,
+        "sha256": "0e9f8cf72b07f49b056a3f9af656e646a1bbd30f3117b305a3ae56b2d1421651"
       }
     }
   ]

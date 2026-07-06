@@ -140,5 +140,5 @@ Candidates:
 - crates/trailgen-core/tests/fixtures/mini_dem.asc: Elevation via arc-ascii-elevation; 169 bytes, sha256 8200f8e889b76ecff72d845148d2476a5b4f75edbf782e6082a5e300a54e0859
 - crates/trailgen-core/tests/fixtures/mini_network.geojson: TrailNetwork via geojson-network; 1714 bytes, sha256 eae6f4f939c209fb1ab455e581d4e50f7dffab68d7a6d7f4c9800e65fec64857
 - crates/trailgen-core/tests/fixtures/terrain_overlay.geojson: Terrain via geojson-terrain-overlay; 535 bytes, sha256 2136c1627f1898ed1d6524f923e2a1e4edbcaab9cd6058a0cccebb3dfd62e936
-- demo/mini-loop/seeds/imports/known-good-kmz-loop.kmz: SeedRoute via kml-route; 2040 bytes, sha256 c4cc6ef457687665c65f34ceb78575ee99b35f24ac87584ada694cee6f34a121
-- demo/mini-loop/seeds/imports/known-good-loop.gpx: SeedRoute via gpx-route; 24233 bytes, sha256 aa020e4b300d952cc8e647bb3244be92389aa612f9454f1ba1c9a19bc40a1199
+- demo/mini-loop/seeds/imports/known-good-kmz-loop.kmz: SeedRoute via kml-route; 2268 bytes, sha256 e34c10ca358a58d00598b52154ee9e5fd364cace7789430dac6f4a0623e362c3
+- demo/mini-loop/seeds/imports/known-good-loop.gpx: SeedRoute via gpx-route; 24583 bytes, sha256 0e9f8cf72b07f49b056a3f9af656e646a1bbd30f3117b305a3ae56b2d1421651

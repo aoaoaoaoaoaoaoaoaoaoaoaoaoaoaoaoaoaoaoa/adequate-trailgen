@@ -18,7 +18,7 @@ Shapefile adapters must treat `.shp`, `.dbf`, `.shx`, `.prj`, and `.cpg` as one 
 Normalization targets:
 
 - trail networks become `SegmentDraft` values and are built by `GraphBuilder`
-- OSM XML/PBF network adapters should stay way-focused unless relation semantics are explicitly modeled: normalize walkable ways, preserve way IDs, access, foot direction, surface, confidence, ODbL provenance, hiking-route relation evidence, and audit-only turn-restriction relation evidence
+- OSM XML/PBF network adapters should stay way-focused unless relation semantics are explicitly modeled: normalize walkable ways, preserve way IDs, access, foot direction, surface, confidence, ODbL provenance, hiking-route relation evidence, and simple via-node turn restrictions as graph-level directed turn bans
 - route files may also become low-confidence `SegmentDraft` scaffolds for `trailgen build` when no network layer is available
 - route JSON adapters should stay structural and provider-neutral: accept coordinate arrays or point objects, not opaque private API documents
 - seed-route adapters may preserve only provider-neutral metadata fields: title, description, recorded timestamp, and activity type

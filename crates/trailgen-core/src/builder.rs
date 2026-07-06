@@ -3,7 +3,7 @@ use crate::enrich::{EmbeddedElevation, EnrichmentConfig, enrich_graph};
 use crate::geo::{Coord, LineString};
 use crate::model::{
     Access, Edge, EdgeAttr, EdgeId, EdgeTravel, GradeDistribution, Provenance, Terrain, TrailGraph,
-    Vertex, VertexId,
+    TurnBan, Vertex, VertexId,
 };
 use crate::{Result, TrailgenError};
 use serde::{Deserialize, Serialize};
@@ -12,6 +12,10 @@ use std::collections::{BTreeMap, btree_map::Entry};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SegmentDraft {
     pub geometry: LineString,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub turn_restrictions: Vec<TurnRestrictionDraft>,
     pub terrain: Terrain,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terrain_confidence: Option<f64>,
@@ -22,6 +26,22 @@ pub struct SegmentDraft {
     pub road_exposure: f64,
     pub confidence: f64,
     pub provenance: Provenance,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TurnRestrictionDraft {
+    pub from: String,
+    pub via: Coord,
+    pub to: String,
+    pub rule: TurnRestrictionRule,
+    pub provenance: Provenance,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TurnRestrictionRule {
+    No,
+    Only,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -136,6 +156,7 @@ impl GraphBuilder {
             license: None,
         };
 
+        let mut edges_by_draft = vec![Vec::<EdgeId>::new(); drafts.len()];
         for (primitive, xs) in primitives.iter().copied().zip(cuts) {
             let xs = normalize_cuts(xs);
             for pair in xs.windows(2) {
@@ -164,10 +185,12 @@ impl GraphBuilder {
                 };
                 self.weights.apply_edge(&mut edge);
                 edges.push(edge);
+                edges_by_draft[primitive.src].push(id);
             }
         }
 
         let mut graph = TrailGraph::new(vertices, edges);
+        graph.turn_bans = turn_bans(drafts, &edges_by_draft, &graph, self.snap_tolerance_m);
         enrich_graph(
             &mut graph,
             &EmbeddedElevation,
@@ -176,6 +199,81 @@ impl GraphBuilder {
         )?;
         Ok(graph)
     }
+}
+
+fn turn_bans(
+    drafts: &[SegmentDraft],
+    edges_by_draft: &[Vec<EdgeId>],
+    graph: &TrailGraph,
+    snap_tolerance_m: f64,
+) -> Vec<TurnBan> {
+    let mut edges_by_ref = BTreeMap::<&str, Vec<EdgeId>>::new();
+    for (draft, edges) in drafts.iter().zip(edges_by_draft) {
+        if let Some(turn_ref) = draft.turn_ref.as_deref() {
+            edges_by_ref.entry(turn_ref).or_default().extend(edges);
+        }
+    }
+    let restrictions = drafts
+        .iter()
+        .flat_map(|draft| draft.turn_restrictions.iter())
+        .collect::<Vec<_>>();
+    let mut seen = std::collections::BTreeSet::<(VertexId, EdgeId, EdgeId)>::new();
+    let mut bans = Vec::new();
+    for restriction in restrictions {
+        let Some((via, distance_m)) = graph.nearest_vertex_with_distance(restriction.via) else {
+            continue;
+        };
+        if distance_m > snap_tolerance_m.max(1.0) {
+            continue;
+        }
+        let Some(from_edges) = edges_by_ref.get(restriction.from.as_str()) else {
+            continue;
+        };
+        let Some(to_edges) = edges_by_ref.get(restriction.to.as_str()) else {
+            continue;
+        };
+        let from_edges = from_edges
+            .iter()
+            .copied()
+            .filter(|edge| arrives_at(graph, *edge, via))
+            .collect::<Vec<_>>();
+        let allowed = to_edges
+            .iter()
+            .copied()
+            .filter(|edge| departs_from(graph, *edge, via))
+            .collect::<std::collections::BTreeSet<_>>();
+        let banned = match restriction.rule {
+            TurnRestrictionRule::No => allowed.iter().copied().collect::<Vec<_>>(),
+            TurnRestrictionRule::Only => graph.adjacency[via.0]
+                .iter()
+                .copied()
+                .filter(|edge| !allowed.contains(edge))
+                .collect(),
+        };
+        for from in &from_edges {
+            for to in &banned {
+                if seen.insert((via, *from, *to)) {
+                    bans.push(TurnBan {
+                        via,
+                        from: *from,
+                        to: *to,
+                        provenance: restriction.provenance.clone(),
+                    });
+                }
+            }
+        }
+    }
+    bans
+}
+
+fn arrives_at(graph: &TrailGraph, edge: EdgeId, via: VertexId) -> bool {
+    let edge = &graph.edges[edge.0];
+    edge.other(via)
+        .is_some_and(|other| edge.traverse(other) == Some(via))
+}
+
+fn departs_from(graph: &TrailGraph, edge: EdgeId, via: VertexId) -> bool {
+    graph.edges[edge.0].traverse(via).is_some()
 }
 
 fn edge_attr(

@@ -217,6 +217,14 @@ pub struct CrossingEvidence {
     pub provenance: Provenance,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TurnBan {
+    pub via: VertexId,
+    pub from: EdgeId,
+    pub to: EdgeId,
+    pub provenance: Provenance,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct GradeDistribution {
     pub flat_m: f64,
@@ -333,6 +341,8 @@ impl Edge {
 pub struct TrailGraph {
     pub vertices: Vec<Vertex>,
     pub edges: Vec<Edge>,
+    #[serde(default)]
+    pub turn_bans: Vec<TurnBan>,
     pub adjacency: Vec<Vec<EdgeId>>,
 }
 
@@ -358,6 +368,7 @@ impl TrailGraph {
             adjacency: vec![Vec::new(); vertices.len()],
             vertices,
             edges,
+            turn_bans: Vec::new(),
         };
         graph.rebuild_adjacency();
         graph
@@ -482,10 +493,25 @@ impl TrailGraph {
     #[must_use]
     pub fn walk_edges(&self, start: VertexId, edges: &[EdgeId]) -> Option<VertexId> {
         let mut at = start;
+        let mut previous = None;
         for edge_id in edges {
+            if !self.turn_allowed(previous, at, *edge_id) {
+                return None;
+            }
             at = self.edges.get(edge_id.0)?.traverse(at)?;
+            previous = Some(*edge_id);
         }
         Some(at)
+    }
+
+    #[must_use]
+    pub fn turn_allowed(&self, from: Option<EdgeId>, via: VertexId, to: EdgeId) -> bool {
+        from.is_none_or(|from| {
+            !self
+                .turn_bans
+                .iter()
+                .any(|ban| ban.via == via && ban.from == from && ban.to == to)
+        })
     }
 
     pub fn apply_seed_hints(&mut self, seed: &crate::seed::SeedRoute) {

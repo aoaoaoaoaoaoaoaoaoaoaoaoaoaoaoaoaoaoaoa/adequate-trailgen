@@ -1687,14 +1687,14 @@
             "seed_count": 2,
             "seed_provenance": [
               {
-                "layer": "kmz",
-                "source": "seed-route",
-                "source_id": "Known Good KMZ Loop"
-              },
-              {
                 "layer": "gpx",
                 "source": "seed-route",
                 "source_id": "Known Good Loop"
+              },
+              {
+                "layer": "kmz",
+                "source": "seed-route",
+                "source_id": "Known Good KMZ Loop"
               }
             ],
             "source_provenance": [
@@ -1778,14 +1778,14 @@
             "seed_count": 2,
             "seed_provenance": [
               {
-                "layer": "kmz",
-                "source": "seed-route",
-                "source_id": "Known Good KMZ Loop"
-              },
-              {
                 "layer": "gpx",
                 "source": "seed-route",
                 "source_id": "Known Good Loop"
+              },
+              {
+                "layer": "kmz",
+                "source": "seed-route",
+                "source_id": "Known Good KMZ Loop"
               }
             ],
             "source_provenance": [

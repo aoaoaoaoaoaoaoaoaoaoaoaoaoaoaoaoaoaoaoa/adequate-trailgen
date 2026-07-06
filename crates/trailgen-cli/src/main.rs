@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1094,6 +1094,8 @@ fn route_source_draft(source: &Path) -> Result<SegmentDraft> {
 
 fn route_source_draft_from_line(source: &Path, line: LineString) -> SegmentDraft {
     SegmentDraft {
+        turn_ref: None,
+        turn_restrictions: Vec::new(),
         geometry: line,
         terrain: Terrain::Unknown,
         terrain_confidence: Some(0.0),
@@ -2995,6 +2997,10 @@ fn snapped_route(
     let start = graph
         .snapped_line_start(&route_file.line, &edges)
         .with_context(|| "route snapped to edges but no traversable start vertex was found")?;
+    ensure!(
+        graph.walk_edges(start, &edges).is_some(),
+        "route snapped to edges but violates directed travel or turn restrictions"
+    );
     Ok(Route::from_edges(
         route_file.metadata.title_or(name),
         graph,
@@ -6305,6 +6311,8 @@ mod tests {
     fn graph_stats_report_attributed_exposure() -> Result<()> {
         let graph = GraphBuilder::default().build(&[
             SegmentDraft {
+                turn_ref: None,
+                turn_restrictions: Vec::new(),
                 geometry: LineString::new(vec![
                     Coord::with_ele(0.0, 0.0, 1_000.0),
                     Coord::with_ele(0.01, 0.0, 1_030.0),
@@ -6320,6 +6328,8 @@ mod tests {
                 provenance: Provenance::fixture("trail"),
             },
             SegmentDraft {
+                turn_ref: None,
+                turn_restrictions: Vec::new(),
                 geometry: LineString::new(vec![Coord::new(0.01, 0.0), Coord::new(0.02, 0.0)])
                     .unwrap(),
                 terrain: Terrain::Road,

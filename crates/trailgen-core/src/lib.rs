@@ -18,7 +18,7 @@ pub mod seed;
 pub mod source;
 pub mod units;
 
-pub use builder::{GraphBuilder, SegmentDraft};
+pub use builder::{GraphBuilder, SegmentDraft, TurnRestrictionDraft, TurnRestrictionRule};
 pub use constraints::{ConstraintVerdict, LoopConstraints};
 pub use difficulty::{
     DifficultyBreakdown, DifficultyFactor, DifficultyWeights, TerrainMultipliers,
@@ -35,7 +35,7 @@ pub use milp::{
 };
 pub use model::{
     Access, CrossingEvidence, CrossingKind, Edge, EdgeAttr, EdgeId, EdgeTravel, GradeDistribution,
-    Provenance, RouteSnapStats, Terrain, TrailGraph, Vertex, VertexId,
+    Provenance, RouteSnapStats, Terrain, TrailGraph, TurnBan, Vertex, VertexId,
 };
 pub use optimizer::{ExactLoopSolver, LoopHunter, RouteSolver, SearchParams, SolverKind};
 pub use overlay::{
