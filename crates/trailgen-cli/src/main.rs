@@ -2192,6 +2192,8 @@ fn render_discovery_report(manifest: &SourceManifest) -> String {
     render_source_coverage(&mut text, manifest);
     text.push_str("## Acquisition Plan\n\n");
     render_acquisition_plan(&mut text, manifest);
+    text.push_str("## Cache Command Sketches\n\n");
+    render_cache_command_sketches(&mut text, manifest);
     text.push_str("## Local Candidates\n\n");
     render_source_candidates(&mut text, manifest);
     text.push_str("\n## Adapter Registry\n\n");
@@ -2297,6 +2299,48 @@ fn render_acquisition_plan(text: &mut String, manifest: &SourceManifest) {
                     hint.formats.join(", "),
                     hint.note
                 );
+            }
+            text.push('\n');
+        }
+    }
+}
+
+fn render_cache_command_sketches(text: &mut String, manifest: &SourceManifest) {
+    text.push_str("Replace `<artifact-url-or-path>` with a concrete downloaded artifact or local file selected from the listed source surface; keep the explicit kind and adapter when provider filenames are ambiguous.\n\n");
+    for recommendation in &manifest.recommendations {
+        let adapter_id = recommendation
+            .adapter_ids
+            .first()
+            .map_or("<adapter-id>", String::as_str);
+        let output = recommendation
+            .suggested_paths
+            .first()
+            .map_or("source.bin", |path| {
+                path.strip_prefix("sources/").unwrap_or(path)
+            });
+        let _ = writeln!(
+            text,
+            "### {:?}\n\n```sh\ntrailgen cache-source <project> --input '<artifact-url-or-path>' --output {} --kind {} --adapter {}\n```\n",
+            recommendation.kind,
+            output,
+            source_kind_arg(recommendation.kind),
+            adapter_id
+        );
+        if let Some(hint) = recommendation.acquisition_hints.first() {
+            let _ = writeln!(
+                text,
+                "Primary source surface: {} ({})",
+                hint.label, hint.url
+            );
+            if recommendation.acquisition_hints.len() > 1 {
+                let alternates = recommendation
+                    .acquisition_hints
+                    .iter()
+                    .skip(1)
+                    .map(|hint| hint.label.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let _ = writeln!(text, "Alternate surfaces: {alternates}");
             }
             text.push('\n');
         }
@@ -3814,6 +3858,19 @@ fn parse_source_kind(raw: &str) -> Result<SourceKind, String> {
     }
 }
 
+const fn source_kind_arg(kind: SourceKind) -> &'static str {
+    match kind {
+        SourceKind::TrailNetwork => "trail-network",
+        SourceKind::SeedRoute => "seed-route",
+        SourceKind::Elevation => "elevation",
+        SourceKind::Terrain => "terrain",
+        SourceKind::Access => "access",
+        SourceKind::Closure => "closure",
+        SourceKind::Road => "road",
+        SourceKind::Hydrology => "hydrology",
+    }
+}
+
 fn parse_shape(raw: &str) -> Result<RouteShape, String> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "loop" => Ok(RouteShape::Loop),
@@ -4131,8 +4188,16 @@ mod tests {
         let discovery = fs::read_to_string(project.join("sources/discovery.md"))?;
         assert!(discovery.starts_with("# Source Discovery"));
         assert!(discovery.contains("## Acquisition Plan"));
+        assert!(discovery.contains("## Cache Command Sketches"));
         assert!(discovery.contains("NPS official GIS open data"));
         assert!(discovery.contains("Geofabrik OpenStreetMap extracts"));
+        assert!(discovery.contains(
+            "trailgen cache-source <project> --input '<artifact-url-or-path>' --output trails.geojson --kind trail-network --adapter geojson-network"
+        ));
+        assert!(
+            discovery
+                .contains("--output seeds/completed.gpx --kind seed-route --adapter gpx-route")
+        );
         assert!(discovery.contains("## Adapter Registry"));
         assert!(
             manifest["candidates"]

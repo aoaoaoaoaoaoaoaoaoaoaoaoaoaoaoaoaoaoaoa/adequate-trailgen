@@ -216,6 +216,82 @@ Acquisition hints:
 - AllTrails import/export support: https://support.alltrails.com/hc/en-us/sections/360006411352-Importing-and-exporting-files [GPX, GeoJSON, KML, KMZ, CSV]. Use user-supplied exports as seed routes only; never couple core graph semantics to private AllTrails APIs.
 - Personal GPS archives: file://local-user-supplied-routes [GPX, GeoJSON, KML, KMZ, CSV]. Cache completed hikes under sources/seeds or import them directly so provenance and fingerprints are preserved.
 
+## Cache Command Sketches
+
+Replace `<artifact-url-or-path>` with a concrete downloaded artifact or local file selected from the listed source surface; keep the explicit kind and adapter when provider filenames are ambiguous.
+
+### TrailNetwork
+
+```sh
+trailgen cache-source <project> --input '<artifact-url-or-path>' --output trails.geojson --kind trail-network --adapter geojson-network
+```
+
+Primary source surface: NPS official GIS open data (https://www.nps.gov/subjects/gisandmapping/tools-and-data.htm)
+Alternate surfaces: USFS geospatial data discovery, Geofabrik OpenStreetMap extracts
+
+### Elevation
+
+```sh
+trailgen cache-source <project> --input '<artifact-url-or-path>' --output dem.asc --kind elevation --adapter arc-ascii-elevation
+```
+
+Primary source surface: USGS The National Map Downloader (https://www.usgs.gov/tools/download-data-maps-national-map)
+Alternate surfaces: USGS TNMAccess API
+
+### Terrain
+
+```sh
+trailgen cache-source <project> --input '<artifact-url-or-path>' --output terrain.geojson --kind terrain --adapter geojson-terrain-overlay
+```
+
+Primary source surface: MRLC NLCD data (https://www.mrlc.gov/data)
+Alternate surfaces: Agency surface or land-cover GIS
+
+### Closure
+
+```sh
+trailgen cache-source <project> --input '<artifact-url-or-path>' --output closures.geojson --kind closure --adapter geojson-closure-overlay
+```
+
+Primary source surface: Agency closure and alert GIS (https://public-nps.opendata.arcgis.com/)
+Alternate surfaces: Local park or forest alerts
+
+### Access
+
+```sh
+trailgen cache-source <project> --input '<artifact-url-or-path>' --output access.geojson --kind access --adapter geojson-access-overlay
+```
+
+Primary source surface: USGS PAD-US data download (https://www.usgs.gov/programs/gap-analysis-project/science/pad-us-data-download)
+Alternate surfaces: PAD-US protected areas overview
+
+### Road
+
+```sh
+trailgen cache-source <project> --input '<artifact-url-or-path>' --output roads.geojson --kind road --adapter geojson-road-context
+```
+
+Primary source surface: USFS roads data (https://data.fs.usda.gov/geodata/edw/datasets.php?dsetCategory=transportation)
+Alternate surfaces: The National Map transportation, Geofabrik OpenStreetMap roads
+
+### Hydrology
+
+```sh
+trailgen cache-source <project> --input '<artifact-url-or-path>' --output hydrology.geojson --kind hydrology --adapter geojson-hydrology-context
+```
+
+Primary source surface: USGS National Hydrography products (https://www.usgs.gov/national-hydrography/access-national-hydrography-products)
+Alternate surfaces: The National Map hydrography
+
+### SeedRoute
+
+```sh
+trailgen cache-source <project> --input '<artifact-url-or-path>' --output seeds/completed.gpx --kind seed-route --adapter gpx-route
+```
+
+Primary source surface: AllTrails import/export support (https://support.alltrails.com/hc/en-us/sections/360006411352-Importing-and-exporting-files)
+Alternate surfaces: Personal GPS archives
+
 ## Local Candidates
 
 Candidates:
