@@ -2182,6 +2182,30 @@ fn geotiff_dem_samples_and_reenriches_graph() {
 }
 
 #[test]
+fn rotated_geotiff_dem_samples_through_model_transformation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dem = tmp.path().join("rotated_dem.tif");
+    write_rotated_geotiff_dem(&dem);
+    let raster = GeoTiffDem::from_path(
+        &dem,
+        Provenance {
+            source: "fixture-rotated-geotiff-dem".to_owned(),
+            layer: Some("geotiff".to_owned()),
+            source_id: Some("rotated_dem.tif".to_owned()),
+            license: Some("CC0-fixture".to_owned()),
+        },
+        0.82,
+    )
+    .unwrap();
+
+    assert_eq!(raster.crs, RasterCrs::Wgs84Degrees);
+    assert!(raster.transform.is_some());
+    let sample = raster.sample(Coord::new(-104.995, 40.005)).unwrap();
+    assert!((sample.ele_m - 1_600.0).abs() <= 1.0e-9);
+    assert!(raster.sample(Coord::new(-106.0, 40.0)).is_none());
+}
+
+#[test]
 fn web_mercator_geotiff_dem_samples_and_rejects_other_projected_crs() {
     let tmp = tempfile::tempdir().unwrap();
     let dem = tmp.path().join("web_mercator_dem.tif");
@@ -2285,6 +2309,50 @@ fn write_geotiff_dem(path: &std::path::Path) {
         .write_tag(
             Tag::ModelTiepointTag,
             &[0.0_f64, 0.0, 0.0, -105.01, 40.02, 0.0][..],
+        )
+        .unwrap();
+    image
+        .encoder()
+        .write_tag(
+            Tag::GeoKeyDirectoryTag,
+            &[
+                1_u16, 1, 0, 3, 1024, 0, 1, 2, 2048, 0, 1, 4326, 2054, 0, 1, 9102,
+            ][..],
+        )
+        .unwrap();
+    image
+        .encoder()
+        .write_tag(Tag::GdalNodata, "-32768")
+        .unwrap();
+    image
+        .write_data(&[
+            1_500_i16, 1_510, 1_520, 1_590, 1_600, 1_610, 1_700, 1_710, 1_720,
+        ])
+        .unwrap();
+}
+
+fn write_rotated_geotiff_dem(path: &std::path::Path) {
+    use tiff::encoder::{TiffEncoder, colortype};
+    use tiff::tags::Tag;
+
+    let center = Coord::new(-104.995, 40.005);
+    let a = 0.01;
+    let b = 0.001;
+    let c = 0.002;
+    let d = -0.01;
+    let x0 = center.lon.mul_add(1.0, -1.5_f64.mul_add(a, 1.5 * b));
+    let y0 = center.lat.mul_add(1.0, -1.5_f64.mul_add(c, 1.5 * d));
+
+    let file = std::fs::File::create(path).unwrap();
+    let mut tiff = TiffEncoder::new(file).unwrap();
+    let mut image = tiff.new_image::<colortype::GrayI16>(3, 3).unwrap();
+    image
+        .encoder()
+        .write_tag(
+            Tag::ModelTransformationTag,
+            &[
+                a, b, 0.0, x0, c, d, 0.0, y0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ][..],
         )
         .unwrap();
     image

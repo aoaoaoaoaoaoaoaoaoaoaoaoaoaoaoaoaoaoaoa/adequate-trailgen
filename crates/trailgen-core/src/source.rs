@@ -328,7 +328,7 @@ fn elevation_adapters() -> Vec<SourceAdapter> {
             AdapterStatus::Implemented,
             ["tif", "tiff"],
             ["sampled elevation profile", "edge ascent/descent"],
-            "North-up WGS84 or EPSG:3857 single-band GeoTIFF DEM sampling.",
+            "Affine WGS84 or EPSG:3857 single-band GeoTIFF DEM sampling.",
         ),
         adapter(
             "vrt-elevation",

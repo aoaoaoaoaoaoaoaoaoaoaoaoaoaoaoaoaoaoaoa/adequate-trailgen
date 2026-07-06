@@ -204,7 +204,7 @@
           "sampled elevation profile",
           "edge ascent/descent"
         ],
-        "note": "North-up WGS84 or EPSG:3857 single-band GeoTIFF DEM sampling."
+        "note": "Affine WGS84 or EPSG:3857 single-band GeoTIFF DEM sampling."
       },
       {
         "id": "vrt-elevation",

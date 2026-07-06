@@ -39,10 +39,94 @@ pub struct GeoTiffDem {
     #[serde(alias = "pixel_height_deg")]
     pub pixel_height: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform: Option<RasterTransform>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nodata_value: Option<f64>,
     pub confidence: f64,
     pub provenance: Provenance,
     values: Vec<f64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RasterTransform {
+    pub x0: f64,
+    pub y0: f64,
+    pub dx_col: f64,
+    pub dy_col: f64,
+    pub dx_row: f64,
+    pub dy_row: f64,
+}
+
+impl RasterTransform {
+    fn north_up(origin_x: f64, origin_y: f64, pixel_width: f64, pixel_height: f64) -> Self {
+        Self {
+            x0: origin_x,
+            y0: origin_y,
+            dx_col: pixel_width,
+            dy_col: 0.0,
+            dx_row: 0.0,
+            dy_row: -pixel_height,
+        }
+    }
+
+    fn from_model_transformation(xs: &[f64]) -> Result<Self> {
+        if xs.len() < 16 {
+            return Err(TrailgenError::InvalidData(
+                "GeoTIFF ModelTransformationTag must contain sixteen numbers".to_owned(),
+            ));
+        }
+        let transform = Self {
+            x0: xs[3],
+            y0: xs[7],
+            dx_col: xs[0],
+            dy_col: xs[4],
+            dx_row: xs[1],
+            dy_row: xs[5],
+        };
+        transform.validate("GeoTIFF ModelTransformationTag")?;
+        Ok(transform)
+    }
+
+    fn validate(self, label: &str) -> Result<()> {
+        let finite = [
+            self.x0,
+            self.y0,
+            self.dx_col,
+            self.dy_col,
+            self.dx_row,
+            self.dy_row,
+        ]
+        .into_iter()
+        .all(f64::is_finite);
+        if !finite || self.det().abs() <= f64::EPSILON {
+            return Err(TrailgenError::InvalidData(format!(
+                "{label} must be finite and invertible"
+            )));
+        }
+        Ok(())
+    }
+
+    fn pixel_xy(self, x: f64, y: f64) -> (f64, f64) {
+        let dx = x - self.x0;
+        let dy = y - self.y0;
+        let det = self.det();
+        (
+            (dx.mul_add(self.dy_row, -self.dx_row * dy)) / det,
+            (self.dx_col.mul_add(dy, -dx * self.dy_col)) / det,
+        )
+    }
+
+    const fn det(self) -> f64 {
+        self.dx_col * self.dy_row - self.dx_row * self.dy_col
+    }
+
+    fn pixel_width(self) -> f64 {
+        self.dx_col.hypot(self.dy_col)
+    }
+
+    fn pixel_height(self) -> f64 {
+        self.dx_row.hypot(self.dy_row)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -227,6 +311,7 @@ impl GeoTiffDem {
             origin_y: georef.origin_y,
             pixel_width: georef.pixel_width,
             pixel_height: georef.pixel_height,
+            transform: georef.transform,
             nodata_value,
             confidence: confidence.clamp(0.0, 1.0),
             provenance,
@@ -237,13 +322,9 @@ impl GeoTiffDem {
     #[must_use]
     pub fn contains(&self, coord: Coord) -> bool {
         let (x, y) = self.crs.xy(coord);
-        let east = self
-            .pixel_width
-            .mul_add(usize_to_f64(self.width), self.origin_x);
-        let south = self
-            .pixel_height
-            .mul_add(-usize_to_f64(self.height), self.origin_y);
-        (self.origin_x..=east).contains(&x) && (south..=self.origin_y).contains(&y)
+        let (col, row) = self.transform().pixel_xy(x, y);
+        (0.0..=usize_to_f64(self.width)).contains(&col)
+            && (0.0..=usize_to_f64(self.height)).contains(&row)
     }
 
     fn interpolated_elevation_m(&self, coord: Coord) -> Option<f64> {
@@ -251,10 +332,9 @@ impl GeoTiffDem {
             return None;
         }
         let (x, y) = self.crs.xy(coord);
-        let col = ((x - self.origin_x) / self.pixel_width - 0.5)
-            .clamp(0.0, usize_to_f64(self.width.saturating_sub(1)));
-        let row = ((self.origin_y - y) / self.pixel_height - 0.5)
-            .clamp(0.0, usize_to_f64(self.height.saturating_sub(1)));
+        let (col_px, row_px) = self.transform().pixel_xy(x, y);
+        let col = (col_px - 0.5).clamp(0.0, usize_to_f64(self.width.saturating_sub(1)));
+        let row = (row_px - 0.5).clamp(0.0, usize_to_f64(self.height.saturating_sub(1)));
         let col0 = f64_to_index(col.floor(), self.width)?;
         let col1 = f64_to_index(col.ceil(), self.width)?;
         let row0 = f64_to_index(row.floor(), self.height)?;
@@ -281,6 +361,17 @@ impl GeoTiffDem {
             return None;
         }
         value.is_finite().then_some(value)
+    }
+
+    fn transform(&self) -> RasterTransform {
+        self.transform.unwrap_or_else(|| {
+            RasterTransform::north_up(
+                self.origin_x,
+                self.origin_y,
+                self.pixel_width,
+                self.pixel_height,
+            )
+        })
     }
 }
 
@@ -591,15 +682,22 @@ struct GeoTiffGeoref {
     origin_y: f64,
     pixel_width: f64,
     pixel_height: f64,
+    transform: Option<RasterTransform>,
 }
 
 impl GeoTiffGeoref {
     fn read<R: std::io::Read + std::io::Seek>(decoder: &mut Decoder<R>) -> Result<Self> {
         let crs = validate_geokeys(decoder)?;
-        if optional_f64_vec(decoder, Tag::ModelTransformationTag)?.is_some() {
-            return Err(TrailgenError::UnsupportedFormat(
-                "GeoTIFF DEM with ModelTransformationTag rotation/shear is unsupported".to_owned(),
-            ));
+        if let Some(xs) = optional_f64_vec(decoder, Tag::ModelTransformationTag)? {
+            let transform = RasterTransform::from_model_transformation(&xs)?;
+            return Ok(Self {
+                crs,
+                origin_x: transform.x0,
+                origin_y: transform.y0,
+                pixel_width: transform.pixel_width(),
+                pixel_height: transform.pixel_height(),
+                transform: Some(transform),
+            });
         }
         let scale = required_f64_vec(decoder, Tag::ModelPixelScaleTag)?;
         let tiepoint = required_f64_vec(decoder, Tag::ModelTiepointTag)?;
@@ -633,6 +731,7 @@ impl GeoTiffGeoref {
             origin_y,
             pixel_width,
             pixel_height,
+            transform: None,
         })
     }
 }
