@@ -1,6 +1,7 @@
 use crate::builder::SegmentDraft;
 use crate::geo::{Coord, LineString};
-use crate::model::{Access, EdgeTravel, Provenance, Terrain};
+use crate::model::{Access, CrossingKind, EdgeTravel, Provenance, Terrain};
+use crate::overlay::ContextOverlay;
 use crate::{Result, TrailgenError};
 use osmpbfreader::{Node as PbfNode, OsmId, OsmObj, OsmPbfReader, Tags as PbfTags, Way as PbfWay};
 use std::collections::BTreeMap;
@@ -35,6 +36,40 @@ pub fn network_from_pbf_reader<R: Read + Seek>(reader: R) -> Result<Vec<SegmentD
         .values()
         .filter_map(|object| match object {
             OsmObj::Way(way) => draft_from_pbf_way(way, &objects).transpose(),
+            OsmObj::Node(_) | OsmObj::Relation(_) => None,
+        })
+        .collect()
+}
+
+pub fn context_overlays_from_str(s: &str) -> Result<Vec<ContextOverlay>> {
+    let doc = roxmltree::Document::parse(s)
+        .map_err(|error| TrailgenError::Xml(format!("parse OSM XML: {error}")))?;
+    let root = doc.root_element();
+    if root.tag_name().name() != "osm" {
+        return Err(TrailgenError::UnsupportedFormat(
+            "OSM XML context layer must have <osm> root".to_owned(),
+        ));
+    }
+    let nodes = root
+        .children()
+        .filter(|node| node.has_tag_name("node"))
+        .map(parse_node)
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    root.children()
+        .filter(|node| node.has_tag_name("way"))
+        .filter_map(|way| context_from_xml_way(way, &nodes).transpose())
+        .collect()
+}
+
+pub fn context_overlays_from_pbf_reader<R: Read + Seek>(reader: R) -> Result<Vec<ContextOverlay>> {
+    let mut pbf = OsmPbfReader::new(reader);
+    let objects = pbf
+        .get_objs_and_deps(pbf_context_way)
+        .map_err(|error| TrailgenError::InvalidData(format!("parse OSM PBF: {error}")))?;
+    objects
+        .values()
+        .filter_map(|object| match object {
+            OsmObj::Way(way) => context_from_pbf_way(way, &objects).transpose(),
             OsmObj::Node(_) | OsmObj::Relation(_) => None,
         })
         .collect()
@@ -99,10 +134,38 @@ fn draft_from_xml_way(
     }))
 }
 
+fn context_from_xml_way(
+    way: roxmltree::Node<'_, '_>,
+    nodes: &BTreeMap<String, Coord>,
+) -> Result<Option<ContextOverlay>> {
+    let tags = xml_tags(way);
+    let Some(kind) = context_kind_from_tags(&tags) else {
+        return Ok(None);
+    };
+    let id = way_id(way);
+    let mut points = Vec::new();
+    for nd in way.children().filter(|node| node.has_tag_name("nd")) {
+        let reference = required_attr(nd, "ref")?;
+        let Some(coord) = nodes.get(reference) else {
+            return Err(TrailgenError::InvalidData(format!(
+                "OSM way {id} references missing node {reference}"
+            )));
+        };
+        points.push(*coord);
+    }
+    context_overlay(kind, &tags, id, points)
+}
+
 fn pbf_walkable_way(object: &OsmObj) -> bool {
     object
         .way()
         .is_some_and(|way| Walkway::from_tags(&pbf_tags(&way.tags)).is_some())
+}
+
+fn pbf_context_way(object: &OsmObj) -> bool {
+    object
+        .way()
+        .is_some_and(|way| context_kind_from_tags(&pbf_tags(&way.tags)).is_some())
 }
 
 fn draft_from_pbf_way(
@@ -143,6 +206,27 @@ fn draft_from_pbf_way(
     }))
 }
 
+fn context_from_pbf_way(
+    way: &PbfWay,
+    objects: &BTreeMap<OsmId, OsmObj>,
+) -> Result<Option<ContextOverlay>> {
+    let tags = pbf_tags(&way.tags);
+    let Some(kind) = context_kind_from_tags(&tags) else {
+        return Ok(None);
+    };
+    let mut points = Vec::new();
+    for id in &way.nodes {
+        let Some(OsmObj::Node(node)) = objects.get(&OsmId::Node(*id)) else {
+            return Err(TrailgenError::InvalidData(format!(
+                "OSM PBF way {} references missing node {}",
+                way.id.0, id.0
+            )));
+        };
+        points.push(pbf_coord(node));
+    }
+    context_overlay(kind, &tags, way.id.0.to_string(), points)
+}
+
 fn pbf_coord(node: &PbfNode) -> Coord {
     let ele = pbf_tags(&node.tags)
         .get("ele")
@@ -153,6 +237,77 @@ fn pbf_coord(node: &PbfNode) -> Coord {
         lat: node.lat(),
         ele,
     }
+}
+
+fn context_overlay(
+    kind: CrossingKind,
+    tags: &BTreeMap<String, String>,
+    id: String,
+    points: Vec<Coord>,
+) -> Result<Option<ContextOverlay>> {
+    if points.len() < 2 {
+        return Ok(None);
+    }
+    let name = tags
+        .get("name")
+        .or_else(|| tags.get("ref"))
+        .cloned()
+        .unwrap_or_else(|| format!("osm-way-{id}"));
+    Ok(Some(ContextOverlay {
+        name,
+        kind,
+        confidence: 0.78,
+        provenance: Provenance {
+            source: osm_context_source(kind).to_owned(),
+            layer: Some("way".to_owned()),
+            source_id: Some(id),
+            license: Some("ODbL-1.0".to_owned()),
+        },
+        geometry: LineString::new(points)?,
+    }))
+}
+
+fn context_kind_from_tags(tags: &BTreeMap<String, String>) -> Option<CrossingKind> {
+    if tags
+        .get("waterway")
+        .is_some_and(|waterway| osm_waterway(waterway))
+    {
+        return Some(CrossingKind::Water);
+    }
+    tags.get("highway")
+        .filter(|highway| osm_road_context(highway))
+        .map(|_| CrossingKind::Road)
+}
+
+const fn osm_context_source(kind: CrossingKind) -> &'static str {
+    match kind {
+        CrossingKind::Road => "osm-road-context",
+        CrossingKind::Water => "osm-hydrology-context",
+    }
+}
+
+fn osm_waterway(waterway: &str) -> bool {
+    matches!(
+        waterway,
+        "stream" | "river" | "canal" | "drain" | "ditch" | "brook"
+    )
+}
+
+fn osm_road_context(highway: &str) -> bool {
+    matches!(
+        highway,
+        "motorway"
+            | "trunk"
+            | "primary"
+            | "secondary"
+            | "tertiary"
+            | "unclassified"
+            | "residential"
+            | "living_street"
+            | "service"
+            | "track"
+            | "road"
+    )
 }
 
 #[derive(Clone, Copy)]

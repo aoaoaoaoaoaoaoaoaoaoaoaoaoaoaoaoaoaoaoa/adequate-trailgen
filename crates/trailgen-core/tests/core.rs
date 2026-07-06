@@ -392,6 +392,21 @@ fn osm_pbf_network_normalizes_walkable_ways() {
 }
 
 #[test]
+fn osm_pbf_context_overlays_normalize_roads_and_waterways() {
+    let overlays = osm::context_overlays_from_pbf_reader(Cursor::new(tiny_osm_pbf())).unwrap();
+    assert!(overlays.iter().any(|overlay| {
+        overlay.kind == CrossingKind::Road
+            && overlay.provenance.source == "osm-road-context"
+            && overlay.provenance.source_id.as_deref() == Some("11")
+    }));
+    assert!(overlays.iter().any(|overlay| {
+        overlay.kind == CrossingKind::Water
+            && overlay.provenance.source == "osm-hydrology-context"
+            && overlay.provenance.source_id.as_deref() == Some("13")
+    }));
+}
+
+#[test]
 fn road_fraction_counts_road_and_pavement_terrain() {
     let graph = GraphBuilder::default()
         .build(&[SegmentDraft {
@@ -914,6 +929,50 @@ fn context_overlays_infer_road_and_water_crossings() {
     assert!(rendered.contains("Crossings:"));
     assert!(rendered.contains("Road:"));
     assert!(rendered.contains("Water:"));
+}
+
+#[test]
+fn osm_context_overlays_infer_road_and_water_crossings() {
+    let mut graph = GraphBuilder::default()
+        .build(&[SegmentDraft {
+            geometry: LineString::new(vec![
+                Coord::new(-105.005, 39.995),
+                Coord::new(-105.005, 40.015),
+            ])
+            .unwrap(),
+            terrain: Terrain::Trail,
+            surface: None,
+            access: Access::Open,
+            travel: EdgeTravel::Both,
+            road_exposure: 0.0,
+            confidence: 1.0,
+            provenance: Provenance::fixture("trail"),
+        }])
+        .unwrap();
+    let overlays = osm::context_overlays_from_str(
+        r#"<osm version="0.6">
+  <node id="1" lat="40.0" lon="-105.01"/>
+  <node id="2" lat="40.0" lon="-105.0"/>
+  <node id="3" lat="40.01" lon="-105.01"/>
+  <node id="4" lat="40.01" lon="-105.0"/>
+  <way id="20"><nd ref="1"/><nd ref="2"/><tag k="highway" v="service"/><tag k="name" v="Park Road"/></way>
+  <way id="21"><nd ref="3"/><nd ref="4"/><tag k="waterway" v="stream"/><tag k="name" v="Cold Creek"/></way>
+</osm>"#,
+    )
+    .unwrap();
+
+    assert_eq!(overlays.len(), 2);
+    let crossings = apply_context_overlays(&mut graph, &overlays, DifficultyWeights::default());
+    assert_eq!(crossings, 2);
+    let edge = &graph.edges[0];
+    assert!(edge.attr.road_exposure > 0.0);
+    assert!(edge.attr.crossings.iter().any(|crossing| {
+        crossing.kind == CrossingKind::Road && crossing.provenance.source == "osm-road-context"
+    }));
+    assert!(edge.attr.crossings.iter().any(|crossing| {
+        crossing.kind == CrossingKind::Water
+            && crossing.provenance.source == "osm-hydrology-context"
+    }));
 }
 
 #[test]
@@ -1917,6 +1976,12 @@ fn source_registry_classifies_local_inputs() {
         classify_path(std::path::Path::new("sources/osm-trails.osm.pbf")).unwrap();
     assert_eq!(osm_pbf_network.kind, SourceKind::TrailNetwork);
     assert_eq!(osm_pbf_network.adapter_id, "osm-pbf-network");
+    let osm_roads = classify_path(std::path::Path::new("sources/roads.osm.pbf")).unwrap();
+    assert_eq!(osm_roads.kind, SourceKind::Road);
+    assert_eq!(osm_roads.adapter_id, "osm-road-context");
+    let osm_hydrology = classify_path(std::path::Path::new("sources/streams.osm.pbf")).unwrap();
+    assert_eq!(osm_hydrology.kind, SourceKind::Hydrology);
+    assert_eq!(osm_hydrology.adapter_id, "osm-hydrology-context");
     let shp_access = classify_path(std::path::Path::new("sources/ownership-access.shp")).unwrap();
     assert_eq!(shp_access.kind, SourceKind::Access);
     assert_eq!(shp_access.adapter_id, "shapefile-access-overlay");
@@ -2920,6 +2985,8 @@ fn tiny_osm_pbf() -> Vec<u8> {
         "private",
         "track",
         "motorway",
+        "waterway",
+        "stream",
     ]
     .into_iter()
     .map(|s| s.as_bytes().to_vec())
@@ -2936,6 +3003,7 @@ fn tiny_osm_pbf() -> Vec<u8> {
         pbf_way(10, &[(1, 2), (3, 4), (5, 6)], &[1, 1]),
         pbf_way(11, &[(1, 9), (7, 8)], &[2, 1]),
         pbf_way(12, &[(1, 10)], &[3, 1]),
+        pbf_way(13, &[(11, 12)], &[4, -3]),
     ];
 
     let mut block = PrimitiveBlock::new();

@@ -314,7 +314,7 @@ enum Cmd {
     ApplyContext {
         /// Project directory containing cache/graph.json.
         project: PathBuf,
-        /// `GeoJSON` or shapefile road/hydrology context layer.
+        /// `GeoJSON`, shapefile, OSM XML, or OSM PBF road/hydrology context layer.
         #[arg(long)]
         source: PathBuf,
     },
@@ -3150,12 +3150,25 @@ fn apply_context(project: &Path, source: &Path) -> Result<()> {
 }
 
 fn context_overlays(source: &Path) -> Result<Vec<trailgen_core::ContextOverlay>> {
-    if source_ext(source).as_deref() == Some("shp") {
-        shp::context_overlays_from_path(source).map_err(Into::into)
-    } else {
-        let raw =
-            fs::read_to_string(source).with_context(|| format!("read {}", source.display()))?;
-        Ok(geojson::context_overlays_from_str(&raw).with_context(|| "parse context GeoJSON")?)
+    match source_ext(source).as_deref() {
+        Some("shp") => shp::context_overlays_from_path(source).map_err(Into::into),
+        Some("osm") => {
+            let raw =
+                fs::read_to_string(source).with_context(|| format!("read {}", source.display()))?;
+            Ok(osm::context_overlays_from_str(&raw).with_context(|| "parse context OSM XML")?)
+        }
+        Some("osm.pbf") => Ok(osm::context_overlays_from_pbf_reader(
+            fs::File::open(source).with_context(|| format!("read {}", source.display()))?,
+        )
+        .with_context(|| "parse context OSM PBF")?),
+        _ => {
+            let raw =
+                fs::read_to_string(source).with_context(|| format!("read {}", source.display()))?;
+            Ok(
+                geojson::context_overlays_from_str(&raw)
+                    .with_context(|| "parse context GeoJSON")?,
+            )
+        }
     }
 }
 
@@ -3648,15 +3661,10 @@ fn register_context_source(
         .iter()
         .any(|overlay| overlay.kind == CrossingKind::Road)
     {
-        let adapter_id = if source_ext(source).as_deref() == Some("shp") {
-            "shapefile-road-context"
-        } else {
-            "geojson-road-context"
-        };
         candidates.push(source_candidate(
             source,
             SourceKind::Road,
-            adapter_id,
+            &context_adapter_id(source, SourceKind::Road),
             fingerprint.clone(),
         ));
     }
@@ -3664,19 +3672,39 @@ fn register_context_source(
         .iter()
         .any(|overlay| overlay.kind == CrossingKind::Water)
     {
-        let adapter_id = if source_ext(source).as_deref() == Some("shp") {
-            "shapefile-hydrology-context"
-        } else {
-            "geojson-hydrology-context"
-        };
         candidates.push(source_candidate(
             source,
             SourceKind::Hydrology,
-            adapter_id,
+            &context_adapter_id(source, SourceKind::Hydrology),
             fingerprint,
         ));
     }
     register_source_candidates(project, candidates)
+}
+
+fn context_adapter_id(source: &Path, kind: SourceKind) -> String {
+    classify_path(source).map_or_else(
+        || fallback_context_adapter_id(source, kind),
+        |candidate| {
+            if candidate.kind == kind {
+                candidate.adapter_id
+            } else {
+                fallback_context_adapter_id(source, kind)
+            }
+        },
+    )
+}
+
+fn fallback_context_adapter_id(source: &Path, kind: SourceKind) -> String {
+    match (kind, source_ext(source).as_deref()) {
+        (SourceKind::Road, Some("shp")) => "shapefile-road-context".to_owned(),
+        (SourceKind::Road, Some("osm" | "osm.pbf")) => "osm-road-context".to_owned(),
+        (SourceKind::Road, _) => "geojson-road-context".to_owned(),
+        (SourceKind::Hydrology, Some("shp")) => "shapefile-hydrology-context".to_owned(),
+        (SourceKind::Hydrology, Some("osm" | "osm.pbf")) => "osm-hydrology-context".to_owned(),
+        (SourceKind::Hydrology, _) => "geojson-hydrology-context".to_owned(),
+        _ => unreachable!("context overlay registration only handles road and hydrology"),
+    }
 }
 
 fn source_candidate(
@@ -5980,6 +6008,48 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn osm_pbf_context_registers_road_and_hydrology_sources() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path().join("project");
+        let network = tmp.path().join("crossing-trail.geojson");
+        let context = tmp.path().join("roads-streams.osm.pbf");
+        fs::write(
+            &network,
+            r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"id":"trail","terrain":"trail"},"geometry":{"type":"LineString","coordinates":[[-105.01,40.005],[-104.98,40.005]]}}]}"#,
+        )?;
+        fs::write(&context, tiny_osm_pbf())?;
+
+        init(&project, "OSM PBF Context Test".to_owned(), None)?;
+        build(&project, &network)?;
+        apply_context(&project, &context)?;
+
+        let graph = load_graph(&project)?;
+        assert!(graph.edges.iter().any(|edge| {
+            edge.attr
+                .crossings
+                .iter()
+                .any(|crossing| crossing.kind == CrossingKind::Road)
+        }));
+        assert!(graph.edges.iter().any(|edge| {
+            edge.attr
+                .crossings
+                .iter()
+                .any(|crossing| crossing.kind == CrossingKind::Water)
+        }));
+
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(project.join("sources/manifest.json"))?)?;
+        let candidates = manifest["candidates"].as_array().expect("candidates");
+        assert!(candidates.iter().any(|candidate| {
+            candidate["kind"] == "road" && candidate["adapter_id"] == "osm-road-context"
+        }));
+        assert!(candidates.iter().any(|candidate| {
+            candidate["kind"] == "hydrology" && candidate["adapter_id"] == "osm-hydrology-context"
+        }));
+        Ok(())
+    }
+
     fn write_test_shapefile(path: &Path, id: &str) {
         let table = ::shapefile::dbase::TableWriterBuilder::new()
             .add_character_field("id".try_into().unwrap(), 32)
@@ -6026,6 +6096,8 @@ mod tests {
             "private",
             "track",
             "motorway",
+            "waterway",
+            "stream",
         ]
         .into_iter()
         .map(|s| s.as_bytes().to_vec())
@@ -6042,6 +6114,7 @@ mod tests {
             pbf_way(10, &[(1, 2), (3, 4), (5, 6)], &[1, 1]),
             pbf_way(11, &[(1, 9), (7, 8)], &[2, 1]),
             pbf_way(12, &[(1, 10)], &[3, 1]),
+            pbf_way(13, &[(11, 12)], &[4, -3]),
         ];
 
         let mut block = PrimitiveBlock::new();

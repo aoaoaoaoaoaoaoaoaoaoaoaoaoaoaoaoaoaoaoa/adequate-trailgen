@@ -151,10 +151,12 @@ Suggested cache paths:
 - sources/roads.geojson
 - sources/context-roads.geojson
 - sources/roads.shp
+- sources/roads.osm.pbf
 
 Adapter ids:
 - geojson-road-context
 - shapefile-road-context
+- osm-road-context
 
 Search terms:
 - road centerline GeoJSON
@@ -176,10 +178,12 @@ Suggested cache paths:
 - sources/hydrology.geojson
 - sources/streams.geojson
 - sources/hydrology.shp
+- sources/hydrology.osm.pbf
 
 Adapter ids:
 - geojson-hydrology-context
 - shapefile-hydrology-context
+- osm-hydrology-context
 
 Search terms:
 - NHD stream lines
@@ -330,6 +334,8 @@ Candidates:
 - geojson-closure-overlay (Closure, Implemented): consumes geojson, json; produces access overrides, confidence/provenance; GeoJSON closure/restriction overlay applied after graph construction.
 - geojson-road-context (Road, Implemented): consumes geojson, json; produces road crossings, road exposure hints; GeoJSON road/street context lines used to infer trail crossings.
 - shapefile-road-context (Road, Implemented): consumes shp, dbf, shx; produces road crossings, road exposure hints; Shapefile road/street centerlines used to infer trail crossings.
+- osm-road-context (Road, Implemented): consumes osm, osm.pbf; produces road crossings, road exposure hints; OSM XML/PBF highway centerlines used to infer trail crossings and road exposure.
 - geojson-hydrology-context (Hydrology, Implemented): consumes geojson, json; produces water crossings; GeoJSON stream/river context lines used to infer water crossings.
 - shapefile-hydrology-context (Hydrology, Implemented): consumes shp, dbf, shx; produces water crossings; Shapefile stream/river centerlines used to infer water crossings.
+- osm-hydrology-context (Hydrology, Implemented): consumes osm, osm.pbf; produces water crossings; OSM XML/PBF waterway linework used to infer stream, river, canal, drain, and ditch crossings.
 - shapefile-closure-layer (Closure, Implemented): consumes shp, dbf, shx; produces access overrides, confidence/provenance; Official park/agency shapefile closure and restriction overlays.

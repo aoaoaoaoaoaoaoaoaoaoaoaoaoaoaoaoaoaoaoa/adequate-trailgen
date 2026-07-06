@@ -41,7 +41,7 @@ Generated artifacts land in the project directory:
 - `sources/terrain-overlays.json`: applied land-cover, surface, or user terrain overrides from GeoJSON or shapefile layers
 - `sources/access-overlays.json`: composed access/closure overlays from every `apply-access --source`
 - `sources/access-baseline.json`: pre-access graph state used to re-materialize dated overlays without cumulative access drift
-- `sources/context-overlays.json`: applied road/hydrology context overlays from GeoJSON or shapefile linework
+- `sources/context-overlays.json`: applied road/hydrology context overlays from GeoJSON, shapefile, or OSM XML/PBF linework
 - `routes/generated.geojson`: Pareto-ranked generated loops with persisted route scores, constraint penalties, constraint-audit margins, terrain/access fractions, access-warning edges, low-confidence and dubious segments, difficulty hotspots, and source provenance summaries
 - `routes/generated.graph.json`: effective graph snapshot used by generated route exports, reports, and maps
 - `routes/generated.manifest.json`: app version, random seed, requested/concrete solver, effective config, fingerprinted source manifest, one-run forbidden-area sources, graph summary, exact route edge sequences, and artifact list for reproducing a generation run

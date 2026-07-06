@@ -416,6 +416,14 @@ fn overlay_context_adapters() -> Vec<SourceAdapter> {
             "Shapefile road/street centerlines used to infer trail crossings.",
         ),
         adapter(
+            "osm-road-context",
+            SourceKind::Road,
+            AdapterStatus::Implemented,
+            ["osm", "osm.pbf"],
+            ["road crossings", "road exposure hints"],
+            "OSM XML/PBF highway centerlines used to infer trail crossings and road exposure.",
+        ),
+        adapter(
             "geojson-hydrology-context",
             SourceKind::Hydrology,
             AdapterStatus::Implemented,
@@ -430,6 +438,14 @@ fn overlay_context_adapters() -> Vec<SourceAdapter> {
             ["shp", "dbf", "shx"],
             ["water crossings"],
             "Shapefile stream/river centerlines used to infer water crossings.",
+        ),
+        adapter(
+            "osm-hydrology-context",
+            SourceKind::Hydrology,
+            AdapterStatus::Implemented,
+            ["osm", "osm.pbf"],
+            ["water crossings"],
+            "OSM XML/PBF waterway linework used to infer stream, river, canal, drain, and ditch crossings.",
         ),
         adapter(
             "shapefile-closure-layer",
@@ -750,11 +766,16 @@ const RECOMMENDATION_SPECS: &[RecommendationSpec] = &[
     RecommendationSpec {
         kind: SourceKind::Road,
         priority: SourcePriority::Recommended,
-        adapter_ids: &["geojson-road-context", "shapefile-road-context"],
+        adapter_ids: &[
+            "geojson-road-context",
+            "shapefile-road-context",
+            "osm-road-context",
+        ],
         suggested_paths: &[
             "sources/roads.geojson",
             "sources/context-roads.geojson",
             "sources/roads.shp",
+            "sources/roads.osm.pbf",
         ],
         acquisition_hints: ROAD_HINTS,
         search_terms: &[
@@ -768,11 +789,16 @@ const RECOMMENDATION_SPECS: &[RecommendationSpec] = &[
     RecommendationSpec {
         kind: SourceKind::Hydrology,
         priority: SourcePriority::Recommended,
-        adapter_ids: &["geojson-hydrology-context", "shapefile-hydrology-context"],
+        adapter_ids: &[
+            "geojson-hydrology-context",
+            "shapefile-hydrology-context",
+            "osm-hydrology-context",
+        ],
         suggested_paths: &[
             "sources/hydrology.geojson",
             "sources/streams.geojson",
             "sources/hydrology.shp",
+            "sources/hydrology.osm.pbf",
         ],
         acquisition_hints: HYDROLOGY_HINTS,
         search_terms: &[
@@ -858,6 +884,22 @@ pub fn classify_path(path: &Path) -> Option<SourceCandidate> {
             (SourceKind::Hydrology, "geojson-hydrology-context")
         }
         "geojson" | "json" => (SourceKind::TrailNetwork, "geojson-network"),
+        "osm" | "osm.pbf"
+            if path_lc.contains("road")
+                || path_lc.contains("street")
+                || path_lc.contains("highway") =>
+        {
+            (SourceKind::Road, "osm-road-context")
+        }
+        "osm" | "osm.pbf"
+            if path_lc.contains("hydrology")
+                || path_lc.contains("water")
+                || path_lc.contains("stream")
+                || path_lc.contains("river")
+                || path_lc.contains("creek") =>
+        {
+            (SourceKind::Hydrology, "osm-hydrology-context")
+        }
         "osm" => (SourceKind::TrailNetwork, "osm-xml-network"),
         "osm.pbf" => (SourceKind::TrailNetwork, "osm-pbf-network"),
         "asc" => (SourceKind::Elevation, "arc-ascii-elevation"),

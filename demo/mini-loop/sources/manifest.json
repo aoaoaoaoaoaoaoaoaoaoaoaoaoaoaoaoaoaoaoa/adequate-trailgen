@@ -263,6 +263,20 @@
       "note": "Shapefile road/street centerlines used to infer trail crossings."
     },
     {
+      "id": "osm-road-context",
+      "kind": "road",
+      "status": "implemented",
+      "consumes": [
+        "osm",
+        "osm.pbf"
+      ],
+      "produces": [
+        "road crossings",
+        "road exposure hints"
+      ],
+      "note": "OSM XML/PBF highway centerlines used to infer trail crossings and road exposure."
+    },
+    {
       "id": "geojson-hydrology-context",
       "kind": "hydrology",
       "status": "implemented",
@@ -288,6 +302,19 @@
         "water crossings"
       ],
       "note": "Shapefile stream/river centerlines used to infer water crossings."
+    },
+    {
+      "id": "osm-hydrology-context",
+      "kind": "hydrology",
+      "status": "implemented",
+      "consumes": [
+        "osm",
+        "osm.pbf"
+      ],
+      "produces": [
+        "water crossings"
+      ],
+      "note": "OSM XML/PBF waterway linework used to infer stream, river, canal, drain, and ditch crossings."
     },
     {
       "id": "shapefile-closure-layer",
@@ -560,12 +587,14 @@
       "priority": "recommended",
       "adapter_ids": [
         "geojson-road-context",
-        "shapefile-road-context"
+        "shapefile-road-context",
+        "osm-road-context"
       ],
       "suggested_paths": [
         "sources/roads.geojson",
         "sources/context-roads.geojson",
-        "sources/roads.shp"
+        "sources/roads.shp",
+        "sources/roads.osm.pbf"
       ],
       "acquisition_hints": [
         {
@@ -617,12 +646,14 @@
       "priority": "recommended",
       "adapter_ids": [
         "geojson-hydrology-context",
-        "shapefile-hydrology-context"
+        "shapefile-hydrology-context",
+        "osm-hydrology-context"
       ],
       "suggested_paths": [
         "sources/hydrology.geojson",
         "sources/streams.geojson",
-        "sources/hydrology.shp"
+        "sources/hydrology.shp",
+        "sources/hydrology.osm.pbf"
       ],
       "acquisition_hints": [
         {
