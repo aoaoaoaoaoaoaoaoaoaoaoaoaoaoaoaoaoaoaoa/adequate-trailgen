@@ -992,12 +992,17 @@ fn discover(project: &Path, area: Option<GeoBounds>) -> Result<()> {
     merge_source_candidates(&mut manifest.candidates, discovered);
     refresh_source_coverage_for_area(&mut manifest, area);
     write_json(project.join("sources/manifest.json"), &manifest)?;
+    write_bytes(
+        project.join("sources/discovery.md"),
+        render_discovery_report(&manifest),
+    )?;
     println!(
-        "discovered {} local candidate(s), recommended {} source class(es), evaluated {} source class(es); wrote {}",
+        "discovered {} local candidate(s), recommended {} source class(es), evaluated {} source class(es); wrote {} and {}",
         discovered_count,
         manifest.recommendations.len(),
         manifest.coverage.len(),
-        project.join("sources/manifest.json").display()
+        project.join("sources/manifest.json").display(),
+        project.join("sources/discovery.md").display()
     );
     Ok(())
 }
@@ -2101,22 +2106,67 @@ fn render_source_manifest_section(text: &mut String, manifest: Option<&SourceMan
         text.push_str("No source manifest found.\n");
         return;
     };
-    if !manifest.coverage.is_empty() {
-        text.push_str("Coverage:\n");
-        for coverage in &manifest.coverage {
-            let candidates = if coverage.candidate_paths.is_empty() {
-                "none".to_owned()
-            } else {
-                coverage.candidate_paths.join(", ")
-            };
+    render_source_coverage(text, manifest);
+    if manifest.candidates.is_empty() {
+        text.push_str("No source candidates recorded.\n");
+        return;
+    }
+    render_source_candidates(text, manifest);
+}
+
+fn render_discovery_report(manifest: &SourceManifest) -> String {
+    let mut text = "# Source Discovery\n\n".to_owned();
+    render_discovery_area(&mut text, manifest);
+    text.push_str("## Coverage\n\n");
+    render_source_coverage(&mut text, manifest);
+    text.push_str("## Acquisition Plan\n\n");
+    render_acquisition_plan(&mut text, manifest);
+    text.push_str("## Local Candidates\n\n");
+    render_source_candidates(&mut text, manifest);
+    text.push_str("\n## Adapter Registry\n\n");
+    render_adapter_registry(&mut text, manifest);
+    text
+}
+
+fn render_discovery_area(text: &mut String, manifest: &SourceManifest) {
+    match manifest
+        .recommendations
+        .iter()
+        .find_map(|recommendation| recommendation.area)
+    {
+        Some(area) => {
             let _ = writeln!(
                 text,
-                "- {:?} ({:?}): {:?}; candidates: {}; {}",
-                coverage.kind, coverage.priority, coverage.status, candidates, coverage.message
+                "AOI: west {:.6}, south {:.6}, east {:.6}, north {:.6}\n",
+                area.west, area.south, area.east, area.north
             );
         }
-        text.push('\n');
+        None => text.push_str("AOI: not set; run `trailgen init --bbox` or `discover --bbox` for region-bound recommendations.\n\n"),
     }
+}
+
+fn render_source_coverage(text: &mut String, manifest: &SourceManifest) {
+    if manifest.coverage.is_empty() {
+        text.push_str("No source coverage ledger recorded.\n\n");
+        return;
+    }
+    text.push_str("Coverage:\n");
+    for coverage in &manifest.coverage {
+        let candidates = if coverage.candidate_paths.is_empty() {
+            "none".to_owned()
+        } else {
+            coverage.candidate_paths.join(", ")
+        };
+        let _ = writeln!(
+            text,
+            "- {:?} ({:?}): {:?}; candidates: {}; {}",
+            coverage.kind, coverage.priority, coverage.status, candidates, coverage.message
+        );
+    }
+    text.push('\n');
+}
+
+fn render_source_candidates(text: &mut String, manifest: &SourceManifest) {
     if manifest.candidates.is_empty() {
         text.push_str("No source candidates recorded.\n");
         return;
@@ -2135,6 +2185,76 @@ fn render_source_manifest_section(text: &mut String, manifest: Option<&SourceMan
             text,
             "- {}: {:?} via {}; {fingerprint}{origin}",
             candidate.path, candidate.kind, candidate.adapter_id
+        );
+    }
+}
+
+fn render_acquisition_plan(text: &mut String, manifest: &SourceManifest) {
+    for recommendation in &manifest.recommendations {
+        let coverage = manifest
+            .coverage
+            .iter()
+            .find(|coverage| coverage.kind == recommendation.kind);
+        let status = coverage.map_or_else(
+            || "uncovered".to_owned(),
+            |coverage| format!("{:?}", coverage.status),
+        );
+        let _ = writeln!(
+            text,
+            "### {:?} ({:?}, {status})\n",
+            recommendation.kind, recommendation.priority
+        );
+        let _ = writeln!(text, "{}\n", recommendation.rationale);
+        let _ = writeln!(text, "Acceptance: {}\n", recommendation.acceptance);
+        write_string_list(
+            text,
+            "Suggested cache paths",
+            &recommendation.suggested_paths,
+        );
+        write_string_list(text, "Adapter ids", &recommendation.adapter_ids);
+        write_string_list(text, "Search terms", &recommendation.search_terms);
+        if recommendation.acquisition_hints.is_empty() {
+            text.push_str("Acquisition hints:\n- none\n\n");
+        } else {
+            text.push_str("Acquisition hints:\n");
+            for hint in &recommendation.acquisition_hints {
+                let _ = writeln!(
+                    text,
+                    "- {}: {} [{}]. {}",
+                    hint.label,
+                    hint.url,
+                    hint.formats.join(", "),
+                    hint.note
+                );
+            }
+            text.push('\n');
+        }
+    }
+}
+
+fn write_string_list(text: &mut String, title: &str, xs: &[String]) {
+    let _ = writeln!(text, "{title}:");
+    if xs.is_empty() {
+        text.push_str("- none\n\n");
+        return;
+    }
+    for x in xs {
+        let _ = writeln!(text, "- {x}");
+    }
+    text.push('\n');
+}
+
+fn render_adapter_registry(text: &mut String, manifest: &SourceManifest) {
+    for adapter in &manifest.adapters {
+        let _ = writeln!(
+            text,
+            "- {} ({:?}, {:?}): consumes {}; produces {}; {}",
+            adapter.id,
+            adapter.kind,
+            adapter.status,
+            adapter.consumes.join(", "),
+            adapter.produces.join(", "),
+            adapter.note
         );
     }
 }
@@ -3565,6 +3685,7 @@ fn is_generated_source_artifact(path: &Path) -> bool {
         path.file_name().and_then(|x| x.to_str()),
         Some(
             "manifest.json"
+                | "discovery.md"
                 | "access-overlays.json"
                 | "access-baseline.json"
                 | "terrain-overlays.json"
@@ -3866,6 +3987,7 @@ mod tests {
         fs::create_dir_all(&sources)?;
         fs::write(sources.join("access-baseline.json"), "{}")?;
         fs::write(sources.join("access-overlays.json"), "{}")?;
+        fs::write(sources.join("discovery.md"), "# generated\n")?;
         fs::write(sources.join("elevation-vrt.json"), "{}")?;
         fs::write(sources.join("trails.geojson"), "{}")?;
 
@@ -3889,6 +4011,12 @@ mod tests {
 
         let manifest: Value =
             serde_json::from_str(&fs::read_to_string(project.join("sources/manifest.json"))?)?;
+        let discovery = fs::read_to_string(project.join("sources/discovery.md"))?;
+        assert!(discovery.starts_with("# Source Discovery"));
+        assert!(discovery.contains("## Acquisition Plan"));
+        assert!(discovery.contains("NPS official GIS open data"));
+        assert!(discovery.contains("Geofabrik OpenStreetMap extracts"));
+        assert!(discovery.contains("## Adapter Registry"));
         assert!(
             manifest["candidates"]
                 .as_array()
