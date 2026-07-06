@@ -121,6 +121,11 @@ enum Cmd {
         /// Project directory containing sources/manifest.json.
         project: PathBuf,
     },
+    /// Verify generated route artifacts and snapshotted source inputs against the generation manifest.
+    VerifyGeneration {
+        /// Project directory containing routes/generated.manifest.json.
+        project: PathBuf,
+    },
     /// Verify fingerprints and fail unless source coverage satisfies a planning gate.
     VetSources {
         /// Project directory containing sources/manifest.json.
@@ -645,6 +650,7 @@ fn main() -> Result<()> {
             },
         ),
         Cmd::VerifySources { project } => verify_sources(&project),
+        Cmd::VerifyGeneration { project } => verify_generation(&project),
         Cmd::VetSources {
             project,
             level,
@@ -1620,6 +1626,95 @@ fn verify_source_fingerprints(project: &Path, manifest: &SourceManifest) -> Resu
     Ok(checked)
 }
 
+fn verify_generation(project: &Path) -> Result<()> {
+    let ledger = load_generated_run_ledger(project)?.with_context(
+        || "read routes/generated.manifest.json; run `trailgen generate` before verify-generation",
+    )?;
+    let artifacts = verify_generated_artifact_fingerprints(project, &ledger)?;
+    let sources = verify_source_fingerprints(
+        project,
+        ledger
+            .source_manifest
+            .as_ref()
+            .with_context(|| "generated manifest lacks source_manifest snapshot")?,
+    )?;
+    println!("verified generation: {artifacts} artifact(s), {sources} source candidate(s)");
+    Ok(())
+}
+
+fn verify_generated_artifact_fingerprints(
+    project: &Path,
+    ledger: &GeneratedRunLedger,
+) -> Result<usize> {
+    if ledger.artifact_fingerprints.is_empty() {
+        bail!("generated manifest lacks artifact_fingerprints; rerun generation with this version");
+    }
+    let fingerprint_paths = ledger
+        .artifact_fingerprints
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .collect::<BTreeSet<_>>();
+    let missing = ledger
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.as_str() != "routes/generated.manifest.json")
+        .filter(|artifact| !fingerprint_paths.contains(artifact.as_str()))
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        bail!(
+            "generated manifest lacks fingerprints for artifact(s): {}",
+            missing.join(", ")
+        );
+    }
+
+    let mut failures = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut checked = 0usize;
+    for entry in &ledger.artifact_fingerprints {
+        if entry.path == "routes/generated.manifest.json" {
+            failures.push("routes/generated.manifest.json must not fingerprint itself".to_owned());
+            continue;
+        }
+        if !seen.insert(entry.path.as_str()) {
+            failures.push(format!("{} has duplicate artifact fingerprint", entry.path));
+            continue;
+        }
+        let path = match resolve_generated_artifact_path(project, &entry.path) {
+            Ok(path) => path,
+            Err(error) => {
+                failures.push(format!("{} invalid artifact path: {error:#}", entry.path));
+                continue;
+            }
+        };
+        match source_fingerprint(&path) {
+            Ok(actual) if actual == entry.fingerprint => checked += 1,
+            Ok(actual) => failures.push(format!(
+                "{} drifted: expected {} bytes sha256 {}, found {} bytes sha256 {}",
+                entry.path,
+                entry.fingerprint.bytes,
+                entry.fingerprint.sha256,
+                actual.bytes,
+                actual.sha256
+            )),
+            Err(error) => failures.push(format!("{} unreadable: {error:#}", entry.path)),
+        }
+    }
+    if !failures.is_empty() {
+        bail!(
+            "generated artifact verification failed:\n{}",
+            failures.join("\n")
+        );
+    }
+    Ok(checked)
+}
+
+fn resolve_generated_artifact_path(project: &Path, raw: &str) -> Result<PathBuf> {
+    let path = PathBuf::from(raw);
+    ensure_safe_relative_project_path(&path)?;
+    Ok(project.join(path))
+}
+
 fn vet_sources(project: &Path, level: SourceGateLevel, require: &[SourceKind]) -> Result<()> {
     let mut manifest = load_source_manifest(project)?.with_context(
         || "read sources/manifest.json; run `trailgen discover` or ingest sources first",
@@ -1923,6 +2018,16 @@ struct GenerationLedger {
     artifacts: Vec<String>,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+struct GeneratedRunLedger {
+    #[serde(default)]
+    source_manifest: Option<SourceManifest>,
+    #[serde(default)]
+    artifacts: Vec<String>,
+    #[serde(default)]
+    artifact_fingerprints: Vec<GeneratedArtifactFingerprint>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 struct ForbiddenAreaManifest {
     path: String,
@@ -1932,7 +2037,7 @@ struct ForbiddenAreaManifest {
     touched_edges: usize,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct GeneratedArtifactFingerprint {
     path: String,
     fingerprint: SourceFingerprint,
@@ -4512,6 +4617,12 @@ fn load_generated_ledger(project: &Path) -> Result<Option<GenerationLedger>> {
         .transpose()?)
 }
 
+fn load_generated_run_ledger(project: &Path) -> Result<Option<GeneratedRunLedger>> {
+    Ok(load_generated_manifest_value(project)?
+        .map(serde_json::from_value)
+        .transpose()?)
+}
+
 fn load_generated_manifest_value(project: &Path) -> Result<Option<serde_json::Value>> {
     let path = project.join("routes/generated.manifest.json");
     if !path.exists() {
@@ -5043,13 +5154,19 @@ fn inferred_source_name(input: &str) -> PathBuf {
 }
 
 fn ensure_safe_relative_source_path(path: &Path) -> Result<()> {
+    ensure_safe_relative_project_path(path).map_err(|_| {
+        anyhow::anyhow!("source cache output must be a relative path under project/sources")
+    })
+}
+
+fn ensure_safe_relative_project_path(path: &Path) -> Result<()> {
     if path
         .components()
         .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
     {
         Ok(())
     } else {
-        bail!("source cache output must be a relative path under project/sources")
+        bail!("path must be relative and stay inside the project")
     }
 }
 
@@ -5445,6 +5562,7 @@ mod tests {
         assert!(help.contains("external MILP solver incumbent"));
         assert!(help.contains("Fetch bbox-scoped OSM XML"));
         assert!(help.contains("source coverage satisfies a planning gate"));
+        assert!(help.contains("Verify generated route artifacts"));
         assert!(help.contains("AllTrails"));
 
         let mut generate = Cli::command();
@@ -6113,6 +6231,55 @@ mod tests {
             manifest["effective_config"]["generation_source_gate"],
             "required"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn generation_verifier_rejects_source_and_artifact_drift() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path();
+        let fixture_dir =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../trailgen-core/tests/fixtures");
+        let network_fixture = fixture_dir.join("mini_network.geojson");
+        let dem_fixture = fixture_dir.join("mini_dem.asc");
+
+        init(project, "Generation Verify Test".to_owned(), None)?;
+        let network = project.join("sources/trails.geojson");
+        let dem = project.join("sources/dem.asc");
+        fs::copy(&network_fixture, &network)?;
+        fs::copy(&dem_fixture, &dem)?;
+        build(project, &network)?;
+        apply_elevation(project, &dem, 0.81)?;
+        generate(
+            project,
+            &GenerateOptions {
+                source_gate: Some(GenerationSourceGate::Required),
+                ..mini_generate_options()
+            },
+        )?;
+        verify_generation(project)?;
+
+        let original_network = fs::read(&network)?;
+        fs::write(
+            &network,
+            b"{\"type\":\"FeatureCollection\",\"features\":[]}",
+        )?;
+        let source_error =
+            verify_generation(project).expect_err("source drift should fail run verification");
+        assert!(format!("{source_error:#}").contains("source verification failed"));
+        assert!(format!("{source_error:#}").contains("trails.geojson drifted"));
+        fs::write(&network, original_network)?;
+        verify_generation(project)?;
+
+        let report = project.join("reports/generated.md");
+        let mut report_text = fs::read_to_string(&report)?;
+        report_text.push_str("\nmanual drift\n");
+        fs::write(&report, report_text)?;
+        let artifact_error =
+            verify_generation(project).expect_err("artifact drift should fail run verification");
+        assert!(format!("{artifact_error:#}").contains("generated artifact verification failed"));
+        assert!(format!("{artifact_error:#}").contains("reports/generated.md drifted"));
 
         Ok(())
     }
