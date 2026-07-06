@@ -22,6 +22,8 @@ trailgen-core.workspace = true
 zip.workspace = true
 
 [dev-dependencies]
+osmpbfreader.workspace = true
+protobuf.workspace = true
 shapefile.workspace = true
 tempfile.workspace = true
 tiff.workspace = true

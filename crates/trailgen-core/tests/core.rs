@@ -1,4 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Cursor;
+
+use protobuf::{Message, MessageField};
 use trailgen_core::alltrails::{
     ALLTRAILS_POLICY_VERIFIED_ON, AllTrailsBridge, AllTrailsExchange, AllTrailsRequest,
     BridgeStatus, ManualAllTrailsBridge, RouteExchangeFormat, TrailgenExchangeAction,
@@ -362,6 +365,30 @@ fn osm_xml_network_rejects_missing_way_nodes() {
     )
     .unwrap_err();
     assert!(format!("{error}").contains("references missing node missing"));
+}
+
+#[test]
+fn osm_pbf_network_normalizes_walkable_ways() {
+    let drafts = osm::network_from_pbf_reader(Cursor::new(tiny_osm_pbf())).unwrap();
+
+    assert_eq!(drafts.len(), 2);
+    assert_eq!(drafts[0].terrain, Terrain::Trail);
+    assert_eq!(drafts[0].surface.as_deref(), Some("gravel"));
+    assert_eq!(drafts[0].travel, EdgeTravel::Forward);
+    assert_eq!(drafts[0].provenance.source, "osm-pbf");
+    assert_eq!(drafts[0].provenance.source_id.as_deref(), Some("10"));
+    assert_eq!(drafts[1].terrain, Terrain::Road);
+    assert_eq!(drafts[1].access, Access::Private);
+    assert!((drafts[1].road_exposure - 1.0).abs() <= f64::EPSILON);
+
+    let graph = GraphBuilder::default().build(&drafts).unwrap();
+    assert_eq!(graph.edges.len(), 2);
+    assert!(
+        graph
+            .edges
+            .iter()
+            .any(|edge| edge.attr.provenance[0].source == "osm-pbf")
+    );
 }
 
 #[test]
@@ -1886,6 +1913,10 @@ fn source_registry_classifies_local_inputs() {
     let osm_network = classify_path(std::path::Path::new("sources/osm-trails.osm")).unwrap();
     assert_eq!(osm_network.kind, SourceKind::TrailNetwork);
     assert_eq!(osm_network.adapter_id, "osm-xml-network");
+    let osm_pbf_network =
+        classify_path(std::path::Path::new("sources/osm-trails.osm.pbf")).unwrap();
+    assert_eq!(osm_pbf_network.kind, SourceKind::TrailNetwork);
+    assert_eq!(osm_pbf_network.adapter_id, "osm-pbf-network");
     let shp_access = classify_path(std::path::Path::new("sources/ownership-access.shp")).unwrap();
     assert_eq!(shp_access.kind, SourceKind::Access);
     assert_eq!(shp_access.adapter_id, "shapefile-access-overlay");
@@ -2871,4 +2902,82 @@ fn bowtie_drafts() -> Vec<SegmentDraft> {
         provenance: Provenance::fixture(name),
     })
     .collect()
+}
+
+fn tiny_osm_pbf() -> Vec<u8> {
+    use osmpbfreader::osmformat::{PrimitiveBlock, PrimitiveGroup, StringTable};
+
+    let mut table = StringTable::new();
+    table.s = [
+        "",
+        "highway",
+        "path",
+        "surface",
+        "gravel",
+        "oneway:foot",
+        "yes",
+        "access",
+        "private",
+        "track",
+        "motorway",
+    ]
+    .into_iter()
+    .map(|s| s.as_bytes().to_vec())
+    .collect();
+
+    let mut group = PrimitiveGroup::new();
+    group.nodes = vec![
+        pbf_node(1, 400_000_000, -1_050_000_000),
+        pbf_node(2, 400_000_000, -1_049_900_000),
+        pbf_node(3, 400_100_000, -1_049_900_000),
+        pbf_node(4, 400_100_000, -1_050_000_000),
+    ];
+    group.ways = vec![
+        pbf_way(10, &[(1, 2), (3, 4), (5, 6)], &[1, 1]),
+        pbf_way(11, &[(1, 9), (7, 8)], &[2, 1]),
+        pbf_way(12, &[(1, 10)], &[3, 1]),
+    ];
+
+    let mut block = PrimitiveBlock::new();
+    block.stringtable = MessageField::some(table);
+    block.primitivegroup.push(group);
+    pbf_file_block("OSMData", block.write_to_bytes().unwrap())
+}
+
+fn pbf_node(id: i64, lat: i64, lon: i64) -> osmpbfreader::osmformat::Node {
+    let mut node = osmpbfreader::osmformat::Node::new();
+    node.set_id(id);
+    node.set_lat(lat);
+    node.set_lon(lon);
+    node
+}
+
+fn pbf_way(id: i64, tags: &[(u32, u32)], refs: &[i64]) -> osmpbfreader::osmformat::Way {
+    let mut way = osmpbfreader::osmformat::Way::new();
+    way.set_id(id);
+    way.keys = tags.iter().map(|(key, _)| *key).collect();
+    way.vals = tags.iter().map(|(_, value)| *value).collect();
+    way.refs = refs.to_vec();
+    way
+}
+
+fn pbf_file_block(kind: &str, raw: Vec<u8>) -> Vec<u8> {
+    use osmpbfreader::fileformat::{Blob, BlobHeader};
+
+    let mut blob = Blob::new();
+    let raw_len = raw.len();
+    blob.set_raw(raw);
+    blob.set_raw_size(i32::try_from(raw_len).unwrap());
+    let blob = blob.write_to_bytes().unwrap();
+
+    let mut header = BlobHeader::new();
+    header.set_type(kind.to_owned());
+    header.set_datasize(i32::try_from(blob.len()).unwrap());
+    let header = header.write_to_bytes().unwrap();
+
+    let mut out = Vec::new();
+    out.extend(u32::try_from(header.len()).unwrap().to_be_bytes());
+    out.extend(header);
+    out.extend(blob);
+    out
 }

@@ -2,7 +2,9 @@ use crate::builder::SegmentDraft;
 use crate::geo::{Coord, LineString};
 use crate::model::{Access, EdgeTravel, Provenance, Terrain};
 use crate::{Result, TrailgenError};
+use osmpbfreader::{Node as PbfNode, OsmId, OsmObj, OsmPbfReader, Tags as PbfTags, Way as PbfWay};
 use std::collections::BTreeMap;
+use std::io::{Read, Seek};
 
 pub fn network_from_str(s: &str) -> Result<Vec<SegmentDraft>> {
     let doc = roxmltree::Document::parse(s)
@@ -20,7 +22,21 @@ pub fn network_from_str(s: &str) -> Result<Vec<SegmentDraft>> {
         .collect::<Result<BTreeMap<_, _>>>()?;
     root.children()
         .filter(|node| node.has_tag_name("way"))
-        .filter_map(|way| draft_from_way(way, &nodes).transpose())
+        .filter_map(|way| draft_from_xml_way(way, &nodes).transpose())
+        .collect()
+}
+
+pub fn network_from_pbf_reader<R: Read + Seek>(reader: R) -> Result<Vec<SegmentDraft>> {
+    let mut pbf = OsmPbfReader::new(reader);
+    let objects = pbf
+        .get_objs_and_deps(pbf_walkable_way)
+        .map_err(|error| TrailgenError::InvalidData(format!("parse OSM PBF: {error}")))?;
+    objects
+        .values()
+        .filter_map(|object| match object {
+            OsmObj::Way(way) => draft_from_pbf_way(way, &objects).transpose(),
+            OsmObj::Node(_) | OsmObj::Relation(_) => None,
+        })
         .collect()
 }
 
@@ -37,18 +53,18 @@ fn parse_node(node: roxmltree::Node<'_, '_>) -> Result<(String, Coord)> {
             "OSM node coordinates must be finite".to_owned(),
         ));
     }
-    let ele = tags(node)
+    let ele = xml_tags(node)
         .get("ele")
         .and_then(|value| value.parse::<f64>().ok())
         .filter(|value| value.is_finite());
     Ok((id, Coord { lon, lat, ele }))
 }
 
-fn draft_from_way(
+fn draft_from_xml_way(
     way: roxmltree::Node<'_, '_>,
     nodes: &BTreeMap<String, Coord>,
 ) -> Result<Option<SegmentDraft>> {
-    let tags = tags(way);
+    let tags = xml_tags(way);
     let Some(walkway) = Walkway::from_tags(&tags) else {
         return Ok(None);
     };
@@ -81,6 +97,62 @@ fn draft_from_way(
             license: Some("ODbL-1.0".to_owned()),
         },
     }))
+}
+
+fn pbf_walkable_way(object: &OsmObj) -> bool {
+    object
+        .way()
+        .is_some_and(|way| Walkway::from_tags(&pbf_tags(&way.tags)).is_some())
+}
+
+fn draft_from_pbf_way(
+    way: &PbfWay,
+    objects: &BTreeMap<OsmId, OsmObj>,
+) -> Result<Option<SegmentDraft>> {
+    let tags = pbf_tags(&way.tags);
+    let Some(walkway) = Walkway::from_tags(&tags) else {
+        return Ok(None);
+    };
+    let mut points = Vec::new();
+    for id in &way.nodes {
+        let Some(OsmObj::Node(node)) = objects.get(&OsmId::Node(*id)) else {
+            return Err(TrailgenError::InvalidData(format!(
+                "OSM PBF way {} references missing node {}",
+                way.id.0, id.0
+            )));
+        };
+        points.push(pbf_coord(node));
+    }
+    if points.len() < 2 {
+        return Ok(None);
+    }
+    Ok(Some(SegmentDraft {
+        geometry: LineString::new(points)?,
+        terrain: walkway.terrain,
+        surface: tags.get("surface").cloned(),
+        access: walkway.access,
+        travel: walkway.travel,
+        road_exposure: walkway.road_exposure,
+        confidence: walkway.confidence,
+        provenance: Provenance {
+            source: "osm-pbf".to_owned(),
+            layer: Some("way".to_owned()),
+            source_id: Some(way.id.0.to_string()),
+            license: Some("ODbL-1.0".to_owned()),
+        },
+    }))
+}
+
+fn pbf_coord(node: &PbfNode) -> Coord {
+    let ele = pbf_tags(&node.tags)
+        .get("ele")
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite());
+    Coord {
+        lon: node.lon(),
+        lat: node.lat(),
+        ele,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -188,7 +260,7 @@ fn travel_from_tags(tags: &BTreeMap<String, String>) -> EdgeTravel {
         .map_or(EdgeTravel::Both, |tag| EdgeTravel::from_tag(tag))
 }
 
-fn tags(node: roxmltree::Node<'_, '_>) -> BTreeMap<String, String> {
+fn xml_tags(node: roxmltree::Node<'_, '_>) -> BTreeMap<String, String> {
     node.children()
         .filter(|child| child.has_tag_name("tag"))
         .filter_map(|tag| {
@@ -196,6 +268,17 @@ fn tags(node: roxmltree::Node<'_, '_>) -> BTreeMap<String, String> {
                 tag.attribute("k")?.to_ascii_lowercase(),
                 tag.attribute("v")?.to_ascii_lowercase(),
             ))
+        })
+        .collect()
+}
+
+fn pbf_tags(tags: &PbfTags) -> BTreeMap<String, String> {
+    tags.iter()
+        .map(|(key, value)| {
+            (
+                key.as_str().to_ascii_lowercase(),
+                value.as_str().to_ascii_lowercase(),
+            )
         })
         .collect()
 }

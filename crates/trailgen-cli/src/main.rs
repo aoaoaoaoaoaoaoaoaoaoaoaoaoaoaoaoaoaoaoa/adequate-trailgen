@@ -55,7 +55,7 @@ enum Cmd {
     Build {
         /// Project directory containing trailgen.toml.
         project: PathBuf,
-        /// `GeoJSON`, OSM XML, shapefile, `GPX`, `KML`/`KMZ`, `CSV`, or route `JSON` source; repeat to merge sources.
+        /// `GeoJSON`, OSM XML/PBF, shapefile, `GPX`, `KML`/`KMZ`, `CSV`, or route `JSON` source; repeat to merge sources.
         #[arg(long, required = true)]
         source: Vec<PathBuf>,
     },
@@ -740,13 +740,20 @@ fn build_source(source: &Path) -> Result<BuildSource> {
             kind: SourceKind::TrailNetwork,
             adapter_id: "osm-xml-network",
         }),
+        Some("osm.pbf") => Ok(BuildSource {
+            drafts: osm::network_from_pbf_reader(
+                fs::File::open(source).with_context(|| format!("read {}", source.display()))?,
+            )?,
+            kind: SourceKind::TrailNetwork,
+            adapter_id: "osm-pbf-network",
+        }),
         Some("shp") => Ok(BuildSource {
             drafts: shp::network_from_path(source)?,
             kind: SourceKind::TrailNetwork,
             adapter_id: "shapefile-network",
         }),
         Some(ext) => bail!(
-            "unsupported build source extension {ext:?}; expected geojson, json, osm, shp, gpx, csv, kml, or kmz"
+            "unsupported build source extension {ext:?}; expected geojson, json, osm, osm.pbf, shp, gpx, csv, kml, or kmz"
         ),
         None => bail!("build source has no extension"),
     }
@@ -3446,6 +3453,13 @@ fn json_route_file(raw: &str) -> Result<(RouteFile, &'static str)> {
 }
 
 fn source_ext(path: &Path) -> Option<String> {
+    if path
+        .file_name()
+        .and_then(|x| x.to_str())
+        .is_some_and(|name| name.to_ascii_lowercase().ends_with(".osm.pbf"))
+    {
+        return Some("osm.pbf".to_owned());
+    }
     path.extension()
         .and_then(|x| x.to_str())
         .map(str::to_ascii_lowercase)
@@ -4293,6 +4307,7 @@ fn write_bytes(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> Result<()> {
 mod tests {
     use super::*;
     use clap::CommandFactory as _;
+    use protobuf::{Message, MessageField};
     use serde_json::Value;
 
     const WGS84_PRJ: &str = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["Degree",0.0174532925199433]]"#;
@@ -5232,6 +5247,49 @@ mod tests {
     }
 
     #[test]
+    fn build_accepts_osm_pbf_network_sources() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path();
+        let pbf = tmp.path().join("osm-trails.osm.pbf");
+        fs::write(&pbf, tiny_osm_pbf())?;
+
+        init(project, "OSM PBF Build Test".to_owned(), None)?;
+        build(project, &pbf)?;
+
+        let graph = load_graph(project)?;
+        assert_eq!(graph.edges.len(), 2);
+        assert!(graph.edges.iter().any(|edge| {
+            edge.attr
+                .provenance
+                .iter()
+                .any(|p| p.source == "osm-pbf" && p.source_id.as_deref() == Some("10"))
+        }));
+        assert!(graph.edges.iter().any(|edge| {
+            edge.attr.access == Access::Private
+                && (edge.attr.road_exposure - 1.0).abs() <= f64::EPSILON
+        }));
+
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(project.join("sources/manifest.json"))?)?;
+        let candidate = manifest["candidates"]
+            .as_array()
+            .expect("candidates")
+            .iter()
+            .find(|candidate| candidate["path"].as_str() == Some(pbf.to_str().unwrap()))
+            .expect("OSM PBF source candidate");
+        assert_eq!(candidate["kind"], "trail-network");
+        assert_eq!(candidate["adapter_id"], "osm-pbf-network");
+        assert!(
+            manifest["coverage"]
+                .as_array()
+                .expect("coverage")
+                .iter()
+                .any(|entry| entry["kind"] == "trail-network" && entry["status"] == "satisfied")
+        );
+        Ok(())
+    }
+
+    #[test]
     fn generation_date_materializes_access_from_baseline_snapshot() -> Result<()> {
         let tmp = tempfile::tempdir()?;
         let project = tmp.path();
@@ -5950,6 +6008,84 @@ mod tests {
         }
         zip.finish()?;
         Ok(())
+    }
+
+    fn tiny_osm_pbf() -> Vec<u8> {
+        use osmpbfreader::osmformat::{PrimitiveBlock, PrimitiveGroup, StringTable};
+
+        let mut table = StringTable::new();
+        table.s = [
+            "",
+            "highway",
+            "path",
+            "surface",
+            "gravel",
+            "oneway:foot",
+            "yes",
+            "access",
+            "private",
+            "track",
+            "motorway",
+        ]
+        .into_iter()
+        .map(|s| s.as_bytes().to_vec())
+        .collect();
+
+        let mut group = PrimitiveGroup::new();
+        group.nodes = vec![
+            pbf_node(1, 400_000_000, -1_050_000_000),
+            pbf_node(2, 400_000_000, -1_049_900_000),
+            pbf_node(3, 400_100_000, -1_049_900_000),
+            pbf_node(4, 400_100_000, -1_050_000_000),
+        ];
+        group.ways = vec![
+            pbf_way(10, &[(1, 2), (3, 4), (5, 6)], &[1, 1]),
+            pbf_way(11, &[(1, 9), (7, 8)], &[2, 1]),
+            pbf_way(12, &[(1, 10)], &[3, 1]),
+        ];
+
+        let mut block = PrimitiveBlock::new();
+        block.stringtable = MessageField::some(table);
+        block.primitivegroup.push(group);
+        pbf_file_block("OSMData", block.write_to_bytes().unwrap())
+    }
+
+    fn pbf_node(id: i64, lat: i64, lon: i64) -> osmpbfreader::osmformat::Node {
+        let mut node = osmpbfreader::osmformat::Node::new();
+        node.set_id(id);
+        node.set_lat(lat);
+        node.set_lon(lon);
+        node
+    }
+
+    fn pbf_way(id: i64, tags: &[(u32, u32)], refs: &[i64]) -> osmpbfreader::osmformat::Way {
+        let mut way = osmpbfreader::osmformat::Way::new();
+        way.set_id(id);
+        way.keys = tags.iter().map(|(key, _)| *key).collect();
+        way.vals = tags.iter().map(|(_, value)| *value).collect();
+        way.refs = refs.to_vec();
+        way
+    }
+
+    fn pbf_file_block(kind: &str, raw: Vec<u8>) -> Vec<u8> {
+        use osmpbfreader::fileformat::{Blob, BlobHeader};
+
+        let mut blob = Blob::new();
+        let raw_len = raw.len();
+        blob.set_raw(raw);
+        blob.set_raw_size(i32::try_from(raw_len).unwrap());
+        let blob = blob.write_to_bytes().unwrap();
+
+        let mut header = BlobHeader::new();
+        header.set_type(kind.to_owned());
+        header.set_datasize(i32::try_from(blob.len()).unwrap());
+        let header = header.write_to_bytes().unwrap();
+
+        let mut out = Vec::new();
+        out.extend(u32::try_from(header.len()).unwrap().to_be_bytes());
+        out.extend(header);
+        out.extend(blob);
+        out
     }
 
     fn write_cli_geotiff_dem(path: &Path) {

@@ -272,6 +272,14 @@ fn network_adapters() -> Vec<SourceAdapter> {
             ["SegmentDraft", "TrailGraph"],
             "OSM XML walkable-way trail-network ingestion with access, surface, direction, and provenance normalization.",
         ),
+        adapter(
+            "osm-pbf-network",
+            SourceKind::TrailNetwork,
+            AdapterStatus::Implemented,
+            ["osm.pbf"],
+            ["SegmentDraft", "TrailGraph"],
+            "OSM PBF extract ingestion for walkable ways with access, surface, direction, and ODbL provenance normalization.",
+        ),
     ]
 }
 
@@ -530,7 +538,7 @@ const TRAIL_NETWORK_HINTS: &[AcquisitionHintSpec] = &[
         label: "Geofabrik OpenStreetMap extracts",
         url: "https://download.geofabrik.de/",
         formats: &["OSM PBF", "OSM XML after conversion", "Shapefile"],
-        note: "Use as a broad fallback extract, then filter hiking paths/tracks and cache as OSM XML, GeoJSON, or shapefile.",
+        note: "Use as a broad fallback extract, then filter hiking paths/tracks directly from OSM PBF or cache a normalized OSM XML/GeoJSON/shapefile artifact.",
     },
 ];
 
@@ -649,12 +657,18 @@ const RECOMMENDATION_SPECS: &[RecommendationSpec] = &[
     RecommendationSpec {
         kind: SourceKind::TrailNetwork,
         priority: SourcePriority::Required,
-        adapter_ids: &["geojson-network", "shapefile-network", "osm-xml-network"],
+        adapter_ids: &[
+            "geojson-network",
+            "shapefile-network",
+            "osm-xml-network",
+            "osm-pbf-network",
+        ],
         suggested_paths: &[
             "sources/trails.geojson",
             "sources/network.geojson",
             "sources/trails.shp",
             "sources/osm-trails.osm",
+            "sources/osm-trails.osm.pbf",
         ],
         acquisition_hints: TRAIL_NETWORK_HINTS,
         search_terms: &[
@@ -800,8 +814,12 @@ const RECOMMENDATION_SPECS: &[RecommendationSpec] = &[
 
 #[must_use]
 pub fn classify_path(path: &Path) -> Option<SourceCandidate> {
-    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     let path_lc = path.display().to_string().to_ascii_lowercase();
+    let ext = if path_lc.ends_with(".osm.pbf") {
+        "osm.pbf".to_owned()
+    } else {
+        path.extension()?.to_str()?.to_ascii_lowercase()
+    };
     let (kind, adapter_id) = match ext.as_str() {
         "gpx" => (SourceKind::SeedRoute, "gpx-route"),
         "csv" => (SourceKind::SeedRoute, "csv-route"),
@@ -841,6 +859,7 @@ pub fn classify_path(path: &Path) -> Option<SourceCandidate> {
         }
         "geojson" | "json" => (SourceKind::TrailNetwork, "geojson-network"),
         "osm" => (SourceKind::TrailNetwork, "osm-xml-network"),
+        "osm.pbf" => (SourceKind::TrailNetwork, "osm-pbf-network"),
         "asc" => (SourceKind::Elevation, "arc-ascii-elevation"),
         "tif" | "tiff" => (SourceKind::Elevation, "geotiff-elevation"),
         "vrt" => (SourceKind::Elevation, "vrt-elevation"),

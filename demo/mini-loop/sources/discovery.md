@@ -27,11 +27,13 @@ Suggested cache paths:
 - sources/network.geojson
 - sources/trails.shp
 - sources/osm-trails.osm
+- sources/osm-trails.osm.pbf
 
 Adapter ids:
 - geojson-network
 - shapefile-network
 - osm-xml-network
+- osm-pbf-network
 
 Search terms:
 - official trail GIS line layer
@@ -41,7 +43,7 @@ Search terms:
 Acquisition hints:
 - NPS official GIS open data: https://www.nps.gov/subjects/gisandmapping/tools-and-data.htm [GeoJSON, Shapefile, Feature Service]. Use first for National Park Service units; cache exported trail linework under sources/ with provenance intact.
 - USFS geospatial data discovery: https://data-usfs.hub.arcgis.com/ [Shapefile, File Geodatabase, Feature Service]. Use for National Forest roads/trails and agency-managed transportation layers before falling back to volunteered data.
-- Geofabrik OpenStreetMap extracts: https://download.geofabrik.de/ [OSM PBF, OSM XML after conversion, Shapefile]. Use as a broad fallback extract, then filter hiking paths/tracks and cache as OSM XML, GeoJSON, or shapefile.
+- Geofabrik OpenStreetMap extracts: https://download.geofabrik.de/ [OSM PBF, OSM XML after conversion, Shapefile]. Use as a broad fallback extract, then filter hiking paths/tracks directly from OSM PBF or cache a normalized OSM XML/GeoJSON/shapefile artifact.
 
 ### Elevation (Required, Satisfied)
 
@@ -312,6 +314,7 @@ Candidates:
 - geojson-network (TrailNetwork, Implemented): consumes geojson, json; produces SegmentDraft, TrailGraph; Provider-neutral LineString and MultiLineString network ingestion.
 - shapefile-network (TrailNetwork, Implemented): consumes shp, dbf, shx; produces SegmentDraft, TrailGraph; Official/agency polyline shapefile trail-network ingestion with DBF attribute normalization.
 - osm-xml-network (TrailNetwork, Implemented): consumes osm; produces SegmentDraft, TrailGraph; OSM XML walkable-way trail-network ingestion with access, surface, direction, and provenance normalization.
+- osm-pbf-network (TrailNetwork, Implemented): consumes osm.pbf; produces SegmentDraft, TrailGraph; OSM PBF extract ingestion for walkable ways with access, surface, direction, and ODbL provenance normalization.
 - geojson-route (SeedRoute, Implemented): consumes geojson; produces LineString, snapped route metrics; GeoJSON seed route import.
 - json-route (SeedRoute, Implemented): consumes json; produces LineString, snapped route metrics; Provider-neutral route JSON import for coordinate arrays and point-object app exports.
 - gpx-route (SeedRoute, Implemented): consumes gpx; produces LineString, snapped route metrics; GPX route import/export, including user-supplied app exports.

@@ -43,6 +43,19 @@
       "note": "OSM XML walkable-way trail-network ingestion with access, surface, direction, and provenance normalization."
     },
     {
+      "id": "osm-pbf-network",
+      "kind": "trail-network",
+      "status": "implemented",
+      "consumes": [
+        "osm.pbf"
+      ],
+      "produces": [
+        "SegmentDraft",
+        "TrailGraph"
+      ],
+      "note": "OSM PBF extract ingestion for walkable ways with access, surface, direction, and ODbL provenance normalization."
+    },
+    {
       "id": "geojson-route",
       "kind": "seed-route",
       "status": "implemented",
@@ -299,13 +312,15 @@
       "adapter_ids": [
         "geojson-network",
         "shapefile-network",
-        "osm-xml-network"
+        "osm-xml-network",
+        "osm-pbf-network"
       ],
       "suggested_paths": [
         "sources/trails.geojson",
         "sources/network.geojson",
         "sources/trails.shp",
-        "sources/osm-trails.osm"
+        "sources/osm-trails.osm",
+        "sources/osm-trails.osm.pbf"
       ],
       "acquisition_hints": [
         {
@@ -336,7 +351,7 @@
             "OSM XML after conversion",
             "Shapefile"
           ],
-          "note": "Use as a broad fallback extract, then filter hiking paths/tracks and cache as OSM XML, GeoJSON, or shapefile."
+          "note": "Use as a broad fallback extract, then filter hiking paths/tracks directly from OSM PBF or cache a normalized OSM XML/GeoJSON/shapefile artifact."
         }
       ],
       "search_terms": [

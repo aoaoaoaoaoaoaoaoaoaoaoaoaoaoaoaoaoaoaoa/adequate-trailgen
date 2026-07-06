@@ -11,6 +11,7 @@ keywords = ["gis", "hiking", "routing", "geojson", "gpx"]
 categories = ["science::geo", "algorithms"]
 
 [dependencies]
+osmpbfreader.workspace = true
 roxmltree.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -20,6 +21,7 @@ tiff.workspace = true
 zip.workspace = true
 
 [dev-dependencies]
+protobuf.workspace = true
 tempfile.workspace = true
 
 [lints]
