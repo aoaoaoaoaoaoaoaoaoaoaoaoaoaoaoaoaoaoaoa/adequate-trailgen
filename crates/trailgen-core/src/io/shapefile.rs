@@ -89,6 +89,7 @@ pub fn access_overlays_from_path(path: &Path) -> Result<Vec<AccessOverlay>> {
             overlays.push(AccessOverlay {
                 name: name.clone(),
                 access,
+                travel: travel_override_from_props(&props),
                 active: access_window_from_props(&props)?,
                 confidence: props.f64("confidence").unwrap_or(0.86).clamp(0.0, 1.0),
                 tolerance_m: props.f64("tolerance_m").unwrap_or(20.0).max(0.0),
@@ -225,7 +226,7 @@ const fn default_context_source(kind: CrossingKind) -> &'static str {
     }
 }
 
-fn travel_from_props(props: &ShpProps<'_>) -> EdgeTravel {
+fn travel_override_from_props(props: &ShpProps<'_>) -> Option<EdgeTravel> {
     props
         .str("travel")
         .or_else(|| props.str("travel_direction"))
@@ -245,7 +246,10 @@ fn travel_from_props(props: &ShpProps<'_>) -> EdgeTravel {
                     }
                 })
         })
-        .unwrap_or_default()
+}
+
+fn travel_from_props(props: &ShpProps<'_>) -> EdgeTravel {
+    travel_override_from_props(props).unwrap_or_default()
 }
 
 fn lines(shape: &Shape, crs: CoordProjector) -> Result<Vec<LineString>> {

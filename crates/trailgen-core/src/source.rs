@@ -593,7 +593,7 @@ const CLOSURE_HINTS: &[AcquisitionHintSpec] = &[
         label: "Agency closure and alert GIS",
         url: "https://public-nps.opendata.arcgis.com/",
         formats: &["GeoJSON", "Shapefile", "Feature Service"],
-        note: "Use current official closure/restriction features; preserve dates, weekdays, hours, and alert provenance in cached overlays.",
+        note: "Use current official closure/restriction features; preserve dates, weekdays, hours, direction rules, and alert provenance in cached overlays.",
     },
     AcquisitionHintSpec {
         label: "Local park or forest alerts",
@@ -742,7 +742,7 @@ const RECOMMENDATION_SPECS: &[RecommendationSpec] = &[
             "park access restriction GIS",
             "seasonal closure boundary GeoJSON",
         ],
-        acceptance: "Closure, private, restricted, and open statuses can be attached to graph edges with dated provenance.",
+        acceptance: "Closure, private, restricted, open, and directional statuses can be attached to graph edges with temporal provenance.",
         rationale: "A beautiful generated loop is trash if it crosses a closed trail or forbidden parcel.",
     },
     RecommendationSpec {

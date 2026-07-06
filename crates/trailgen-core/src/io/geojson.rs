@@ -518,6 +518,7 @@ fn overlay_from_feature(feature: &Value, i: usize, crs: CoordProjector) -> Resul
     Ok(AccessOverlay {
         name,
         access,
+        travel: travel_override_from_properties(&properties),
         active: access_window_from_properties(&properties)?,
         confidence: prop_f64(&properties, "confidence")
             .unwrap_or(0.9)
@@ -937,7 +938,7 @@ fn weekdays_from_value(value: &Value) -> Result<WeekdaySet> {
     }
 }
 
-fn travel_from_properties(props: &Map<String, Value>) -> EdgeTravel {
+fn travel_override_from_properties(props: &Map<String, Value>) -> Option<EdgeTravel> {
     prop_str(props, "travel")
         .or_else(|| prop_str(props, "travel_direction"))
         .or_else(|| prop_str(props, "direction"))
@@ -955,5 +956,8 @@ fn travel_from_properties(props: &Map<String, Value>) -> EdgeTravel {
                     }
                 })
         })
-        .unwrap_or_default()
+}
+
+fn travel_from_properties(props: &Map<String, Value>) -> EdgeTravel {
+    travel_override_from_properties(props).unwrap_or_default()
 }

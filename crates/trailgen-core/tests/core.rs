@@ -1790,6 +1790,93 @@ fn exact_solver_accepts_two_edge_multiedge_loops() {
 }
 
 #[test]
+fn temporal_direction_overlay_constrains_route_generation() {
+    let drafts = [
+        SegmentDraft {
+            geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
+            terrain: Terrain::Trail,
+            surface: None,
+            access: Access::Open,
+            travel: EdgeTravel::Both,
+            road_exposure: 0.0,
+            confidence: 1.0,
+            provenance: Provenance::fixture("out"),
+        },
+        SegmentDraft {
+            geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
+            terrain: Terrain::Trail,
+            surface: None,
+            access: Access::Open,
+            travel: EdgeTravel::Both,
+            road_exposure: 0.0,
+            confidence: 1.0,
+            provenance: Provenance::fixture("back"),
+        },
+    ];
+    let constraints = LoopConstraints {
+        min_distance_m: 0.0,
+        max_distance_m: 10_000.0,
+        max_difficulty: 10_000.0,
+        allowed_shapes: vec![RouteShape::Loop],
+        ..LoopConstraints::default()
+    };
+    let solver = ExactLoopSolver {
+        params: SearchParams {
+            max_hops: 2,
+            max_frontier: 100,
+            keep: 4,
+            ..SearchParams::default()
+        },
+    };
+    let mut graph = GraphBuilder::default().build(&drafts).unwrap();
+    let start = graph.nearest_vertex(Coord::new(0.0, 0.0)).unwrap();
+    assert!(!solver.enumerate(&graph, start, &constraints, 4).is_empty());
+
+    let overlays = geojson::access_overlays_from_str(
+        r#"{
+          "type": "FeatureCollection",
+          "features": [{
+            "type": "Feature",
+            "properties": {
+              "id": "clockwise-only",
+              "source": "fixture-direction",
+              "access": "open",
+              "travel": "forward",
+              "seasonal_from": "06-01",
+              "seasonal_to": "09-30"
+            },
+            "geometry": {
+              "type": "Polygon",
+              "coordinates": [[
+                [-0.001, -0.001],
+                [0.011, -0.001],
+                [0.011, 0.001],
+                [-0.001, 0.001],
+                [-0.001, -0.001]
+              ]]
+            }
+          }]
+        }"#,
+    )
+    .unwrap();
+    let touched = apply_access_overlays(
+        &mut graph,
+        &overlays,
+        Some(PlanningDate::new(2026, 7, 1).unwrap()),
+        DifficultyWeights::default(),
+    );
+
+    assert_eq!(touched, 2);
+    assert!(
+        graph
+            .edges
+            .iter()
+            .all(|edge| edge.attr.travel == EdgeTravel::Forward)
+    );
+    assert!(solver.enumerate(&graph, start, &constraints, 4).is_empty());
+}
+
+#[test]
 fn milp_formulation_exports_connected_loop_model() {
     let graph = GraphBuilder::default().build(&square_drafts()).unwrap();
     let start = graph.nearest_vertex(Coord::new(0.0, 0.0)).unwrap();
@@ -2427,6 +2514,7 @@ fn shapefile_adapters_normalize_networks_and_overlays() {
     let overlays = shp_io::access_overlays_from_path(&access).unwrap();
     assert_eq!(overlays.len(), 1);
     assert_eq!(overlays[0].access, Access::Closed);
+    assert_eq!(overlays[0].travel, Some(EdgeTravel::Forward));
     assert_eq!(overlays[0].name, "closure-1");
     assert!(overlays[0].active_at(Some(PlanningMoment::new(
         Some(PlanningDate::new(2026, 7, 4).unwrap()),
@@ -2682,6 +2770,7 @@ fn write_access_shapefile(path: &std::path::Path) {
     let table = ::shapefile::dbase::TableWriterBuilder::new()
         .add_character_field("name".try_into().unwrap(), 32)
         .add_character_field("status".try_into().unwrap(), 16)
+        .add_character_field("travel".try_into().unwrap(), 16)
         .add_character_field("weekdays".try_into().unwrap(), 16)
         .add_character_field("time_from".try_into().unwrap(), 8)
         .add_character_field("time_to".try_into().unwrap(), 8)
@@ -2697,6 +2786,7 @@ fn write_access_shapefile(path: &std::path::Path) {
     let mut record = ::shapefile::dbase::Record::default();
     record.insert("name".to_owned(), "closure-1".to_owned().into());
     record.insert("status".to_owned(), "closed".to_owned().into());
+    record.insert("travel".to_owned(), "forward".to_owned().into());
     record.insert("weekdays".to_owned(), "weekends".to_owned().into());
     record.insert("time_from".to_owned(), "08:00".to_owned().into());
     record.insert("time_to".to_owned(), "17:00".to_owned().into());

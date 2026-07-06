@@ -1,7 +1,8 @@
 use crate::difficulty::DifficultyWeights;
 use crate::geo::{Coord, LineString};
 use crate::model::{
-    Access, CrossingEvidence, CrossingKind, Edge, Provenance, Terrain, TerrainEvidence, TrailGraph,
+    Access, CrossingEvidence, CrossingKind, Edge, EdgeTravel, Provenance, Terrain, TerrainEvidence,
+    TrailGraph,
 };
 use crate::{Result, TrailgenError};
 use serde::de::{SeqAccess, Visitor};
@@ -694,6 +695,8 @@ impl AccessWindow {
 pub struct AccessOverlay {
     pub name: String,
     pub access: Access,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub travel: Option<EdgeTravel>,
     #[serde(default, skip_serializing_if = "AccessWindow::is_always")]
     pub active: AccessWindow,
     pub confidence: f64,
@@ -792,6 +795,7 @@ pub fn apply_access_overlays_at(
     weights: DifficultyWeights,
 ) -> usize {
     let mut touched = 0usize;
+    let mut travel_changed = false;
     for edge in &mut graph.edges {
         for overlay in overlays {
             if !overlay.active_at(planning_moment) || !overlay.affects(edge) {
@@ -799,6 +803,10 @@ pub fn apply_access_overlays_at(
             }
             touched += 1;
             edge.attr.access = overlay.access;
+            if let Some(travel) = overlay.travel {
+                edge.attr.travel = travel;
+                travel_changed = true;
+            }
             edge.attr.access_confidence = edge.attr.access_confidence.max(overlay.confidence);
             edge.attr.confidence = edge.attr.confidence.min(overlay.confidence);
             if !edge.attr.access_provenance.contains(&overlay.provenance) {
@@ -806,6 +814,9 @@ pub fn apply_access_overlays_at(
             }
         }
         weights.apply_edge(edge);
+    }
+    if travel_changed {
+        graph.rebuild_adjacency();
     }
     touched
 }

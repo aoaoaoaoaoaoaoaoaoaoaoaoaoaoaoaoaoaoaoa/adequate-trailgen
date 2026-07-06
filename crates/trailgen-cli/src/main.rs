@@ -1769,6 +1769,8 @@ struct AccessBaseline {
 struct EdgeAccessBaseline {
     edge: EdgeId,
     access: Access,
+    #[serde(default)]
+    travel: EdgeTravel,
     access_confidence: f64,
     confidence: f64,
     access_provenance: Vec<Provenance>,
@@ -1783,6 +1785,7 @@ impl AccessBaseline {
                 .map(|edge| EdgeAccessBaseline {
                     edge: edge.id,
                     access: edge.attr.access,
+                    travel: edge.attr.travel,
                     access_confidence: edge.attr.access_confidence,
                     confidence: edge.attr.confidence,
                     access_provenance: edge.attr.access_provenance.clone(),
@@ -1812,6 +1815,7 @@ impl AccessBaseline {
                 );
             }
             edge.attr.access = baseline.access;
+            edge.attr.travel = baseline.travel;
             edge.attr.access_confidence = baseline.access_confidence;
             edge.attr.confidence = baseline.confidence;
             edge.attr
@@ -1819,6 +1823,7 @@ impl AccessBaseline {
                 .clone_from(&baseline.access_provenance);
             weights.apply_edge(edge);
         }
+        graph.rebuild_adjacency();
         Ok(())
     }
 }
@@ -3489,6 +3494,7 @@ fn force_forbidden_area_overlays(source: &Path, overlays: &mut [AccessOverlay]) 
     for overlay in overlays {
         let name = overlay.name.clone();
         overlay.access = Access::Closed;
+        overlay.travel = None;
         overlay.active = AccessWindow::default();
         overlay.confidence = overlay.confidence.max(0.95);
         overlay.provenance = Provenance {
