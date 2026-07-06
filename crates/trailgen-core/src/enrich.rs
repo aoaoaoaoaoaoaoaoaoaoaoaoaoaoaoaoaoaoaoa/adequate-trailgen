@@ -138,7 +138,7 @@ fn enrich_edge<S: ElevationSampler>(
     if elevation_confidence > 0.0 {
         edge.attr.confidence = edge.attr.confidence.min(elevation_confidence);
     }
-    infer_terrain(edge, profile.grade_abs_max);
+    infer_terrain(edge, &profile);
     weights.apply_edge(edge);
     Ok(())
 }
@@ -250,45 +250,166 @@ fn grade_profile(line: &LineString, steep_grade_threshold: f64) -> GradeProfile 
     }
 }
 
-fn infer_terrain(edge: &mut Edge, grade_abs_max: f64) {
+struct TerrainInference {
+    terrain: Terrain,
+    confidence: f64,
+    rationale: String,
+    provenance: Option<Provenance>,
+}
+
+fn infer_terrain(edge: &mut Edge, profile: &GradeProfile) {
+    let evicted_enrichment_evidence = evict_enrichment_terrain_evidence(edge);
+    if evicted_enrichment_evidence
+        && edge.attr.terrain_confidence < 0.85
+        && !edge
+            .attr
+            .terrain_evidence
+            .iter()
+            .any(|e| e.terrain == edge.attr.terrain)
+    {
+        edge.attr.terrain = Terrain::Unknown;
+        edge.attr.terrain_confidence = 0.0;
+    }
+
     let terrain = edge.attr.terrain;
     let explicit_confidence = edge.attr.terrain_confidence;
     if terrain != Terrain::Unknown && explicit_confidence >= 0.85 {
-        if edge.attr.terrain_evidence.is_empty() {
-            edge.attr.terrain_evidence.push(TerrainEvidence {
-                terrain,
-                confidence: explicit_confidence,
-                rationale: "explicit source terrain tag".to_owned(),
-                provenance: edge.attr.provenance.first().cloned(),
-            });
+        if !edge
+            .attr
+            .terrain_evidence
+            .iter()
+            .any(|e| e.terrain == terrain)
+        {
+            upsert_terrain_evidence(
+                edge,
+                TerrainEvidence {
+                    terrain,
+                    confidence: explicit_confidence,
+                    rationale: "explicit source terrain tag".to_owned(),
+                    provenance: edge.attr.provenance.first().cloned(),
+                },
+            );
         }
         edge.attr.terrain_confidence = edge.attr.terrain_confidence.max(explicit_confidence);
         return;
     }
 
-    let (inferred, confidence, rationale) = if edge.attr.road_exposure >= 0.75 {
-        (Terrain::Road, 0.70, "high road-exposure fraction")
-    } else if grade_abs_max >= 0.32 {
-        (Terrain::Scramble, 0.52, "very steep sampled grade")
-    } else if grade_abs_max >= 0.22 {
-        (Terrain::Talus, 0.45, "steep sampled grade")
-    } else {
-        (
-            Terrain::Trail,
-            0.35,
-            "default low-confidence hiking surface",
-        )
-    };
-    if confidence < edge.attr.terrain_confidence {
+    let inference = terrain_inference(edge, profile);
+    if inference.confidence < edge.attr.terrain_confidence {
         return;
     }
-    edge.attr.terrain = inferred;
-    edge.attr.terrain_confidence = confidence;
-    edge.attr.confidence = edge.attr.confidence.min(confidence.mul_add(0.35, 0.65));
-    edge.attr.terrain_evidence.push(TerrainEvidence {
-        terrain: inferred,
-        confidence,
-        rationale: rationale.to_owned(),
-        provenance: edge.attr.provenance.first().cloned(),
+    edge.attr.terrain = inference.terrain;
+    edge.attr.terrain_confidence = inference.confidence;
+    edge.attr.confidence = edge
+        .attr
+        .confidence
+        .min(inference.confidence.mul_add(0.35, 0.65));
+    upsert_terrain_evidence(
+        edge,
+        TerrainEvidence {
+            terrain: inference.terrain,
+            confidence: inference.confidence,
+            rationale: inference.rationale,
+            provenance: inference.provenance,
+        },
+    );
+}
+
+fn terrain_inference(edge: &Edge, profile: &GradeProfile) -> TerrainInference {
+    let grade_basis = grade_basis(edge, profile);
+    let edge_provenance = edge.attr.provenance.first().cloned();
+    if edge.attr.road_exposure >= 0.75 {
+        TerrainInference {
+            terrain: Terrain::Road,
+            confidence: 0.70,
+            rationale: format!(
+                "inferred from road exposure {:.0}% with {grade_basis}",
+                edge.attr.road_exposure * 100.0
+            ),
+            provenance: edge
+                .attr
+                .crossings
+                .iter()
+                .find(|x| x.kind == crate::model::CrossingKind::Road)
+                .map(|x| x.provenance.clone())
+                .or(edge_provenance),
+        }
+    } else if profile.grade_abs_max >= 0.32 {
+        TerrainInference {
+            terrain: Terrain::Scramble,
+            confidence: 0.52,
+            rationale: format!("inferred from savage sampled grade: {grade_basis}"),
+            provenance: edge
+                .attr
+                .elevation_provenance
+                .first()
+                .cloned()
+                .or(edge_provenance),
+        }
+    } else if profile.grade_abs_max >= 0.22 {
+        TerrainInference {
+            terrain: Terrain::Talus,
+            confidence: 0.45,
+            rationale: format!("inferred from steep sampled grade: {grade_basis}"),
+            provenance: edge
+                .attr
+                .elevation_provenance
+                .first()
+                .cloned()
+                .or(edge_provenance),
+        }
+    } else {
+        TerrainInference {
+            terrain: Terrain::Trail,
+            confidence: 0.35,
+            rationale: format!("inferred default hiking surface: {grade_basis}"),
+            provenance: edge_provenance,
+        }
+    }
+}
+
+fn grade_basis(edge: &Edge, profile: &GradeProfile) -> String {
+    if edge.attr.elevation_provenance.is_empty() {
+        format!(
+            "no sampled elevation source; road exposure {:.0}%",
+            edge.attr.road_exposure * 100.0
+        )
+    } else {
+        let bins = profile.grade_distribution;
+        let total = bins.total_m().max(1.0);
+        format!(
+            "max grade {:.1}%, mean grade {:.1}%, steep {:.0}%, savage {:.0}%",
+            profile.grade_abs_max * 100.0,
+            profile.grade_abs_mean * 100.0,
+            bins.steep_m / total * 100.0,
+            bins.savage_m / total * 100.0
+        )
+    }
+}
+
+fn evict_enrichment_terrain_evidence(edge: &mut Edge) -> bool {
+    let old_len = edge.attr.terrain_evidence.len();
+    edge.attr.terrain_evidence.retain(|e| {
+        !(e.rationale.starts_with("inferred ")
+            || matches!(
+                e.rationale.as_str(),
+                "high road-exposure fraction"
+                    | "very steep sampled grade"
+                    | "steep sampled grade"
+                    | "default low-confidence hiking surface"
+            ))
     });
+    edge.attr.terrain_evidence.len() != old_len
+}
+
+fn upsert_terrain_evidence(edge: &mut Edge, evidence: TerrainEvidence) {
+    if let Some(existing) = edge.attr.terrain_evidence.iter_mut().find(|e| {
+        e.terrain == evidence.terrain
+            && e.rationale == evidence.rationale
+            && e.provenance == evidence.provenance
+    }) {
+        existing.confidence = existing.confidence.max(evidence.confidence);
+    } else {
+        edge.attr.terrain_evidence.push(evidence);
+    }
 }

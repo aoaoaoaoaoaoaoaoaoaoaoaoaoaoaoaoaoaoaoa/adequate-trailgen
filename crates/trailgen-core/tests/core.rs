@@ -22,9 +22,9 @@ use trailgen_core::{
 use trailgen_core::{
     Coord, DifficultyWeights, EnrichmentConfig, GraphBuilder, LineString, LoopConstraints,
     LoopHunter, OverlayGeometry, PlaneElevation, Provenance, SeedRoute, SegmentDraft, Terrain,
-    TerrainMultipliers, apply_access_overlays, apply_access_overlays_at, apply_context_overlays,
-    apply_terrain_overlays, enrich_graph, rank_routes, route_edges_from_selected_arcs,
-    route_edges_from_solution,
+    TerrainMultipliers, TrailGraph, apply_access_overlays, apply_access_overlays_at,
+    apply_context_overlays, apply_terrain_overlays, enrich_graph, rank_routes,
+    route_edges_from_selected_arcs, route_edges_from_solution,
 };
 
 const WGS84_PRJ: &str = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["Degree",0.0174532925199433]]"#;
@@ -3169,22 +3169,8 @@ fn elevation_enrichment_densifies_rates_and_infers_terrain() {
         provenance: Provenance::fixture("climb"),
     };
     let mut graph = GraphBuilder::default().build(&[draft]).unwrap();
-    enrich_graph(
-        &mut graph,
-        &PlaneElevation {
-            origin: Coord::new(0.0, 0.0),
-            origin_ele_m: 1_000.0,
-            east_gain_m_per_degree: 0.0,
-            north_gain_m_per_degree: 40_000.0,
-            confidence: 0.77,
-        },
-        EnrichmentConfig {
-            sample_spacing_m: 50.0,
-            steep_grade_threshold: 0.15,
-        },
-        DifficultyWeights::default(),
-    )
-    .unwrap();
+    enrich_with_north_plane(&mut graph, 40_000.0, 0.77);
+
     let edge = &graph.edges[0];
     assert!(edge.geometry.points.len() > 10);
     assert!(edge.attr.ascent_m > 390.0);
@@ -3199,6 +3185,77 @@ fn elevation_enrichment_densifies_rates_and_infers_terrain() {
             .iter()
             .any(|p| p.source == "synthetic-plane-elevation")
     );
+    let terrain_evidence = edge
+        .attr
+        .terrain_evidence
+        .iter()
+        .filter(|e| e.terrain == Terrain::Scramble)
+        .collect::<Vec<_>>();
+    assert_eq!(terrain_evidence.len(), 1);
+    assert!((terrain_evidence[0].confidence - 0.52).abs() <= 1.0e-12);
+    assert!(
+        terrain_evidence[0]
+            .rationale
+            .contains("inferred from savage sampled grade")
+    );
+    assert!(terrain_evidence[0].rationale.contains("max grade"));
+    assert!(
+        terrain_evidence[0]
+            .provenance
+            .as_ref()
+            .is_some_and(|p| p.source == "synthetic-plane-elevation")
+    );
+
+    enrich_with_north_plane(&mut graph, 40_000.0, 0.77);
+    assert_eq!(
+        graph.edges[0]
+            .attr
+            .terrain_evidence
+            .iter()
+            .filter(|e| e.terrain == Terrain::Scramble)
+            .count(),
+        1
+    );
+
+    enrich_with_north_plane(&mut graph, 0.0, 0.80);
+    let reenriched = &graph.edges[0];
+    assert_eq!(reenriched.attr.terrain, Terrain::Trail);
+    assert_eq!(
+        reenriched
+            .attr
+            .terrain_evidence
+            .iter()
+            .filter(|e| e.terrain == Terrain::Scramble)
+            .count(),
+        0
+    );
+    assert!(
+        reenriched
+            .attr
+            .terrain_evidence
+            .iter()
+            .any(|e| e.terrain == Terrain::Trail
+                && e.rationale.contains("inferred default hiking surface"))
+    );
+}
+
+fn enrich_with_north_plane(graph: &mut TrailGraph, north_gain_m_per_degree: f64, confidence: f64) {
+    enrich_graph(
+        graph,
+        &PlaneElevation {
+            origin: Coord::new(0.0, 0.0),
+            origin_ele_m: 1_000.0,
+            east_gain_m_per_degree: 0.0,
+            north_gain_m_per_degree,
+            confidence,
+        },
+        EnrichmentConfig {
+            sample_spacing_m: 50.0,
+            steep_grade_threshold: 0.15,
+        },
+        DifficultyWeights::default(),
+    )
+    .unwrap();
 }
 
 #[test]
