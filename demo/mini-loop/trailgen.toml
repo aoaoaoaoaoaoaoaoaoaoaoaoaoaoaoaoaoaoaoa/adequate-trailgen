@@ -61,3 +61,4 @@ forbidden_terrain = []
 max_hops = 36
 max_frontier = 200000
 keep = 12
+closure_paths = 4

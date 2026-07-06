@@ -74,6 +74,7 @@
       "max_hops": 36,
       "max_frontier": 200000,
       "keep": 12,
+      "closure_paths": 4,
       "seed": 0
     },
     "max_start_snap_m": 500.0,

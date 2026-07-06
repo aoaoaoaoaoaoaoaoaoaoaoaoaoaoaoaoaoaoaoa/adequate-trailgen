@@ -127,6 +127,9 @@ enum Cmd {
         /// Maximum pre-truncation candidates retained by the solver.
         #[arg(long, value_parser = parse_positive_usize)]
         keep: Option<usize>,
+        /// Number of legal return paths tried from each outward heuristic frontier.
+        #[arg(long, value_parser = parse_positive_usize)]
+        closure_paths: Option<usize>,
         /// Planning date used to materialize dated access/closure overlays.
         #[arg(long, value_parser = parse_planning_date)]
         date: Option<PlanningDate>,
@@ -433,6 +436,7 @@ fn main() -> Result<()> {
             max_hops,
             max_frontier,
             keep,
+            closure_paths,
             date,
             min_difficulty,
             max_difficulty,
@@ -462,6 +466,7 @@ fn main() -> Result<()> {
                 max_hops,
                 max_frontier,
                 keep,
+                closure_paths,
                 date,
                 min_difficulty,
                 max_difficulty,
@@ -1090,6 +1095,7 @@ struct GenerateOptions {
     max_hops: Option<usize>,
     max_frontier: Option<usize>,
     keep: Option<usize>,
+    closure_paths: Option<usize>,
     date: Option<PlanningDate>,
     min_difficulty: Option<f64>,
     max_difficulty: Option<f64>,
@@ -1457,6 +1463,9 @@ const fn apply_generate_search_options(search: &mut SearchParams, options: &Gene
     }
     if let Some(keep) = options.keep {
         search.keep = keep;
+    }
+    if let Some(closure_paths) = options.closure_paths {
+        search.closure_paths = closure_paths;
     }
 }
 
@@ -4014,6 +4023,7 @@ mod tests {
             max_hops: None,
             max_frontier: None,
             keep: None,
+            closure_paths: None,
             date: None,
             min_difficulty: None,
             max_difficulty: None,
@@ -4051,6 +4061,7 @@ mod tests {
         assert!(generate_help.contains("Maximum road or pavement"));
         assert!(generate_help.contains("Allowed measured route shape"));
         assert!(generate_help.contains("Maximum expanded solver states"));
+        assert!(generate_help.contains("legal return paths"));
 
         let mut access = Cli::command();
         let access_help = access
@@ -4078,6 +4089,7 @@ mod tests {
                 max_hops: None,
                 max_frontier: None,
                 keep: None,
+                closure_paths: None,
                 date: None,
                 min_difficulty: None,
                 max_difficulty: None,
@@ -4280,6 +4292,7 @@ mod tests {
             max_hops: Some(9),
             max_frontier: Some(1_234),
             keep: Some(7),
+            closure_paths: Some(3),
             date: Some("2026-05-15".parse().unwrap()),
             forbidden_terrain: vec![Terrain::Road],
             min_terrain: vec![TerrainFraction {
@@ -4313,6 +4326,7 @@ mod tests {
             1_234
         );
         assert_eq!(manifest["effective_config"]["search"]["keep"], 7);
+        assert_eq!(manifest["effective_config"]["search"]["closure_paths"], 3);
         assert_eq!(manifest["effective_config"]["search"]["seed"], 77);
         assert_eq!(manifest["effective_config"]["planning_date"], "2026-05-15");
         assert_effective_constraints_manifest(&manifest);
@@ -4375,6 +4389,7 @@ mod tests {
             max_hops: None,
             max_frontier: None,
             keep: None,
+            closure_paths: None,
             date: None,
             min_difficulty: None,
             max_difficulty: None,
@@ -4438,6 +4453,7 @@ mod tests {
                 max_hops: None,
                 max_frontier: None,
                 keep: None,
+                closure_paths: None,
                 date: None,
                 min_difficulty: None,
                 max_difficulty: Some(10_000.0),
@@ -4602,6 +4618,7 @@ mod tests {
                 max_hops: None,
                 max_frontier: None,
                 keep: None,
+                closure_paths: None,
                 date: None,
                 min_difficulty: None,
                 max_difficulty: None,
@@ -4901,6 +4918,7 @@ mod tests {
                 max_hops: None,
                 max_frontier: None,
                 keep: None,
+                closure_paths: None,
                 date: Some("2026-07-15".parse().unwrap()),
                 min_difficulty: None,
                 max_difficulty: None,
@@ -4985,6 +5003,7 @@ mod tests {
                 max_hops: None,
                 max_frontier: None,
                 keep: None,
+                closure_paths: None,
                 date: Some("2026-07-15".parse().unwrap()),
                 min_difficulty: None,
                 max_difficulty: None,
@@ -5066,6 +5085,7 @@ mod tests {
                 max_hops: None,
                 max_frontier: None,
                 keep: None,
+                closure_paths: None,
                 date: None,
                 min_difficulty: None,
                 max_difficulty: Some(10_000.0),

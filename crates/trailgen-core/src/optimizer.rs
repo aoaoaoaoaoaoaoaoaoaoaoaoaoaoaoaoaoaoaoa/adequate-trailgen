@@ -11,8 +11,14 @@ pub struct SearchParams {
     pub max_hops: usize,
     pub max_frontier: usize,
     pub keep: usize,
+    #[serde(default = "default_closure_paths")]
+    pub closure_paths: usize,
     #[serde(default)]
     pub seed: u64,
+}
+
+const fn default_closure_paths() -> usize {
+    4
 }
 
 impl Default for SearchParams {
@@ -21,6 +27,7 @@ impl Default for SearchParams {
             max_hops: 36,
             max_frontier: 200_000,
             keep: 12,
+            closure_paths: default_closure_paths(),
             seed: 0,
         }
     }
@@ -138,9 +145,14 @@ impl RouteSolver for LoopHunter {
             }
             if closes_allowed(constraints) && state.at != start && !state.edges.is_empty() {
                 let max_return_m = constraints.max_distance_m.mul_add(1.35, -state.distance_m);
-                if let Some(return_edges) =
-                    shortest_return_path(graph, state.at, start, &state.used, max_return_m)
-                {
+                for return_edges in shortest_return_paths(
+                    graph,
+                    state.at,
+                    start,
+                    &state.used,
+                    max_return_m,
+                    self.params.closure_paths,
+                ) {
                     let mut route_edges = state.edges.clone();
                     route_edges.extend(return_edges);
                     push_allowed_route(&mut routes, graph, start, route_edges, constraints);
@@ -343,65 +355,66 @@ fn route_distance(graph: &TrailGraph, edges: &[EdgeId]) -> f64 {
         .sum()
 }
 
-fn shortest_return_path(
+fn shortest_return_paths(
     graph: &TrailGraph,
     from: VertexId,
     target: VertexId,
     banned_edges: &BTreeSet<EdgeId>,
     max_distance_m: f64,
-) -> Option<Vec<EdgeId>> {
+    keep: usize,
+) -> Vec<Vec<EdgeId>> {
     if max_distance_m < 0.0 {
-        return None;
+        return Vec::new();
     }
-    let mut distance = vec![f64::INFINITY; graph.vertices.len()];
-    let mut predecessor = vec![None::<(VertexId, EdgeId)>; graph.vertices.len()];
+    let keep = keep.max(1);
+    let expansion_cap = keep
+        .saturating_mul(graph.edges.len().max(1))
+        .saturating_mul(8)
+        .max(64);
     let mut heap = BinaryHeap::new();
-    distance[from.0] = 0.0;
-    heap.push(HeapEntry {
+    heap.push(ReturnPathState {
         cost_m: 0.0,
-        vertex: from,
+        at: from,
+        edges: Vec::new(),
+        used: banned_edges.clone(),
     });
+    let mut expanded = 0usize;
+    let mut paths = Vec::new();
 
-    while let Some(HeapEntry { cost_m, vertex }) = heap.pop() {
-        if cost_m > distance[vertex.0] {
-            continue;
-        }
-        if vertex == target {
+    while let Some(state) = heap.pop() {
+        if paths.len() >= keep || expanded >= expansion_cap {
             break;
         }
-        for edge_id in &graph.adjacency[vertex.0] {
-            if banned_edges.contains(edge_id) {
+        expanded += 1;
+        if state.at == target && !state.edges.is_empty() {
+            paths.push(state.edges);
+            continue;
+        }
+        for edge_id in &graph.adjacency[state.at.0] {
+            if state.used.contains(edge_id) {
                 continue;
             }
             let edge = &graph.edges[edge_id.0];
-            let Some(next) = edge.traverse(vertex) else {
+            let Some(next) = edge.traverse(state.at) else {
                 continue;
             };
-            let next_cost_m = cost_m + edge.attr.length_m;
-            if next_cost_m > max_distance_m || next_cost_m >= distance[next.0] {
+            let next_cost_m = state.cost_m + edge.attr.length_m;
+            if next_cost_m > max_distance_m {
                 continue;
             }
-            distance[next.0] = next_cost_m;
-            predecessor[next.0] = Some((vertex, *edge_id));
-            heap.push(HeapEntry {
+            let mut edges = state.edges.clone();
+            edges.push(*edge_id);
+            let mut used = state.used.clone();
+            used.insert(*edge_id);
+            heap.push(ReturnPathState {
                 cost_m: next_cost_m,
-                vertex: next,
+                at: next,
+                edges,
+                used,
             });
         }
     }
-
-    if !distance[target.0].is_finite() {
-        return None;
-    }
-    let mut path = Vec::new();
-    let mut cursor = target;
-    while cursor != from {
-        let (previous, edge_id) = predecessor[cursor.0]?;
-        path.push(edge_id);
-        cursor = previous;
-    }
-    path.reverse();
-    Some(path)
+    paths
 }
 
 fn sort_heuristic_fanout(
@@ -438,23 +451,26 @@ const fn splitmix64(mut x: u64) -> u64 {
     x ^ (x >> 31)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct HeapEntry {
+#[derive(Clone, Debug, PartialEq)]
+struct ReturnPathState {
     cost_m: f64,
-    vertex: VertexId,
+    at: VertexId,
+    edges: Vec<EdgeId>,
+    used: BTreeSet<EdgeId>,
 }
 
-impl Eq for HeapEntry {}
+impl Eq for ReturnPathState {}
 
-impl Ord for HeapEntry {
+impl Ord for ReturnPathState {
     fn cmp(&self, rhs: &Self) -> Ordering {
         rhs.cost_m
             .total_cmp(&self.cost_m)
-            .then_with(|| rhs.vertex.cmp(&self.vertex))
+            .then_with(|| rhs.at.cmp(&self.at))
+            .then_with(|| rhs.edges.cmp(&self.edges))
     }
 }
 
-impl PartialOrd for HeapEntry {
+impl PartialOrd for ReturnPathState {
     fn partial_cmp(&self, rhs: &Self) -> Option<Ordering> {
         Some(self.cmp(rhs))
     }

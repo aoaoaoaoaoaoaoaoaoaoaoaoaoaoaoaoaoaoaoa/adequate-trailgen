@@ -1130,6 +1130,41 @@ fn loop_hunter_closes_sparse_frontier_with_shortest_return_path() {
 }
 
 #[test]
+fn loop_hunter_tries_alternate_return_paths_when_shortest_closure_violates_constraints() {
+    let graph = GraphBuilder::default()
+        .build(&closure_trap_drafts())
+        .unwrap();
+    let start = graph.nearest_vertex(Coord::new(0.0, 0.0)).unwrap();
+    let constraints = LoopConstraints {
+        min_distance_m: 0.0,
+        max_distance_m: 8_000.0,
+        max_difficulty: 10_000.0,
+        max_road_fraction: 0.10,
+        allowed_shapes: vec![RouteShape::Loop],
+        ..LoopConstraints::default()
+    };
+    let hunt = |closure_paths| {
+        LoopHunter {
+            params: SearchParams {
+                max_hops: 1,
+                max_frontier: 20,
+                keep: 8,
+                closure_paths,
+                ..SearchParams::default()
+            },
+        }
+        .hunt(&graph, start, &constraints, 8)
+    };
+
+    assert!(!hunt(1).iter().any(|route| route.verdict.satisfied));
+    assert!(hunt(2).iter().any(|route| {
+        route.verdict.satisfied
+            && route.metrics.road_fraction <= constraints.max_road_fraction
+            && route.edges.len() > 2
+    }));
+}
+
+#[test]
 fn loop_hunter_seed_diversifies_sparse_frontier_order() {
     let graph = GraphBuilder::default().build(&bowtie_drafts()).unwrap();
     let start = graph.nearest_vertex(Coord::new(0.0, 0.0)).unwrap();
@@ -1146,6 +1181,7 @@ fn loop_hunter_seed_diversifies_sparse_frontier_order() {
                 max_hops: 1,
                 max_frontier: 2,
                 keep: 1,
+                closure_paths: 1,
                 seed,
             },
         }
@@ -2395,6 +2431,56 @@ fn square_drafts() -> Vec<SegmentDraft> {
         access: Access::Open,
         travel: EdgeTravel::Both,
         road_exposure: 0.0,
+        confidence: 1.0,
+        provenance: Provenance::fixture(name),
+    })
+    .collect()
+}
+
+fn closure_trap_drafts() -> Vec<SegmentDraft> {
+    let start = Coord::new(0.0, 0.0);
+    let fork = Coord::new(0.01, 0.0);
+    let north = Coord::new(0.01, 0.01);
+    let west = Coord::new(0.0, 0.01);
+    [
+        (start, fork, Terrain::Trail, EdgeTravel::Forward, "outbound"),
+        (
+            fork,
+            start,
+            Terrain::Road,
+            EdgeTravel::Forward,
+            "short-road-return",
+        ),
+        (
+            fork,
+            north,
+            Terrain::Trail,
+            EdgeTravel::Forward,
+            "long-return-east",
+        ),
+        (
+            north,
+            west,
+            Terrain::Trail,
+            EdgeTravel::Forward,
+            "long-return-north",
+        ),
+        (
+            west,
+            start,
+            Terrain::Trail,
+            EdgeTravel::Forward,
+            "long-return-west",
+        ),
+    ]
+    .into_iter()
+    .map(|(from, to, terrain, travel, name)| SegmentDraft {
+        geometry: LineString::new(vec![from, to]).unwrap(),
+        terrain,
+        surface: None,
+        access: Access::Open,
+        travel,
+        road_exposure: if terrain == Terrain::Road { 1.0 } else { 0.0 },
         confidence: 1.0,
         provenance: Provenance::fixture(name),
     })
