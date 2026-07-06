@@ -40,6 +40,7 @@ fn builder_splits_crossing_lines() {
         SegmentDraft {
             geometry: LineString::new(vec![Coord::new(0.0, 0.5), Coord::new(1.0, 0.5)]).unwrap(),
             terrain: Terrain::Trail,
+            terrain_confidence: None,
             surface: None,
             access: Access::Open,
             travel: EdgeTravel::Both,
@@ -50,6 +51,7 @@ fn builder_splits_crossing_lines() {
         SegmentDraft {
             geometry: LineString::new(vec![Coord::new(0.5, 0.0), Coord::new(0.5, 1.0)]).unwrap(),
             terrain: Terrain::Trail,
+            terrain_confidence: None,
             surface: None,
             access: Access::Open,
             travel: EdgeTravel::Both,
@@ -74,6 +76,7 @@ fn graph_adjacency_respects_one_way_travel() {
         .build(&[SegmentDraft {
             geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
             terrain: Terrain::Trail,
+            terrain_confidence: None,
             surface: None,
             access: Access::Open,
             travel: EdgeTravel::Forward,
@@ -150,6 +153,7 @@ fn near_miss_drafts() -> Vec<SegmentDraft> {
         SegmentDraft {
             geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(1.0, 0.0)]).unwrap(),
             terrain: Terrain::Trail,
+            terrain_confidence: None,
             surface: None,
             access: Access::Open,
             travel: EdgeTravel::Both,
@@ -161,6 +165,7 @@ fn near_miss_drafts() -> Vec<SegmentDraft> {
             geometry: LineString::new(vec![Coord::new(0.5, 0.00005), Coord::new(0.5, 0.01)])
                 .unwrap(),
             terrain: Terrain::Trail,
+            terrain_confidence: None,
             surface: None,
             access: Access::Open,
             travel: EdgeTravel::Both,
@@ -176,6 +181,7 @@ fn difficulty_penalizes_rough_uncertain_closed_edges() {
     let smooth = SegmentDraft {
         geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
         terrain: Terrain::Trail,
+        terrain_confidence: None,
         surface: Some("dirt".to_owned()),
         access: Access::Open,
         travel: EdgeTravel::Both,
@@ -185,6 +191,7 @@ fn difficulty_penalizes_rough_uncertain_closed_edges() {
     };
     let savage = SegmentDraft {
         terrain: Terrain::Scramble,
+        terrain_confidence: None,
         surface: Some("dirt".to_owned()),
         access: Access::Closed,
         confidence: 0.25,
@@ -193,6 +200,7 @@ fn difficulty_penalizes_rough_uncertain_closed_edges() {
     };
     let uncertain = SegmentDraft {
         terrain: Terrain::Unknown,
+        terrain_confidence: None,
         surface: Some("dirt".to_owned()),
         access: Access::Open,
         confidence: 0.9,
@@ -235,6 +243,7 @@ fn terrain_multipliers_are_configurable_and_defaulted() {
     let draft = SegmentDraft {
         geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
         terrain: Terrain::Talus,
+        terrain_confidence: None,
         surface: None,
         access: Access::Open,
         travel: EdgeTravel::Both,
@@ -277,6 +286,7 @@ fn geojson_network_preserves_surface_tags() {
 
     assert_eq!(edge.attr.surface.as_deref(), Some("asphalt"));
     assert_eq!(edge.attr.terrain, Terrain::Pavement);
+    assert!((edge.attr.terrain_confidence - 0.82).abs() <= f64::EPSILON);
     assert!(geojson::graph_to_geojson(&graph)["features"][0]["properties"]["surface"] == "asphalt");
     let report = report::render(
         &graph,
@@ -340,12 +350,14 @@ fn osm_xml_network_normalizes_walkable_ways() {
 
     assert_eq!(drafts.len(), 2);
     assert_eq!(drafts[0].terrain, Terrain::Pavement);
+    assert_eq!(drafts[0].terrain_confidence, Some(0.86));
     assert_eq!(drafts[0].surface.as_deref(), Some("asphalt"));
     assert_eq!(drafts[0].access, Access::Open);
     assert_eq!(drafts[0].travel, EdgeTravel::Forward);
     assert_eq!(drafts[0].provenance.source, "osm-xml");
     assert_eq!(drafts[0].provenance.source_id.as_deref(), Some("10"));
     assert_eq!(drafts[1].terrain, Terrain::Road);
+    assert_eq!(drafts[1].terrain_confidence, Some(0.62));
     assert_eq!(drafts[1].access, Access::Private);
     assert!((drafts[1].road_exposure - 1.0).abs() <= f64::EPSILON);
 
@@ -420,6 +432,7 @@ fn osm_pbf_network_normalizes_walkable_ways() {
 
     assert_eq!(drafts.len(), 2);
     assert_eq!(drafts[0].terrain, Terrain::Trail);
+    assert_eq!(drafts[0].terrain_confidence, Some(0.68));
     assert_eq!(drafts[0].surface.as_deref(), Some("gravel"));
     assert_eq!(drafts[0].travel, EdgeTravel::Forward);
     assert_eq!(drafts[0].provenance.source, "osm-pbf");
@@ -432,6 +445,7 @@ fn osm_pbf_network_normalizes_walkable_ways() {
     assert!(source_id.contains("turn restrictions 30:from:no_right_turn,30:to:no_right_turn"));
     assert!(drafts[0].confidence >= 0.82);
     assert_eq!(drafts[1].terrain, Terrain::Road);
+    assert_eq!(drafts[1].terrain_confidence, Some(0.62));
     assert_eq!(drafts[1].access, Access::Private);
     assert!((drafts[1].road_exposure - 1.0).abs() <= f64::EPSILON);
 
@@ -466,6 +480,7 @@ fn road_fraction_counts_road_and_pavement_terrain() {
         .build(&[SegmentDraft {
             geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
             terrain: Terrain::Pavement,
+            terrain_confidence: None,
             surface: Some("asphalt".to_owned()),
             access: Access::Open,
             travel: EdgeTravel::Both,
@@ -965,6 +980,7 @@ fn multiline_access_overlay_hits_each_line_without_flattening() {
                 geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)])
                     .unwrap(),
                 terrain: Terrain::Trail,
+                terrain_confidence: None,
                 surface: None,
                 access: Access::Open,
                 travel: EdgeTravel::Both,
@@ -976,6 +992,7 @@ fn multiline_access_overlay_hits_each_line_without_flattening() {
                 geometry: LineString::new(vec![Coord::new(0.0, 0.01), Coord::new(0.01, 0.01)])
                     .unwrap(),
                 terrain: Terrain::Trail,
+                terrain_confidence: None,
                 surface: None,
                 access: Access::Open,
                 travel: EdgeTravel::Both,
@@ -1244,6 +1261,7 @@ fn osm_context_overlays_infer_road_and_water_crossings() {
             ])
             .unwrap(),
             terrain: Terrain::Trail,
+            terrain_confidence: None,
             surface: None,
             access: Access::Open,
             travel: EdgeTravel::Both,
@@ -1284,6 +1302,7 @@ fn multiline_context_overlay_does_not_invent_joiner_crossings() {
         .build(&[SegmentDraft {
             geometry: LineString::new(vec![Coord::new(0.5, 0.4), Coord::new(0.5, 0.6)]).unwrap(),
             terrain: Terrain::Trail,
+            terrain_confidence: None,
             surface: None,
             access: Access::Open,
             travel: EdgeTravel::Both,
@@ -1552,6 +1571,7 @@ fn repeated_edge_fraction_is_distance_weighted() {
             ])
             .unwrap(),
             terrain: Terrain::Trail,
+            terrain_confidence: None,
             surface: None,
             access: Access::Open,
             travel: EdgeTravel::Both,
@@ -1627,6 +1647,7 @@ fn loop_hunter_rejects_directionally_impossible_out_and_back() {
         .build(&[SegmentDraft {
             geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
             terrain: Terrain::Trail,
+            terrain_confidence: None,
             surface: None,
             access: Access::Open,
             travel: EdgeTravel::Forward,
@@ -1809,6 +1830,7 @@ fn exact_solver_accepts_two_edge_multiedge_loops() {
                 geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)])
                     .unwrap(),
                 terrain: Terrain::Trail,
+                terrain_confidence: None,
                 surface: None,
                 access: Access::Open,
                 travel: EdgeTravel::Both,
@@ -1820,6 +1842,7 @@ fn exact_solver_accepts_two_edge_multiedge_loops() {
                 geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)])
                     .unwrap(),
                 terrain: Terrain::Trail,
+                terrain_confidence: None,
                 surface: None,
                 access: Access::Open,
                 travel: EdgeTravel::Both,
@@ -1866,6 +1889,7 @@ fn solvers_collapse_reversed_equivalent_edge_sets() {
                 geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)])
                     .unwrap(),
                 terrain: Terrain::Trail,
+                terrain_confidence: None,
                 surface: None,
                 access: Access::Open,
                 travel: EdgeTravel::Both,
@@ -1877,6 +1901,7 @@ fn solvers_collapse_reversed_equivalent_edge_sets() {
                 geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)])
                     .unwrap(),
                 terrain: Terrain::Trail,
+                terrain_confidence: None,
                 surface: None,
                 access: Access::Open,
                 travel: EdgeTravel::Both,
@@ -1922,6 +1947,7 @@ fn directed_travel_diagnostics_are_exported() {
                 geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)])
                     .unwrap(),
                 terrain: Terrain::Trail,
+                terrain_confidence: None,
                 surface: None,
                 access: Access::Open,
                 travel: EdgeTravel::Forward,
@@ -1933,6 +1959,7 @@ fn directed_travel_diagnostics_are_exported() {
                 geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)])
                     .unwrap(),
                 terrain: Terrain::Trail,
+                terrain_confidence: None,
                 surface: None,
                 access: Access::Open,
                 travel: EdgeTravel::Backward,
@@ -1987,6 +2014,7 @@ fn temporal_direction_overlay_constrains_route_generation() {
         SegmentDraft {
             geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
             terrain: Terrain::Trail,
+            terrain_confidence: None,
             surface: None,
             access: Access::Open,
             travel: EdgeTravel::Both,
@@ -1997,6 +2025,7 @@ fn temporal_direction_overlay_constrains_route_generation() {
         SegmentDraft {
             geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
             terrain: Terrain::Trail,
+            terrain_confidence: None,
             surface: None,
             access: Access::Open,
             travel: EdgeTravel::Both,
@@ -2120,6 +2149,7 @@ fn milp_formulation_respects_one_way_arc_feasibility() {
         .build(&[SegmentDraft {
             geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
             terrain: Terrain::Trail,
+            terrain_confidence: None,
             surface: None,
             access: Access::Open,
             travel: EdgeTravel::Forward,
@@ -2189,6 +2219,7 @@ fn milp_incumbent_rejects_disconnected_subtours() {
         SegmentDraft {
             geometry: LineString::new(vec![detached_a, detached_b]).unwrap(),
             terrain: Terrain::Trail,
+            terrain_confidence: None,
             surface: None,
             access: Access::Open,
             travel: EdgeTravel::Forward,
@@ -2199,6 +2230,7 @@ fn milp_incumbent_rejects_disconnected_subtours() {
         SegmentDraft {
             geometry: LineString::new(vec![detached_b, detached_a]).unwrap(),
             terrain: Terrain::Trail,
+            terrain_confidence: None,
             surface: None,
             access: Access::Open,
             travel: EdgeTravel::Forward,
@@ -2241,6 +2273,7 @@ fn auto_solver_uses_exact_backend_only_for_small_graphs() {
             ])
             .unwrap(),
             terrain: Terrain::Trail,
+            terrain_confidence: None,
             surface: None,
             access: Access::Open,
             travel: EdgeTravel::Both,
@@ -3167,6 +3200,7 @@ fn elevation_enrichment_densifies_rates_and_infers_terrain() {
     let draft = SegmentDraft {
         geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.0, 0.01)]).unwrap(),
         terrain: Terrain::Unknown,
+        terrain_confidence: None,
         surface: None,
         access: Access::Open,
         travel: EdgeTravel::Both,
@@ -3918,6 +3952,7 @@ fn simple_path_draft() -> SegmentDraft {
         ])
         .unwrap(),
         terrain: Terrain::Trail,
+        terrain_confidence: None,
         surface: None,
         access: Access::Open,
         travel: EdgeTravel::Both,
@@ -3942,6 +3977,7 @@ fn square_drafts() -> Vec<SegmentDraft> {
     .map(|(from, to, name)| SegmentDraft {
         geometry: LineString::new(vec![from, to]).unwrap(),
         terrain: Terrain::Trail,
+        terrain_confidence: None,
         surface: None,
         access: Access::Open,
         travel: EdgeTravel::Both,
@@ -3992,6 +4028,7 @@ fn closure_trap_drafts() -> Vec<SegmentDraft> {
     .map(|(from, to, terrain, travel, name)| SegmentDraft {
         geometry: LineString::new(vec![from, to]).unwrap(),
         terrain,
+        terrain_confidence: None,
         surface: None,
         access: Access::Open,
         travel,
@@ -4020,6 +4057,7 @@ fn bowtie_drafts() -> Vec<SegmentDraft> {
     .map(|(from, to, name)| SegmentDraft {
         geometry: LineString::new(vec![from, to]).unwrap(),
         terrain: Terrain::Trail,
+        terrain_confidence: None,
         surface: None,
         access: Access::Open,
         travel: EdgeTravel::Both,

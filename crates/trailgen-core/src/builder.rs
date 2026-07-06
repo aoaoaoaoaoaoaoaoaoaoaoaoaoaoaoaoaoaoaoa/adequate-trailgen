@@ -13,6 +13,8 @@ use std::collections::{BTreeMap, btree_map::Entry};
 pub struct SegmentDraft {
     pub geometry: LineString,
     pub terrain: Terrain,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terrain_confidence: Option<f64>,
     pub surface: Option<String>,
     pub access: Access,
     #[serde(default)]
@@ -204,11 +206,10 @@ fn edge_attr(
         grade_distribution: GradeDistribution::default().add_segment(length_m, grade_abs_mean),
         terrain: draft.terrain,
         surface: draft.surface.clone(),
-        terrain_confidence: if draft.terrain == Terrain::Unknown {
-            0.0
-        } else {
-            0.90
-        },
+        terrain_confidence: draft
+            .terrain_confidence
+            .unwrap_or_else(|| legacy_terrain_confidence(draft.terrain))
+            .clamp(0.0, 1.0),
         terrain_evidence: Vec::new(),
         access: draft.access,
         travel: draft.travel,
@@ -228,6 +229,14 @@ fn edge_attr(
         seed_provenance: Vec::new(),
         elevation_provenance: Vec::new(),
         provenance,
+    }
+}
+
+const fn legacy_terrain_confidence(terrain: Terrain) -> f64 {
+    if matches!(terrain, Terrain::Unknown) {
+        0.0
+    } else {
+        0.90
     }
 }
 

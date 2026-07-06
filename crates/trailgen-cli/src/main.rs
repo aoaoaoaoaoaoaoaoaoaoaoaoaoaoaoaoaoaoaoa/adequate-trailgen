@@ -1095,6 +1095,7 @@ fn route_source_draft_from_line(source: &Path, line: LineString) -> SegmentDraft
     SegmentDraft {
         geometry: line,
         terrain: Terrain::Unknown,
+        terrain_confidence: Some(0.0),
         surface: None,
         access: Access::Unknown,
         travel: EdgeTravel::Both,
@@ -6249,6 +6250,7 @@ mod tests {
                 ])
                 .unwrap(),
                 terrain: Terrain::Trail,
+                terrain_confidence: None,
                 surface: None,
                 access: Access::Open,
                 travel: EdgeTravel::Both,
@@ -6260,6 +6262,7 @@ mod tests {
                 geometry: LineString::new(vec![Coord::new(0.01, 0.0), Coord::new(0.02, 0.0)])
                     .unwrap(),
                 terrain: Terrain::Road,
+                terrain_confidence: None,
                 surface: Some("gravel".to_owned()),
                 access: Access::Restricted,
                 travel: EdgeTravel::Both,
@@ -7416,6 +7419,12 @@ mod tests {
 
         let graph = load_graph(project)?;
         assert_eq!(graph.edges.len(), 2);
+        assert!(
+            graph
+                .edges
+                .iter()
+                .all(|edge| edge.attr.terrain_confidence <= 0.35)
+        );
         assert!(graph.edges.iter().all(|edge| {
             edge.attr.provenance.iter().any(|p| {
                 p.source == "route-file" && p.layer.as_deref() == Some("route-derived-network")

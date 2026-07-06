@@ -29,9 +29,20 @@ pub fn network_from_str(s: &str) -> Result<Vec<SegmentDraft>> {
             .cloned()
             .unwrap_or_default();
         let surface = prop_str(&properties, "surface").map(str::to_owned);
-        let terrain = prop_str(&properties, "terrain")
-            .or(surface.as_deref())
+        let terrain_tag = prop_str(&properties, "terrain");
+        let surface_terrain = surface
+            .as_deref()
             .map_or(Terrain::Unknown, Terrain::from_tag);
+        let terrain = terrain_tag
+            .map(Terrain::from_tag)
+            .filter(|terrain| *terrain != Terrain::Unknown)
+            .unwrap_or(surface_terrain);
+        let terrain_confidence = terrain_confidence_from_properties(
+            &properties,
+            terrain,
+            terrain_tag.is_some(),
+            surface_terrain != Terrain::Unknown,
+        );
         let access = prop_str(&properties, "access").map_or(Access::Unknown, Access::from_tag);
         let travel = travel_from_properties(&properties);
         let confidence = prop_f64(&properties, "confidence").unwrap_or(0.75);
@@ -58,6 +69,7 @@ pub fn network_from_str(s: &str) -> Result<Vec<SegmentDraft>> {
             drafts.push(SegmentDraft {
                 geometry: line,
                 terrain,
+                terrain_confidence: Some(terrain_confidence),
                 surface: surface.clone(),
                 access,
                 travel,
@@ -68,6 +80,28 @@ pub fn network_from_str(s: &str) -> Result<Vec<SegmentDraft>> {
         }
     }
     Ok(drafts)
+}
+
+fn terrain_confidence_from_properties(
+    properties: &Map<String, Value>,
+    terrain: Terrain,
+    explicit_terrain: bool,
+    explicit_surface: bool,
+) -> f64 {
+    prop_f64(properties, "terrain_confidence").map_or_else(
+        || {
+            if terrain == Terrain::Unknown {
+                0.0
+            } else if explicit_terrain {
+                0.90
+            } else if explicit_surface {
+                0.82
+            } else {
+                0.45
+            }
+        },
+        |confidence| confidence.clamp(0.0, 1.0),
+    )
 }
 
 pub fn route_line_from_str(s: &str) -> Result<LineString> {

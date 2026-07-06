@@ -19,10 +19,20 @@ pub fn network_from_path(path: &Path) -> Result<Vec<SegmentDraft>> {
         let (shape, record) = row;
         let props = ShpProps::new(&record);
         let surface = props.str("surface").map(str::to_owned);
-        let terrain = props
-            .str("terrain")
-            .or(surface.as_deref())
+        let terrain_tag = props.str("terrain");
+        let surface_terrain = surface
+            .as_deref()
             .map_or(Terrain::Unknown, Terrain::from_tag);
+        let terrain = terrain_tag
+            .map(Terrain::from_tag)
+            .filter(|terrain| *terrain != Terrain::Unknown)
+            .unwrap_or(surface_terrain);
+        let terrain_confidence = terrain_confidence_from_props(
+            &props,
+            terrain,
+            terrain_tag.is_some(),
+            surface_terrain != Terrain::Unknown,
+        );
         let access = props
             .str("access")
             .or_else(|| props.str("status"))
@@ -50,6 +60,7 @@ pub fn network_from_path(path: &Path) -> Result<Vec<SegmentDraft>> {
             drafts.push(SegmentDraft {
                 geometry: line,
                 terrain,
+                terrain_confidence: Some(terrain_confidence),
                 surface: surface.clone(),
                 access,
                 travel,
@@ -60,6 +71,28 @@ pub fn network_from_path(path: &Path) -> Result<Vec<SegmentDraft>> {
         }
     }
     Ok(drafts)
+}
+
+fn terrain_confidence_from_props(
+    props: &ShpProps<'_>,
+    terrain: Terrain,
+    explicit_terrain: bool,
+    explicit_surface: bool,
+) -> f64 {
+    props.f64("terrain_confidence").map_or_else(
+        || {
+            if terrain == Terrain::Unknown {
+                0.0
+            } else if explicit_terrain {
+                0.90
+            } else if explicit_surface {
+                0.82
+            } else {
+                0.45
+            }
+        },
+        |confidence| confidence.clamp(0.0, 1.0),
+    )
 }
 
 pub fn access_overlays_from_path(path: &Path) -> Result<Vec<AccessOverlay>> {

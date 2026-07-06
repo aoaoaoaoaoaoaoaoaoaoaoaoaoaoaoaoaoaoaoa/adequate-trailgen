@@ -126,6 +126,7 @@ fn draft_from_xml_way(
     Ok(Some(SegmentDraft {
         geometry: LineString::new(points)?,
         terrain: walkway.terrain,
+        terrain_confidence: Some(walkway.terrain_confidence),
         surface: tags.get("surface").cloned(),
         access: walkway.access,
         travel: walkway.travel,
@@ -215,6 +216,7 @@ fn draft_from_pbf_way(
     Ok(Some(SegmentDraft {
         geometry: LineString::new(points)?,
         terrain: walkway.terrain,
+        terrain_confidence: Some(walkway.terrain_confidence),
         surface: tags.get("surface").cloned(),
         access: walkway.access,
         travel: walkway.travel,
@@ -547,6 +549,7 @@ fn osm_road_context(highway: &str) -> bool {
 #[derive(Clone, Copy)]
 struct Walkway {
     terrain: Terrain,
+    terrain_confidence: f64,
     access: Access,
     travel: EdgeTravel,
     road_exposure: f64,
@@ -564,15 +567,17 @@ impl Walkway {
             return None;
         }
         let kind = walkable_highway.unwrap_or(WalkwayKind::Path);
-        let surface_terrain = tags
-            .get("surface")
-            .map_or(Terrain::Unknown, |surface| Terrain::from_tag(surface));
-        let terrain = terrain_from_tags(tags, kind, surface_terrain);
+        let surface = tags.get("surface");
+        let surface_terrain =
+            surface.map_or(Terrain::Unknown, |surface| Terrain::from_tag(surface));
+        let (terrain, terrain_confidence) =
+            terrain_from_tags(tags, kind, surface_terrain, surface.is_some());
         let access = access_from_tags(tags, foot);
         let road_exposure =
             f64::from(kind.road_like() || matches!(terrain, Terrain::Road | Terrain::Pavement));
         Some(Self {
             terrain,
+            terrain_confidence,
             access,
             travel: travel_from_tags(tags),
             road_exposure,
@@ -617,21 +622,23 @@ fn terrain_from_tags(
     tags: &BTreeMap<String, String>,
     kind: WalkwayKind,
     surface_terrain: Terrain,
-) -> Terrain {
+    has_surface: bool,
+) -> (Terrain, f64) {
     if surface_terrain != Terrain::Unknown {
-        return surface_terrain;
+        return (surface_terrain, 0.86);
     }
     let sac = tags.get("sac_scale").map(String::as_str);
     if sac.is_some_and(|sac| sac.contains("alpine_hiking")) {
-        Terrain::Alpine
+        (Terrain::Alpine, 0.80)
     } else if sac.is_some_and(|sac| {
         sac.contains("demanding_mountain_hiking") || sac.contains("demanding_alpine_hiking")
     }) {
-        Terrain::Scramble
+        (Terrain::Scramble, 0.80)
     } else {
         match kind {
-            WalkwayKind::Track | WalkwayKind::Service | WalkwayKind::Road => Terrain::Road,
-            _ => Terrain::Trail,
+            WalkwayKind::Track | WalkwayKind::Service | WalkwayKind::Road => (Terrain::Road, 0.62),
+            _ if has_surface => (Terrain::Trail, 0.68),
+            _ => (Terrain::Trail, 0.50),
         }
     }
 }
