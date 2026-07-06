@@ -1258,6 +1258,7 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
     if let Some(max_start_snap_m) = options.max_start_snap_m {
         config.max_start_snap_m = max_start_snap_m;
     }
+    config.search.seed = options.seed;
     apply_generate_search_options(&mut config.search, options);
     apply_generate_options(&mut config.constraints, options);
     let mut graph = materialize_effective_graph(project, &config)?;
@@ -4171,6 +4172,7 @@ mod tests {
             1_234
         );
         assert_eq!(manifest["effective_config"]["search"]["keep"], 7);
+        assert_eq!(manifest["effective_config"]["search"]["seed"], 77);
         assert_eq!(manifest["effective_config"]["planning_date"], "2026-05-15");
         assert_effective_constraints_manifest(&manifest);
         assert!(manifest["source_manifest"]["adapters"].as_array().is_some());

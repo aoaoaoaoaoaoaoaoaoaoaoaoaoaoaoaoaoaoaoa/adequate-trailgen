@@ -11,6 +11,8 @@ pub struct SearchParams {
     pub max_hops: usize,
     pub max_frontier: usize,
     pub keep: usize,
+    #[serde(default)]
+    pub seed: u64,
 }
 
 impl Default for SearchParams {
@@ -19,6 +21,7 @@ impl Default for SearchParams {
             max_hops: 36,
             max_frontier: 200_000,
             keep: 12,
+            seed: 0,
         }
     }
 }
@@ -147,12 +150,13 @@ impl RouteSolver for LoopHunter {
                 continue;
             }
             let mut fanout = graph.adjacency[state.at.0].clone();
-            fanout.sort_by(|a, b| {
-                graph.edges[a.0]
-                    .attr
-                    .difficulty
-                    .total_cmp(&graph.edges[b.0].attr.difficulty)
-            });
+            sort_heuristic_fanout(
+                graph,
+                &mut fanout,
+                self.params.seed,
+                state.edges.len(),
+                state.at,
+            );
 
             for edge_id in fanout {
                 if state.used.contains(&edge_id) {
@@ -398,6 +402,40 @@ fn shortest_return_path(
     }
     path.reverse();
     Some(path)
+}
+
+fn sort_heuristic_fanout(
+    graph: &TrailGraph,
+    fanout: &mut [EdgeId],
+    seed: u64,
+    depth: usize,
+    at: VertexId,
+) {
+    fanout.sort_by(|a, b| {
+        branch_score(graph, *b, seed, depth, at)
+            .total_cmp(&branch_score(graph, *a, seed, depth, at))
+            .then_with(|| b.cmp(a))
+    });
+}
+
+fn branch_score(graph: &TrailGraph, edge_id: EdgeId, seed: u64, depth: usize, at: VertexId) -> f64 {
+    graph.edges[edge_id.0]
+        .attr
+        .difficulty
+        .mul_add(1_024.0, seeded_unit(seed, depth, at, edge_id) * 128.0)
+}
+
+fn seeded_unit(seed: u64, depth: usize, at: VertexId, edge_id: EdgeId) -> f64 {
+    let hash = splitmix64(seed ^ ((depth as u64) << 48) ^ ((at.0 as u64) << 24) ^ edge_id.0 as u64);
+    let bits = u32::try_from(hash >> 32).expect("shifted splitmix output fits in u32");
+    f64::from(bits) * (1.0 / f64::from(u32::MAX))
+}
+
+const fn splitmix64(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^ (x >> 31)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

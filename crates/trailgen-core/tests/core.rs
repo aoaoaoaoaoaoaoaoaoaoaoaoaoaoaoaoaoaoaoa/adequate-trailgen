@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use trailgen_core::alltrails::{
     ALLTRAILS_POLICY_VERIFIED_ON, AllTrailsBridge, AllTrailsExchange, AllTrailsRequest,
     BridgeStatus, ManualAllTrailsBridge, RouteExchangeFormat, TrailgenExchangeAction,
@@ -844,6 +844,7 @@ fn fixture_generates_nontrivial_loops() {
             max_hops: 10,
             max_frontier: 10_000,
             keep: 8,
+            ..SearchParams::default()
         },
     }
     .hunt(
@@ -1006,6 +1007,7 @@ fn loop_hunter_emits_out_and_back_when_shape_allows_repeated_edges() {
             max_hops: 4,
             max_frontier: 100,
             keep: 8,
+            ..SearchParams::default()
         },
     }
     .hunt(
@@ -1054,6 +1056,7 @@ fn loop_hunter_rejects_directionally_impossible_out_and_back() {
             max_hops: 1,
             max_frontier: 10,
             keep: 4,
+            ..SearchParams::default()
         },
     }
     .hunt(
@@ -1082,6 +1085,7 @@ fn loop_hunter_closes_sparse_frontier_with_shortest_return_path() {
             max_hops: 1,
             max_frontier: 20,
             keep: 4,
+            ..SearchParams::default()
         },
     }
     .hunt(
@@ -1103,6 +1107,41 @@ fn loop_hunter_closes_sparse_frontier_with_shortest_return_path() {
 }
 
 #[test]
+fn loop_hunter_seed_diversifies_sparse_frontier_order() {
+    let graph = GraphBuilder::default().build(&bowtie_drafts()).unwrap();
+    let start = graph.nearest_vertex(Coord::new(0.0, 0.0)).unwrap();
+    let constraints = LoopConstraints {
+        min_distance_m: 0.0,
+        max_distance_m: 10_000.0,
+        max_difficulty: 10_000.0,
+        allowed_shapes: vec![RouteShape::Loop],
+        ..LoopConstraints::default()
+    };
+    let hunt = |seed| {
+        LoopHunter {
+            params: SearchParams {
+                max_hops: 1,
+                max_frontier: 2,
+                keep: 1,
+                seed,
+            },
+        }
+        .hunt(&graph, start, &constraints, 1)
+        .into_iter()
+        .next()
+        .expect("tight seeded frontier should still close one bowtie lobe")
+        .edges
+    };
+
+    assert_eq!(hunt(11), hunt(11));
+    let signatures = (0..32).map(hunt).collect::<BTreeSet<_>>();
+    assert!(
+        signatures.len() > 1,
+        "seeded sparse frontier should choose more than one symmetric lobe: {signatures:?}"
+    );
+}
+
+#[test]
 fn exact_solver_enumerates_only_fully_bounded_loops() {
     let graph = GraphBuilder::default().build(&square_drafts()).unwrap();
     let start = graph.nearest_vertex(Coord::new(0.0, 0.0)).unwrap();
@@ -1120,6 +1159,7 @@ fn exact_solver_enumerates_only_fully_bounded_loops() {
                 max_hops: 3,
                 max_frontier: 100,
                 keep: 4,
+                ..SearchParams::default()
             },
         }
         .enumerate(&graph, start, &constraints, 4)
@@ -1130,6 +1170,7 @@ fn exact_solver_enumerates_only_fully_bounded_loops() {
             max_hops: 4,
             max_frontier: 100,
             keep: 4,
+            ..SearchParams::default()
         },
     }
     .enumerate(&graph, start, &constraints, 4);
@@ -1173,6 +1214,7 @@ fn exact_solver_accepts_two_edge_multiedge_loops() {
             max_hops: 2,
             max_frontier: 100,
             keep: 4,
+            ..SearchParams::default()
         },
     }
     .enumerate(
@@ -1229,6 +1271,7 @@ fn loop_hunter_builds_figure_eights_when_shape_allows_two_lobes() {
             max_hops: 8,
             max_frontier: 1_000,
             keep: 8,
+            ..SearchParams::default()
         },
     }
     .hunt(
