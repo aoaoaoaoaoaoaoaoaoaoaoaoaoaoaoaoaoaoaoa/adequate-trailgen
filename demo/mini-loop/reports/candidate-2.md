@@ -105,6 +105,7 @@ Terrain/elevation evidence:
 - random seed: 0
 - requested start: -105.000000,40.000000
 - snapped start: vertex 3, -105.000000,40.000000 (0 m)
+- seed ledger: 2 route(s), 4153 bytes sha256 f259fc31f62768568e651636a2c71c2ebc32ab821522222410bde1fb494b71f7
 - graph: 5 vertices, 6 edges, 7.08 km, 0 directed-travel edge(s), 0 turn ban(s)
 - graph elevation: 209 m ascent / 153 m descent, 7.08 sampled grade-km, 0.00 sustained-steep km
 - emitted artifacts: 24

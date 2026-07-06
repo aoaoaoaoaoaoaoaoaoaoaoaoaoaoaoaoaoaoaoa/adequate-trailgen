@@ -1056,6 +1056,14 @@
     "missing_recommended": [],
     "planned_recommended": []
   },
+  "seed_ledger": {
+    "present": true,
+    "routes": 2,
+    "fingerprint": {
+      "bytes": 4153,
+      "sha256": "f259fc31f62768568e651636a2c71c2ebc32ab821522222410bde1fb494b71f7"
+    }
+  },
   "forbidden_areas": [],
   "graph": {
     "vertices": 5,
@@ -1324,8 +1332,8 @@
     {
       "path": "reports/generated.md",
       "fingerprint": {
-        "bytes": 17171,
-        "sha256": "dba347bc8db7fdfaff5b1831acbd3c3c24023c8aaee31921429c60ed72d9ae99"
+        "bytes": 17281,
+        "sha256": "88abe5f5390ffa8634ae7ea1dff82f46ed3c3c95f3f1aacad5ff59de8a7b845b"
       }
     },
     {
@@ -1373,8 +1381,8 @@
     {
       "path": "reports/candidate-1.md",
       "fingerprint": {
-        "bytes": 8699,
-        "sha256": "96aab61353835fb36984d036858889a3ed475ecf7cedfe85d751265a4b071973"
+        "bytes": 8809,
+        "sha256": "ea27f8e9d68d267d9c5b0cfaa565bebec5c0a1cbfd8c8fab0ff36c3f13d16cc0"
       }
     },
     {
@@ -1415,8 +1423,8 @@
     {
       "path": "reports/candidate-2.md",
       "fingerprint": {
-        "bytes": 8227,
-        "sha256": "14c77e7aaea93a9cff9d348313747adf44e5e85be141fc09adbe8ed6fab84565"
+        "bytes": 8337,
+        "sha256": "0e56b6fd1d987014693e1b1f8e3b4344678c12cbf97e69281692b7280417f25f"
       }
     },
     {
@@ -1457,8 +1465,8 @@
     {
       "path": "reports/candidate-3.md",
       "fingerprint": {
-        "bytes": 8190,
-        "sha256": "79be9fd2b41d032c85f7f52abbeb3e36f9f7148f65c72c9e903bb62bb3cb9ae3"
+        "bytes": 8300,
+        "sha256": "c757b02f6926d7f4b5e3b6176ca29ce8362e1ad921dd4f3cc836baaaf2c3fdb4"
       }
     }
   ]

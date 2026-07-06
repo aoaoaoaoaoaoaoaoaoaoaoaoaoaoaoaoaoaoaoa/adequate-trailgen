@@ -1760,6 +1760,7 @@ fn verify_generation(project: &Path) -> Result<()> {
         .with_context(|| "generated manifest lacks source_manifest snapshot")?;
     let sources = verify_source_fingerprints(project, source_manifest)?;
     verify_source_coverage_summary(&ledger, source_manifest)?;
+    verify_generated_seed_ledger(project, &ledger)?;
     verify_generated_run_metadata(project, &ledger)?;
     verify_generated_graph_manifest(project, &ledger)?;
     verify_forbidden_area_ledger(project, &ledger)?;
@@ -1983,6 +1984,19 @@ fn verify_source_coverage_summary(
     ensure!(
         actual == &expected,
         "generated source coverage summary verification failed: manifest source_coverage_summary drifted"
+    );
+    Ok(())
+}
+
+fn verify_generated_seed_ledger(project: &Path, ledger: &GeneratedRunLedger) -> Result<()> {
+    let actual = seed_ledger_manifest(project)?;
+    let expected = ledger
+        .seed_ledger
+        .as_ref()
+        .with_context(|| "generated manifest lacks seed_ledger snapshot")?;
+    ensure!(
+        &actual == expected,
+        "generated seed ledger verification failed: seeds/seeds.json drifted"
     );
     Ok(())
 }
@@ -2932,6 +2946,7 @@ struct GenerationManifest {
     effective_config: ProjectConfig,
     source_manifest: Option<SourceManifest>,
     source_coverage_summary: Option<SourceCoverageSummary>,
+    seed_ledger: SeedLedgerManifest,
     forbidden_areas: Vec<ForbiddenAreaManifest>,
     graph: GraphManifest,
     routes: Vec<RouteManifestEntry>,
@@ -2950,9 +2965,19 @@ struct GenerationLedger {
     snapped_start_coord: Coord,
     start_snap_m: f64,
     #[serde(default)]
+    seed_ledger: Option<SeedLedgerManifest>,
+    #[serde(default)]
     forbidden_areas: Vec<ForbiddenAreaLedger>,
     #[serde(default)]
     artifacts: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+struct SeedLedgerManifest {
+    present: bool,
+    routes: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fingerprint: Option<SourceFingerprint>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2981,6 +3006,8 @@ struct GeneratedRunLedger {
     source_manifest: Option<SourceManifest>,
     #[serde(default)]
     source_coverage_summary: Option<SourceCoverageSummary>,
+    #[serde(default)]
+    seed_ledger: Option<SeedLedgerManifest>,
     #[serde(default)]
     graph: Option<GraphManifest>,
     #[serde(default)]
@@ -4315,6 +4342,7 @@ fn render_generation_ledger_section(
         ledger.snapped_start_coord.lat,
         ledger.start_snap_m
     );
+    render_generation_seed_ledger(text, ledger.seed_ledger.as_ref());
     render_generation_graph_ledger(text, graph);
     let _ = writeln!(text, "- emitted artifacts: {}", ledger.artifacts.len());
     if ledger.forbidden_areas.is_empty() {
@@ -4330,6 +4358,29 @@ fn render_generation_ledger_section(
         }
     }
     text.push('\n');
+}
+
+fn render_generation_seed_ledger(text: &mut String, seed_ledger: Option<&SeedLedgerManifest>) {
+    match seed_ledger {
+        Some(SeedLedgerManifest {
+            present: true,
+            routes,
+            fingerprint: Some(fingerprint),
+        }) => {
+            let _ = writeln!(
+                text,
+                "- seed ledger: {routes} route(s), {} bytes sha256 {}",
+                fingerprint.bytes, fingerprint.sha256
+            );
+        }
+        Some(SeedLedgerManifest { present: false, .. }) => text.push_str("- seed ledger: none\n"),
+        Some(SeedLedgerManifest {
+            fingerprint: None, ..
+        }) => {
+            text.push_str("- seed ledger: present without fingerprint\n");
+        }
+        None => text.push_str("- seed ledger: missing from manifest\n"),
+    }
 }
 
 fn render_generation_graph_ledger(text: &mut String, graph: &TrailGraph) {
@@ -6144,6 +6195,22 @@ fn source_fingerprint(path: &Path) -> Result<SourceFingerprint> {
     Ok(SourceFingerprint { bytes, sha256 })
 }
 
+fn seed_ledger_manifest(project: &Path) -> Result<SeedLedgerManifest> {
+    let path = project.join("seeds/seeds.json");
+    if !path.exists() {
+        return Ok(SeedLedgerManifest {
+            present: false,
+            routes: 0,
+            fingerprint: None,
+        });
+    }
+    Ok(SeedLedgerManifest {
+        present: true,
+        routes: load_seeds(project)?.len(),
+        fingerprint: Some(source_fingerprint(&path)?),
+    })
+}
+
 fn fingerprint_members(path: &Path) -> Result<Vec<PathBuf>> {
     match source_ext(path).as_deref() {
         Some("shp") => shapefile_fingerprint_members(path),
@@ -6219,6 +6286,7 @@ fn generation_manifest(input: GenerationManifestInput<'_>) -> Result<GenerationM
         effective_config: config.clone(),
         source_manifest,
         source_coverage_summary,
+        seed_ledger: seed_ledger_manifest(project)?,
         forbidden_areas: forbidden_areas.to_vec(),
         graph: graph_manifest(graph),
         routes: routes.iter().map(route_manifest_entry).collect(),
@@ -7643,6 +7711,8 @@ mod tests {
                 .is_some_and(|hints| !hints.is_empty())
         );
         assert_source_coverage_manifest(&manifest);
+        assert_eq!(manifest["seed_ledger"]["present"], false);
+        assert_eq!(manifest["seed_ledger"]["routes"], 0);
         let candidates = manifest["source_manifest"]["candidates"]
             .as_array()
             .expect("source candidates");
@@ -7673,6 +7743,7 @@ mod tests {
         assert!(generated_report.contains("- solver: requested Exact, concrete exact-enumerator"));
         assert!(generated_report.contains("- random seed: 77"));
         assert!(generated_report.contains("- snapped start: vertex"));
+        assert!(generated_report.contains("- seed ledger: none"));
         assert!(generated_report.contains("directed-travel edge(s), 0 turn ban(s)"));
         assert!(generated_report.contains("- graph elevation:"));
 
@@ -7775,6 +7846,7 @@ mod tests {
         verify_generation(project)?;
 
         expect_source_drift(project, &network)?;
+        expect_seed_ledger_appearance_drift(project)?;
         expect_generated_run_metadata_drift(project)?;
         expect_generated_manifest_drift(
             project,
@@ -7844,6 +7916,19 @@ mod tests {
         assert!(format!("{error:#}").contains("source verification failed"));
         assert!(format!("{error:#}").contains("trails.geojson drifted"));
         fs::write(network, original_network)?;
+        verify_generation(project)?;
+        Ok(())
+    }
+
+    fn expect_seed_ledger_appearance_drift(project: &Path) -> Result<()> {
+        let seeds_dir = project.join("seeds");
+        fs::create_dir_all(&seeds_dir)?;
+        let seed_ledger = seeds_dir.join("seeds.json");
+        fs::write(&seed_ledger, "[]")?;
+        let error =
+            verify_generation(project).expect_err("new seed ledger should fail verification");
+        assert!(format!("{error:#}").contains("generated seed ledger verification failed"));
+        fs::remove_file(seed_ledger)?;
         verify_generation(project)?;
         Ok(())
     }
@@ -9952,6 +10037,7 @@ mod tests {
         )?;
         generate(project, &mini_generate_options())?;
         verify_sources(project)?;
+        verify_generation(project)?;
 
         let manifest: Value =
             serde_json::from_str(&fs::read_to_string(project.join("sources/manifest.json"))?)?;
@@ -9980,7 +10066,32 @@ mod tests {
                 .is_some_and(|path| path.ends_with("routes/candidate-1.gpx"))
         );
         assert_eq!(seeds["metadata"]["title"], "candidate-1");
+        let generation_manifest: Value = serde_json::from_str(&fs::read_to_string(
+            project.join("routes/generated.manifest.json"),
+        )?)?;
+        assert_eq!(generation_manifest["seed_ledger"]["present"], true);
+        assert_eq!(generation_manifest["seed_ledger"]["routes"], 1);
+        assert!(
+            generation_manifest["seed_ledger"]["fingerprint"]["sha256"]
+                .as_str()
+                .is_some_and(|hash| hash.len() == 64)
+        );
+        let generated_report = fs::read_to_string(project.join("reports/generated.md"))?;
+        assert!(generated_report.contains("- seed ledger: 1 route(s)"));
+        expect_seed_ledger_content_drift(project)?;
 
+        Ok(())
+    }
+
+    fn expect_seed_ledger_content_drift(project: &Path) -> Result<()> {
+        let seed_ledger = project.join("seeds/seeds.json");
+        let original = fs::read_to_string(&seed_ledger)?;
+        fs::write(&seed_ledger, format!("{original}\n"))?;
+        let error = verify_generation(project)
+            .expect_err("seed ledger byte drift should fail verification");
+        assert!(format!("{error:#}").contains("generated seed ledger verification failed"));
+        fs::write(seed_ledger, original)?;
+        verify_generation(project)?;
         Ok(())
     }
 }
