@@ -13,7 +13,7 @@ The current registry is `adapter_registry()` in `crates/trailgen-core/src/source
 
 If filenames can identify the source class, update `classify_path()` in the same module. If the adapter requires an explicit CLI command, add it in `crates/trailgen-cli/src/main.rs`, cache or copy source bytes under `project/sources/`, fingerprint the cached artifact with `SourceFingerprint`, then register a `SourceCandidate` in `sources/manifest.json`.
 
-Shapefile adapters must treat `.shp`, `.dbf`, and `.shx` as one source bundle where applicable. The DBF table is semantic input, not metadata garnish: cache and verification code must copy/hash sidecars so attribute drift changes the manifest fingerprint.
+Shapefile adapters must treat `.shp`, `.dbf`, `.shx`, `.prj`, and `.cpg` as one source bundle where applicable. The DBF table and CRS sidecars are semantic input, not metadata garnish: cache and verification code must copy/hash sidecars so attribute or projection drift changes the manifest fingerprint. Zipped official shapefile downloads should be materialized into loose cached sidecars under `sources/`, not kept as opaque archives.
 
 Normalization targets:
 

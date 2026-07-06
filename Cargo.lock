@@ -1446,6 +1446,7 @@ dependencies = [
  "tiff",
  "toml",
  "trailgen-core",
+ "zip",
 ]
 
 [[package]]

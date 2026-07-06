@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Write as _};
 use std::fs;
+use std::io::{Cursor, Read};
 use std::path::{Component, Path, PathBuf};
 use trailgen_core::alltrails::{
     AllTrailsBridge, AllTrailsExchange, AllTrailsRequest, ManualAllTrailsBridge,
@@ -1066,8 +1067,12 @@ fn cache_source(
     let path = cached_source_path(project, input, output)?;
     let (kind, adapter_id) = cached_source_kind_adapter(&path, kind, adapter)?;
     let bytes = read_source_input(input)?;
-    write_bytes(&path, &bytes)?;
-    copy_shapefile_sidecars(input, &path)?;
+    if source_ext(&path).as_deref() == Some("shp") && looks_like_zip(input, &bytes) {
+        extract_shapefile_archive(&bytes, &path)?;
+    } else {
+        write_bytes(&path, &bytes)?;
+        copy_shapefile_sidecars(input, &path)?;
+    }
     let fingerprint = source_fingerprint(&path)?;
     let mut candidate = source_candidate(&path, kind, &adapter_id, fingerprint);
     candidate.origin = Some(input.to_owned());
@@ -3801,9 +3806,11 @@ fn shapefile_fingerprint_members(path: &Path) -> Result<Vec<PathBuf>> {
         );
     }
     let mut members = vec![path.to_path_buf(), dbf];
-    let shx = path.with_extension("shx");
-    if shx.exists() {
-        members.push(shx);
+    for ext in ["shx", "prj", "cpg"] {
+        let sidecar = path.with_extension(ext);
+        if sidecar.exists() {
+            members.push(sidecar);
+        }
     }
     members.sort();
     Ok(members)
@@ -3986,10 +3993,10 @@ fn copy_shapefile_sidecars(input: &str, cached_shp: &Path) -> Result<()> {
     }
     let Some(local_shp) = local_input_path(input) else {
         bail!(
-            "remote shapefile caching requires a bundled archive; cache local .shp/.dbf/.shx files or normalize to GeoJSON first"
+            "remote loose shapefile caching requires a bundled .zip archive; cache local .shp/.dbf/.shx files, pass --output name.shp for zipped shapefiles, or normalize to GeoJSON first"
         );
     };
-    for ext in ["dbf", "shx"] {
+    for ext in ["dbf", "shx", "prj", "cpg"] {
         let src = local_shp.with_extension(ext);
         if !src.exists() && ext == "dbf" {
             bail!(
@@ -4009,6 +4016,100 @@ fn copy_shapefile_sidecars(input: &str, cached_shp: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn looks_like_zip(input: &str, bytes: &[u8]) -> bool {
+    source_input_ext(input).as_deref() == Some("zip") || bytes.starts_with(b"PK\x03\x04")
+}
+
+fn source_input_ext(input: &str) -> Option<String> {
+    input
+        .split(['?', '#'])
+        .next()
+        .and_then(|head| Path::new(head).extension())
+        .and_then(|ext| ext.to_str())
+        .map(str::to_ascii_lowercase)
+}
+
+fn extract_shapefile_archive(bytes: &[u8], cached_shp: &Path) -> Result<()> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .with_context(|| "read zipped shapefile archive")?;
+    let stem = shapefile_archive_stem(&mut archive, cached_shp)?;
+    for ext in ["shp", "dbf", "shx", "prj", "cpg"] {
+        let output = cached_shp.with_extension(ext);
+        match archive_member_bytes(&mut archive, &stem, ext)? {
+            Some(member) => write_bytes(output, member)?,
+            None if ext == "shp" || ext == "dbf" => bail!(
+                "zipped shapefile archive is missing mandatory .{ext} member for stem {stem:?}"
+            ),
+            None => {}
+        }
+    }
+    Ok(())
+}
+
+fn shapefile_archive_stem(
+    archive: &mut zip::ZipArchive<Cursor<&[u8]>>,
+    cached_shp: &Path,
+) -> Result<String> {
+    let requested = cached_shp
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(str::to_owned);
+    let mut stems = BTreeSet::new();
+    for i in 0..archive.len() {
+        let file = archive.by_index(i)?;
+        let path = Path::new(file.name());
+        if path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("shp"))
+            && let Some(stem) = path.file_stem().and_then(|stem| stem.to_str())
+        {
+            stems.insert(stem.to_owned());
+        }
+    }
+    if let Some(requested) = requested.filter(|requested| stems.contains(requested)) {
+        return Ok(requested);
+    }
+    match stems.len() {
+        0 => bail!("zipped shapefile archive contains no .shp member"),
+        1 => Ok(stems.into_iter().next().expect("len checked")),
+        _ => bail!(
+            "zipped shapefile archive contains multiple .shp members; pass --output with one of: {}",
+            stems.into_iter().collect::<Vec<_>>().join(", ")
+        ),
+    }
+}
+
+fn archive_member_bytes(
+    archive: &mut zip::ZipArchive<Cursor<&[u8]>>,
+    stem: &str,
+    ext: &str,
+) -> Result<Option<Vec<u8>>> {
+    let mut index = None;
+    for i in 0..archive.len() {
+        let file = archive.by_index(i)?;
+        let path = Path::new(file.name());
+        let matched = path
+            .file_stem()
+            .and_then(|x| x.to_str())
+            .is_some_and(|x| x == stem)
+            && path
+                .extension()
+                .and_then(|x| x.to_str())
+                .is_some_and(|x| x.eq_ignore_ascii_case(ext));
+        if matched && index.replace(i).is_some() {
+            bail!("zipped shapefile archive has multiple .{ext} members for stem {stem:?}");
+        }
+    }
+    let Some(index) = index else {
+        return Ok(None);
+    };
+    let mut file = archive.by_index(index)?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(Some(bytes))
 }
 
 fn local_input_path(input: &str) -> Option<PathBuf> {
@@ -4193,6 +4294,9 @@ mod tests {
     use super::*;
     use clap::CommandFactory as _;
     use serde_json::Value;
+
+    const WGS84_PRJ: &str = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["Degree",0.0174532925199433]]"#;
+    const UTM_PRJ: &str = r#"PROJCS["WGS 84 / UTM zone 13N",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PROJECTION["Transverse_Mercator"],UNIT["metre",1],AUTHORITY["EPSG","32613"]]"#;
 
     fn mini_generate_options() -> GenerateOptions {
         GenerateOptions {
@@ -4404,6 +4508,7 @@ mod tests {
         fs::write(sources.join("access-baseline.json"), "{}")?;
         fs::write(sources.join("access-overlays.json"), "{}")?;
         fs::write(sources.join("discovery.md"), "# generated\n")?;
+        fs::write(sources.join("elevation-mosaic.json"), "{}")?;
         fs::write(sources.join("elevation-vrt.json"), "{}")?;
         fs::write(sources.join("trails.geojson"), "{}")?;
 
@@ -5661,6 +5766,38 @@ mod tests {
     }
 
     #[test]
+    fn cache_source_extracts_zipped_shapefile_bundle() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path().join("project");
+        let source = tmp.path().join("agency-roads.shp");
+        let archive = tmp.path().join("agency-roads.zip");
+        write_test_shapefile(&source, "road-1");
+        fs::write(source.with_extension("prj"), WGS84_PRJ)?;
+        write_shapefile_zip(&archive, &source)?;
+
+        init(&project, "Zip Shapefile Cache Test".to_owned(), None)?;
+        cache_source(
+            &project,
+            archive.to_str().expect("utf-8 temp path"),
+            Some(Path::new("cached/roads.shp")),
+            Some(SourceKind::Road),
+            Some("shapefile-road-context"),
+        )?;
+        verify_sources(&project)?;
+
+        let cached = project.join("sources/cached/roads.shp");
+        assert!(cached.exists());
+        assert!(cached.with_extension("dbf").exists());
+        assert!(cached.with_extension("shx").exists());
+        assert!(cached.with_extension("prj").exists());
+
+        fs::write(cached.with_extension("prj"), UTM_PRJ)?;
+        let error = verify_sources(&project).expect_err("PRJ drift should fail verification");
+        assert!(format!("{error:#}").contains("drifted"));
+        Ok(())
+    }
+
+    #[test]
     fn geotiff_elevation_application_registers_source() -> Result<()> {
         let tmp = tempfile::tempdir()?;
         let project = tmp.path().join("project");
@@ -5798,6 +5935,21 @@ mod tests {
         record.insert("id".to_owned(), id.to_owned().into());
         record.insert("terrain".to_owned(), "trail".to_owned().into());
         writer.write_shape_and_record(&line, &record).unwrap();
+    }
+
+    fn write_shapefile_zip(archive: &Path, source: &Path) -> Result<()> {
+        use std::io::Write as _;
+        let file = fs::File::create(archive)?;
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        let stem = source.file_stem().and_then(|x| x.to_str()).expect("stem");
+        for ext in ["shp", "dbf", "shx", "prj"] {
+            let path = source.with_extension(ext);
+            zip.start_file(format!("nested/{stem}.{ext}"), options)?;
+            zip.write_all(&fs::read(path)?)?;
+        }
+        zip.finish()?;
+        Ok(())
     }
 
     fn write_cli_geotiff_dem(path: &Path) {
