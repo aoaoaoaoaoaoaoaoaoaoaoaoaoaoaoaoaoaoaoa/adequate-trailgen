@@ -1754,13 +1754,12 @@ fn verify_generation(project: &Path) -> Result<()> {
         || "read routes/generated.manifest.json; run `trailgen generate` before verify-generation",
     )?;
     let artifacts = verify_generated_artifact_fingerprints(project, &ledger)?;
-    let sources = verify_source_fingerprints(
-        project,
-        ledger
-            .source_manifest
-            .as_ref()
-            .with_context(|| "generated manifest lacks source_manifest snapshot")?,
-    )?;
+    let source_manifest = ledger
+        .source_manifest
+        .as_ref()
+        .with_context(|| "generated manifest lacks source_manifest snapshot")?;
+    let sources = verify_source_fingerprints(project, source_manifest)?;
+    verify_source_coverage_summary(&ledger, source_manifest)?;
     verify_generated_graph_manifest(project, &ledger)?;
     let routes = verify_generated_route_sequences(project, &ledger)?;
     println!(
@@ -1834,6 +1833,22 @@ fn verify_generated_artifact_fingerprints(
         );
     }
     Ok(checked)
+}
+
+fn verify_source_coverage_summary(
+    ledger: &GeneratedRunLedger,
+    manifest: &SourceManifest,
+) -> Result<()> {
+    let actual = ledger
+        .source_coverage_summary
+        .as_ref()
+        .with_context(|| "generated manifest lacks source_coverage_summary")?;
+    let expected = summarize_source_coverage(&manifest.coverage);
+    ensure!(
+        actual == &expected,
+        "generated source coverage summary verification failed: manifest source_coverage_summary drifted"
+    );
+    Ok(())
 }
 
 fn verify_generated_graph_manifest(project: &Path, ledger: &GeneratedRunLedger) -> Result<()> {
@@ -2622,6 +2637,8 @@ struct GeneratedRunLedger {
     effective_config: Option<ProjectConfig>,
     #[serde(default)]
     source_manifest: Option<SourceManifest>,
+    #[serde(default)]
+    source_coverage_summary: Option<SourceCoverageSummary>,
     #[serde(default)]
     graph: Option<GraphManifest>,
     #[serde(default)]
@@ -7393,6 +7410,15 @@ mod tests {
         verify_generation(project)?;
 
         expect_source_drift(project, &network)?;
+        expect_generated_manifest_drift(
+            project,
+            |manifest| {
+                manifest["source_coverage_summary"]["required"]["satisfied"] =
+                    serde_json::json!(42);
+            },
+            "generated source coverage summary verification failed",
+            "source_coverage_summary drifted",
+        )?;
         expect_generated_manifest_drift(
             project,
             |manifest| manifest["graph"]["edges"] = serde_json::json!(0),
