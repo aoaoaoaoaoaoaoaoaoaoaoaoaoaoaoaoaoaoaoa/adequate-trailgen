@@ -2039,6 +2039,7 @@ fn verify_route_metrics(
         ascent_m,
         descent_m,
         difficulty,
+        sustained_steep_m,
         road_fraction,
         low_confidence_fraction,
         restricted_access_fraction,
@@ -2048,6 +2049,12 @@ fn verify_route_metrics(
         &format!("{label}.difficulty_breakdown"),
         actual.difficulty_breakdown,
         expected.difficulty_breakdown,
+        failures,
+    );
+    verify_grade_distribution(
+        &format!("{label}.grade_distribution"),
+        actual.grade_distribution,
+        expected.grade_distribution,
         failures,
     );
     if actual.crossings != expected.crossings {
@@ -2067,6 +2074,24 @@ fn verify_route_metrics(
         &actual.terrain_m,
         &expected.terrain_m,
         failures,
+    );
+}
+
+fn verify_grade_distribution(
+    label: &str,
+    actual: GradeDistribution,
+    expected: GradeDistribution,
+    failures: &mut Vec<String>,
+) {
+    verify_f64_fields!(
+        label,
+        actual,
+        expected,
+        failures;
+        flat_m,
+        rolling_m,
+        steep_m,
+        savage_m,
     );
 }
 
@@ -7261,6 +7286,31 @@ mod tests {
             verify_generation(project).expect_err("route metric drift should fail verification");
         assert!(format!("{metric_error:#}").contains("generated route verification failed"));
         assert!(format!("{metric_error:#}").contains("manifest metrics.distance_m mismatch"));
+        fs::write(&manifest_path, original_manifest)?;
+        verify_generation(project)?;
+
+        let original_manifest = fs::read_to_string(&manifest_path)?;
+        let mut manifest: Value = serde_json::from_str(&original_manifest)?;
+        manifest["routes"][0]["metrics"]["sustained_steep_m"] = serde_json::json!(42.0);
+        write_json(&manifest_path, &manifest)?;
+        let steep_error = verify_generation(project)
+            .expect_err("route sustained-steep drift should fail verification");
+        assert!(format!("{steep_error:#}").contains("generated route verification failed"));
+        assert!(format!("{steep_error:#}").contains("manifest metrics.sustained_steep_m mismatch"));
+        fs::write(&manifest_path, original_manifest)?;
+        verify_generation(project)?;
+
+        let original_manifest = fs::read_to_string(&manifest_path)?;
+        let mut manifest: Value = serde_json::from_str(&original_manifest)?;
+        manifest["routes"][0]["metrics"]["grade_distribution"]["flat_m"] = serde_json::json!(42.0);
+        write_json(&manifest_path, &manifest)?;
+        let grade_error =
+            verify_generation(project).expect_err("route grade drift should fail verification");
+        assert!(format!("{grade_error:#}").contains("generated route verification failed"));
+        assert!(
+            format!("{grade_error:#}")
+                .contains("manifest metrics.grade_distribution.flat_m mismatch")
+        );
         fs::write(&manifest_path, original_manifest)?;
         verify_generation(project)?;
 
