@@ -512,9 +512,7 @@ fn overlay_from_feature(feature: &Value, i: usize, crs: CoordProjector) -> Resul
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    let access = prop_str(&properties, "access")
-        .or_else(|| prop_str(&properties, "status"))
-        .map_or(Access::Closed, Access::from_tag);
+    let access = access_from_properties(&properties);
     let name = prop_str(&properties, "name")
         .or_else(|| prop_str(&properties, "id"))
         .map_or_else(|| format!("overlay-{i}"), str::to_owned);
@@ -856,7 +854,57 @@ fn prop_f64(props: &Map<String, Value>, key: &str) -> Option<f64> {
 }
 
 fn prop_bool(props: &Map<String, Value>, key: &str) -> Option<bool> {
-    props.get(key).and_then(Value::as_bool)
+    props.get(key).and_then(|value| {
+        value
+            .as_bool()
+            .or_else(|| {
+                value
+                    .as_str()
+                    .and_then(|raw| match raw.trim().to_ascii_lowercase().as_str() {
+                        "1" | "true" | "t" | "yes" | "y" | "required" | "permit"
+                        | "reservation" => Some(true),
+                        "0" | "false" | "f" | "no" | "n" | "none" | "not-required" => Some(false),
+                        _ => None,
+                    })
+            })
+            .or_else(|| value.as_f64().map(|raw| raw != 0.0))
+    })
+}
+
+fn access_from_properties(properties: &Map<String, Value>) -> Access {
+    prop_str(properties, "access")
+        .or_else(|| prop_str(properties, "status"))
+        .map(Access::from_tag)
+        .or_else(|| {
+            permit_required(
+                properties,
+                &[
+                    "permit_required",
+                    "requires_permit",
+                    "permit",
+                    "permits",
+                    "reservation_required",
+                    "requires_reservation",
+                    "reservation",
+                    "reservations",
+                    "timed_entry_required",
+                    "timed_entry",
+                    "quota_required",
+                ],
+            )
+            .map(|required| {
+                if required {
+                    Access::Restricted
+                } else {
+                    Access::Open
+                }
+            })
+        })
+        .unwrap_or(Access::Closed)
+}
+
+fn permit_required(properties: &Map<String, Value>, keys: &[&str]) -> Option<bool> {
+    keys.iter().find_map(|key| prop_bool(properties, key))
 }
 
 fn terrain_from_properties(props: &Map<String, Value>) -> Terrain {

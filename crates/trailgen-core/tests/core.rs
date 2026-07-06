@@ -841,6 +841,65 @@ fn hourly_access_overlay_only_bites_inside_daily_window() {
 }
 
 #[test]
+fn reservation_required_overlay_normalizes_to_timed_restriction() {
+    let drafts = geojson::network_from_str(include_str!("fixtures/mini_network.geojson")).unwrap();
+    let overlays = geojson::access_overlays_from_str(
+        r#"{
+          "type": "FeatureCollection",
+          "features": [{
+            "type": "Feature",
+            "properties": {
+              "id": "timed-entry-permit",
+              "source": "fixture-permit-system",
+              "reservation_required": "yes",
+              "active_from": "2026-07-01",
+              "active_to": "2026-07-31",
+              "time_from": "08:00",
+              "time_to": "17:30"
+            },
+            "geometry": {
+              "type": "Polygon",
+              "coordinates": [[
+                [-105.0000, 40.0020],
+                [-104.9900, 40.0020],
+                [-104.9900, 40.0100],
+                [-105.0000, 40.0100],
+                [-105.0000, 40.0020]
+              ]]
+            }
+          }]
+        }"#,
+    )
+    .unwrap();
+
+    assert_eq!(overlays[0].access, Access::Restricted);
+    let mut graph = GraphBuilder::default().build(&drafts).unwrap();
+    let hits = apply_access_overlays_at(
+        &mut graph,
+        &overlays,
+        Some(PlanningMoment::new(
+            Some(PlanningDate::new(2026, 7, 6).unwrap()),
+            Some("12:00".parse().unwrap()),
+        )),
+        DifficultyWeights::default(),
+    );
+
+    assert!(hits > 0);
+    assert!(
+        graph
+            .edges
+            .iter()
+            .any(|edge| edge.attr.access == Access::Restricted)
+    );
+    assert!(graph.edges.iter().any(|edge| {
+        edge.attr.access_provenance.iter().any(|p| {
+            p.source == "fixture-permit-system"
+                && p.source_id.as_deref() == Some("timed-entry-permit")
+        })
+    }));
+}
+
+#[test]
 fn weekday_access_overlay_only_bites_on_listed_days() {
     let drafts = geojson::network_from_str(include_str!("fixtures/mini_network.geojson")).unwrap();
     let overlays = geojson::access_overlays_from_str(
@@ -2618,12 +2677,14 @@ fn shapefile_adapters_normalize_networks_and_overlays() {
     let tmp = tempfile::tempdir().unwrap();
     let network = tmp.path().join("trails.shp");
     let access = tmp.path().join("access.shp");
+    let permit = tmp.path().join("permit-access.shp");
     let terrain = tmp.path().join("terrain.shp");
     let nlcd = tmp.path().join("nlcd-landcover.shp");
     let road = tmp.path().join("roads.shp");
     let water = tmp.path().join("streams.shp");
     write_network_shapefile(&network);
     write_access_shapefile(&access);
+    write_permit_access_shapefile(&permit);
     write_terrain_shapefile(&terrain);
     write_nlcd_shapefile(&nlcd);
     write_context_shapefile(&road, "road-1", "road");
@@ -2659,6 +2720,18 @@ fn shapefile_adapters_normalize_networks_and_overlays() {
         overlays[0].geometry,
         trailgen_core::OverlayGeometry::Polygon(_)
     ));
+
+    let permits = shp_io::access_overlays_from_path(&permit).unwrap();
+    assert_eq!(permits.len(), 1);
+    assert_eq!(permits[0].access, Access::Restricted);
+    assert!(permits[0].active_at(Some(PlanningMoment::new(
+        Some(PlanningDate::new(2026, 9, 1).unwrap()),
+        Some("09:00".parse().unwrap())
+    ))));
+    assert!(!permits[0].active_at(Some(PlanningMoment::new(
+        Some(PlanningDate::new(2026, 9, 1).unwrap()),
+        Some("17:30".parse().unwrap())
+    ))));
 
     let terrain_overlays = shp_io::terrain_overlays_from_path(&terrain).unwrap();
     assert_eq!(terrain_overlays.len(), 1);
@@ -2926,6 +2999,30 @@ fn write_access_shapefile(path: &std::path::Path) {
     record.insert("time_from".to_owned(), "08:00".to_owned().into());
     record.insert("time_to".to_owned(), "17:00".to_owned().into());
     record.insert("source".to_owned(), "agency".to_owned().into());
+    writer.write_shape_and_record(&polygon, &record).unwrap();
+}
+
+fn write_permit_access_shapefile(path: &std::path::Path) {
+    let table = ::shapefile::dbase::TableWriterBuilder::new()
+        .add_character_field("name".try_into().unwrap(), 32)
+        .add_character_field("permit_req".try_into().unwrap(), 8)
+        .add_character_field("time_from".try_into().unwrap(), 8)
+        .add_character_field("time_to".try_into().unwrap(), 8)
+        .add_character_field("source".try_into().unwrap(), 32);
+    let mut writer = ::shapefile::Writer::from_path(path, table).unwrap();
+    let polygon = ::shapefile::Polygon::with_rings(vec![::shapefile::PolygonRing::Outer(vec![
+        ::shapefile::Point::new(-0.001, -0.001),
+        ::shapefile::Point::new(0.011, -0.001),
+        ::shapefile::Point::new(0.011, 0.001),
+        ::shapefile::Point::new(-0.001, 0.001),
+        ::shapefile::Point::new(-0.001, -0.001),
+    ])]);
+    let mut record = ::shapefile::dbase::Record::default();
+    record.insert("name".to_owned(), "timed-entry".to_owned().into());
+    record.insert("permit_req".to_owned(), "yes".to_owned().into());
+    record.insert("time_from".to_owned(), "08:00".to_owned().into());
+    record.insert("time_to".to_owned(), "17:00".to_owned().into());
+    record.insert("source".to_owned(), "agency-permits".to_owned().into());
     writer.write_shape_and_record(&polygon, &record).unwrap();
 }
 

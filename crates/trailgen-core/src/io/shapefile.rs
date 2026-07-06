@@ -68,10 +68,7 @@ pub fn access_overlays_from_path(path: &Path) -> Result<Vec<AccessOverlay>> {
     for (i, row) in read(path)?.into_iter().enumerate() {
         let (shape, record) = row;
         let props = ShpProps::new(&record);
-        let access = props
-            .str("access")
-            .or_else(|| props.str("status"))
-            .map_or(Access::Closed, Access::from_tag);
+        let access = access_from_props(&props);
         let name = props
             .str("name")
             .or_else(|| props.str("id"))
@@ -109,6 +106,47 @@ fn access_window_from_props(props: &ShpProps<'_>) -> Result<AccessWindow> {
         weekdays: props.weekdays()?,
         time: props.time_window()?,
     })
+}
+
+fn access_from_props(props: &ShpProps<'_>) -> Access {
+    props
+        .str("access")
+        .or_else(|| props.str("status"))
+        .map(Access::from_tag)
+        .or_else(|| {
+            props
+                .permit_required(&[
+                    "permit_required",
+                    "requires_permit",
+                    "permit_req",
+                    "permit",
+                    "permits",
+                    "reservation_required",
+                    "requires_reservation",
+                    "reserv_req",
+                    "reservation",
+                    "reservatio",
+                    "timed_entry_required",
+                    "timed_req",
+                    "timedentry",
+                    "quota_required",
+                    "quota_req",
+                ])
+                .map(|required| {
+                    if required {
+                        Access::Restricted
+                    } else {
+                        Access::Open
+                    }
+                })
+        })
+        .unwrap_or(Access::Closed)
+}
+
+impl ShpProps<'_> {
+    fn permit_required(&self, keys: &[&str]) -> Option<bool> {
+        keys.iter().find_map(|key| self.bool(key))
+    }
 }
 
 pub fn terrain_overlays_from_path(path: &Path) -> Result<Vec<TerrainOverlay>> {
