@@ -246,6 +246,7 @@ fn route_feature(graph: &TrailGraph, route: &Route) -> Value {
             "edges": route.edges.iter().map(|id| id.0).collect::<Vec<_>>(),
             "difficulty_hotspots": route_difficulty_hotspots(graph, route),
             "access_warning_edges": route_access_warning_edges(graph, route),
+            "directed_travel_edges": route_directed_travel_edges(graph, route),
             "low_confidence_edges": route_low_confidence_edges(graph, route),
             "dubious_edges": route_dubious_edges(graph, route),
             "source_provenance": route_source_provenance(graph, route),
@@ -320,6 +321,16 @@ fn route_access_warning_edges(graph: &TrailGraph, route: &Route) -> Vec<Value> {
     edges.into_iter().map(route_edge_diagnostic).collect()
 }
 
+fn route_directed_travel_edges(graph: &TrailGraph, route: &Route) -> Vec<Value> {
+    route
+        .edges
+        .iter()
+        .map(|id| &graph.edges[id.0])
+        .filter(|edge| edge.attr.travel != EdgeTravel::Both)
+        .map(route_edge_diagnostic)
+        .collect()
+}
+
 fn route_dubious_edges(graph: &TrailGraph, route: &Route) -> Vec<Value> {
     let mut dubious = route
         .edges
@@ -346,6 +357,7 @@ fn route_edge_diagnostic(edge: &Edge) -> Value {
         "terrain": edge.attr.terrain,
         "surface": edge.attr.surface.as_deref(),
         "access": edge.attr.access,
+        "travel": edge.attr.travel,
         "confidence": edge.attr.confidence,
         "terrain_confidence": edge.attr.terrain_confidence,
         "access_confidence": edge.attr.access_confidence,

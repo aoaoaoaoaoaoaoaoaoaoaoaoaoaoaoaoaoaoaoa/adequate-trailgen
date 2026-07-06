@@ -1790,6 +1790,73 @@ fn exact_solver_accepts_two_edge_multiedge_loops() {
 }
 
 #[test]
+fn directed_travel_diagnostics_are_exported() {
+    let graph = GraphBuilder::default()
+        .build(&[
+            SegmentDraft {
+                geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)])
+                    .unwrap(),
+                terrain: Terrain::Trail,
+                surface: None,
+                access: Access::Open,
+                travel: EdgeTravel::Forward,
+                road_exposure: 0.0,
+                confidence: 0.95,
+                provenance: Provenance::fixture("forward"),
+            },
+            SegmentDraft {
+                geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)])
+                    .unwrap(),
+                terrain: Terrain::Trail,
+                surface: None,
+                access: Access::Open,
+                travel: EdgeTravel::Backward,
+                road_exposure: 0.0,
+                confidence: 0.9,
+                provenance: Provenance::fixture("backward"),
+            },
+        ])
+        .unwrap();
+    let start = graph.nearest_vertex(Coord::new(0.0, 0.0)).unwrap();
+    let route = ExactLoopSolver {
+        params: SearchParams {
+            max_hops: 2,
+            max_frontier: 100,
+            keep: 4,
+            ..SearchParams::default()
+        },
+    }
+    .enumerate(
+        &graph,
+        start,
+        &LoopConstraints {
+            min_distance_m: 0.0,
+            max_distance_m: 10_000.0,
+            max_difficulty: 10_000.0,
+            allowed_shapes: vec![RouteShape::Loop],
+            ..LoopConstraints::default()
+        },
+        4,
+    )
+    .into_iter()
+    .find(|route| route.metrics.shape == RouteShape::Loop && route.edges.len() == 2)
+    .unwrap();
+
+    let geojson = geojson::routes_to_geojson(&graph, std::slice::from_ref(&route));
+    let directed = geojson["features"][0]["properties"]["directed_travel_edges"]
+        .as_array()
+        .unwrap();
+    assert_eq!(directed.len(), 2);
+    assert!(directed.iter().any(|edge| edge["travel"] == "forward"));
+    assert!(directed.iter().any(|edge| edge["travel"] == "backward"));
+
+    let text = report::render_titled("Routes", &graph, std::slice::from_ref(&route));
+    assert!(text.contains("Directed travel constraints:"));
+    assert!(text.contains("Forward"));
+    assert!(text.contains("Backward"));
+}
+
+#[test]
 fn temporal_direction_overlay_constrains_route_generation() {
     let drafts = [
         SegmentDraft {

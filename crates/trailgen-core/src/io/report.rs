@@ -1,5 +1,5 @@
 use crate::difficulty::DifficultyFactor;
-use crate::model::{Edge, Provenance, TerrainEvidence, TrailGraph};
+use crate::model::{Edge, EdgeTravel, Provenance, TerrainEvidence, TrailGraph};
 use crate::route::{LOW_CONFIDENCE_THRESHOLD, Route, is_restricted_access};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -49,6 +49,7 @@ fn render_route(graph: &TrailGraph, route: &Route, s: &mut String) {
     render_difficulty(route, s);
     render_access_mix(route, s);
     render_access_warnings(graph, route, s);
+    render_directed_travel(graph, route, s);
     render_crossings(route, s);
     render_terrain_mix(route, s);
     render_source_provenance(graph, route, s);
@@ -149,6 +150,36 @@ fn render_access_warnings(graph: &TrailGraph, route: &Route, s: &mut String) {
             edge.id.0,
             edge.attr.access,
             edge.attr.access_confidence * 100.0
+        );
+    }
+}
+
+fn render_directed_travel(graph: &TrailGraph, route: &Route, s: &mut String) {
+    let directed = route
+        .edges
+        .iter()
+        .map(|id| &graph.edges[id.0])
+        .filter(|edge| edge.attr.travel != EdgeTravel::Both)
+        .collect::<Vec<_>>();
+    if directed.is_empty() {
+        return;
+    }
+    s.push_str("\nDirected travel constraints:\n");
+    for edge in directed {
+        let prov = edge
+            .attr
+            .access_provenance
+            .first()
+            .or_else(|| edge.attr.provenance.first())
+            .map_or_else(|| "unknown".to_owned(), provenance_label);
+        let _ = writeln!(
+            s,
+            "- edge {}: {:?}, {:.0} m, access {:?}, confidence {:.0}%, provenance {prov}",
+            edge.id.0,
+            edge.attr.travel,
+            edge.attr.length_m,
+            edge.attr.access,
+            edge.attr.confidence * 100.0
         );
     }
 }

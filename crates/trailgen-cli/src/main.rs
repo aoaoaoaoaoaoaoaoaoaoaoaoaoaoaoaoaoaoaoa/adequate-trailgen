@@ -2747,6 +2747,9 @@ function accessWarningText(e) {{
   const prov = (e.access_provenance || []).map(p => p.source_id ? `${{p.source}}:${{p.source_id}}` : p.source).join(', ') || e.provenance || 'unknown';
   return `edge ${{e.edge_id}} ${{e.access || 'unknown'}} ${{pct(e.access_confidence)}} ${{prov}}`;
 }}
+function directedTravelText(e) {{
+  return `edge ${{e.edge_id}} ${{e.travel || 'unknown'}} ${{km(e.length_m)}} ${{pct(e.confidence)}}`;
+}}
 function routeText(p) {{
   return `${{p.name}} | rank ${{p.pareto_rank}} | ${{km(p.distance_m)}} | ascent ${{(p.ascent_m || 0).toFixed(0)}} m | difficulty ${{(p.difficulty || 0).toFixed(1)}} | road ${{pct(p.road_fraction)}} | low confidence ${{pct(p.low_confidence_fraction)}} | restricted ${{pct(p.restricted_access_fraction)}}`;
 }}
@@ -2783,9 +2786,11 @@ function routeDiagnostics(p) {{
   const routeDubious = (p.dubious_edges || []).map(e => `edge ${{e.edge_id}} ${{pct(e.confidence)}} ${{e.terrain || 'unknown'}}`);
   const routeLowConfidence = (p.low_confidence_edges || []).map(e => `edge ${{e.edge_id}} ${{pct(e.confidence)}} ${{e.terrain || 'unknown'}}`);
   const routeAccessWarnings = (p.access_warning_edges || []).map(accessWarningText);
+  const routeDirectedTravel = (p.directed_travel_edges || []).map(directedTravelText);
   const routeHotspots = (p.difficulty_hotspots || []).map(e => `edge ${{e.edge_id}} ${{e.factor}} ${{scalar(e.value)}} ${{e.terrain || 'unknown'}}`);
   return {{
     accessWarnings: routeAccessWarnings.join(', ') || 'none',
+    directedTravel: routeDirectedTravel.join(', ') || 'none',
     lowConfidence: routeLowConfidence.join(', ') || 'none',
     dubious: routeDubious.join(', ') || dubious.map(e => `edge ${{e.edge_id}} ${{pct(e.confidence)}} ${{e.terrain || 'unknown'}}`).join(', ') || 'none',
     brutal: routeHotspots.join(', ') || brutal.map(e => `edge ${{e.edge_id}} ${{scalar(e.difficulty)}} ${{e.terrain || 'unknown'}}`).join(', ') || 'none'
@@ -2816,6 +2821,7 @@ function routeSummary(p) {{
     ${{metricRow('access mix', mixText(p.access_fraction))}}
     ${{metricRow('violations', (p.violations || []).join(' | ') || 'none')}}
     ${{metricRow('access warnings', d.accessWarnings)}}
+    ${{metricRow('directed travel constraints', d.directedTravel)}}
     ${{metricRow('low-confidence segments', d.lowConfidence)}}
     ${{metricRow('dubious segments', d.dubious)}}
     ${{metricRow('largest difficulty contributors', d.brutal)}}
@@ -5970,6 +5976,7 @@ mod tests {
         assert!(selected_properties["access_fraction"].is_object());
         assert!(selected_properties["difficulty_hotspots"].is_array());
         assert!(selected_properties["access_warning_edges"].is_array());
+        assert!(selected_properties["directed_travel_edges"].is_array());
         assert!(selected_properties["low_confidence_edges"].is_array());
         assert!(selected_properties["dubious_edges"].is_array());
         Ok(())
