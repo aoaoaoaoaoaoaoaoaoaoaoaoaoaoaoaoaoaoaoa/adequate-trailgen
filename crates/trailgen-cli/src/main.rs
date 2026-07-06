@@ -1761,6 +1761,7 @@ fn verify_generation(project: &Path) -> Result<()> {
     let sources = verify_source_fingerprints(project, source_manifest)?;
     verify_source_coverage_summary(&ledger, source_manifest)?;
     verify_generated_graph_manifest(project, &ledger)?;
+    verify_forbidden_area_ledger(project, &ledger)?;
     let routes = verify_generated_route_sequences(project, &ledger)?;
     println!(
         "verified generation: {artifacts} artifact(s), {sources} source candidate(s), {routes} route sequence(s)"
@@ -1867,6 +1868,95 @@ fn verify_generated_graph_manifest(project: &Path, ledger: &GeneratedRunLedger) 
         );
     }
     Ok(())
+}
+
+fn verify_forbidden_area_ledger(project: &Path, ledger: &GeneratedRunLedger) -> Result<()> {
+    if ledger.forbidden_areas.is_empty() {
+        return Ok(());
+    }
+    let config = ledger
+        .effective_config
+        .as_ref()
+        .with_context(|| "generated manifest lacks effective_config snapshot")?;
+    let graph = load_generated_graph(project)?;
+    let mut failures = Vec::new();
+    let mut seen = BTreeSet::new();
+    for area in &ledger.forbidden_areas {
+        verify_forbidden_area(area, &graph, config, &mut seen, &mut failures);
+    }
+    if !failures.is_empty() {
+        bail!(
+            "generated forbidden-area verification failed:\n{}",
+            failures.join("\n")
+        );
+    }
+    Ok(())
+}
+
+fn verify_forbidden_area(
+    area: &ForbiddenAreaLedger,
+    graph: &TrailGraph,
+    config: &ProjectConfig,
+    seen: &mut BTreeSet<String>,
+    failures: &mut Vec<String>,
+) {
+    if !seen.insert(area.path.clone()) {
+        failures.push(format!(
+            "{} appears twice in forbidden-area ledger",
+            area.path
+        ));
+        return;
+    }
+    let path = PathBuf::from(&area.path);
+    match source_fingerprint(&path) {
+        Ok(actual) if actual == area.fingerprint => {}
+        Ok(actual) => failures.push(format!(
+            "{} forbidden-area source drifted: expected {} bytes sha256 {}, found {} bytes sha256 {}",
+            area.path,
+            area.fingerprint.bytes,
+            area.fingerprint.sha256,
+            actual.bytes,
+            actual.sha256
+        )),
+        Err(error) => failures.push(format!(
+            "{} forbidden-area source unreadable: {error:#}",
+            area.path
+        )),
+    }
+    let expected_adapter = forbidden_area_adapter_id(&path);
+    if area.adapter_id != expected_adapter {
+        failures.push(format!(
+            "{} forbidden-area adapter mismatch: {} != {}",
+            area.path, area.adapter_id, expected_adapter
+        ));
+    }
+    let mut overlays = match access_overlays(&path) {
+        Ok(overlays) => overlays,
+        Err(error) => {
+            failures.push(format!(
+                "{} forbidden-area parse failed: {error:#}",
+                area.path
+            ));
+            return;
+        }
+    };
+    force_forbidden_area_overlays(&path, &mut overlays);
+    if area.overlays != overlays.len() {
+        failures.push(format!(
+            "{} forbidden-area overlay count mismatch: {} != {}",
+            area.path,
+            area.overlays,
+            overlays.len()
+        ));
+    }
+    let mut graph = graph.clone();
+    let touched_edges = apply_access_overlays(&mut graph, &overlays, None, config.difficulty);
+    if area.touched_edges != touched_edges {
+        failures.push(format!(
+            "{} forbidden-area touched edge count mismatch: {} != {}",
+            area.path, area.touched_edges, touched_edges
+        ));
+    }
 }
 
 fn verify_graph_manifest(
@@ -2642,6 +2732,8 @@ struct GeneratedRunLedger {
     #[serde(default)]
     graph: Option<GraphManifest>,
     #[serde(default)]
+    forbidden_areas: Vec<ForbiddenAreaLedger>,
+    #[serde(default)]
     routes: Vec<RouteManifestEntry>,
     #[serde(default)]
     artifacts: Vec<String>,
@@ -2668,6 +2760,7 @@ struct GeneratedArtifactFingerprint {
 struct ForbiddenAreaLedger {
     path: String,
     adapter_id: String,
+    fingerprint: SourceFingerprint,
     overlays: usize,
     touched_edges: usize,
 }
@@ -6569,6 +6662,15 @@ mod tests {
         }
     }
 
+    fn forbidden_area_generate_options(forbidden: PathBuf) -> GenerateOptions {
+        GenerateOptions {
+            solver: Some(SolverKind::Exact),
+            max_difficulty: Some(10_000.0),
+            forbidden_area: vec![forbidden],
+            ..mini_generate_options()
+        }
+    }
+
     #[test]
     fn cli_help_explains_operational_commands() {
         let mut root = Cli::command();
@@ -7617,45 +7719,13 @@ mod tests {
         let fixture_dir =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../trailgen-core/tests/fixtures");
         let network = fixture_dir.join("mini_network.geojson");
-        let forbidden = fixture_dir.join("closure_overlay.geojson");
+        let forbidden = project.join("closure_overlay.geojson");
 
         init(project, "Forbidden Area Test".to_owned(), None)?;
         discover(project, None)?;
         build(project, &network)?;
-        generate(
-            project,
-            &GenerateOptions {
-                start: "-105.0000,40.0000".to_owned(),
-                min_km: 3.0,
-                max_km: 8.0,
-                count: 2,
-                seed: 0,
-                max_start_snap_m: None,
-                solver: Some(SolverKind::Exact),
-                max_hops: None,
-                max_frontier: None,
-                keep: None,
-                closure_paths: None,
-                source_gate: None,
-                date: None,
-                time: None,
-                min_difficulty: None,
-                max_difficulty: Some(10_000.0),
-                min_ascent_m: None,
-                max_ascent_m: None,
-                min_descent_m: None,
-                max_descent_m: None,
-                max_road_fraction: None,
-                max_low_confidence_fraction: None,
-                max_restricted_access_fraction: None,
-                shape: Vec::new(),
-                max_repeated_edge_fraction: None,
-                forbidden_terrain: Vec::new(),
-                forbidden_area: vec![forbidden.clone()],
-                min_terrain: Vec::new(),
-                max_terrain: Vec::new(),
-            },
-        )?;
+        fs::copy(fixture_dir.join("closure_overlay.geojson"), &forbidden)?;
+        generate(project, &forbidden_area_generate_options(forbidden.clone()))?;
 
         let manifest: Value = serde_json::from_str(&fs::read_to_string(
             project.join("routes/generated.manifest.json"),
@@ -7679,6 +7749,16 @@ mod tests {
                 .as_str()
                 .is_some_and(|hash| hash.len() == 64)
         );
+        verify_generation(project)?;
+
+        let original_forbidden = fs::read_to_string(&forbidden)?;
+        fs::write(&forbidden, format!("{original_forbidden}\n"))?;
+        let error =
+            verify_generation(project).expect_err("forbidden area drift should fail verification");
+        assert!(format!("{error:#}").contains("generated forbidden-area verification failed"));
+        assert!(format!("{error:#}").contains("forbidden-area source drifted"));
+        fs::write(&forbidden, original_forbidden)?;
+        verify_generation(project)?;
 
         let cached = load_graph(project)?;
         assert!(cached.edges.iter().all(|edge| {
