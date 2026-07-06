@@ -76,6 +76,17 @@ enum Cmd {
         #[arg(long, allow_hyphen_values = true, value_parser = parse_bounds)]
         bbox: Option<GeoBounds>,
     },
+    /// Print concrete next source-acquisition actions from sources/manifest.json.
+    SourcePlan {
+        /// Project directory containing sources/manifest.json.
+        project: PathBuf,
+        /// Restrict the plan to one source class; repeatable.
+        #[arg(long = "kind", value_parser = parse_source_kind)]
+        kind: Vec<SourceKind>,
+        /// Include already satisfied source classes instead of only gaps.
+        #[arg(long)]
+        all: bool,
+    },
     /// Copy or download a source artifact into project/sources and fingerprint it.
     CacheSource {
         /// Project directory containing trailgen.toml.
@@ -617,6 +628,7 @@ fn main() -> Result<()> {
         Cmd::Build { project, source } => build_many(&project, source.iter().map(PathBuf::as_path)),
         Cmd::Stats { project } => stats(&project),
         Cmd::Discover { project, bbox } => discover(&project, bbox),
+        Cmd::SourcePlan { project, kind, all } => source_plan(&project, &kind, all),
         Cmd::CacheSource {
             project,
             input,
@@ -1329,6 +1341,16 @@ fn discover(project: &Path, area: Option<GeoBounds>) -> Result<()> {
         manifest.coverage.len(),
         project.join("sources/manifest.json").display(),
         project.join("sources/discovery.md").display()
+    );
+    Ok(())
+}
+
+fn source_plan(project: &Path, kinds: &[SourceKind], include_satisfied: bool) -> Result<()> {
+    let manifest = load_source_manifest(project)?
+        .with_context(|| "read sources/manifest.json; run `trailgen discover` first")?;
+    print!(
+        "{}",
+        render_source_plan(project, &manifest, kinds, include_satisfied)
     );
     Ok(())
 }
@@ -3825,6 +3847,96 @@ fn render_source_candidates(text: &mut String, manifest: &SourceManifest) {
     }
 }
 
+fn render_source_plan(
+    project: &Path,
+    manifest: &SourceManifest,
+    kinds: &[SourceKind],
+    include_satisfied: bool,
+) -> String {
+    let mut text = "# Source Acquisition Plan\n\n".to_owned();
+    let mut emitted = 0usize;
+    let project = shell_arg(&project.display().to_string());
+    let kind_filter = kinds.iter().copied().collect::<BTreeSet<_>>();
+    for recommendation in &manifest.recommendations {
+        if !kind_filter.is_empty() && !kind_filter.contains(&recommendation.kind) {
+            continue;
+        }
+        let coverage = manifest
+            .coverage
+            .iter()
+            .find(|coverage| coverage.kind == recommendation.kind);
+        let status = coverage.map_or(SourceCoverageStatus::Missing, |coverage| coverage.status);
+        if !include_satisfied && status == SourceCoverageStatus::Satisfied {
+            continue;
+        }
+        emitted += 1;
+        render_source_plan_item(&mut text, &project, recommendation, status);
+    }
+    if emitted == 0 {
+        text.push_str("No source acquisition actions match the requested filters.\n");
+    }
+    text
+}
+
+fn render_source_plan_item(
+    text: &mut String,
+    project: &str,
+    recommendation: &trailgen_core::source::SourceRecommendation,
+    status: SourceCoverageStatus,
+) {
+    let _ = writeln!(
+        text,
+        "## {:?} ({:?}, {:?})\n",
+        recommendation.kind, recommendation.priority, status
+    );
+    let adapter_id = recommendation
+        .adapter_ids
+        .first()
+        .map_or("<adapter-id>", String::as_str);
+    let output = recommendation
+        .suggested_paths
+        .first()
+        .map_or("source.bin", |path| {
+            path.strip_prefix("sources/").unwrap_or(path)
+        });
+    if let Some(profile) = osm_profile_for_kind(recommendation.kind) {
+        let bbox = recommendation.area.map_or_else(
+            || " --bbox west,south,east,north".to_owned(),
+            |_| String::new(),
+        );
+        let _ = writeln!(
+            text,
+            "Direct OSM fallback:\n```sh\ntrailgen acquire-osm {project} --profile {}{} --output {}\n```\n",
+            profile.label(),
+            bbox,
+            profile.default_output()
+        );
+    }
+    let _ = writeln!(
+        text,
+        "Cache selected artifact:\n```sh\ntrailgen cache-source {project} --input '<artifact-url-or-path>' --output {} --kind {} --adapter {}\n```\n",
+        output,
+        source_kind_arg(recommendation.kind),
+        adapter_id
+    );
+    text.push_str("Acceptance:\n");
+    let _ = writeln!(text, "- {}\n", recommendation.acceptance);
+    if !recommendation.acquisition_hints.is_empty() {
+        text.push_str("Source surfaces:\n");
+        for hint in &recommendation.acquisition_hints {
+            let _ = writeln!(
+                text,
+                "- {}: {} [{}]. {}",
+                hint.label,
+                hint.url,
+                hint.formats.join(", "),
+                hint.note
+            );
+        }
+        text.push('\n');
+    }
+}
+
 fn render_acquisition_plan(text: &mut String, manifest: &SourceManifest) {
     for recommendation in &manifest.recommendations {
         let coverage = manifest
@@ -3869,7 +3981,7 @@ fn render_acquisition_plan(text: &mut String, manifest: &SourceManifest) {
 }
 
 fn render_cache_command_sketches(text: &mut String, manifest: &SourceManifest) {
-    text.push_str("Replace `<artifact-url-or-path>` with a concrete downloaded artifact or local file selected from the listed source surface; keep the explicit kind and adapter when provider filenames are ambiguous. For OSM-backed trail, road, and hydrology layers, `acquire-osm` can materialize bbox-scoped XML directly from an Overpass endpoint.\n\n");
+    text.push_str("Run `trailgen source-plan <project>` for a filtered next-action view of this manifest. Replace `<artifact-url-or-path>` with a concrete downloaded artifact or local file selected from the listed source surface; keep the explicit kind and adapter when provider filenames are ambiguous. For OSM-backed trail, road, and hydrology layers, `acquire-osm` can materialize bbox-scoped XML directly from an Overpass endpoint.\n\n");
     if manifest
         .recommendations
         .iter()
@@ -5829,6 +5941,17 @@ const fn source_kind_arg(kind: SourceKind) -> &'static str {
     }
 }
 
+fn shell_arg(raw: &str) -> String {
+    if raw
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | ':'))
+    {
+        raw.to_owned()
+    } else {
+        format!("'{}'", raw.replace('\'', r"'\''"))
+    }
+}
+
 const fn source_priority_arg(priority: SourcePriority) -> &'static str {
     match priority {
         SourcePriority::Required => "required",
@@ -5981,6 +6104,7 @@ mod tests {
         assert!(help.contains("deterministic LP/MILP loop formulation"));
         assert!(help.contains("external MILP solver incumbent"));
         assert!(help.contains("Fetch bbox-scoped OSM XML"));
+        assert!(help.contains("Print concrete next source-acquisition actions"));
         assert!(help.contains("source coverage satisfies a planning gate"));
         assert!(help.contains("Verify generated route artifacts"));
         assert!(help.contains("AllTrails"));
@@ -6269,6 +6393,39 @@ mod tests {
 
         let files = source_files(&sources)?;
         assert_eq!(files, vec![sources.join("trails.geojson")]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn source_plan_renders_filtered_gap_actions() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path();
+        let area = GeoBounds::new(-105.02, 39.99, -104.98, 40.02);
+        init(project, "Source Plan Test".to_owned(), Some(area))?;
+        discover(project, None)?;
+        let manifest = load_source_manifest(project)?.expect("manifest");
+        let plan = render_source_plan(project, &manifest, &[SourceKind::TrailNetwork], false);
+
+        assert!(plan.starts_with("# Source Acquisition Plan"));
+        assert!(plan.contains("## TrailNetwork (Required, Missing)"));
+        assert!(plan.contains("Direct OSM fallback"));
+        assert!(plan.contains("trailgen acquire-osm"));
+        assert!(plan.contains("--profile trails --output osm-trails.osm"));
+        assert!(plan.contains("--kind trail-network --adapter geojson-network"));
+        assert!(plan.contains("NPS official GIS open data"));
+        assert!(!plan.contains("## Elevation"));
+
+        fs::write(
+            project.join("sources/trails.geojson"),
+            include_str!("../../trailgen-core/tests/fixtures/mini_network.geojson"),
+        )?;
+        discover(project, None)?;
+        let manifest = load_source_manifest(project)?.expect("manifest");
+        let gap_plan = render_source_plan(project, &manifest, &[SourceKind::TrailNetwork], false);
+        assert!(gap_plan.contains("No source acquisition actions match"));
+        let full_plan = render_source_plan(project, &manifest, &[SourceKind::TrailNetwork], true);
+        assert!(full_plan.contains("## TrailNetwork (Required, Satisfied)"));
 
         Ok(())
     }
