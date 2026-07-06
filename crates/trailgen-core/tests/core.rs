@@ -994,6 +994,37 @@ fn terrain_overlays_override_edges_with_provenance_and_rerating() {
 }
 
 #[test]
+fn terrain_overlays_normalize_landcover_codes_and_names() {
+    let overlays = geojson::terrain_overlays_from_str(
+        r#"{"type":"FeatureCollection","features":[
+          {
+            "type":"Feature",
+            "properties":{"name":"nlcd-barren","nlcd":31,"source":"nlcd-fixture"},
+            "geometry":{"type":"Polygon","coordinates":[[
+              [-105.001,39.999],[-104.999,39.999],[-104.999,40.001],[-105.001,40.001],[-105.001,39.999]
+            ]]}
+          },
+          {
+            "type":"Feature",
+            "properties":{"name":"nlcd-forest","landcover":"Deciduous Forest"},
+            "geometry":{"type":"Polygon","coordinates":[[
+              [-105.001,40.009],[-104.999,40.009],[-104.999,40.011],[-105.001,40.011],[-105.001,40.009]
+            ]]}
+          }
+        ]}"#,
+    )
+    .unwrap();
+
+    assert_eq!(overlays[0].terrain, Terrain::Talus);
+    assert_eq!(overlays[1].terrain, Terrain::Forest);
+    assert_eq!(
+        Terrain::from_landcover_tag("Developed, Medium Intensity"),
+        Terrain::Pavement
+    );
+    assert_eq!(Terrain::from_landcover_tag("95"), Terrain::Water);
+}
+
+#[test]
 fn fixture_generates_nontrivial_loops() {
     let drafts = geojson::network_from_str(include_str!("fixtures/mini_network.geojson")).unwrap();
     let graph = GraphBuilder::default().build(&drafts).unwrap();
@@ -1878,11 +1909,13 @@ fn shapefile_adapters_normalize_networks_and_overlays() {
     let network = tmp.path().join("trails.shp");
     let access = tmp.path().join("access.shp");
     let terrain = tmp.path().join("terrain.shp");
+    let nlcd = tmp.path().join("nlcd-landcover.shp");
     let road = tmp.path().join("roads.shp");
     let water = tmp.path().join("streams.shp");
     write_network_shapefile(&network);
     write_access_shapefile(&access);
     write_terrain_shapefile(&terrain);
+    write_nlcd_shapefile(&nlcd);
     write_context_shapefile(&road, "road-1", "road");
     write_context_shapefile(&water, "stream-1", "water");
 
@@ -1912,6 +1945,10 @@ fn shapefile_adapters_normalize_networks_and_overlays() {
         terrain_overlays[0].geometry,
         trailgen_core::OverlayGeometry::Polygon(_)
     ));
+
+    let nlcd_overlays = shp_io::terrain_overlays_from_path(&nlcd).unwrap();
+    assert_eq!(nlcd_overlays.len(), 1);
+    assert_eq!(nlcd_overlays[0].terrain, Terrain::Forest);
 
     let road_overlays = shp_io::context_overlays_from_path(&road).unwrap();
     assert_eq!(road_overlays.len(), 1);
@@ -2102,6 +2139,26 @@ fn write_terrain_shapefile(path: &std::path::Path) {
     record.insert("terrain".to_owned(), "talus".to_owned().into());
     record.insert("surface".to_owned(), "scree".to_owned().into());
     record.insert("source".to_owned(), "agency-terrain".to_owned().into());
+    writer.write_shape_and_record(&polygon, &record).unwrap();
+}
+
+fn write_nlcd_shapefile(path: &std::path::Path) {
+    let table = ::shapefile::dbase::TableWriterBuilder::new()
+        .add_character_field("name".try_into().unwrap(), 32)
+        .add_numeric_field("nlcd".try_into().unwrap(), 5, 0)
+        .add_character_field("source".try_into().unwrap(), 32);
+    let mut writer = ::shapefile::Writer::from_path(path, table).unwrap();
+    let polygon = ::shapefile::Polygon::with_rings(vec![::shapefile::PolygonRing::Outer(vec![
+        ::shapefile::Point::new(-0.001, -0.001),
+        ::shapefile::Point::new(0.011, -0.001),
+        ::shapefile::Point::new(0.011, 0.001),
+        ::shapefile::Point::new(-0.001, 0.001),
+        ::shapefile::Point::new(-0.001, -0.001),
+    ])]);
+    let mut record = ::shapefile::dbase::Record::default();
+    record.insert("name".to_owned(), "nlcd-forest".to_owned().into());
+    record.insert("nlcd".to_owned(), 41.0.into());
+    record.insert("source".to_owned(), "nlcd-fixture".to_owned().into());
     writer.write_shape_and_record(&polygon, &record).unwrap();
 }
 

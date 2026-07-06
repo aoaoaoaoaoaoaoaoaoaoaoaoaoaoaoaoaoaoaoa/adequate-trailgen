@@ -588,11 +588,7 @@ fn terrain_overlay_from_feature(
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    let terrain = prop_str(&properties, "terrain")
-        .or_else(|| prop_str(&properties, "surface"))
-        .or_else(|| prop_str(&properties, "landcover"))
-        .or_else(|| prop_str(&properties, "land_cover"))
-        .map_or(Terrain::Unknown, Terrain::from_tag);
+    let terrain = terrain_from_properties(&properties);
     if terrain == Terrain::Unknown {
         return Err(TrailgenError::InvalidData(
             "terrain overlay feature has no recognized terrain/surface/landcover tag".to_owned(),
@@ -804,6 +800,40 @@ fn prop_f64(props: &Map<String, Value>, key: &str) -> Option<f64> {
 
 fn prop_bool(props: &Map<String, Value>, key: &str) -> Option<bool> {
     props.get(key).and_then(Value::as_bool)
+}
+
+fn terrain_from_properties(props: &Map<String, Value>) -> Terrain {
+    let direct = ["terrain", "surface"].into_iter().find_map(|key| {
+        prop_str(props, key)
+            .map(Terrain::from_tag)
+            .filter(|terrain| *terrain != Terrain::Unknown)
+    });
+    direct.unwrap_or_else(|| {
+        [
+            "landcover",
+            "land_cover",
+            "landcover_class",
+            "land_cover_class",
+            "nlcd",
+            "nlcd_code",
+            "gridcode",
+            "class",
+            "class_name",
+            "cover",
+            "cover_type",
+        ]
+        .into_iter()
+        .find_map(|key| props.get(key).and_then(terrain_from_landcover_value))
+        .unwrap_or(Terrain::Unknown)
+    })
+}
+
+fn terrain_from_landcover_value(value: &Value) -> Option<Terrain> {
+    let terrain = value.as_str().map_or_else(
+        || Terrain::from_landcover_tag(&value.to_string()),
+        Terrain::from_landcover_tag,
+    );
+    (terrain != Terrain::Unknown).then_some(terrain)
 }
 
 fn prop_date(props: &Map<String, Value>, keys: &[&str]) -> Result<Option<PlanningDate>> {

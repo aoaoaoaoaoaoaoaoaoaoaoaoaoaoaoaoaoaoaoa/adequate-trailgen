@@ -42,6 +42,56 @@ impl Terrain {
             _ => Self::Unknown,
         }
     }
+
+    #[must_use]
+    pub fn from_landcover_tag(tag: &str) -> Self {
+        let terrain = Self::from_tag(tag);
+        if terrain != Self::Unknown {
+            return terrain;
+        }
+        if let Ok(code) = tag.trim().parse::<u16>() {
+            return Self::from_nlcd_code(code);
+        }
+        match canonical_tag(tag).as_str() {
+            "openwater" | "emergentherbaceouswetlands" | "wetlands" => Self::Water,
+            "perennialicesnow"
+            | "shrubscrub"
+            | "grasslandherbaceous"
+            | "sedgeherbaceous"
+            | "lichens"
+            | "moss"
+            | "pasturehay"
+            | "cultivatedcrops" => Self::Alpine,
+            "developedopenspace"
+            | "developedlowintensity"
+            | "developedmediumintensity"
+            | "developedhighintensity"
+            | "developed"
+            | "urban" => Self::Pavement,
+            "barrenland" | "rocksandclay" | "barren" | "bedrock" | "rock" => Self::Talus,
+            "deciduousforest" | "evergreenforest" | "mixedforest" | "forestland"
+            | "woodywetlands" => Self::Forest,
+            _ => Self::Unknown,
+        }
+    }
+
+    const fn from_nlcd_code(code: u16) -> Self {
+        match code {
+            11 | 95 => Self::Water,
+            12 | 52 | 71 | 72 | 73 | 74 | 81 | 82 => Self::Alpine,
+            21..=24 => Self::Pavement,
+            31 => Self::Talus,
+            41..=43 | 90 => Self::Forest,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+fn canonical_tag(tag: &str) -> String {
+    tag.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 #[derive(

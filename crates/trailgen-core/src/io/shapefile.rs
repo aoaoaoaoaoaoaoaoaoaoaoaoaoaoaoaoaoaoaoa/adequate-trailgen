@@ -115,12 +115,7 @@ pub fn terrain_overlays_from_path(path: &Path) -> Result<Vec<TerrainOverlay>> {
         let (shape, record) = row;
         let props = ShpProps::new(&record);
         let surface = props.str("surface").map(str::to_owned);
-        let terrain = props
-            .str("terrain")
-            .or(surface.as_deref())
-            .or_else(|| props.str("landcover"))
-            .or_else(|| props.str("land_cover"))
-            .map_or(Terrain::Unknown, Terrain::from_tag);
+        let terrain = props.terrain();
         if terrain == Terrain::Unknown {
             return Err(TrailgenError::InvalidData(format!(
                 "shapefile terrain feature {i} has no recognized terrain/surface/landcover tag"
@@ -386,6 +381,50 @@ impl<'a> ShpProps<'a> {
             FieldValue::Character(Some(value)) => value.trim().parse().ok(),
             _ => None,
         }
+    }
+
+    fn terrain(&self) -> Terrain {
+        ["terrain", "surface"]
+            .into_iter()
+            .find_map(|key| {
+                self.str(key)
+                    .map(Terrain::from_tag)
+                    .filter(|terrain| *terrain != Terrain::Unknown)
+            })
+            .unwrap_or_else(|| {
+                [
+                    "landcover",
+                    "land_cover",
+                    "landcover_class",
+                    "land_cover_class",
+                    "nlcd",
+                    "nlcd_code",
+                    "gridcode",
+                    "class",
+                    "class_name",
+                    "cover",
+                    "cover_type",
+                ]
+                .into_iter()
+                .find_map(|key| self.landcover_terrain(key))
+                .unwrap_or(Terrain::Unknown)
+            })
+    }
+
+    fn landcover_terrain(&self, key: &str) -> Option<Terrain> {
+        let value = self.field(key)?;
+        let terrain = match value {
+            FieldValue::Character(Some(value)) | FieldValue::Memo(value) => {
+                Terrain::from_landcover_tag(value)
+            }
+            FieldValue::Numeric(Some(value))
+            | FieldValue::Double(value)
+            | FieldValue::Currency(value) => Terrain::from_landcover_tag(&value.to_string()),
+            FieldValue::Float(Some(value)) => Terrain::from_landcover_tag(&value.to_string()),
+            FieldValue::Integer(value) => Terrain::from_landcover_tag(&value.to_string()),
+            _ => Terrain::Unknown,
+        };
+        (terrain != Terrain::Unknown).then_some(terrain)
     }
 
     fn date(&self, keys: &[&str]) -> Result<Option<PlanningDate>> {
