@@ -1,6 +1,6 @@
 use crate::difficulty::DifficultyFactor;
 use crate::model::{Access, Edge, Provenance, TerrainEvidence, TrailGraph};
-use crate::route::Route;
+use crate::route::{LOW_CONFIDENCE_THRESHOLD, Route};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
@@ -52,6 +52,7 @@ fn render_route(graph: &TrailGraph, route: &Route, s: &mut String) {
     render_terrain_mix(route, s);
     render_source_provenance(graph, route, s);
     render_difficulty_hotspots(graph, route, s);
+    render_low_confidence_segments(graph, route, s);
     render_dubious_edges(graph, route, s);
     render_evidence(graph, route, s);
     s.push('\n');
@@ -201,6 +202,24 @@ fn render_difficulty_hotspots(graph: &TrailGraph, route: &Route, s: &mut String)
             edge.attr.terrain,
             edge.attr.length_m
         );
+    }
+}
+
+fn render_low_confidence_segments(graph: &TrailGraph, route: &Route, s: &mut String) {
+    s.push_str("\nLow-confidence segments:\n");
+    let mut edges = route
+        .edges
+        .iter()
+        .map(|id| &graph.edges[id.0])
+        .filter(|edge| edge.attr.confidence < LOW_CONFIDENCE_THRESHOLD)
+        .collect::<Vec<_>>();
+    if edges.is_empty() {
+        s.push_str("- none\n");
+        return;
+    }
+    edges.sort_by(|a, b| a.attr.confidence.total_cmp(&b.attr.confidence));
+    for edge in edges {
+        render_dubious_edge(edge, s);
     }
 }
 

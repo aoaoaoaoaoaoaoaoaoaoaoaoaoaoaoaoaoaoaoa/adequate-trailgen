@@ -5,6 +5,8 @@ use crate::model::{Access, CrossingKind, EdgeId, Terrain, TrailGraph, VertexId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub const LOW_CONFIDENCE_THRESHOLD: f64 = 0.6;
+
 #[derive(
     Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize,
 )]
@@ -246,7 +248,7 @@ impl RouteMetrics {
             road_m = a
                 .length_m
                 .mul_add(road_pavement_exposure(a.terrain, a.road_exposure), road_m);
-            if a.confidence < 0.6 {
+            if a.confidence < LOW_CONFIDENCE_THRESHOLD {
                 low_conf_m += a.length_m;
             }
             if is_restricted_access(a.access) {

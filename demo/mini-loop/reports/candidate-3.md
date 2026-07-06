@@ -58,6 +58,9 @@ Largest difficulty contributors:
 - edge 3 ascent: 1.36 (0.1% of route), Talus, 1334 m
 - edge 3 distance: 1.33 (0.1% of route), Talus, 1334 m
 
+Low-confidence segments:
+- none
+
 Most dubious segments:
 - edge 3: 1334 m, Talus, surface unknown, grade max 9.0%, grade bins flat 0% / rolling 100% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:west
 - edge 0: 1022 m, Trail, surface unknown, grade max 4.0%, grade bins flat 100% / rolling 0% / steep 0% / savage 0%, crossings 1, confidence 0.82, seed count 2, provenance fixture:north

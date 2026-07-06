@@ -19,10 +19,10 @@ use trailgen_core::source::{
 use trailgen_core::{
     Access, AccessOverlay, AccessWindow, ArcAsciiGrid, Coord, CrossingKind, DifficultyBreakdown,
     DifficultyWeights, EdgeAttr, EdgeId, EdgeTravel, EnrichmentConfig, GeoTiffDem, GraphBuilder,
-    LineString, LoopConstraints, PlanningDate, Provenance, Route, RouteMetrics, RouteShape,
-    RouteSnapStats, SearchParams, SeedRoute, SegmentDraft, SolverKind, Terrain, TrailGraph,
-    VertexId, VrtDem, apply_access_overlays, apply_context_overlays, apply_terrain_overlays,
-    enrich_graph, rank_routes, slug,
+    LOW_CONFIDENCE_THRESHOLD, LineString, LoopConstraints, PlanningDate, Provenance, Route,
+    RouteMetrics, RouteShape, RouteSnapStats, SearchParams, SeedRoute, SegmentDraft, SolverKind,
+    Terrain, TrailGraph, VertexId, VrtDem, apply_access_overlays, apply_context_overlays,
+    apply_terrain_overlays, enrich_graph, rank_routes, slug,
 };
 
 #[derive(Parser)]
@@ -793,7 +793,7 @@ fn stats_text(graph: &TrailGraph) -> String {
             edge_road_pavement_exposure(a.terrain, a.road_exposure),
             road_m,
         );
-        if a.confidence < 0.6 {
+        if a.confidence < LOW_CONFIDENCE_THRESHOLD {
             low_conf_m += a.length_m;
         }
         if matches!(
@@ -909,7 +909,7 @@ enum ConfidenceBand {
 
 impl ConfidenceBand {
     const fn from_confidence(confidence: f64) -> Self {
-        if confidence < 0.6 {
+        if confidence < LOW_CONFIDENCE_THRESHOLD {
             Self::Low
         } else if confidence < 0.8 {
             Self::Medium
@@ -3522,7 +3522,7 @@ fn graph_manifest(graph: &TrailGraph) -> GraphManifest {
         low_confidence_edges: graph
             .edges
             .iter()
-            .filter(|edge| edge.attr.confidence < 0.6)
+            .filter(|edge| edge.attr.confidence < LOW_CONFIDENCE_THRESHOLD)
             .count(),
         crossings: crossing_totals(graph),
         terrain_km,
@@ -4309,6 +4309,7 @@ mod tests {
         assert!(report.starts_with("# Rated Hiking Route"));
         assert!(report.contains("rated-route"));
         assert!(report.contains("Difficulty decomposition"));
+        assert!(report.contains("Low-confidence segments"));
         assert!(report.contains("Most dubious segments"));
         assert!(report.contains("## Constraint Envelope"));
         assert!(report.contains("## Source Manifest"));
@@ -4429,6 +4430,7 @@ mod tests {
         assert!(report.contains("distance: 3.00–8.00 km"));
         assert!(report.contains("scalar difficulty: 0.00–90.00"));
         assert!(report.contains("Difficulty decomposition"));
+        assert!(report.contains("Low-confidence segments"));
         assert!(report.contains("Access mix"));
         assert!(report.contains("restricted-access fraction"));
         assert!(report.contains("## Source Manifest"));

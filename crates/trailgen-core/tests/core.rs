@@ -854,7 +854,7 @@ fn fixture_generates_nontrivial_loops() {
 #[test]
 fn report_explains_difficulty_decomposition() {
     let drafts = geojson::network_from_str(include_str!("fixtures/mini_network.geojson")).unwrap();
-    let graph = GraphBuilder::default().build(&drafts).unwrap();
+    let mut graph = GraphBuilder::default().build(&drafts).unwrap();
     let start = graph.nearest_vertex(Coord::new(-105.0, 40.0)).unwrap();
     let route = LoopHunter::default()
         .hunt(
@@ -871,12 +871,16 @@ fn report_explains_difficulty_decomposition() {
         .into_iter()
         .next()
         .unwrap();
+    let low_confidence_edge = route.edges[0];
+    graph.edges[low_confidence_edge.0].attr.confidence = 0.42;
     let rendered = report::render(&graph, &[route]);
     assert!(rendered.contains("- score:"));
     assert!(rendered.contains("Difficulty decomposition:"));
     assert!(rendered.contains("- distance:"));
     assert!(rendered.contains("- ascent:"));
     assert!(rendered.contains("Largest difficulty contributors:"));
+    assert!(rendered.contains("Low-confidence segments:"));
+    assert!(rendered.contains("confidence 0.42"));
     assert!(rendered.contains("Source provenance:"));
     assert!(rendered.contains("fixture:"));
     assert!(rendered.contains("edge "));
