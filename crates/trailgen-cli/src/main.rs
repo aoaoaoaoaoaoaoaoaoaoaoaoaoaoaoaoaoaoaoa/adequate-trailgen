@@ -1764,6 +1764,7 @@ fn verify_generation(project: &Path) -> Result<()> {
     verify_generated_graph_manifest(project, &ledger)?;
     verify_forbidden_area_ledger(project, &ledger)?;
     let routes = verify_generated_route_sequences(project, &ledger)?;
+    verify_generated_solver_replay(project, &ledger)?;
     println!(
         "verified generation: {artifacts} artifact(s), {sources} source candidate(s), {routes} route sequence(s)"
     );
@@ -2284,6 +2285,90 @@ fn verify_generated_route_sequences(project: &Path, ledger: &GeneratedRunLedger)
         );
     }
     Ok(ledger.routes.len())
+}
+
+fn verify_generated_solver_replay(project: &Path, ledger: &GeneratedRunLedger) -> Result<()> {
+    if ledger.solver.as_deref() == Some("milp-incumbent-import") {
+        return Ok(());
+    }
+    let config = ledger
+        .effective_config
+        .as_ref()
+        .with_context(|| "generated manifest lacks effective_config snapshot")?;
+    let start = ledger
+        .snapped_start_vertex
+        .with_context(|| "generated manifest lacks snapped_start_vertex")?;
+    let graph = load_generated_graph(project)?;
+    let routes = load_generated_routes(project)?;
+    if routes.is_empty() {
+        return Ok(());
+    }
+    let replayed = solve_generation_routes(project, &graph, config, start, routes.len())?;
+    let mut failures = Vec::new();
+    if replayed.len() != routes.len() {
+        failures.push(format!(
+            "route count mismatch: persisted {} != replayed {}",
+            routes.len(),
+            replayed.len()
+        ));
+    }
+    for (index, (persisted, replayed)) in routes.iter().zip(&replayed).enumerate() {
+        verify_solver_replayed_route(index, persisted, replayed, &mut failures);
+    }
+    if !failures.is_empty() {
+        bail!(
+            "generated solver replay verification failed:\n{}",
+            failures.join("\n")
+        );
+    }
+    Ok(())
+}
+
+fn verify_solver_replayed_route(
+    index: usize,
+    persisted: &Route,
+    replayed: &Route,
+    failures: &mut Vec<String>,
+) {
+    let label = format!("route[{index}] {}", persisted.name);
+    if persisted.name != replayed.name {
+        failures.push(format!(
+            "{label} name mismatch: {} != {}",
+            persisted.name, replayed.name
+        ));
+    }
+    if persisted.start != replayed.start {
+        failures.push(format!(
+            "{label} start mismatch: {:?} != {:?}",
+            persisted.start, replayed.start
+        ));
+    }
+    if persisted.edges != replayed.edges {
+        failures.push(format!("{label} edge sequence differs from solver replay"));
+    }
+    if persisted.pareto_rank != replayed.pareto_rank {
+        failures.push(format!(
+            "{label} Pareto rank mismatch: {} != {}",
+            persisted.pareto_rank, replayed.pareto_rank
+        ));
+    }
+    if persisted.verdict != replayed.verdict {
+        failures.push(format!(
+            "{label} constraint verdict differs from solver replay"
+        ));
+    }
+    verify_route_metrics(
+        &format!("{label} metrics"),
+        &persisted.metrics,
+        &replayed.metrics,
+        failures,
+    );
+    verify_f64(
+        &format!("{label} score"),
+        persisted.score,
+        replayed.computed_score(),
+        failures,
+    );
 }
 
 fn verify_generated_route_record(
@@ -3099,22 +3184,7 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
     let start_coord = parse_coord(&options.start)?;
     let start = snap_generation_start(&graph, start_coord, config.max_start_snap_m)?;
     let solver = config.solver.resolve(&graph);
-    let mut routes = solver.solve(
-        config.search,
-        &graph,
-        start.snapped,
-        &config.constraints,
-        options.count,
-    );
-    routes.extend(
-        load_seeds(project)?
-            .iter()
-            .filter_map(|seed| seed.as_route(&graph, &config.constraints)),
-    );
-    let mut seen = std::collections::BTreeSet::new();
-    routes.retain(|route| seen.insert(route.edges.clone()));
-    rank_routes(&mut routes, &config.constraints);
-    routes.truncate(options.count);
+    let routes = solve_generation_routes(project, &graph, &config, start.snapped, options.count)?;
     fs::create_dir_all(project.join("routes"))?;
     fs::create_dir_all(project.join("reports"))?;
     let previous_artifacts = previous_generated_artifacts(project)?;
@@ -3148,6 +3218,27 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
     remove_obsolete_generation_artifacts(project, previous_artifacts, &manifest.artifacts)?;
     println!("generated {} route(s)", routes.len());
     Ok(())
+}
+
+fn solve_generation_routes(
+    project: &Path,
+    graph: &TrailGraph,
+    config: &ProjectConfig,
+    start: VertexId,
+    count: usize,
+) -> Result<Vec<Route>> {
+    let solver = config.solver.resolve(graph);
+    let mut routes = solver.solve(config.search, graph, start, &config.constraints, count);
+    routes.extend(
+        load_seeds(project)?
+            .iter()
+            .filter_map(|seed| seed.as_route(graph, &config.constraints)),
+    );
+    let mut seen = BTreeSet::new();
+    routes.retain(|route| seen.insert(route.edges.clone()));
+    rank_routes(&mut routes, &config.constraints);
+    routes.truncate(count);
+    Ok(routes)
 }
 
 fn write_generated_snapshots(
@@ -7685,6 +7776,12 @@ mod tests {
 
         expect_source_drift(project, &network)?;
         expect_generated_run_metadata_drift(project)?;
+        expect_generated_manifest_drift(
+            project,
+            |manifest| manifest["effective_config"]["search"]["max_hops"] = serde_json::json!(1),
+            "generated solver replay verification failed",
+            "route count mismatch",
+        )?;
         expect_generated_manifest_drift(
             project,
             |manifest| {
