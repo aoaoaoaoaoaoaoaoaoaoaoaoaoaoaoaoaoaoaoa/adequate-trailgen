@@ -3,7 +3,10 @@ use crate::geo::{Coord, LineString};
 use crate::model::{Access, CrossingKind, EdgeTravel, Provenance, Terrain};
 use crate::overlay::ContextOverlay;
 use crate::{Result, TrailgenError};
-use osmpbfreader::{Node as PbfNode, OsmId, OsmObj, OsmPbfReader, Tags as PbfTags, Way as PbfWay};
+use osmpbfreader::{
+    Node as PbfNode, OsmId, OsmObj, OsmPbfReader, Relation as PbfRelation, Tags as PbfTags,
+    Way as PbfWay, WayId,
+};
 use std::collections::BTreeMap;
 use std::io::{Read, Seek};
 
@@ -21,21 +24,23 @@ pub fn network_from_str(s: &str) -> Result<Vec<SegmentDraft>> {
         .filter(|node| node.has_tag_name("node"))
         .map(parse_node)
         .collect::<Result<BTreeMap<_, _>>>()?;
+    let route_relations = xml_route_relations(root)?;
     root.children()
         .filter(|node| node.has_tag_name("way"))
-        .filter_map(|way| draft_from_xml_way(way, &nodes).transpose())
+        .filter_map(|way| draft_from_xml_way(way, &nodes, &route_relations).transpose())
         .collect()
 }
 
 pub fn network_from_pbf_reader<R: Read + Seek>(reader: R) -> Result<Vec<SegmentDraft>> {
     let mut pbf = OsmPbfReader::new(reader);
     let objects = pbf
-        .get_objs_and_deps(pbf_walkable_way)
+        .get_objs_and_deps(pbf_network_object)
         .map_err(|error| TrailgenError::InvalidData(format!("parse OSM PBF: {error}")))?;
+    let route_relations = pbf_route_relations(&objects);
     objects
         .values()
         .filter_map(|object| match object {
-            OsmObj::Way(way) => draft_from_pbf_way(way, &objects).transpose(),
+            OsmObj::Way(way) => draft_from_pbf_way(way, &objects, &route_relations).transpose(),
             OsmObj::Node(_) | OsmObj::Relation(_) => None,
         })
         .collect()
@@ -98,18 +103,19 @@ fn parse_node(node: roxmltree::Node<'_, '_>) -> Result<(String, Coord)> {
 fn draft_from_xml_way(
     way: roxmltree::Node<'_, '_>,
     nodes: &BTreeMap<String, Coord>,
+    route_relations: &BTreeMap<String, Vec<RouteRelationEvidence>>,
 ) -> Result<Option<SegmentDraft>> {
     let tags = xml_tags(way);
     let Some(walkway) = Walkway::from_tags(&tags) else {
         return Ok(None);
     };
+    let id = way_id(way);
     let mut points = Vec::new();
     for nd in way.children().filter(|node| node.has_tag_name("nd")) {
         let reference = required_attr(nd, "ref")?;
         let Some(coord) = nodes.get(reference) else {
             return Err(TrailgenError::InvalidData(format!(
-                "OSM way {} references missing node {reference}",
-                way_id(way)
+                "OSM way {id} references missing node {reference}"
             )));
         };
         points.push(*coord);
@@ -124,13 +130,11 @@ fn draft_from_xml_way(
         access: walkway.access,
         travel: walkway.travel,
         road_exposure: walkway.road_exposure,
-        confidence: walkway.confidence,
-        provenance: Provenance {
-            source: "osm-xml".to_owned(),
-            layer: Some("way".to_owned()),
-            source_id: Some(way_id(way)),
-            license: Some("ODbL-1.0".to_owned()),
-        },
+        confidence: relation_boosted_confidence(
+            walkway.confidence,
+            route_relations.get(&id).map_or(0, Vec::len),
+        ),
+        provenance: osm_way_provenance("osm-xml", &id, route_relations),
     }))
 }
 
@@ -162,6 +166,16 @@ fn pbf_walkable_way(object: &OsmObj) -> bool {
         .is_some_and(|way| Walkway::from_tags(&pbf_tags(&way.tags)).is_some())
 }
 
+fn pbf_network_object(object: &OsmObj) -> bool {
+    pbf_walkable_way(object) || pbf_hiking_route_relation(object)
+}
+
+fn pbf_hiking_route_relation(object: &OsmObj) -> bool {
+    object
+        .relation()
+        .is_some_and(|relation| route_relation_from_tags(&pbf_tags(&relation.tags)).is_some())
+}
+
 fn pbf_context_way(object: &OsmObj) -> bool {
     object
         .way()
@@ -171,6 +185,7 @@ fn pbf_context_way(object: &OsmObj) -> bool {
 fn draft_from_pbf_way(
     way: &PbfWay,
     objects: &BTreeMap<OsmId, OsmObj>,
+    route_relations: &BTreeMap<String, Vec<RouteRelationEvidence>>,
 ) -> Result<Option<SegmentDraft>> {
     let tags = pbf_tags(&way.tags);
     let Some(walkway) = Walkway::from_tags(&tags) else {
@@ -196,13 +211,13 @@ fn draft_from_pbf_way(
         access: walkway.access,
         travel: walkway.travel,
         road_exposure: walkway.road_exposure,
-        confidence: walkway.confidence,
-        provenance: Provenance {
-            source: "osm-pbf".to_owned(),
-            layer: Some("way".to_owned()),
-            source_id: Some(way.id.0.to_string()),
-            license: Some("ODbL-1.0".to_owned()),
-        },
+        confidence: relation_boosted_confidence(
+            walkway.confidence,
+            route_relations
+                .get(&way.id.0.to_string())
+                .map_or(0, Vec::len),
+        ),
+        provenance: osm_way_provenance("osm-pbf", &way.id.0.to_string(), route_relations),
     }))
 }
 
@@ -236,6 +251,124 @@ fn pbf_coord(node: &PbfNode) -> Coord {
         lon: node.lon(),
         lat: node.lat(),
         ele,
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RouteRelationEvidence {
+    id: String,
+    label: String,
+}
+
+fn xml_route_relations(
+    root: roxmltree::Node<'_, '_>,
+) -> Result<BTreeMap<String, Vec<RouteRelationEvidence>>> {
+    let mut by_way = BTreeMap::<String, Vec<RouteRelationEvidence>>::new();
+    for relation in root.children().filter(|node| node.has_tag_name("relation")) {
+        let tags = xml_tags(relation);
+        let Some(evidence) = route_relation_from_tags(&tags).map(|label| RouteRelationEvidence {
+            id: relation_id(relation),
+            label,
+        }) else {
+            continue;
+        };
+        for member in relation
+            .children()
+            .filter(|node| node.has_tag_name("member"))
+        {
+            if required_attr(member, "type")? != "way" {
+                continue;
+            }
+            by_way
+                .entry(required_attr(member, "ref")?.to_owned())
+                .or_default()
+                .push(evidence.clone());
+        }
+    }
+    Ok(by_way)
+}
+
+fn pbf_route_relations(
+    objects: &BTreeMap<OsmId, OsmObj>,
+) -> BTreeMap<String, Vec<RouteRelationEvidence>> {
+    let mut by_way = BTreeMap::<String, Vec<RouteRelationEvidence>>::new();
+    for relation in objects.values().filter_map(OsmObj::relation) {
+        let Some(evidence) = pbf_route_relation_evidence(relation) else {
+            continue;
+        };
+        for reference in &relation.refs {
+            if let OsmId::Way(WayId(id)) = reference.member {
+                by_way
+                    .entry(id.to_string())
+                    .or_default()
+                    .push(evidence.clone());
+            }
+        }
+    }
+    by_way
+}
+
+fn pbf_route_relation_evidence(relation: &PbfRelation) -> Option<RouteRelationEvidence> {
+    route_relation_from_tags(&pbf_tags(&relation.tags)).map(|label| RouteRelationEvidence {
+        id: relation.id.0.to_string(),
+        label,
+    })
+}
+
+fn route_relation_from_tags(tags: &BTreeMap<String, String>) -> Option<String> {
+    if tags.get("type").is_none_or(|value| value != "route") {
+        return None;
+    }
+    let route = tags.get("route")?;
+    if !matches!(route.as_str(), "hiking" | "foot" | "walking") {
+        return None;
+    }
+    Some(
+        tags.get("name")
+            .or_else(|| tags.get("ref"))
+            .map_or_else(|| format!("{route} route"), Clone::clone),
+    )
+}
+
+fn osm_way_provenance(
+    source: &str,
+    way_id: &str,
+    route_relations: &BTreeMap<String, Vec<RouteRelationEvidence>>,
+) -> Provenance {
+    let relation_label = route_relations.get(way_id).map(|relations| {
+        relations
+            .iter()
+            .map(RouteRelationEvidence::slug)
+            .collect::<Vec<_>>()
+            .join(",")
+    });
+    let source_id = relation_label.as_ref().map_or_else(
+        || way_id.to_owned(),
+        |relations| format!("way {way_id}; route relations {relations}"),
+    );
+    Provenance {
+        source: source.to_owned(),
+        layer: Some(if relation_label.is_none() {
+            "way".to_owned()
+        } else {
+            "way+route-relation".to_owned()
+        }),
+        source_id: Some(source_id),
+        license: Some("ODbL-1.0".to_owned()),
+    }
+}
+
+impl RouteRelationEvidence {
+    fn slug(&self) -> String {
+        format!("{}:{}", self.id, self.label)
+    }
+}
+
+const fn relation_boosted_confidence(confidence: f64, route_relation_count: usize) -> f64 {
+    if route_relation_count == 0 {
+        confidence
+    } else {
+        confidence.max(0.82)
     }
 }
 
@@ -445,4 +578,11 @@ fn required_attr<'a>(node: roxmltree::Node<'a, '_>, key: &str) -> Result<&'a str
 
 fn way_id(way: roxmltree::Node<'_, '_>) -> String {
     way.attribute("id").unwrap_or("unknown-way").to_owned()
+}
+
+fn relation_id(relation: roxmltree::Node<'_, '_>) -> String {
+    relation
+        .attribute("id")
+        .unwrap_or("unknown-relation")
+        .to_owned()
 }

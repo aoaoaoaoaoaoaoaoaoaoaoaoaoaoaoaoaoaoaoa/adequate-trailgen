@@ -493,7 +493,8 @@ const fn default_max_route_snap_m() -> f64 {
 const DEFAULT_OVERPASS_ENDPOINT: &str = "https://overpass-api.de/api/interpreter";
 const OSM_TRAIL_SELECTORS: &[&str] = &[
     r#"way["highway"~"^(path|footway|track|service|pedestrian|steps|bridleway|unclassified|residential|tertiary|road)$"]"#,
-    r#"way["route"~"^(hiking|foot)$"]"#,
+    r#"way["route"~"^(hiking|foot|walking)$"]"#,
+    r#"relation["type"="route"]["route"~"^(hiking|foot|walking)$"]"#,
 ];
 const OSM_ROAD_SELECTORS: &[&str] = &[
     r#"way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|track|road)$"]"#,
@@ -5325,7 +5326,10 @@ mod tests {
         assert!(trails.contains(&format!(
             r#"way["highway"~"^(path|footway|track|service|pedestrian|steps|bridleway|unclassified|residential|tertiary|road)$"]{bbox};"#
         )));
-        assert!(trails.contains(&format!(r#"way["route"~"^(hiking|foot)$"]{bbox};"#)));
+        assert!(trails.contains(&format!(r#"way["route"~"^(hiking|foot|walking)$"]{bbox};"#)));
+        assert!(trails.contains(&format!(
+            r#"relation["type"="route"]["route"~"^(hiking|foot|walking)$"]{bbox};"#
+        )));
         assert!(trails.ends_with("(._;>;);\nout body;\n"));
 
         let roads = overpass_query(OsmAcquireProfile::Roads, area, 45);
@@ -6972,6 +6976,12 @@ mod tests {
     <tag k="waterway" v="stream"/>
     <tag k="name" v="Stream One"/>
   </way>
+  <relation id="20">
+    <member type="way" ref="10" role=""/>
+    <tag k="type" v="route"/>
+    <tag k="route" v="hiking"/>
+    <tag k="name" v="Trail One Route"/>
+  </relation>
 </osm>"#
     }
 

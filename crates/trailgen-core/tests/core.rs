@@ -368,6 +368,47 @@ fn osm_xml_network_rejects_missing_way_nodes() {
 }
 
 #[test]
+fn osm_xml_network_preserves_hiking_route_relation_evidence() {
+    let drafts = osm::network_from_str(
+        r#"<osm version="0.6">
+  <node id="1" lat="40.0" lon="-105.0"/>
+  <node id="2" lat="40.0" lon="-104.99"/>
+  <way id="10">
+    <nd ref="1"/><nd ref="2"/>
+    <tag k="highway" v="path"/>
+  </way>
+  <relation id="20">
+    <member type="way" ref="10" role=""/>
+    <tag k="type" v="route"/>
+    <tag k="route" v="hiking"/>
+    <tag k="name" v="Ridge Route"/>
+  </relation>
+</osm>"#,
+    )
+    .unwrap();
+
+    assert_eq!(drafts.len(), 1);
+    assert_eq!(
+        drafts[0].provenance.layer.as_deref(),
+        Some("way+route-relation")
+    );
+    assert!(
+        drafts[0]
+            .provenance
+            .source_id
+            .as_deref()
+            .is_some_and(|id| id.contains("way 10; route relations 20:ridge route"))
+    );
+    assert!(drafts[0].confidence >= 0.82);
+
+    let graph = GraphBuilder::default().build(&drafts).unwrap();
+    assert_eq!(
+        graph.edges[0].attr.provenance[0].layer.as_deref(),
+        Some("way+route-relation")
+    );
+}
+
+#[test]
 fn osm_pbf_network_normalizes_walkable_ways() {
     let drafts = osm::network_from_pbf_reader(Cursor::new(tiny_osm_pbf())).unwrap();
 
@@ -376,7 +417,18 @@ fn osm_pbf_network_normalizes_walkable_ways() {
     assert_eq!(drafts[0].surface.as_deref(), Some("gravel"));
     assert_eq!(drafts[0].travel, EdgeTravel::Forward);
     assert_eq!(drafts[0].provenance.source, "osm-pbf");
-    assert_eq!(drafts[0].provenance.source_id.as_deref(), Some("10"));
+    assert_eq!(
+        drafts[0].provenance.layer.as_deref(),
+        Some("way+route-relation")
+    );
+    assert!(
+        drafts[0]
+            .provenance
+            .source_id
+            .as_deref()
+            .is_some_and(|id| id.contains("way 10; route relations 20:ridge route"))
+    );
+    assert!(drafts[0].confidence >= 0.82);
     assert_eq!(drafts[1].terrain, Terrain::Road);
     assert_eq!(drafts[1].access, Access::Private);
     assert!((drafts[1].road_exposure - 1.0).abs() <= f64::EPSILON);
@@ -3147,6 +3199,11 @@ fn tiny_osm_pbf() -> Vec<u8> {
         "motorway",
         "waterway",
         "stream",
+        "type",
+        "route",
+        "hiking",
+        "name",
+        "ridge route",
     ]
     .into_iter()
     .map(|s| s.as_bytes().to_vec())
@@ -3165,6 +3222,7 @@ fn tiny_osm_pbf() -> Vec<u8> {
         pbf_way(12, &[(1, 10)], &[3, 1]),
         pbf_way(13, &[(11, 12)], &[4, -3]),
     ];
+    group.relations = vec![pbf_relation(20, &[(13, 14), (14, 15), (16, 17)], &[10])];
 
     let mut block = PrimitiveBlock::new();
     block.stringtable = MessageField::some(table);
@@ -3187,6 +3245,30 @@ fn pbf_way(id: i64, tags: &[(u32, u32)], refs: &[i64]) -> osmpbfreader::osmforma
     way.vals = tags.iter().map(|(_, value)| *value).collect();
     way.refs = refs.to_vec();
     way
+}
+
+fn pbf_relation(
+    id: i64,
+    tags: &[(u32, u32)],
+    way_refs: &[i64],
+) -> osmpbfreader::osmformat::Relation {
+    use osmpbfreader::osmformat::relation::MemberType;
+
+    let mut relation = osmpbfreader::osmformat::Relation::new();
+    relation.set_id(id);
+    relation.keys = tags.iter().map(|(key, _)| *key).collect();
+    relation.vals = tags.iter().map(|(_, value)| *value).collect();
+    relation.roles_sid = vec![0; way_refs.len()];
+    relation.memids = way_refs
+        .iter()
+        .scan(0, |last, reference| {
+            let delta = *reference - *last;
+            *last = *reference;
+            Some(delta)
+        })
+        .collect();
+    relation.types = vec![MemberType::WAY.into(); way_refs.len()];
+    relation
 }
 
 fn pbf_file_block(kind: &str, raw: Vec<u8>) -> Vec<u8> {
