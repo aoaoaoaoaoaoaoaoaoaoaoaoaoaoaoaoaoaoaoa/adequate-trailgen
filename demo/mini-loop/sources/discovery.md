@@ -316,7 +316,7 @@ Candidates:
 - kml-route (SeedRoute, Implemented): consumes kml, kmz; produces LineString, snapped route metrics; KML/KMZ route import/export for manual map-app exchange.
 - arc-ascii-elevation (Elevation, Implemented): consumes asc; produces sampled elevation profile, edge ascent/descent; Arc/Info ASCII Grid DEM sampling for local elevation enrichment.
 - geotiff-elevation (Elevation, Implemented): consumes tif, tiff; produces sampled elevation profile, edge ascent/descent; Affine WGS84 or EPSG:3857 single-band GeoTIFF DEM sampling.
-- vrt-elevation (Elevation, Implemented): consumes vrt; produces sampled elevation profile, edge ascent/descent; GDAL VRT SimpleSource wrapper around a north-up geographic GeoTIFF DEM.
+- vrt-elevation (Elevation, Implemented): consumes vrt; produces sampled elevation profile, edge ascent/descent; GDAL VRT SimpleSource DEM wrapper with affine WGS84 or EPSG:3857 GeoTransform sampling.
 - geojson-terrain-overlay (Terrain, Implemented): consumes geojson, json; produces terrain overrides, confidence/provenance; GeoJSON land-cover, surface, or user terrain overlays applied after graph construction.
 - shapefile-terrain-overlay (Terrain, Implemented): consumes shp, dbf, shx; produces terrain overrides, confidence/provenance; Polygon or line shapefile land-cover, surface, or terrain overlays applied after graph construction.
 - geojson-access-overlay (Access, Implemented): consumes geojson, json; produces access overrides, confidence/provenance; GeoJSON access/status overlay applied after graph construction.

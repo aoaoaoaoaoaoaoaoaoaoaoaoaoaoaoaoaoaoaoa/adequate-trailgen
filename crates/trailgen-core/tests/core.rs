@@ -2264,6 +2264,8 @@ fn vrt_dem_wraps_geotiff_source_and_samples() {
 
     assert_eq!(raster.width, 3);
     assert_eq!(raster.height, 3);
+    assert_eq!(raster.crs, RasterCrs::Wgs84Degrees);
+    assert!(raster.transform.is_some());
     assert!(raster.source_filename.ends_with("mini_dem.tif"));
     assert!(raster.sample(Coord::new(-105.0, 40.01)).is_some_and(
         |sample| sample.ele_m > 1_500.0 && (sample.confidence - 0.76).abs() <= f64::EPSILON
@@ -2272,14 +2274,55 @@ fn vrt_dem_wraps_geotiff_source_and_samples() {
 }
 
 #[test]
-fn vrt_dem_rejects_projected_geotiff_source() {
+fn rotated_vrt_dem_samples_through_affine_geotransform() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tif = tmp.path().join("rotated_dem.tif");
+    let vrt = tmp.path().join("rotated_dem.vrt");
+    write_rotated_geotiff_dem(&tif);
+    write_vrt_dem_with_geotransform(
+        &vrt,
+        "rotated_dem.tif",
+        rotated_fixture_geotransform(),
+        Some("EPSG:4326"),
+    );
+
+    let raster = VrtDem::from_path(
+        &vrt,
+        Provenance {
+            source: "fixture-rotated-vrt-dem".to_owned(),
+            layer: Some("vrt".to_owned()),
+            source_id: Some("rotated_dem.vrt".to_owned()),
+            license: None,
+        },
+        0.75,
+    )
+    .unwrap();
+
+    assert_eq!(raster.crs, RasterCrs::Wgs84Degrees);
+    assert!(raster.transform.is_some());
+    let sample = raster.sample(Coord::new(-104.995, 40.005)).unwrap();
+    assert!((sample.ele_m - 1_600.0).abs() <= 1.0e-9);
+    assert!(raster.sample(Coord::new(-106.0, 40.0)).is_none());
+}
+
+#[test]
+fn web_mercator_vrt_dem_samples_projected_source() {
     let tmp = tempfile::tempdir().unwrap();
     let tif = tmp.path().join("web_mercator_dem.tif");
     let vrt = tmp.path().join("web_mercator_dem.vrt");
     write_web_mercator_geotiff_dem(&tif, 3857);
-    write_vrt_dem(&vrt, "web_mercator_dem.tif");
+    let scale = 1_000.0;
+    let (x, y) = web_mercator_xy(Coord::new(-104.995, 40.005));
+    let origin_x = 1.5_f64.mul_add(-scale, x);
+    let origin_y = 1.5_f64.mul_add(scale, y);
+    write_vrt_dem_with_geotransform(
+        &vrt,
+        "web_mercator_dem.tif",
+        [origin_x, scale, 0.0, origin_y, 0.0, -scale],
+        Some("EPSG:3857"),
+    );
 
-    let error = VrtDem::from_path(
+    let raster = VrtDem::from_path(
         &vrt,
         Provenance {
             source: "fixture-vrt-dem".to_owned(),
@@ -2289,8 +2332,38 @@ fn vrt_dem_rejects_projected_geotiff_source() {
         },
         0.76,
     )
+    .unwrap();
+    assert_eq!(raster.crs, RasterCrs::WebMercatorMeters);
+    let sample = raster.sample(Coord::new(-104.995, 40.005)).unwrap();
+    assert!((sample.ele_m - 1_600.0).abs() <= 1.0e-9);
+    assert!(raster.sample(Coord::new(-106.0, 40.0)).is_none());
+}
+
+#[test]
+fn vrt_dem_rejects_unsupported_projected_srs_even_when_wkt_mentions_wgs84() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tif = tmp.path().join("mini_dem.tif");
+    let vrt = tmp.path().join("utm_dem.vrt");
+    write_geotiff_dem(&tif);
+    write_vrt_dem_with_geotransform(
+        &vrt,
+        "mini_dem.tif",
+        [-105.01, 0.01, 0.0, 40.02, 0.0, -0.01],
+        Some(r#"PROJCS["WGS 84 / UTM zone 13N",PROJECTION["Transverse_Mercator"]]"#),
+    );
+
+    let error = VrtDem::from_path(
+        &vrt,
+        Provenance {
+            source: "fixture-vrt-dem".to_owned(),
+            layer: Some("vrt".to_owned()),
+            source_id: Some("utm_dem.vrt".to_owned()),
+            license: None,
+        },
+        0.76,
+    )
     .unwrap_err();
-    assert!(format!("{error}").contains("VRT DEM currently requires a geographic GeoTIFF source"));
+    assert!(format!("{error}").contains("projected VRT SRS must be EPSG:3857"));
 }
 
 fn write_geotiff_dem(path: &std::path::Path) {
@@ -2335,13 +2408,7 @@ fn write_rotated_geotiff_dem(path: &std::path::Path) {
     use tiff::encoder::{TiffEncoder, colortype};
     use tiff::tags::Tag;
 
-    let center = Coord::new(-104.995, 40.005);
-    let a = 0.01;
-    let b = 0.001;
-    let c = 0.002;
-    let d = -0.01;
-    let x0 = center.lon.mul_add(1.0, -1.5_f64.mul_add(a, 1.5 * b));
-    let y0 = center.lat.mul_add(1.0, -1.5_f64.mul_add(c, 1.5 * d));
+    let [x0, a, b, y0, c, d] = rotated_fixture_geotransform();
 
     let file = std::fs::File::create(path).unwrap();
     let mut tiff = TiffEncoder::new(file).unwrap();
@@ -2373,6 +2440,22 @@ fn write_rotated_geotiff_dem(path: &std::path::Path) {
             1_500_i16, 1_510, 1_520, 1_590, 1_600, 1_610, 1_700, 1_710, 1_720,
         ])
         .unwrap();
+}
+
+fn rotated_fixture_geotransform() -> [f64; 6] {
+    let center = Coord::new(-104.995, 40.005);
+    let a = 0.01;
+    let b = 0.001;
+    let c = 0.002;
+    let d = -0.01;
+    [
+        center.lon.mul_add(1.0, -1.5_f64.mul_add(a, 1.5 * b)),
+        a,
+        b,
+        center.lat.mul_add(1.0, -1.5_f64.mul_add(c, 1.5 * d)),
+        c,
+        d,
+    ]
 }
 
 fn write_web_mercator_geotiff_dem(path: &std::path::Path, projected_epsg: u16) {
@@ -2442,11 +2525,22 @@ fn web_mercator_xy(coord: Coord) -> (f64, f64) {
 }
 
 fn write_vrt_dem(path: &std::path::Path, source: &str) {
+    write_vrt_dem_with_geotransform(path, source, [-105.01, 0.01, 0.0, 40.02, 0.0, -0.01], None);
+}
+
+fn write_vrt_dem_with_geotransform(
+    path: &std::path::Path,
+    source: &str,
+    geotransform: [f64; 6],
+    srs: Option<&str>,
+) {
+    let [gt0, gt1, gt2, gt3, gt4, gt5] = geotransform;
+    let srs = srs.map_or_else(String::new, |srs| format!("  <SRS>{srs}</SRS>\n"));
     std::fs::write(
         path,
         format!(
             r#"<VRTDataset rasterXSize="3" rasterYSize="3">
-  <GeoTransform>-105.01, 0.01, 0.0, 40.02, 0.0, -0.01</GeoTransform>
+{srs}  <GeoTransform>{gt0}, {gt1}, {gt2}, {gt3}, {gt4}, {gt5}</GeoTransform>
   <VRTRasterBand dataType="Int16" band="1">
     <NoDataValue>-32768</NoDataValue>
     <SimpleSource>

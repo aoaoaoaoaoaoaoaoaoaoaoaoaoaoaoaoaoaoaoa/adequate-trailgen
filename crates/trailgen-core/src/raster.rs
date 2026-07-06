@@ -145,14 +145,26 @@ impl RasterCrs {
     }
 }
 
+const fn default_raster_crs() -> RasterCrs {
+    RasterCrs::Wgs84Degrees
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct VrtDem {
     pub width: usize,
     pub height: usize,
-    pub origin_lon: f64,
-    pub origin_lat: f64,
-    pub pixel_width_deg: f64,
-    pub pixel_height_deg: f64,
+    #[serde(default = "default_raster_crs")]
+    pub crs: RasterCrs,
+    #[serde(alias = "origin_lon")]
+    pub origin_x: f64,
+    #[serde(alias = "origin_lat")]
+    pub origin_y: f64,
+    #[serde(alias = "pixel_width_deg")]
+    pub pixel_width: f64,
+    #[serde(alias = "pixel_height_deg")]
+    pub pixel_height: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform: Option<RasterTransform>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nodata_value: Option<f64>,
     pub source_filename: String,
@@ -321,46 +333,19 @@ impl GeoTiffDem {
 
     #[must_use]
     pub fn contains(&self, coord: Coord) -> bool {
-        let (x, y) = self.crs.xy(coord);
-        let (col, row) = self.transform().pixel_xy(x, y);
-        (0.0..=usize_to_f64(self.width)).contains(&col)
-            && (0.0..=usize_to_f64(self.height)).contains(&row)
+        raster_contains(self.width, self.height, self.crs, self.transform(), coord)
     }
 
     fn interpolated_elevation_m(&self, coord: Coord) -> Option<f64> {
-        if !self.contains(coord) {
-            return None;
-        }
-        let (x, y) = self.crs.xy(coord);
-        let (col_px, row_px) = self.transform().pixel_xy(x, y);
-        let col = (col_px - 0.5).clamp(0.0, usize_to_f64(self.width.saturating_sub(1)));
-        let row = (row_px - 0.5).clamp(0.0, usize_to_f64(self.height.saturating_sub(1)));
-        let col0 = f64_to_index(col.floor(), self.width)?;
-        let col1 = f64_to_index(col.ceil(), self.width)?;
-        let row0 = f64_to_index(row.floor(), self.height)?;
-        let row1 = f64_to_index(row.ceil(), self.height)?;
-        let tx = col - usize_to_f64(col0);
-        let ty = row - usize_to_f64(row0);
-        let z00 = self.cell(row0, col0)?;
-        let z01 = self.cell(row0, col1)?;
-        let z10 = self.cell(row1, col0)?;
-        let z11 = self.cell(row1, col1)?;
-        let top = tx.mul_add(z01 - z00, z00);
-        let bottom = tx.mul_add(z11 - z10, z10);
-        Some(ty.mul_add(bottom - top, top))
-    }
-
-    fn cell(&self, row: usize, col: usize) -> Option<f64> {
-        let value = *self
-            .values
-            .get(row.checked_mul(self.width)?.checked_add(col)?)?;
-        if self
-            .nodata_value
-            .is_some_and(|nodata| (value - nodata).abs() <= f64::EPSILON)
-        {
-            return None;
-        }
-        value.is_finite().then_some(value)
+        interpolated_raster_value(
+            self.width,
+            self.height,
+            &self.values,
+            self.nodata_value,
+            self.crs,
+            self.transform(),
+            coord,
+        )
     }
 
     fn transform(&self) -> RasterTransform {
@@ -394,11 +379,12 @@ impl VrtDem {
             },
             confidence,
         )?;
-        if source.crs != RasterCrs::Wgs84Degrees {
-            return Err(TrailgenError::UnsupportedFormat(
-                "VRT DEM currently requires a geographic GeoTIFF source; sample EPSG:3857 GeoTIFFs directly"
-                    .to_owned(),
-            ));
+        let crs = spec.crs.unwrap_or(source.crs);
+        if spec.crs.is_some_and(|spec_crs| spec_crs != source.crs) {
+            return Err(TrailgenError::UnsupportedFormat(format!(
+                "VRT SRS {:?} does not match source GeoTIFF CRS {:?}; reproject or materialize a consistent VRT",
+                crs, source.crs
+            )));
         }
         if source.width != spec.width || source.height != spec.height {
             return Err(TrailgenError::UnsupportedFormat(format!(
@@ -409,10 +395,12 @@ impl VrtDem {
         Ok(Self {
             width: spec.width,
             height: spec.height,
-            origin_lon: spec.origin_lon,
-            origin_lat: spec.origin_lat,
-            pixel_width_deg: spec.pixel_width_deg,
-            pixel_height_deg: spec.pixel_height_deg,
+            crs,
+            origin_x: spec.transform.x0,
+            origin_y: spec.transform.y0,
+            pixel_width: spec.transform.pixel_width(),
+            pixel_height: spec.transform.pixel_height(),
+            transform: Some(spec.transform),
             nodata_value: spec.nodata_value.or(source.nodata_value),
             source_filename: spec.source_path.display().to_string(),
             confidence: confidence.clamp(0.0, 1.0),
@@ -429,50 +417,30 @@ impl VrtDem {
 
     #[must_use]
     pub fn contains(&self, coord: Coord) -> bool {
-        let east = self
-            .pixel_width_deg
-            .mul_add(usize_to_f64(self.width), self.origin_lon);
-        let south = self
-            .pixel_height_deg
-            .mul_add(-usize_to_f64(self.height), self.origin_lat);
-        (self.origin_lon..=east).contains(&coord.lon)
-            && (south..=self.origin_lat).contains(&coord.lat)
+        raster_contains(self.width, self.height, self.crs, self.transform(), coord)
     }
 
     fn interpolated_elevation_m(&self, coord: Coord) -> Option<f64> {
-        if !self.contains(coord) {
-            return None;
-        }
-        let col = ((coord.lon - self.origin_lon) / self.pixel_width_deg - 0.5)
-            .clamp(0.0, usize_to_f64(self.width.saturating_sub(1)));
-        let row = ((self.origin_lat - coord.lat) / self.pixel_height_deg - 0.5)
-            .clamp(0.0, usize_to_f64(self.height.saturating_sub(1)));
-        let col0 = f64_to_index(col.floor(), self.width)?;
-        let col1 = f64_to_index(col.ceil(), self.width)?;
-        let row0 = f64_to_index(row.floor(), self.height)?;
-        let row1 = f64_to_index(row.ceil(), self.height)?;
-        let tx = col - usize_to_f64(col0);
-        let ty = row - usize_to_f64(row0);
-        let z00 = self.cell(row0, col0)?;
-        let z01 = self.cell(row0, col1)?;
-        let z10 = self.cell(row1, col0)?;
-        let z11 = self.cell(row1, col1)?;
-        let top = tx.mul_add(z01 - z00, z00);
-        let bottom = tx.mul_add(z11 - z10, z10);
-        Some(ty.mul_add(bottom - top, top))
+        interpolated_raster_value(
+            self.width,
+            self.height,
+            &self.values,
+            self.nodata_value,
+            self.crs,
+            self.transform(),
+            coord,
+        )
     }
 
-    fn cell(&self, row: usize, col: usize) -> Option<f64> {
-        let value = *self
-            .values
-            .get(row.checked_mul(self.width)?.checked_add(col)?)?;
-        if self
-            .nodata_value
-            .is_some_and(|nodata| (value - nodata).abs() <= f64::EPSILON)
-        {
-            return None;
-        }
-        value.is_finite().then_some(value)
+    fn transform(&self) -> RasterTransform {
+        self.transform.unwrap_or_else(|| {
+            RasterTransform::north_up(
+                self.origin_x,
+                self.origin_y,
+                self.pixel_width,
+                self.pixel_height,
+            )
+        })
     }
 }
 
@@ -512,10 +480,8 @@ impl ElevationSampler for VrtDem {
 struct VrtSpec {
     width: usize,
     height: usize,
-    origin_lon: f64,
-    origin_lat: f64,
-    pixel_width_deg: f64,
-    pixel_height_deg: f64,
+    crs: Option<RasterCrs>,
+    transform: RasterTransform,
     nodata_value: Option<f64>,
     source_path: PathBuf,
 }
@@ -551,18 +517,16 @@ impl VrtSpec {
                 "VRT GeoTransform must contain six numbers".to_owned(),
             ));
         }
-        let origin_lon = geotransform[0];
-        let pixel_width_deg = geotransform[1];
-        let x_skew = geotransform[2];
-        let origin_lat = geotransform[3];
-        let y_skew = geotransform[4];
-        let pixel_height_signed = geotransform[5];
-        if x_skew != 0.0 || y_skew != 0.0 || pixel_width_deg <= 0.0 || pixel_height_signed >= 0.0 {
-            return Err(TrailgenError::UnsupportedFormat(
-                "VRT DEM must be north-up geographic with positive x scale and negative y scale"
-                    .to_owned(),
-            ));
-        }
+        let transform = RasterTransform {
+            x0: geotransform[0],
+            y0: geotransform[3],
+            dx_col: geotransform[1],
+            dy_col: geotransform[4],
+            dx_row: geotransform[2],
+            dy_row: geotransform[5],
+        };
+        transform.validate("VRT GeoTransform")?;
+        let crs = child_text(root, "SRS").map(parse_vrt_srs).transpose()?;
         let band = root
             .children()
             .find(|node| node.has_tag_name("VRTRasterBand"))
@@ -604,13 +568,103 @@ impl VrtSpec {
         Ok(Self {
             width,
             height,
-            origin_lon,
-            origin_lat,
-            pixel_width_deg,
-            pixel_height_deg: pixel_height_signed.abs(),
+            crs,
+            transform,
             nodata_value,
             source_path,
         })
+    }
+}
+
+fn raster_contains(
+    width: usize,
+    height: usize,
+    crs: RasterCrs,
+    transform: RasterTransform,
+    coord: Coord,
+) -> bool {
+    let (x, y) = crs.xy(coord);
+    let (col, row) = transform.pixel_xy(x, y);
+    (0.0..=usize_to_f64(width)).contains(&col) && (0.0..=usize_to_f64(height)).contains(&row)
+}
+
+fn interpolated_raster_value(
+    width: usize,
+    height: usize,
+    values: &[f64],
+    nodata_value: Option<f64>,
+    crs: RasterCrs,
+    transform: RasterTransform,
+    coord: Coord,
+) -> Option<f64> {
+    if !raster_contains(width, height, crs, transform, coord) {
+        return None;
+    }
+    let (x, y) = crs.xy(coord);
+    let (col_px, row_px) = transform.pixel_xy(x, y);
+    let col = (col_px - 0.5).clamp(0.0, usize_to_f64(width.saturating_sub(1)));
+    let row = (row_px - 0.5).clamp(0.0, usize_to_f64(height.saturating_sub(1)));
+    let col0 = f64_to_index(col.floor(), width)?;
+    let col1 = f64_to_index(col.ceil(), width)?;
+    let row0 = f64_to_index(row.floor(), height)?;
+    let row1 = f64_to_index(row.ceil(), height)?;
+    let tx = col - usize_to_f64(col0);
+    let ty = row - usize_to_f64(row0);
+    let z00 = raster_cell(width, values, nodata_value, row0, col0)?;
+    let z01 = raster_cell(width, values, nodata_value, row0, col1)?;
+    let z10 = raster_cell(width, values, nodata_value, row1, col0)?;
+    let z11 = raster_cell(width, values, nodata_value, row1, col1)?;
+    let top = tx.mul_add(z01 - z00, z00);
+    let bottom = tx.mul_add(z11 - z10, z10);
+    Some(ty.mul_add(bottom - top, top))
+}
+
+fn raster_cell(
+    width: usize,
+    values: &[f64],
+    nodata_value: Option<f64>,
+    row: usize,
+    col: usize,
+) -> Option<f64> {
+    let value = *values.get(row.checked_mul(width)?.checked_add(col)?)?;
+    if nodata_value.is_some_and(|nodata| (value - nodata).abs() <= f64::EPSILON) {
+        return None;
+    }
+    value.is_finite().then_some(value)
+}
+
+fn parse_vrt_srs(srs: &str) -> Result<RasterCrs> {
+    let normalized: String = srs
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .flat_map(char::to_uppercase)
+        .collect();
+    if normalized.contains("EPSG3857")
+        || normalized.contains("EPSG900913")
+        || normalized.contains("WEBMERCATOR")
+        || normalized.contains("PSEUDOMERCATOR")
+    {
+        Ok(RasterCrs::WebMercatorMeters)
+    } else if normalized.contains("PROJCS")
+        || normalized.contains("PROJCRS")
+        || normalized.contains("PROJECTION")
+    {
+        Err(TrailgenError::UnsupportedFormat(
+            "projected VRT SRS must be EPSG:3857 Web Mercator or reprojected before ingestion"
+                .to_owned(),
+        ))
+    } else if normalized.contains("EPSG4326")
+        || normalized.contains("OGC13CRS84")
+        || normalized.contains("OGC14CRS84")
+        || normalized.contains("CRS84")
+        || normalized.contains("WGS84")
+        || normalized.contains("WGS1984")
+    {
+        Ok(RasterCrs::Wgs84Degrees)
+    } else {
+        Err(TrailgenError::UnsupportedFormat(
+            "VRT SRS must declare WGS84/CRS84 geographic or EPSG:3857 Web Mercator".to_owned(),
+        ))
     }
 }
 

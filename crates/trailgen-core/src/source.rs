@@ -336,7 +336,7 @@ fn elevation_adapters() -> Vec<SourceAdapter> {
             AdapterStatus::Implemented,
             ["vrt"],
             ["sampled elevation profile", "edge ascent/descent"],
-            "GDAL VRT SimpleSource wrapper around a north-up geographic GeoTIFF DEM.",
+            "GDAL VRT SimpleSource DEM wrapper with affine WGS84 or EPSG:3857 GeoTransform sampling.",
         ),
     ]
 }

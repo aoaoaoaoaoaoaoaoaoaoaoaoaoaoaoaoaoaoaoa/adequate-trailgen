@@ -217,7 +217,7 @@
           "sampled elevation profile",
           "edge ascent/descent"
         ],
-        "note": "GDAL VRT SimpleSource wrapper around a north-up geographic GeoTIFF DEM."
+        "note": "GDAL VRT SimpleSource DEM wrapper with affine WGS84 or EPSG:3857 GeoTransform sampling."
       },
       {
         "id": "geojson-terrain-overlay",
