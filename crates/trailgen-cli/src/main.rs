@@ -377,7 +377,7 @@ enum Cmd {
     ApplyElevation {
         /// Project directory containing cache/graph.json.
         project: PathBuf,
-        /// Arc/Info ASCII Grid, affine WGS84/EPSG:3857 `GeoTIFF`, or simple `VRT` `DEM`.
+        /// Arc/Info ASCII Grid, affine WGS84/EPSG:3857/WGS84 UTM `GeoTIFF`, or simple `VRT` `DEM`.
         #[arg(long)]
         source: PathBuf,
         /// Confidence assigned to sampled elevation evidence.

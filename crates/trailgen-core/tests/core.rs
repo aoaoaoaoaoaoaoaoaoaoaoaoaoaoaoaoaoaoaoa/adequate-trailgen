@@ -2743,7 +2743,35 @@ fn web_mercator_geotiff_dem_samples_and_rejects_other_projected_crs() {
         0.79,
     )
     .unwrap_err();
-    assert!(format!("{error}").contains("projected GeoTIFF DEM must be EPSG:3857"));
+    assert!(format!("{error}").contains("WGS84 UTM"));
+}
+
+#[test]
+fn utm_geotiff_dem_samples_projected_source() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dem = tmp.path().join("utm_dem.tif");
+    write_utm_geotiff_dem(&dem, 32613);
+    let raster = GeoTiffDem::from_path(
+        &dem,
+        Provenance {
+            source: "fixture-utm-dem".to_owned(),
+            layer: Some("geotiff".to_owned()),
+            source_id: Some("utm_dem.tif".to_owned()),
+            license: Some("CC0-fixture".to_owned()),
+        },
+        0.79,
+    )
+    .unwrap();
+    assert_eq!(
+        raster.crs,
+        RasterCrs::Wgs84UtmMeters {
+            zone: 13,
+            north: true
+        }
+    );
+    let sample = raster.sample(Coord::new(-104.995, 40.005)).unwrap();
+    assert!((sample.ele_m - 1_600.0).abs() <= 1.0e-9);
+    assert!(raster.sample(Coord::new(-106.0, 40.0)).is_none());
 }
 
 #[test]
@@ -2844,19 +2872,20 @@ fn web_mercator_vrt_dem_samples_projected_source() {
 }
 
 #[test]
-fn vrt_dem_rejects_unsupported_projected_srs_even_when_wkt_mentions_wgs84() {
+fn utm_vrt_dem_samples_projected_source() {
     let tmp = tempfile::tempdir().unwrap();
-    let tif = tmp.path().join("mini_dem.tif");
+    let tif = tmp.path().join("utm_dem.tif");
     let vrt = tmp.path().join("utm_dem.vrt");
-    write_geotiff_dem(&tif);
+    write_utm_geotiff_dem(&tif, 32613);
+    let [origin_x, scale, _, origin_y, _, dy] = utm_fixture_geotransform();
     write_vrt_dem_with_geotransform(
         &vrt,
-        "mini_dem.tif",
-        [-105.01, 0.01, 0.0, 40.02, 0.0, -0.01],
-        Some(r#"PROJCS["WGS 84 / UTM zone 13N",PROJECTION["Transverse_Mercator"]]"#),
+        "utm_dem.tif",
+        [origin_x, scale, 0.0, origin_y, 0.0, dy],
+        Some(UTM_PRJ),
     );
 
-    let error = VrtDem::from_path(
+    let raster = VrtDem::from_path(
         &vrt,
         Provenance {
             source: "fixture-vrt-dem".to_owned(),
@@ -2866,8 +2895,44 @@ fn vrt_dem_rejects_unsupported_projected_srs_even_when_wkt_mentions_wgs84() {
         },
         0.76,
     )
+    .unwrap();
+    assert_eq!(
+        raster.crs,
+        RasterCrs::Wgs84UtmMeters {
+            zone: 13,
+            north: true
+        }
+    );
+    let sample = raster.sample(Coord::new(-104.995, 40.005)).unwrap();
+    assert!((sample.ele_m - 1_600.0).abs() <= 1.0e-9);
+    assert!(raster.sample(Coord::new(-106.0, 40.0)).is_none());
+}
+
+#[test]
+fn vrt_dem_rejects_unsupported_projected_srs_even_when_wkt_mentions_wgs84() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tif = tmp.path().join("mini_dem.tif");
+    let vrt = tmp.path().join("lambert_dem.vrt");
+    write_geotiff_dem(&tif);
+    write_vrt_dem_with_geotransform(
+        &vrt,
+        "mini_dem.tif",
+        [-105.01, 0.01, 0.0, 40.02, 0.0, -0.01],
+        Some(r#"PROJCS["WGS 84 / Lambert",PROJECTION["Lambert_Conformal_Conic"]]"#),
+    );
+
+    let error = VrtDem::from_path(
+        &vrt,
+        Provenance {
+            source: "fixture-vrt-dem".to_owned(),
+            layer: Some("vrt".to_owned()),
+            source_id: Some("lambert_dem.vrt".to_owned()),
+            license: None,
+        },
+        0.76,
+    )
     .unwrap_err();
-    assert!(format!("{error}").contains("projected VRT SRS must be EPSG:3857"));
+    assert!(format!("{error}").contains("WGS84 UTM"));
 }
 
 fn write_geotiff_dem(path: &std::path::Path) {
@@ -3017,6 +3082,74 @@ fn write_web_mercator_geotiff_dem(path: &std::path::Path, projected_epsg: u16) {
             1_500_i16, 1_510, 1_520, 1_590, 1_600, 1_610, 1_700, 1_710, 1_720,
         ])
         .unwrap();
+}
+
+fn write_utm_geotiff_dem(path: &std::path::Path, projected_epsg: u16) {
+    use tiff::encoder::{TiffEncoder, colortype};
+    use tiff::tags::Tag;
+
+    let [origin_x, scale, _, origin_y, _, _] = utm_fixture_geotransform();
+    let file = std::fs::File::create(path).unwrap();
+    let mut tiff = TiffEncoder::new(file).unwrap();
+    let mut image = tiff.new_image::<colortype::GrayI16>(3, 3).unwrap();
+    image
+        .encoder()
+        .write_tag(Tag::ModelPixelScaleTag, &[scale, scale, 0.0][..])
+        .unwrap();
+    image
+        .encoder()
+        .write_tag(
+            Tag::ModelTiepointTag,
+            &[0.0_f64, 0.0, 0.0, origin_x, origin_y, 0.0][..],
+        )
+        .unwrap();
+    image
+        .encoder()
+        .write_tag(
+            Tag::GeoKeyDirectoryTag,
+            &[
+                1_u16,
+                1,
+                0,
+                3,
+                1024,
+                0,
+                1,
+                1,
+                3072,
+                0,
+                1,
+                projected_epsg,
+                3076,
+                0,
+                1,
+                9001,
+            ][..],
+        )
+        .unwrap();
+    image
+        .encoder()
+        .write_tag(Tag::GdalNodata, "-32768")
+        .unwrap();
+    image
+        .write_data(&[
+            1_500_i16, 1_510, 1_520, 1_590, 1_600, 1_610, 1_700, 1_710, 1_720,
+        ])
+        .unwrap();
+}
+
+fn utm_fixture_geotransform() -> [f64; 6] {
+    let scale = 30.0;
+    let (x, y) = trailgen_core::crs::wgs84_to_utm(Coord::new(-104.995, 40.005), 13, true)
+        .expect("fixture coordinate is inside UTM zone 13N");
+    [
+        1.5_f64.mul_add(-scale, x),
+        scale,
+        0.0,
+        1.5_f64.mul_add(scale, y),
+        0.0,
+        -scale,
+    ]
 }
 
 fn web_mercator_xy(coord: Coord) -> (f64, f64) {

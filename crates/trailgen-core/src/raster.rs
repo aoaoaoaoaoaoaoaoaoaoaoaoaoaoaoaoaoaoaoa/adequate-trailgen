@@ -1,4 +1,4 @@
-use crate::crs::wgs84_to_web_mercator;
+use crate::crs::{wgs84_to_utm, wgs84_to_web_mercator};
 use crate::enrich::{ElevationSample, ElevationSampler};
 use crate::geo::Coord;
 use crate::model::Provenance;
@@ -134,13 +134,15 @@ impl RasterTransform {
 pub enum RasterCrs {
     Wgs84Degrees,
     WebMercatorMeters,
+    Wgs84UtmMeters { zone: u8, north: bool },
 }
 
 impl RasterCrs {
-    fn xy(self, coord: Coord) -> (f64, f64) {
+    fn xy(self, coord: Coord) -> Option<(f64, f64)> {
         match self {
-            Self::Wgs84Degrees => (coord.lon, coord.lat),
-            Self::WebMercatorMeters => wgs84_to_web_mercator(coord),
+            Self::Wgs84Degrees => Some((coord.lon, coord.lat)),
+            Self::WebMercatorMeters => Some(wgs84_to_web_mercator(coord)),
+            Self::Wgs84UtmMeters { zone, north } => wgs84_to_utm(coord, zone, north),
         }
     }
 }
@@ -601,7 +603,9 @@ fn raster_contains(
     transform: RasterTransform,
     coord: Coord,
 ) -> bool {
-    let (x, y) = crs.xy(coord);
+    let Some((x, y)) = crs.xy(coord) else {
+        return false;
+    };
     let (col, row) = transform.pixel_xy(x, y);
     (0.0..=usize_to_f64(width)).contains(&col) && (0.0..=usize_to_f64(height)).contains(&row)
 }
@@ -618,7 +622,7 @@ fn interpolated_raster_value(
     if !raster_contains(width, height, crs, transform, coord) {
         return None;
     }
-    let (x, y) = crs.xy(coord);
+    let (x, y) = crs.xy(coord)?;
     let (col_px, row_px) = transform.pixel_xy(x, y);
     let col = (col_px - 0.5).clamp(0.0, usize_to_f64(width.saturating_sub(1)));
     let row = (row_px - 0.5).clamp(0.0, usize_to_f64(height.saturating_sub(1)));
@@ -663,12 +667,14 @@ fn parse_vrt_srs(srs: &str) -> Result<RasterCrs> {
         || normalized.contains("PSEUDOMERCATOR")
     {
         Ok(RasterCrs::WebMercatorMeters)
+    } else if let Some(crs) = utm_from_normalized_srs(&normalized) {
+        Ok(crs)
     } else if normalized.contains("PROJCS")
         || normalized.contains("PROJCRS")
         || normalized.contains("PROJECTION")
     {
         Err(TrailgenError::UnsupportedFormat(
-            "projected VRT SRS must be EPSG:3857 Web Mercator or reprojected before ingestion"
+            "projected VRT SRS must be EPSG:3857 Web Mercator or WGS84 UTM (EPSG:326xx/327xx), or reprojected before ingestion"
                 .to_owned(),
         ))
     } else if normalized.contains("EPSG4326")
@@ -681,9 +687,47 @@ fn parse_vrt_srs(srs: &str) -> Result<RasterCrs> {
         Ok(RasterCrs::Wgs84Degrees)
     } else {
         Err(TrailgenError::UnsupportedFormat(
-            "VRT SRS must declare WGS84/CRS84 geographic or EPSG:3857 Web Mercator".to_owned(),
+            "VRT SRS must declare WGS84/CRS84 geographic, EPSG:3857 Web Mercator, or WGS84 UTM (EPSG:326xx/327xx)"
+                .to_owned(),
         ))
     }
+}
+
+fn utm_from_normalized_srs(normalized: &str) -> Option<RasterCrs> {
+    (1_u16..=60).find_map(|zone| {
+        [
+            (
+                format!("EPSG326{zone:02}"),
+                RasterCrs::Wgs84UtmMeters {
+                    zone: u8::try_from(zone).ok()?,
+                    north: true,
+                },
+            ),
+            (
+                format!("EPSG327{zone:02}"),
+                RasterCrs::Wgs84UtmMeters {
+                    zone: u8::try_from(zone).ok()?,
+                    north: false,
+                },
+            ),
+            (
+                format!("WGS84UTMZONE{zone}N"),
+                RasterCrs::Wgs84UtmMeters {
+                    zone: u8::try_from(zone).ok()?,
+                    north: true,
+                },
+            ),
+            (
+                format!("WGS84UTMZONE{zone}S"),
+                RasterCrs::Wgs84UtmMeters {
+                    zone: u8::try_from(zone).ok()?,
+                    north: false,
+                },
+            ),
+        ]
+        .into_iter()
+        .find_map(|(needle, crs)| normalized.contains(&needle).then_some(crs))
+    })
 }
 
 fn required_attr<T>(node: roxmltree::Node<'_, '_>, key: &str) -> Result<T>
@@ -813,7 +857,7 @@ fn validate_geokeys<R: std::io::Read + std::io::Seek>(
 ) -> Result<RasterCrs> {
     let Some(keys) = optional_u16_vec(decoder, Tag::GeoKeyDirectoryTag)? else {
         return Err(TrailgenError::InvalidData(
-            "GeoTIFF DEM requires GeoKeyDirectoryTag declaring WGS84 geographic or EPSG:3857 projected CRS"
+            "GeoTIFF DEM requires GeoKeyDirectoryTag declaring WGS84 geographic, EPSG:3857 Web Mercator, or WGS84 UTM (EPSG:326xx/327xx)"
                 .to_owned(),
         ));
     };
@@ -842,16 +886,16 @@ fn validate_geokeys<R: std::io::Read + std::io::Seek>(
         }
     }
     if model_type == Some(1) {
-        if projected_crs == Some(3857) {
+        if let Some(crs) = projected_crs.and_then(projected_raster_crs) {
             if linear_units.is_some_and(|unit| unit != 9001) {
                 return Err(TrailgenError::UnsupportedFormat(
-                    "EPSG:3857 GeoTIFF DEM linear units must be metres".to_owned(),
+                    "projected GeoTIFF DEM linear units must be metres".to_owned(),
                 ));
             }
-            return Ok(RasterCrs::WebMercatorMeters);
+            return Ok(crs);
         }
         return Err(TrailgenError::UnsupportedFormat(
-            "projected GeoTIFF DEM must be EPSG:3857 Web Mercator or reprojected before ingestion"
+            "projected GeoTIFF DEM must be EPSG:3857 Web Mercator or WGS84 UTM (EPSG:326xx/327xx), or reprojected before ingestion"
                 .to_owned(),
         ));
     }
@@ -864,8 +908,23 @@ fn validate_geokeys<R: std::io::Read + std::io::Seek>(
         return Ok(RasterCrs::Wgs84Degrees);
     }
     Err(TrailgenError::UnsupportedFormat(
-        "GeoTIFF DEM must declare GTModelTypeGeoKey=geographic or EPSG:3857 projected".to_owned(),
+        "GeoTIFF DEM must declare GTModelTypeGeoKey=geographic, EPSG:3857 projected, or WGS84 UTM projected".to_owned(),
     ))
+}
+
+fn projected_raster_crs(epsg: u16) -> Option<RasterCrs> {
+    match epsg {
+        3857 => Some(RasterCrs::WebMercatorMeters),
+        32601..=32660 => Some(RasterCrs::Wgs84UtmMeters {
+            zone: u8::try_from(epsg - 32600).ok()?,
+            north: true,
+        }),
+        32701..=32760 => Some(RasterCrs::Wgs84UtmMeters {
+            zone: u8::try_from(epsg - 32700).ok()?,
+            north: false,
+        }),
+        _ => None,
+    }
 }
 
 fn decoding_result_to_f64(image: DecodingResult) -> Vec<f64> {
