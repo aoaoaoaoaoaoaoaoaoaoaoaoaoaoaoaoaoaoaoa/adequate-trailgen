@@ -62,6 +62,6 @@ Use `trailgen cache-source <project> --input URL_OR_PATH --output trails.geojson
 
 Use `trailgen verify-sources <project>` before reproduction-sensitive generation runs; it recomputes source byte counts and SHA-256 hashes from `sources/manifest.json` and fails on missing, unfingerprinted, or drifted inputs. `trailgen stats <project>` audits graph terrain, access, source/provenance, confidence, seed attribution, elevation attribution, road/pavement exposure, and crossings. Generated and selected route reports include the same source manifest summary for human review.
 
-Use `trailgen alltrails-status` to print the current manual AllTrails exchange contract. The machine-readable section exposes typed bridge plans for import, manual custom-route upload, manual activity upload, and the intentionally unsupported direct-write API.
+Use `trailgen alltrails-status` to print the current manual AllTrails exchange contract. The machine-readable section exposes typed, verification-dated bridge plans for import, manual custom-route upload, manual activity upload, and the intentionally unsupported direct-write API.
 
 See [docs/installation.md](docs/installation.md), [docs/model.md](docs/model.md), [docs/data-sources.md](docs/data-sources.md), [docs/source-adapters.md](docs/source-adapters.md), [docs/difficulty.md](docs/difficulty.md), [docs/optimizer.md](docs/optimizer.md), [docs/alltrails.md](docs/alltrails.md), and [docs/limitations.md](docs/limitations.md).

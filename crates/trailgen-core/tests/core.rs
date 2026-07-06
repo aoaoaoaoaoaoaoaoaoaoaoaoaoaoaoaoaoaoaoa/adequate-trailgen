@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use trailgen_core::alltrails::{
-    AllTrailsBridge, AllTrailsExchange, AllTrailsRequest, BridgeStatus, ManualAllTrailsBridge,
-    RouteExchangeFormat, TrailgenExchangeAction,
+    ALLTRAILS_POLICY_VERIFIED_ON, AllTrailsBridge, AllTrailsExchange, AllTrailsRequest,
+    BridgeStatus, ManualAllTrailsBridge, RouteExchangeFormat, TrailgenExchangeAction,
 };
 use trailgen_core::io::{csv, geojson, gpx, json_route, kml, kmz, report, shapefile as shp_io};
 use trailgen_core::source::{
@@ -1855,6 +1855,10 @@ fn write_context_shapefile(path: &std::path::Path, name: &str, kind: &str) {
 #[test]
 fn alltrails_bridge_refuses_undocumented_write_api() {
     let caps = ManualAllTrailsBridge.capabilities();
+    assert!(
+        caps.iter()
+            .all(|cap| cap.verified_on == ALLTRAILS_POLICY_VERIFIED_ON)
+    );
     assert!(caps.iter().any(|cap| {
         cap.exchange == AllTrailsExchange::ManualUploadCustomRoute
             && cap.status == BridgeStatus::Manual
@@ -1879,6 +1883,7 @@ fn alltrails_bridge_refuses_undocumented_write_api() {
         import_plan.trailgen_action,
         TrailgenExchangeAction::ImportSeed
     );
+    assert_eq!(import_plan.verified_on, ALLTRAILS_POLICY_VERIFIED_ON);
     assert!(
         import_plan
             .trailgen_template
@@ -1894,6 +1899,7 @@ fn alltrails_bridge_refuses_undocumented_write_api() {
         upload_plan.trailgen_action,
         TrailgenExchangeAction::ExportGeneratedRoute
     );
+    assert_eq!(upload_plan.verified_on, ALLTRAILS_POLICY_VERIFIED_ON);
     assert!(
         upload_plan
             .trailgen_template
@@ -1909,6 +1915,7 @@ fn alltrails_bridge_refuses_undocumented_write_api() {
         direct_write.trailgen_action,
         TrailgenExchangeAction::Unsupported
     );
+    assert_eq!(direct_write.verified_on, ALLTRAILS_POLICY_VERIFIED_ON);
 }
 
 #[test]

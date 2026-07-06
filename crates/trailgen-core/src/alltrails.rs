@@ -5,6 +5,7 @@ const ALLTRAILS_UPLOAD_URL: &str =
 const ALLTRAILS_DOWNLOAD_URL: &str = "https://support.alltrails.com/hc/en-us/articles/37230403315476-Downloading-files-from-AllTrails";
 const ALLTRAILS_EXCHANGE_URL: &str =
     "https://support.alltrails.com/hc/en-us/sections/360006411352-Importing-and-exporting-files";
+pub const ALLTRAILS_POLICY_VERIFIED_ON: &str = "2026-07-06";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -73,6 +74,7 @@ pub struct AllTrailsCapability {
     pub exchange: AllTrailsExchange,
     pub status: BridgeStatus,
     pub formats: Vec<RouteExchangeFormat>,
+    pub verified_on: String,
     pub workflow: String,
     pub source_url: String,
 }
@@ -90,6 +92,7 @@ pub struct AllTrailsPlan {
     pub format: RouteExchangeFormat,
     pub trailgen_action: TrailgenExchangeAction,
     pub trailgen_template: String,
+    pub verified_on: String,
     pub workflow: String,
     pub source_url: String,
 }
@@ -109,6 +112,7 @@ pub trait AllTrailsBridge {
                 format: request.format,
                 trailgen_action: TrailgenExchangeAction::Unsupported,
                 trailgen_template: String::new(),
+                verified_on: ALLTRAILS_POLICY_VERIFIED_ON.to_owned(),
                 workflow: unsupported_workflow(request),
                 source_url: ALLTRAILS_EXCHANGE_URL.to_owned(),
             },
@@ -118,6 +122,7 @@ pub trait AllTrailsBridge {
                 format: request.format,
                 trailgen_action: trailgen_action(request.exchange),
                 trailgen_template: trailgen_template(request.exchange, request.format),
+                verified_on: cap.verified_on.clone(),
                 workflow: cap.workflow.clone(),
                 source_url: cap.source_url.clone(),
             },
@@ -131,10 +136,10 @@ pub struct ManualAllTrailsBridge;
 impl AllTrailsBridge for ManualAllTrailsBridge {
     fn capabilities(&self) -> Vec<AllTrailsCapability> {
         vec![
-            AllTrailsCapability {
-                exchange: AllTrailsExchange::ImportUserExport,
-                status: BridgeStatus::Supported,
-                formats: vec![
+            capability(
+                AllTrailsExchange::ImportUserExport,
+                BridgeStatus::Supported,
+                vec![
                     RouteExchangeFormat::Gpx,
                     RouteExchangeFormat::Geojson,
                     RouteExchangeFormat::Json,
@@ -142,46 +147,58 @@ impl AllTrailsBridge for ManualAllTrailsBridge {
                     RouteExchangeFormat::Kmz,
                     RouteExchangeFormat::Csv,
                 ],
-                workflow: "User downloads an AllTrails activity, trail, or custom-route file and imports it locally."
-                    .to_owned(),
-                source_url: ALLTRAILS_DOWNLOAD_URL.to_owned(),
-            },
-            AllTrailsCapability {
-                exchange: AllTrailsExchange::ManualUploadCustomRoute,
-                status: BridgeStatus::Manual,
-                formats: vec![
+                "User downloads an AllTrails activity, trail, or custom-route file and imports it locally.",
+                ALLTRAILS_DOWNLOAD_URL,
+            ),
+            capability(
+                AllTrailsExchange::ManualUploadCustomRoute,
+                BridgeStatus::Manual,
+                vec![
                     RouteExchangeFormat::Gpx,
                     RouteExchangeFormat::Kml,
                     RouteExchangeFormat::Kmz,
                     RouteExchangeFormat::Csv,
                 ],
-                workflow: "User uploads a generated route through AllTrails Build custom route → Upload a route."
-                    .to_owned(),
-                source_url: ALLTRAILS_UPLOAD_URL.to_owned(),
-            },
-            AllTrailsCapability {
-                exchange: AllTrailsExchange::ManualUploadActivity,
-                status: BridgeStatus::Manual,
-                formats: vec![
+                "User uploads a generated route through AllTrails Build custom route → Upload a route.",
+                ALLTRAILS_UPLOAD_URL,
+            ),
+            capability(
+                AllTrailsExchange::ManualUploadActivity,
+                BridgeStatus::Manual,
+                vec![
                     RouteExchangeFormat::Gpx,
                     RouteExchangeFormat::Kml,
                     RouteExchangeFormat::Kmz,
                     RouteExchangeFormat::Csv,
                 ],
-                workflow:
-                    "User uploads a generated route to the AllTrails activities list on the website."
-                        .to_owned(),
-                source_url: ALLTRAILS_UPLOAD_URL.to_owned(),
-            },
-            AllTrailsCapability {
-                exchange: AllTrailsExchange::DirectWriteApi,
-                status: BridgeStatus::Undocumented,
-                formats: Vec::new(),
-                workflow: "No documented public route-write API was found; private endpoints are intentionally unsupported."
-                    .to_owned(),
-                source_url: ALLTRAILS_EXCHANGE_URL.to_owned(),
-            },
+                "User uploads a generated route to the AllTrails activities list on the website.",
+                ALLTRAILS_UPLOAD_URL,
+            ),
+            capability(
+                AllTrailsExchange::DirectWriteApi,
+                BridgeStatus::Undocumented,
+                Vec::new(),
+                "No documented public route-write API was found; private endpoints are intentionally unsupported.",
+                ALLTRAILS_EXCHANGE_URL,
+            ),
         ]
+    }
+}
+
+fn capability(
+    exchange: AllTrailsExchange,
+    status: BridgeStatus,
+    formats: Vec<RouteExchangeFormat>,
+    workflow: &str,
+    source_url: &str,
+) -> AllTrailsCapability {
+    AllTrailsCapability {
+        exchange,
+        status,
+        formats,
+        verified_on: ALLTRAILS_POLICY_VERIFIED_ON.to_owned(),
+        workflow: workflow.to_owned(),
+        source_url: source_url.to_owned(),
     }
 }
 
