@@ -3540,6 +3540,16 @@ function mixText(obj) {{
   const xs = topEntries(obj, 6);
   return xs.length ? xs.map(([k, v]) => `${{k}} ${{pct(v)}}`).join(', ') : 'none';
 }}
+function gradeText(obj) {{
+  const total = Object.values(obj || {{}}).reduce((a, b) => a + Number(b || 0), 0);
+  if (total <= 0) return 'none';
+  return [
+    ['flat <5%', obj.flat_m],
+    ['rolling 5-15%', obj.rolling_m],
+    ['steep 15-30%', obj.steep_m],
+    ['savage ≥30%', obj.savage_m]
+  ].map(([k, v]) => `${{k}} ${{pct(Number(v || 0) / total)}}`).join(', ');
+}}
 function sourceText(p) {{
   const xs = (p.source_provenance || []).map(x => {{
     const source = x.source || 'unknown';
@@ -3616,6 +3626,8 @@ function routeSummary(p) {{
     ${{metricRow('source provenance', sourceText(p))}}
     ${{metricRow('distance', km(p.distance_m))}}
     ${{metricRow('ascent/descent', `${{scalar(p.ascent_m, 0)}} m / ${{scalar(p.descent_m, 0)}} m`)}}
+    ${{metricRow('sustained steepness', km(p.sustained_steep_m))}}
+    ${{metricRow('grade distribution', gradeText(p.grade_distribution))}}
     ${{metricRow('difficulty', scalar(p.difficulty))}}
     ${{metricRow('difficulty factors', difficultyText(p.difficulty_breakdown))}}
     ${{metricRow('road/pavement', pct(p.road_fraction))}}
@@ -7659,6 +7671,8 @@ mod tests {
         let csv_text = fs::read_to_string(csv)?;
         assert!(csv_text.starts_with("# name: candidate-1\n"));
         assert!(csv_text.contains("# description: score "));
+        assert!(csv_text.contains("sustained-steep "));
+        assert!(csv_text.contains("; grade "));
         assert!(csv_text.contains("\nlongitude,latitude,elevation_m\n"));
         assert!(csv::route_line_from_str(&csv_text)?.length_m() > 3_000.0);
         let selected_geojson = serde_json::from_str::<Value>(&fs::read_to_string(geojson)?)?;
@@ -7672,6 +7686,8 @@ mod tests {
         );
         let selected_properties = &selected_geojson["features"][0]["properties"];
         assert!(selected_properties["restricted_access_fraction"].is_number());
+        assert!(selected_properties["sustained_steep_m"].is_number());
+        assert!(selected_properties["grade_distribution"].is_object());
         assert!(selected_properties["terrain_fraction"].is_object());
         assert!(selected_properties["access_fraction"].is_object());
         assert!(selected_properties["difficulty_hotspots"].is_array());
@@ -7694,6 +7710,8 @@ mod tests {
         assert!(report.contains("distance: 3.00–8.00 km"));
         assert!(report.contains("scalar difficulty: 0.00–90.00"));
         assert!(report.contains("Difficulty decomposition"));
+        assert!(report.contains("sustained steepness"));
+        assert!(report.contains("Grade distribution"));
         assert!(report.contains("Low-confidence segments"));
         assert!(report.contains("Access mix"));
         assert!(report.contains("restricted-access fraction"));
@@ -7708,6 +7726,7 @@ mod tests {
         assert!(sidecar_report.contains("- emitted artifacts:"));
         assert!(sidecar_report.contains("Route sequence:"));
         assert!(sidecar_report.contains("Difficulty decomposition"));
+        assert!(sidecar_report.contains("Grade distribution"));
         assert!(sidecar_report.contains("Source provenance:"));
         assert!(sidecar_report.contains("Coverage summary:"));
         Ok(())
@@ -7722,6 +7741,8 @@ mod tests {
         assert!(generated_map.contains(".route.selected"));
         assert!(generated_map.contains("edge width"));
         assert!(generated_map.contains("difficulty factors"));
+        assert!(generated_map.contains("sustained steepness"));
+        assert!(generated_map.contains("grade distribution"));
         assert!(generated_map.contains("Constraint audit"));
         assert!(generated_map.contains("access warnings"));
         assert!(generated_map.contains("low-confidence segments"));

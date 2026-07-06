@@ -2160,6 +2160,12 @@
           0,
           3
         ],
+        "grade_distribution": {
+          "flat_m": 2044.149301328377,
+          "rolling_m": 2668.68192560489,
+          "savage_m": 0.0,
+          "steep_m": 0.0
+        },
         "low_confidence_edges": [],
         "low_confidence_fraction": 0.0,
         "name": "candidate-1",
@@ -2188,6 +2194,7 @@
             "source_id": "west"
           }
         ],
+        "sustained_steep_m": 0.0,
         "terrain_fraction": {
           "talus": 0.5662587512902417,
           "trail": 0.43374124870975816
@@ -4020,6 +4027,12 @@
           1,
           4
         ],
+        "grade_distribution": {
+          "flat_m": 2002.9552986349963,
+          "rolling_m": 2034.3542389790248,
+          "savage_m": 0.0,
+          "steep_m": 0.0
+        },
         "low_confidence_edges": [],
         "low_confidence_fraction": 0.0,
         "name": "candidate-2",
@@ -4044,6 +4057,7 @@
             "source_id": "diagonal"
           }
         ],
+        "sustained_steep_m": 0.0,
         "terrain_fraction": {
           "alpine": 0.4163178669784434,
           "talus": 0.3305025166811997,
@@ -5956,6 +5970,12 @@
           0,
           4
         ],
+        "grade_distribution": {
+          "flat_m": 2002.775640402611,
+          "rolling_m": 2034.3542389790248,
+          "savage_m": 0.0,
+          "steep_m": 0.0
+        },
         "low_confidence_edges": [],
         "low_confidence_fraction": 0.0,
         "name": "candidate-3",
@@ -5980,6 +6000,7 @@
             "source_id": "diagonal"
           }
         ],
+        "sustained_steep_m": 0.0,
         "terrain_fraction": {
           "alpine": 0.4163363937373852,
           "talus": 0.3305172245305184,

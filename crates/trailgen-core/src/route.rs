@@ -1,7 +1,9 @@
 use crate::constraints::{ConstraintVerdict, LoopConstraints};
 use crate::difficulty::DifficultyBreakdown;
 use crate::geo::LineString;
-use crate::model::{Access, CrossingKind, EdgeId, Terrain, TrailGraph, VertexId};
+use crate::model::{
+    Access, CrossingKind, EdgeId, GradeDistribution, Terrain, TrailGraph, VertexId,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -212,6 +214,10 @@ pub struct RouteMetrics {
     pub difficulty: f64,
     #[serde(default)]
     pub difficulty_breakdown: DifficultyBreakdown,
+    #[serde(default)]
+    pub sustained_steep_m: f64,
+    #[serde(default)]
+    pub grade_distribution: GradeDistribution,
     pub road_fraction: f64,
     pub low_confidence_fraction: f64,
     #[serde(default)]
@@ -257,6 +263,8 @@ impl RouteMetrics {
             m.descent_m += descent_m;
             m.difficulty += a.difficulty;
             m.difficulty_breakdown += a.difficulty_breakdown;
+            m.sustained_steep_m += a.sustained_steep_m;
+            m.grade_distribution += a.grade_distribution;
             road_m = a
                 .length_m
                 .mul_add(road_pavement_exposure(a.terrain, a.road_exposure), road_m);

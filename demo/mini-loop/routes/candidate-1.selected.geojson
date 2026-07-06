@@ -2160,6 +2160,12 @@
           0,
           3
         ],
+        "grade_distribution": {
+          "flat_m": 2044.149301328377,
+          "rolling_m": 2668.68192560489,
+          "savage_m": 0.0,
+          "steep_m": 0.0
+        },
         "low_confidence_edges": [],
         "low_confidence_fraction": 0.0,
         "name": "candidate-1",
@@ -2188,6 +2194,7 @@
             "source_id": "west"
           }
         ],
+        "sustained_steep_m": 0.0,
         "terrain_fraction": {
           "talus": 0.5662587512902417,
           "trail": 0.43374124870975816

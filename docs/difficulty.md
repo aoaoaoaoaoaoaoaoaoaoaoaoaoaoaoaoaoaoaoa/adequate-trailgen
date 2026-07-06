@@ -13,7 +13,7 @@ Difficulty is additive per edge. `DifficultyWeights` rates each edge into a pers
 - `confidence`: low-confidence penalty from `1 - confidence`
 - `access`: hard penalty for closed/private or restricted access
 
-The edge stores both the scalar total and the factor breakdown. It also stores fixed-bin grade distribution meters for elevation-covered spans: flat `<5%`, rolling `5–15%`, steep `15–30%`, and savage `≥30%` absolute grade. Route metrics sum difficulty factors, and reports show route-level factor shares plus the largest edge-factor contributors and grade-bin summaries for dubious segments. This makes a high scalar score inspectable instead of mystical.
+The edge stores both the scalar total and the factor breakdown. It also stores fixed-bin grade distribution meters for elevation-covered spans: flat `<5%`, rolling `5–15%`, steep `15–30%`, and savage `≥30%` absolute grade. Route metrics sum difficulty factors, sustained steep meters, and grade distribution bins. Reports show route-level factor shares, route-level grade-bin summaries, largest edge-factor contributors, and grade-bin summaries for dubious segments. This makes a high scalar score inspectable instead of mystical.
 
 Default terrain multipliers are: unknown 1.15, trail 1.0, forest 1.0, alpine 1.18, talus 1.65, scramble 2.1, pavement 0.82, road 0.9, water 2.5. Override any subset under `[difficulty.terrain_multipliers]`; missing buckets retain defaults.
 

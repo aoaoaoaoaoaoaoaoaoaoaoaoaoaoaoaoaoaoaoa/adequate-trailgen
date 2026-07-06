@@ -1252,8 +1252,17 @@ fn route_geojson_exports_full_diagnostics() {
             .is_some_and(|score| (score - expected_score).abs() <= 1.0e-9 && score > 0.0)
     );
     assert!(report.contains(&format!("- score: {expected_score:.2}")));
+    assert!(report.contains("- sustained steepness:"));
+    assert!(report.contains("Grade distribution:"));
     assert!(report.contains("Constraint audit:"));
     assert_eq!(properties["restricted_access_fraction"], 1.0);
+    assert!(properties["sustained_steep_m"].is_number());
+    assert!(properties["grade_distribution"].is_object());
+    assert!(
+        properties["grade_distribution"]["flat_m"]
+            .as_f64()
+            .is_some_and(|x| x >= 0.0)
+    );
     assert_eq!(properties["access_fraction"]["closed"], 1.0);
     assert!(
         properties["constraint_audit"]
@@ -1605,6 +1614,11 @@ fn fixture_generates_nontrivial_loops() {
     assert!(routes.iter().all(|r| {
         (r.metrics.difficulty - r.metrics.difficulty_breakdown.total()).abs() <= 1.0e-9
     }));
+    assert!(
+        routes
+            .iter()
+            .all(|r| r.metrics.grade_distribution.total_m() > 0.0)
+    );
 }
 
 #[test]
@@ -1636,6 +1650,8 @@ fn report_explains_difficulty_decomposition() {
     assert!(rendered.contains("- edge ids:"));
     assert!(rendered.contains("- vertex ids:"));
     assert!(rendered.contains("Difficulty decomposition:"));
+    assert!(rendered.contains("- sustained steepness:"));
+    assert!(rendered.contains("Grade distribution:"));
     assert!(rendered.contains("- distance:"));
     assert!(rendered.contains("- ascent:"));
     assert!(rendered.contains("Largest difficulty contributors:"));

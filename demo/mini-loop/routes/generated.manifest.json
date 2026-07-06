@@ -1123,6 +1123,13 @@
           "confidence": 1.0800000000000003,
           "access": 1000.0
         },
+        "sustained_steep_m": 0.0,
+        "grade_distribution": {
+          "flat_m": 2044.149301328377,
+          "rolling_m": 2668.68192560489,
+          "steep_m": 0.0,
+          "savage_m": 0.0
+        },
         "road_fraction": 0.013012237461292745,
         "low_confidence_fraction": 0.0,
         "restricted_access_fraction": 0.28312937564512086,
@@ -1173,6 +1180,13 @@
           "navigation": 0.7197358574494941,
           "confidence": 0.8250000000000001,
           "access": 1000.0
+        },
+        "sustained_steep_m": 0.0,
+        "grade_distribution": {
+          "flat_m": 2002.9552986349963,
+          "rolling_m": 2034.3542389790248,
+          "steep_m": 0.0,
+          "savage_m": 0.0
         },
         "road_fraction": 0.020084924499564005,
         "low_confidence_fraction": 0.0,
@@ -1225,6 +1239,13 @@
           "navigation": 0.7197229220567624,
           "confidence": 0.8250000000000001,
           "access": 2000.0
+        },
+        "sustained_steep_m": 0.0,
+        "grade_distribution": {
+          "flat_m": 2002.775640402611,
+          "rolling_m": 2034.3542389790248,
+          "steep_m": 0.0,
+          "savage_m": 0.0
         },
         "road_fraction": 0.020084483264084445,
         "low_confidence_fraction": 0.0,
@@ -1282,8 +1303,8 @@
     {
       "path": "routes/generated.geojson",
       "fingerprint": {
-        "bytes": 148828,
-        "sha256": "6af71d9fb1510f093a7f629b1b573acb53ac0205cc6bec9b12bf2500a18ef0d2"
+        "bytes": 149460,
+        "sha256": "3f485c903135756e735420b2bc3a4d0ddccaea9e4df2865c7ffeaf28955d7e84"
       }
     },
     {
@@ -1296,148 +1317,148 @@
     {
       "path": "routes/generated.routes.json",
       "fingerprint": {
-        "bytes": 12050,
-        "sha256": "e5590086c51ccd11ab50c0cb361806b3140d1addac63792bf3d520db2f78dc12"
+        "bytes": 12641,
+        "sha256": "4013988cb96dfdf3afa9f7ba30608aa619a3aaf2d4eb174ffccab136b82b5201"
       }
     },
     {
       "path": "reports/generated.md",
       "fingerprint": {
-        "bytes": 16631,
-        "sha256": "7520a1c9d09a8532731e94c223c25cbd858e9e6df42ff4951b9879fda623ef87"
+        "bytes": 17171,
+        "sha256": "dba347bc8db7fdfaff5b1831acbd3c3c24023c8aaee31921429c60ed72d9ae99"
       }
     },
     {
       "path": "reports/map.html",
       "fingerprint": {
-        "bytes": 117699,
-        "sha256": "156b647c03fa3b1ef21f5c69d039f3335c514891e0bfb5e8f01717dd2de9dee1"
+        "bytes": 118601,
+        "sha256": "f3302cdbdc5ff74c3c07eee8435b57842ecdd3703cdde49fce6532db4f1ef994"
       }
     },
     {
       "path": "routes/candidate-1.geojson",
       "fingerprint": {
-        "bytes": 53443,
-        "sha256": "68a117549af528694a4e54f3129b01db76574cd2a398df13e8b8779fe06fada4"
+        "bytes": 53652,
+        "sha256": "0c2271e12141d8d60d8b00ba0a6f9043d160b42d030db86b5eb4282662f48077"
       }
     },
     {
       "path": "routes/candidate-1.gpx",
       "fingerprint": {
-        "bytes": 24583,
-        "sha256": "0e9f8cf72b07f49b056a3f9af656e646a1bbd30f3117b305a3ae56b2d1421651"
+        "bytes": 24666,
+        "sha256": "2b4965df9f49ddea0a8b377c28da55ce5c521c099db696be266405fa549b2691"
       }
     },
     {
       "path": "routes/candidate-1.csv",
       "fingerprint": {
-        "bytes": 10558,
-        "sha256": "c7a94ff87a05279df79140087e3b977c6cead0a546180ee99ec369a2e9bc20fc"
+        "bytes": 10641,
+        "sha256": "76d5ca791f3c9c46c1015f70ed5803b4f95af89b8928d34847fbb93c294690b5"
       }
     },
     {
       "path": "routes/candidate-1.kml",
       "fingerprint": {
-        "bytes": 14195,
-        "sha256": "6e02d1b77fe51d49aa0849604cc0b85b2a12725f77c95bf1727a02a963a8754a"
+        "bytes": 14278,
+        "sha256": "520686c0dcdd8588a2bd901f7508ba5dae06822eef9ab5feaec1c9550e1ee8c6"
       }
     },
     {
       "path": "routes/candidate-1.kmz",
       "fingerprint": {
-        "bytes": 2268,
-        "sha256": "e34c10ca358a58d00598b52154ee9e5fd364cace7789430dac6f4a0623e362c3"
+        "bytes": 2316,
+        "sha256": "0d33cae7e9f9ccd45c4051122a3b1b0053b935ebb182399873069c5d5c878553"
       }
     },
     {
       "path": "reports/candidate-1.md",
       "fingerprint": {
-        "bytes": 8519,
-        "sha256": "865efef2b070beb9663c53bdc2e75526a77ffadd1e3d6367ffeb79ac4bf7abc7"
+        "bytes": 8699,
+        "sha256": "96aab61353835fb36984d036858889a3ed475ecf7cedfe85d751265a4b071973"
       }
     },
     {
       "path": "routes/candidate-2.geojson",
       "fingerprint": {
-        "bytes": 46497,
-        "sha256": "a5a6116ca71cc259554d512a8f052c860067556e2e9c5929bec485b8956f7156"
+        "bytes": 46709,
+        "sha256": "2db56b9a792d898ba845df5a9d544095ab7fbd2a3e8eb84b178b8db6b7ade2e5"
       }
     },
     {
       "path": "routes/candidate-2.gpx",
       "fingerprint": {
-        "bytes": 20603,
-        "sha256": "966da2860ce75f28ece9a9d065c951b3d7470de2b0bdb33d3b6e71a1e773ecb2"
+        "bytes": 20686,
+        "sha256": "b687b3ffccafa8e6d42a6e73675119e8385adc5262defe86f54ff70be6e42c21"
       }
     },
     {
       "path": "routes/candidate-2.csv",
       "fingerprint": {
-        "bytes": 8873,
-        "sha256": "30ad43222b5603ce26700e1a2b74a50ef46224c769efba575236fb4076c068eb"
+        "bytes": 8956,
+        "sha256": "65c39b24ac987c18b3b16d57233c5c8cf12465c102b572dbf8ad1994709157fc"
       }
     },
     {
       "path": "routes/candidate-2.kml",
       "fingerprint": {
-        "bytes": 11949,
-        "sha256": "4ab9e3838cb01b3cc916d916fae0ffdbf57eb4b54aaa216be62f52dcf46df7ee"
+        "bytes": 12032,
+        "sha256": "ed1b215e4eb8b8e3b263417559993b963e0e4f52a0385fc5eec8f47ce8f9bc63"
       }
     },
     {
       "path": "routes/candidate-2.kmz",
       "fingerprint": {
-        "bytes": 2434,
-        "sha256": "d6dd26729101aba27a330ede5445a1e105c97080fe1ce221ec614ee56a9a5438"
+        "bytes": 2483,
+        "sha256": "459b2d7ca31f0db59a8d850214c030b1165826f0229dc7eb5b811b3c3bcc25b6"
       }
     },
     {
       "path": "reports/candidate-2.md",
       "fingerprint": {
-        "bytes": 8047,
-        "sha256": "e24b2db39db2331e343c6ba6291062f201067f92a6de5e860cf07646dd24a0c6"
+        "bytes": 8227,
+        "sha256": "14c77e7aaea93a9cff9d348313747adf44e5e85be141fc09adbe8ed6fab84565"
       }
     },
     {
       "path": "routes/candidate-3.geojson",
       "fingerprint": {
-        "bytes": 48994,
-        "sha256": "e87f23abf484249c82daf0f51a874267511a5ccd2434e316f793aa103db0c2a6"
+        "bytes": 49205,
+        "sha256": "ff3781e2d248ea13297a143a92cd103cf9e512a450fba2563dc2933f6867271d"
       }
     },
     {
       "path": "routes/candidate-3.gpx",
       "fingerprint": {
-        "bytes": 20527,
-        "sha256": "576753a6923db9bc7f002883d257ae58ecf8a26a468c372623be0f34b3ccca02"
+        "bytes": 20610,
+        "sha256": "61decc99558820063930477166d28a79d3d0306f2e71beaa528495f42257e2fc"
       }
     },
     {
       "path": "routes/candidate-3.csv",
       "fingerprint": {
-        "bytes": 8842,
-        "sha256": "1f633703ab0394b761c5a2c5a9f4e1ef50e994617312b0a4069fdfbbf553c268"
+        "bytes": 8925,
+        "sha256": "a30af7dd06dc565ace9a8aade586b20367a68d05f8551fd54057e434e6493fea"
       }
     },
     {
       "path": "routes/candidate-3.kml",
       "fingerprint": {
-        "bytes": 11907,
-        "sha256": "328144f72ee567df57a2ade303673ca532af6792bd3760d2832a52523abe945b"
+        "bytes": 11990,
+        "sha256": "2208d907faa43a3dc4847e6454c4b3b42e90878e222b087a112a887665ffd982"
       }
     },
     {
       "path": "routes/candidate-3.kmz",
       "fingerprint": {
-        "bytes": 2432,
-        "sha256": "322c690b89cf7e53eaf72f8d36d226194bb5e83a4768df5226218daddd326e03"
+        "bytes": 2482,
+        "sha256": "d2fdfaf7ac3d8abdb0cb7089aaa364dc5fc71e68d85ca2a3593275d0c31e3433"
       }
     },
     {
       "path": "reports/candidate-3.md",
       "fingerprint": {
-        "bytes": 8010,
-        "sha256": "2b1b6793fa519149380f34bdd0a8c3d54a8d65f36e0e0e07b0ece326ee1dcba1"
+        "bytes": 8190,
+        "sha256": "79be9fd2b41d032c85f7f52abbeb3e36f9f7148f65c72c9e903bb62bb3cb9ae3"
       }
     }
   ]

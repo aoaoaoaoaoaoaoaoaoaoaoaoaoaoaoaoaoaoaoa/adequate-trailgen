@@ -7,6 +7,7 @@
 - shape: Loop
 - distance: 4.71 km
 - ascent/descent: 137 m / 137 m
+- sustained steepness: 0.00 km
 - scalar difficulty: 1014.07
 - road/pavement exposure: 1.3%
 - low-confidence fraction: 0.0%
@@ -49,6 +50,12 @@ Difficulty decomposition:
 - grade: 0.53 (0.1%)
 - descent: 0.41 (0.0%)
 - road: 0.12 (0.0%)
+
+Grade distribution:
+- flat <5%: 2.04 km (43.4%)
+- rolling 5–15%: 2.67 km (56.6%)
+- steep 15–30%: 0.00 km (0.0%)
+- savage ≥30%: 0.00 km (0.0%)
 
 Access mix:
 - Open: 71.7%
@@ -100,6 +107,7 @@ Terrain/elevation evidence:
 - shape: Loop
 - distance: 4.04 km
 - ascent/descent: 96 m / 96 m
+- sustained steepness: 0.00 km
 - scalar difficulty: 1010.87
 - road/pavement exposure: 2.0%
 - low-confidence fraction: 0.0%
@@ -142,6 +150,12 @@ Difficulty decomposition:
 - grade: 0.33 (0.0%)
 - descent: 0.29 (0.0%)
 - road: 0.16 (0.0%)
+
+Grade distribution:
+- flat <5%: 2.00 km (49.6%)
+- rolling 5–15%: 2.03 km (50.4%)
+- steep 15–30%: 0.00 km (0.0%)
+- savage ≥30%: 0.00 km (0.0%)
 
 Access mix:
 - Open: 58.4%
@@ -191,6 +205,7 @@ Terrain/elevation evidence:
 - shape: Loop
 - distance: 4.04 km
 - ascent/descent: 113 m / 113 m
+- sustained steepness: 0.00 km
 - scalar difficulty: 2011.84
 - road/pavement exposure: 2.0%
 - low-confidence fraction: 0.0%
@@ -233,6 +248,12 @@ Difficulty decomposition:
 - grade: 0.40 (0.0%)
 - road: 0.16 (0.0%)
 - descent: 0.12 (0.0%)
+
+Grade distribution:
+- flat <5%: 2.00 km (49.6%)
+- rolling 5–15%: 2.03 km (50.4%)
+- steep 15–30%: 0.00 km (0.0%)
+- savage ≥30%: 0.00 km (0.0%)
 
 Access mix:
 - Open: 25.3%

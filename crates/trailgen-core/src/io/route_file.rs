@@ -1,4 +1,5 @@
 use crate::geo::LineString;
+use crate::model::GradeDistribution;
 use crate::route::Route;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
@@ -58,13 +59,15 @@ pub fn export_summary(route: &Route) -> String {
         "violated"
     };
     let mut s = format!(
-        "score {:.2}; pareto rank {}; shape {:?}; distance {:.2} km; ascent/descent {:.0}/{:.0} m; difficulty {:.2}; road {:.1}%; low-confidence {:.1}%; restricted-access {:.1}%; repeated-edge {:.1}%; constraints {verdict}",
+        "score {:.2}; pareto rank {}; shape {:?}; distance {:.2} km; ascent/descent {:.0}/{:.0} m; sustained-steep {:.2} km; grade {}; difficulty {:.2}; road {:.1}%; low-confidence {:.1}%; restricted-access {:.1}%; repeated-edge {:.1}%; constraints {verdict}",
         route.computed_score(),
         route.pareto_rank,
         route.metrics.shape,
         route.metrics.distance_m / 1_000.0,
         route.metrics.ascent_m,
         route.metrics.descent_m,
+        route.metrics.sustained_steep_m / 1_000.0,
+        grade_summary(route.metrics.grade_distribution),
         route.metrics.difficulty,
         route.metrics.road_fraction * 100.0,
         route.metrics.low_confidence_fraction * 100.0,
@@ -75,4 +78,18 @@ pub fn export_summary(route: &Route) -> String {
         let _ = write!(s, "; violations {}", route.verdict.violations.join(" | "));
     }
     s
+}
+
+fn grade_summary(d: GradeDistribution) -> String {
+    let total = d.total_m();
+    if total <= f64::EPSILON {
+        return "none".to_owned();
+    }
+    format!(
+        "flat {:.1}%, rolling {:.1}%, steep {:.1}%, savage {:.1}%",
+        d.flat_m / total * 100.0,
+        d.rolling_m / total * 100.0,
+        d.steep_m / total * 100.0,
+        d.savage_m / total * 100.0,
+    )
 }

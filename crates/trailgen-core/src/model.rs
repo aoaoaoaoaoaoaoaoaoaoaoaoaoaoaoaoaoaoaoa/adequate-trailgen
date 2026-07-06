@@ -1,6 +1,7 @@
 use crate::difficulty::DifficultyBreakdown;
 use crate::geo::{Coord, LineString};
 use serde::{Deserialize, Serialize};
+use std::ops::AddAssign;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -251,6 +252,15 @@ impl GradeDistribution {
     #[must_use]
     pub fn total_m(self) -> f64 {
         self.flat_m + self.rolling_m + self.steep_m + self.savage_m
+    }
+}
+
+impl AddAssign for GradeDistribution {
+    fn add_assign(&mut self, rhs: Self) {
+        self.flat_m += rhs.flat_m;
+        self.rolling_m += rhs.rolling_m;
+        self.steep_m += rhs.steep_m;
+        self.savage_m += rhs.savage_m;
     }
 }
 

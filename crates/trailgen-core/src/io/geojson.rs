@@ -266,6 +266,8 @@ fn route_feature(graph: &TrailGraph, route: &Route) -> Value {
             "shape": route.metrics.shape,
             "difficulty": route.metrics.difficulty,
             "difficulty_breakdown": route.metrics.difficulty_breakdown,
+            "sustained_steep_m": route.metrics.sustained_steep_m,
+            "grade_distribution": route.metrics.grade_distribution,
             "road_fraction": route.metrics.road_fraction,
             "low_confidence_fraction": route.metrics.low_confidence_fraction,
             "restricted_access_fraction": route.metrics.restricted_access_fraction,

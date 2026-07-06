@@ -27,6 +27,13 @@
         "confidence": 1.0800000000000003,
         "access": 1000.0
       },
+      "sustained_steep_m": 0.0,
+      "grade_distribution": {
+        "flat_m": 2044.149301328377,
+        "rolling_m": 2668.68192560489,
+        "steep_m": 0.0,
+        "savage_m": 0.0
+      },
       "road_fraction": 0.013012237461292745,
       "low_confidence_fraction": 0.0,
       "restricted_access_fraction": 0.28312937564512086,
@@ -173,6 +180,13 @@
         "navigation": 0.7197358574494941,
         "confidence": 0.8250000000000001,
         "access": 1000.0
+      },
+      "sustained_steep_m": 0.0,
+      "grade_distribution": {
+        "flat_m": 2002.9552986349963,
+        "rolling_m": 2034.3542389790248,
+        "steep_m": 0.0,
+        "savage_m": 0.0
       },
       "road_fraction": 0.020084924499564005,
       "low_confidence_fraction": 0.0,
@@ -321,6 +335,13 @@
         "navigation": 0.7197229220567624,
         "confidence": 0.8250000000000001,
         "access": 2000.0
+      },
+      "sustained_steep_m": 0.0,
+      "grade_distribution": {
+        "flat_m": 2002.7756404026113,
+        "rolling_m": 2034.3542389790248,
+        "steep_m": 0.0,
+        "savage_m": 0.0
       },
       "road_fraction": 0.020084483264084445,
       "low_confidence_fraction": 0.0,

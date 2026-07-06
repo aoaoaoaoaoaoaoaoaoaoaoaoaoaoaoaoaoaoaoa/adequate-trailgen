@@ -1895,6 +1895,12 @@
           0,
           4
         ],
+        "grade_distribution": {
+          "flat_m": 2002.775640402611,
+          "rolling_m": 2034.3542389790248,
+          "savage_m": 0.0,
+          "steep_m": 0.0
+        },
         "low_confidence_edges": [],
         "low_confidence_fraction": 0.0,
         "name": "candidate-3",
@@ -1919,6 +1925,7 @@
             "source_id": "diagonal"
           }
         ],
+        "sustained_steep_m": 0.0,
         "terrain_fraction": {
           "alpine": 0.4163363937373852,
           "talus": 0.3305172245305184,

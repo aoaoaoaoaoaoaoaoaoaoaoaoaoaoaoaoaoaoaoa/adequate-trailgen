@@ -26,13 +26,14 @@ fn render_route(graph: &TrailGraph, route: &Route, s: &mut String) {
     let _ = write!(s, "## {}\n\n", route.name);
     let _ = write!(
         s,
-        "- score: {:.2}\n- pareto rank: {}\n- shape: {:?}\n- distance: {:.2} km\n- ascent/descent: {:.0} m / {:.0} m\n- scalar difficulty: {:.2}\n- road/pavement exposure: {:.1}%\n- low-confidence fraction: {:.1}%\n- restricted-access fraction: {:.1}%\n- repeated-edge fraction: {:.1}%\n- constraint verdict: {}\n",
+        "- score: {:.2}\n- pareto rank: {}\n- shape: {:?}\n- distance: {:.2} km\n- ascent/descent: {:.0} m / {:.0} m\n- sustained steepness: {:.2} km\n- scalar difficulty: {:.2}\n- road/pavement exposure: {:.1}%\n- low-confidence fraction: {:.1}%\n- restricted-access fraction: {:.1}%\n- repeated-edge fraction: {:.1}%\n- constraint verdict: {}\n",
         route.computed_score(),
         route.pareto_rank,
         route.metrics.shape,
         route.metrics.distance_m / 1_000.0,
         route.metrics.ascent_m,
         route.metrics.descent_m,
+        route.metrics.sustained_steep_m / 1_000.0,
         route.metrics.difficulty,
         route.metrics.road_fraction * 100.0,
         route.metrics.low_confidence_fraction * 100.0,
@@ -48,6 +49,7 @@ fn render_route(graph: &TrailGraph, route: &Route, s: &mut String) {
     render_violations(route, s);
     render_constraint_audit(route, s);
     render_difficulty(route, s);
+    render_route_grade_distribution(route, s);
     render_access_mix(route, s);
     render_access_warnings(graph, route, s);
     render_directed_travel(graph, route, s);
@@ -59,6 +61,28 @@ fn render_route(graph: &TrailGraph, route: &Route, s: &mut String) {
     render_dubious_edges(graph, route, s);
     render_evidence(graph, route, s);
     s.push('\n');
+}
+
+fn render_route_grade_distribution(route: &Route, s: &mut String) {
+    let d = route.metrics.grade_distribution;
+    let total = d.total_m();
+    if total <= f64::EPSILON {
+        return;
+    }
+    s.push_str("\nGrade distribution:\n");
+    for (label, meters) in [
+        ("flat <5%", d.flat_m),
+        ("rolling 5–15%", d.rolling_m),
+        ("steep 15–30%", d.steep_m),
+        ("savage ≥30%", d.savage_m),
+    ] {
+        let _ = writeln!(
+            s,
+            "- {label}: {:.2} km ({:.1}%)",
+            meters / 1_000.0,
+            meters / total * 100.0
+        );
+    }
 }
 
 fn render_route_sequence(graph: &TrailGraph, route: &Route, s: &mut String) {
