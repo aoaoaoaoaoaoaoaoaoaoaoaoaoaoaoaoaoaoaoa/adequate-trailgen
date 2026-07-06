@@ -228,6 +228,12 @@ Acquisition hints:
 
 Replace `<artifact-url-or-path>` with a concrete downloaded artifact or local file selected from the listed source surface; keep the explicit kind and adapter when provider filenames are ambiguous. For OSM-backed trail, road, and hydrology layers, `acquire-osm` can materialize bbox-scoped XML directly from an Overpass endpoint.
 
+Combined OSM/Overpass fallback:
+
+```sh
+trailgen acquire-osm <project> --profile all --output osm-extract.osm
+```
+
 ### TrailNetwork
 
 ```sh

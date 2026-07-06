@@ -400,6 +400,7 @@ enum ExportFormat {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum OsmAcquireProfile {
+    All,
     Trails,
     Roads,
     Hydrology,
@@ -1164,24 +1165,9 @@ struct OsmAcquisition {
 }
 
 impl OsmAcquireProfile {
-    const fn kind(self) -> SourceKind {
-        match self {
-            Self::Trails => SourceKind::TrailNetwork,
-            Self::Roads => SourceKind::Road,
-            Self::Hydrology => SourceKind::Hydrology,
-        }
-    }
-
-    const fn adapter_id(self) -> &'static str {
-        match self {
-            Self::Trails => "osm-xml-network",
-            Self::Roads => "osm-road-context",
-            Self::Hydrology => "osm-hydrology-context",
-        }
-    }
-
     const fn default_output(self) -> &'static str {
         match self {
+            Self::All => "osm-extract.osm",
             Self::Trails => "osm-trails.osm",
             Self::Roads => "roads.osm",
             Self::Hydrology => "hydrology.osm",
@@ -1190,11 +1176,20 @@ impl OsmAcquireProfile {
 
     const fn label(self) -> &'static str {
         match self {
+            Self::All => "all",
             Self::Trails => "trails",
             Self::Roads => "roads",
             Self::Hydrology => "hydrology",
         }
     }
+}
+
+#[derive(Clone, Copy)]
+struct OsmAcquiredClass {
+    kind: SourceKind,
+    adapter_id: &'static str,
+    label: &'static str,
+    count: usize,
 }
 
 fn acquire_osm(project: &Path, acquisition: &OsmAcquisition) -> Result<()> {
@@ -1232,17 +1227,11 @@ fn cache_acquired_osm(
     }
     let normalized =
         std::str::from_utf8(bytes).with_context(|| "Overpass response is not UTF-8 OSM XML")?;
-    let feature_count = validate_osm_acquisition(acquisition.profile, normalized)?;
+    let acquired = validate_osm_acquisition(acquisition.profile, normalized)?;
     write_bytes(&path, bytes)?;
     write_bytes(path.with_extension("overpassql"), query)?;
     let fingerprint = source_fingerprint(&path)?;
-    let mut candidate = source_candidate(
-        &path,
-        acquisition.profile.kind(),
-        acquisition.profile.adapter_id(),
-        fingerprint,
-    );
-    candidate.origin = Some(format!(
+    let origin = format!(
         "overpass:{} profile={} bbox={},{},{},{}",
         acquisition.endpoint,
         acquisition.profile.label(),
@@ -1250,36 +1239,97 @@ fn cache_acquired_osm(
         area.south,
         area.east,
         area.north
-    ));
-    register_source_candidates(project, vec![candidate])?;
+    );
+    let candidates = acquired
+        .iter()
+        .map(|class| {
+            let mut candidate =
+                source_candidate(&path, class.kind, class.adapter_id, fingerprint.clone());
+            candidate.origin = Some(origin.clone());
+            candidate
+        })
+        .collect::<Vec<_>>();
+    register_source_candidates(project, candidates)?;
     println!(
-        "acquired {} OSM {} feature(s) into {}",
-        feature_count,
+        "acquired OSM {} extract into {}: {}",
         acquisition.profile.label(),
-        path.display()
+        path.display(),
+        acquired
+            .iter()
+            .map(|class| format!("{} {}", class.count, class.label))
+            .collect::<Vec<_>>()
+            .join(", ")
     );
     Ok(())
 }
 
-fn validate_osm_acquisition(profile: OsmAcquireProfile, raw: &str) -> Result<usize> {
-    let count = match profile {
-        OsmAcquireProfile::Trails => osm::network_from_str(raw)?.len(),
-        OsmAcquireProfile::Roads => osm::context_overlays_from_str(raw)?
-            .into_iter()
-            .filter(|overlay| overlay.kind == CrossingKind::Road)
-            .count(),
-        OsmAcquireProfile::Hydrology => osm::context_overlays_from_str(raw)?
-            .into_iter()
-            .filter(|overlay| overlay.kind == CrossingKind::Water)
-            .count(),
+fn validate_osm_acquisition(
+    profile: OsmAcquireProfile,
+    raw: &str,
+) -> Result<Vec<OsmAcquiredClass>> {
+    let drafts = if matches!(profile, OsmAcquireProfile::All | OsmAcquireProfile::Trails) {
+        osm::network_from_str(raw)?.len()
+    } else {
+        0
     };
-    if count == 0 {
+    let (roads, hydrology) = if matches!(
+        profile,
+        OsmAcquireProfile::All | OsmAcquireProfile::Roads | OsmAcquireProfile::Hydrology
+    ) {
+        osm_context_counts(raw)?
+    } else {
+        (0, 0)
+    };
+    let mut acquired = Vec::new();
+    if drafts > 0 {
+        acquired.push(OsmAcquiredClass {
+            kind: SourceKind::TrailNetwork,
+            adapter_id: "osm-xml-network",
+            label: "trail",
+            count: drafts,
+        });
+    }
+    if roads > 0 {
+        acquired.push(OsmAcquiredClass {
+            kind: SourceKind::Road,
+            adapter_id: "osm-road-context",
+            label: "road",
+            count: roads,
+        });
+    }
+    if hydrology > 0 {
+        acquired.push(OsmAcquiredClass {
+            kind: SourceKind::Hydrology,
+            adapter_id: "osm-hydrology-context",
+            label: "hydrology",
+            count: hydrology,
+        });
+    }
+    acquired.retain(|class| match profile {
+        OsmAcquireProfile::All => true,
+        OsmAcquireProfile::Trails => class.kind == SourceKind::TrailNetwork,
+        OsmAcquireProfile::Roads => class.kind == SourceKind::Road,
+        OsmAcquireProfile::Hydrology => class.kind == SourceKind::Hydrology,
+    });
+    if acquired.is_empty() {
         bail!(
             "Overpass response contained no normalizable {} ways for the current adapter",
             profile.label()
         );
     }
-    Ok(count)
+    Ok(acquired)
+}
+
+fn osm_context_counts(raw: &str) -> Result<(usize, usize)> {
+    let mut roads = 0;
+    let mut hydrology = 0;
+    for overlay in osm::context_overlays_from_str(raw)? {
+        match overlay.kind {
+            CrossingKind::Road => roads += 1,
+            CrossingKind::Water => hydrology += 1,
+        }
+    }
+    Ok((roads, hydrology))
 }
 
 fn read_overpass_xml(endpoint: &str, query: &str, timeout_s: u64) -> Result<Vec<u8>> {
@@ -1305,17 +1355,27 @@ fn read_overpass_xml(endpoint: &str, query: &str, timeout_s: u64) -> Result<Vec<
 
 fn overpass_query(profile: OsmAcquireProfile, area: GeoBounds, timeout_s: u64) -> String {
     let bbox = overpass_bbox(area);
-    let selectors = match profile {
-        OsmAcquireProfile::Trails => OSM_TRAIL_SELECTORS,
-        OsmAcquireProfile::Roads => OSM_ROAD_SELECTORS,
-        OsmAcquireProfile::Hydrology => OSM_HYDROLOGY_SELECTORS,
-    };
+    let selectors = overpass_selectors(profile);
     let mut query = format!("[out:xml][timeout:{timeout_s}];\n(\n");
-    for selector in selectors {
+    for selector in &selectors {
         let _ = writeln!(query, "  {selector}{bbox};");
     }
     query.push_str(");\n(._;>;);\nout body;\n");
     query
+}
+
+fn overpass_selectors(profile: OsmAcquireProfile) -> Vec<&'static str> {
+    match profile {
+        OsmAcquireProfile::All => [
+            OSM_TRAIL_SELECTORS,
+            OSM_ROAD_SELECTORS,
+            OSM_HYDROLOGY_SELECTORS,
+        ]
+        .concat(),
+        OsmAcquireProfile::Trails => OSM_TRAIL_SELECTORS.to_vec(),
+        OsmAcquireProfile::Roads => OSM_ROAD_SELECTORS.to_vec(),
+        OsmAcquireProfile::Hydrology => OSM_HYDROLOGY_SELECTORS.to_vec(),
+    }
 }
 
 fn overpass_bbox(area: GeoBounds) -> String {
@@ -2739,6 +2799,25 @@ fn render_acquisition_plan(text: &mut String, manifest: &SourceManifest) {
 
 fn render_cache_command_sketches(text: &mut String, manifest: &SourceManifest) {
     text.push_str("Replace `<artifact-url-or-path>` with a concrete downloaded artifact or local file selected from the listed source surface; keep the explicit kind and adapter when provider filenames are ambiguous. For OSM-backed trail, road, and hydrology layers, `acquire-osm` can materialize bbox-scoped XML directly from an Overpass endpoint.\n\n");
+    if manifest
+        .recommendations
+        .iter()
+        .any(|recommendation| osm_profile_for_kind(recommendation.kind).is_some())
+    {
+        let bbox = manifest
+            .recommendations
+            .iter()
+            .find_map(|recommendation| recommendation.area)
+            .map_or_else(
+                || " --bbox west,south,east,north".to_owned(),
+                |_| String::new(),
+            );
+        let _ = writeln!(
+            text,
+            "Combined OSM/Overpass fallback:\n\n```sh\ntrailgen acquire-osm <project> --profile all{bbox} --output {}\n```\n",
+            OsmAcquireProfile::All.default_output()
+        );
+    }
     for recommendation in &manifest.recommendations {
         let adapter_id = recommendation
             .adapter_ids
@@ -4843,6 +4922,9 @@ mod tests {
         assert!(discovery.contains(
             "trailgen cache-source <project> --input '<artifact-url-or-path>' --output trails.geojson --kind trail-network --adapter geojson-network"
         ));
+        assert!(discovery.contains(
+            "trailgen acquire-osm <project> --profile all --bbox west,south,east,north --output osm-extract.osm"
+        ));
         assert!(
             discovery.contains(
                 "trailgen acquire-osm <project> --profile trails --bbox west,south,east,north --output osm-trails.osm"
@@ -4892,10 +4974,33 @@ mod tests {
         assert!(hydrology.contains("brook"));
         assert!(hydrology.contains(bbox));
 
-        assert!(validate_osm_acquisition(OsmAcquireProfile::Trails, tiny_overpass_osm()).is_ok());
-        assert!(validate_osm_acquisition(OsmAcquireProfile::Roads, tiny_overpass_osm()).is_ok());
-        assert!(
-            validate_osm_acquisition(OsmAcquireProfile::Hydrology, tiny_overpass_osm()).is_ok()
+        let all = overpass_query(OsmAcquireProfile::All, area, 45);
+        assert!(all.contains("living_street"));
+        assert!(all.contains("waterway"));
+        assert_eq!(
+            all.matches(bbox).count(),
+            OSM_TRAIL_SELECTORS.len() + OSM_ROAD_SELECTORS.len() + OSM_HYDROLOGY_SELECTORS.len()
+        );
+
+        assert_acquired_classes(
+            validate_osm_acquisition(OsmAcquireProfile::Trails, tiny_overpass_osm()).unwrap(),
+            &[(SourceKind::TrailNetwork, "osm-xml-network", 2)],
+        );
+        assert_acquired_classes(
+            validate_osm_acquisition(OsmAcquireProfile::Roads, tiny_overpass_osm()).unwrap(),
+            &[(SourceKind::Road, "osm-road-context", 1)],
+        );
+        assert_acquired_classes(
+            validate_osm_acquisition(OsmAcquireProfile::Hydrology, tiny_overpass_osm()).unwrap(),
+            &[(SourceKind::Hydrology, "osm-hydrology-context", 1)],
+        );
+        assert_acquired_classes(
+            validate_osm_acquisition(OsmAcquireProfile::All, tiny_overpass_osm()).unwrap(),
+            &[
+                (SourceKind::TrailNetwork, "osm-xml-network", 2),
+                (SourceKind::Road, "osm-road-context", 1),
+                (SourceKind::Hydrology, "osm-hydrology-context", 1),
+            ],
         );
         assert!(
             validate_osm_acquisition(OsmAcquireProfile::Hydrology, empty_overpass_osm()).is_err()
@@ -4931,6 +5036,16 @@ mod tests {
                 tiny_overpass_osm().as_bytes(),
             )?;
         }
+        let all = OsmAcquisition {
+            profile: OsmAcquireProfile::All,
+            bbox: None,
+            output: Some(PathBuf::from("osm-complete.osm")),
+            endpoint: "https://overpass.example.test/api/interpreter".to_owned(),
+            timeout_s: 30,
+            print_query: false,
+        };
+        let query = overpass_query(all.profile, area, all.timeout_s);
+        cache_acquired_osm(project, &all, area, &query, tiny_overpass_osm().as_bytes())?;
         verify_sources(project)?;
 
         let manifest: Value =
@@ -4949,6 +5064,19 @@ mod tests {
                 "hydrology",
                 "osm-hydrology-context",
                 "hydrology",
+            ),
+            (
+                "osm-complete.osm",
+                "trail-network",
+                "osm-xml-network",
+                "all",
+            ),
+            ("osm-complete.osm", "road", "osm-road-context", "all"),
+            (
+                "osm-complete.osm",
+                "hydrology",
+                "osm-hydrology-context",
+                "all",
             ),
         ] {
             assert!(project.join("sources").join(output).exists(), "{output}");
@@ -6486,6 +6614,18 @@ mod tests {
 
     fn empty_overpass_osm() -> &'static str {
         r#"<osm version="0.6" generator="adequate-trailgen-test"></osm>"#
+    }
+
+    fn assert_acquired_classes(
+        mut actual: Vec<OsmAcquiredClass>,
+        expected: &[(SourceKind, &'static str, usize)],
+    ) {
+        actual.sort_by_key(|class| (class.kind, class.adapter_id));
+        let actual = actual
+            .into_iter()
+            .map(|class| (class.kind, class.adapter_id, class.count))
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
     }
 
     fn tiny_osm_pbf() -> Vec<u8> {
