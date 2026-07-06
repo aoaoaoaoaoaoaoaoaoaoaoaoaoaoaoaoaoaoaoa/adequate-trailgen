@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Write as _};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -92,6 +92,17 @@ enum Cmd {
     VerifySources {
         /// Project directory containing sources/manifest.json.
         project: PathBuf,
+    },
+    /// Build and enrich cache/graph.json from sources/manifest.json.
+    Assemble {
+        /// Project directory containing trailgen.toml and sources/manifest.json.
+        project: PathBuf,
+        /// Planning date used while applying access/closure overlays.
+        #[arg(long, value_parser = parse_planning_date)]
+        date: Option<PlanningDate>,
+        /// Confidence assigned to DEM samples during manifest elevation application.
+        #[arg(long, default_value_t = 0.80)]
+        elevation_confidence: f64,
     },
     /// Generate ranked candidate routes from a trailhead/start coordinate.
     Generate {
@@ -424,6 +435,11 @@ fn main() -> Result<()> {
             adapter.as_deref(),
         ),
         Cmd::VerifySources { project } => verify_sources(&project),
+        Cmd::Assemble {
+            project,
+            date,
+            elevation_confidence,
+        } => assemble_sources(&project, date, elevation_confidence),
         Cmd::Generate {
             project,
             start,
@@ -1076,7 +1092,8 @@ fn verify_sources(project: &Path) -> Result<()> {
             failures.push(format!("{} lacks fingerprint", candidate.path));
             continue;
         };
-        match source_fingerprint(Path::new(&candidate.path)) {
+        let path = resolve_manifest_source_path(project, &candidate.path);
+        match source_fingerprint(&path) {
             Ok(actual) if actual == *expected => checked += 1,
             Ok(actual) => failures.push(format!(
                 "{} drifted: expected {} bytes sha256 {}, found {} bytes sha256 {}",
@@ -1090,6 +1107,107 @@ fn verify_sources(project: &Path) -> Result<()> {
     }
     println!("verified {checked} source candidate(s)");
     Ok(())
+}
+
+fn assemble_sources(
+    project: &Path,
+    date: Option<PlanningDate>,
+    elevation_confidence: f64,
+) -> Result<()> {
+    if !(0.0..=1.0).contains(&elevation_confidence) {
+        bail!("elevation confidence must be in [0,1]");
+    }
+    verify_sources(project)?;
+    let manifest = load_source_manifest(project)?.with_context(
+        || "read sources/manifest.json; run `trailgen discover` or `trailgen cache-source` first",
+    )?;
+    let candidates = sorted_manifest_candidates(&manifest);
+    let trail_networks = manifest_phase_paths(project, &candidates, &[SourceKind::TrailNetwork]);
+    let seed_routes = manifest_phase_paths(project, &candidates, &[SourceKind::SeedRoute]);
+    let build_sources = if trail_networks.is_empty() {
+        &seed_routes
+    } else {
+        &trail_networks
+    };
+    if build_sources.is_empty() {
+        bail!("assemble requires at least one trail-network candidate or seed-route scaffold");
+    }
+
+    build_many(project, build_sources.iter().map(PathBuf::as_path))?;
+    for source in manifest_phase_paths(project, &candidates, &[SourceKind::Elevation]) {
+        apply_elevation(project, &source, elevation_confidence)
+            .with_context(|| format!("assemble elevation {}", source.display()))?;
+    }
+    for source in manifest_phase_paths(project, &candidates, &[SourceKind::Terrain]) {
+        apply_terrain(project, &source)
+            .with_context(|| format!("assemble terrain {}", source.display()))?;
+    }
+    for source in manifest_phase_paths(
+        project,
+        &candidates,
+        &[SourceKind::Road, SourceKind::Hydrology],
+    ) {
+        apply_context(project, &source)
+            .with_context(|| format!("assemble context {}", source.display()))?;
+    }
+    for source in seed_routes {
+        import_seed(project, &source, None, None)
+            .with_context(|| format!("assemble seed route {}", source.display()))?;
+    }
+    let access_sources = manifest_phase_paths(
+        project,
+        &candidates,
+        &[SourceKind::Access, SourceKind::Closure],
+    );
+    if !access_sources.is_empty() {
+        apply_access(project, &access_sources, date)
+            .with_context(|| "assemble access/closure overlays")?;
+    }
+
+    let graph = load_graph(project)?;
+    println!(
+        "assembled graph from manifest: {} vertices, {} edges",
+        graph.vertices.len(),
+        graph.edges.len()
+    );
+    Ok(())
+}
+
+fn sorted_manifest_candidates(manifest: &SourceManifest) -> Vec<SourceCandidate> {
+    let mut candidates = manifest.candidates.clone();
+    candidates
+        .sort_by(|a, b| (a.kind, &a.path, &a.adapter_id).cmp(&(b.kind, &b.path, &b.adapter_id)));
+    candidates
+}
+
+fn manifest_phase_paths(
+    project: &Path,
+    candidates: &[SourceCandidate],
+    kinds: &[SourceKind],
+) -> Vec<PathBuf> {
+    let mut seen = BTreeSet::new();
+    let mut paths = Vec::new();
+    for candidate in candidates {
+        if !kinds.contains(&candidate.kind) {
+            continue;
+        }
+        let path = resolve_manifest_source_path(project, &candidate.path);
+        if seen.insert(path.display().to_string()) {
+            paths.push(path);
+        }
+    }
+    paths
+}
+
+fn resolve_manifest_source_path(project: &Path, raw: &str) -> PathBuf {
+    let path = PathBuf::from(raw);
+    if path.is_absolute() {
+        path
+    } else if project.join(&path).exists() {
+        project.join(path)
+    } else {
+        path
+    }
 }
 
 struct GenerateOptions {
@@ -5255,6 +5373,76 @@ mod tests {
         let error = verify_sources(project).expect_err("source drift should fail verification");
         assert!(format!("{error:#}").contains("source verification failed"));
         assert!(format!("{error:#}").contains("drifted"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn assemble_realizes_discovered_manifest_into_attributed_graph() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path().join("project");
+        let sources = project.join("sources");
+        let seed_sources = sources.join("seeds");
+        fs::create_dir_all(&seed_sources)?;
+        init(&project, "Assemble Test".to_owned(), None)?;
+        let fixtures =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../trailgen-core/tests/fixtures");
+        fs::copy(
+            fixtures.join("mini_network.geojson"),
+            sources.join("network.geojson"),
+        )?;
+        fs::copy(fixtures.join("mini_dem.asc"), sources.join("dem.asc"))?;
+        fs::copy(
+            fixtures.join("terrain_overlay.geojson"),
+            sources.join("terrain.geojson"),
+        )?;
+        fs::copy(
+            fixtures.join("context_overlay.geojson"),
+            sources.join("roads.geojson"),
+        )?;
+        fs::copy(
+            fixtures.join("access_overlay.geojson"),
+            sources.join("access.geojson"),
+        )?;
+        fs::copy(
+            fixtures.join("closure_overlay.geojson"),
+            sources.join("closure.geojson"),
+        )?;
+        fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../demo/mini-loop/routes/candidate-1.gpx"),
+            seed_sources.join("completed.gpx"),
+        )?;
+
+        discover(&project, None)?;
+        assemble_sources(&project, None, 0.82)?;
+
+        let graph = load_graph(&project)?;
+        assert!(
+            graph
+                .edges
+                .iter()
+                .any(|edge| !edge.attr.elevation_provenance.is_empty())
+        );
+        assert!(
+            graph
+                .edges
+                .iter()
+                .any(|edge| edge.attr.terrain == Terrain::Talus)
+        );
+        assert!(graph.edges.iter().any(|edge| {
+            edge.attr
+                .crossings
+                .iter()
+                .any(|crossing| crossing.kind == CrossingKind::Road)
+        }));
+        assert!(
+            graph
+                .edges
+                .iter()
+                .any(|edge| edge.attr.access == Access::Closed)
+        );
+        assert!(project.join("seeds/seeds.json").exists());
 
         Ok(())
     }
