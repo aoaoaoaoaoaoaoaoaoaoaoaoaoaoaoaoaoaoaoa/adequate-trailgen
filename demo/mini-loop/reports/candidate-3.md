@@ -88,6 +88,16 @@ Terrain/elevation evidence:
 - edge 1: current Talus; terrain evidence Forest 90%: explicit source terrain tag (fixture:east) | Talus 87%: terrain overlay (fixture-landcover:talus-basin); surface unknown; elevation sources arc-ascii-grid:mini_dem.asc
 - edge 2: current Trail; terrain evidence Trail 90%: explicit source terrain tag (fixture:south); surface unknown; elevation sources arc-ascii-grid:mini_dem.asc
 
+## Generation Ledger
+
+- app version: 0.1.0
+- solver: requested Auto, concrete exact-enumerator
+- random seed: 0
+- requested start: -105.000000,40.000000
+- snapped start: vertex 3, -105.000000,40.000000 (0 m)
+- emitted artifacts: 30
+- forbidden areas: none
+
 ## Constraint Envelope
 
 - distance: 3.00–8.00 km

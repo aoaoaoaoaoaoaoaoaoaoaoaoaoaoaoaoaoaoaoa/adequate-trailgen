@@ -1717,11 +1717,35 @@ struct GenerationManifest {
     artifacts: Vec<String>,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+struct GenerationLedger {
+    app_version: String,
+    solver: String,
+    requested_solver: SolverKind,
+    random_seed: u64,
+    requested_start: Coord,
+    snapped_start_vertex: VertexId,
+    snapped_start_coord: Coord,
+    start_snap_m: f64,
+    #[serde(default)]
+    forbidden_areas: Vec<ForbiddenAreaLedger>,
+    #[serde(default)]
+    artifacts: Vec<String>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 struct ForbiddenAreaManifest {
     path: String,
     adapter_id: String,
     fingerprint: SourceFingerprint,
+    overlays: usize,
+    touched_edges: usize,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ForbiddenAreaLedger {
+    path: String,
+    adapter_id: String,
     overlays: usize,
     touched_edges: usize,
 }
@@ -1906,16 +1930,10 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
             solver_label: solver.label(),
         })?,
     )?;
-    write_route_artifacts(project, &graph, &routes, &config.constraints)?;
+    write_route_artifacts(project, &graph, &routes)?;
     fs::write(
         project.join("reports/generated.md"),
-        render_project_report(
-            project,
-            "Generated Hiking Routes",
-            &graph,
-            &routes,
-            &config.constraints,
-        )?,
+        render_generated_report(project, &graph, &routes)?,
     )
     .with_context(|| "write generated report")?;
     write_bytes(
@@ -2019,16 +2037,10 @@ fn import_milp_solution(project: &Path, options: &MilpIncumbentOptions) -> Resul
             solver_label: "milp-incumbent-import",
         })?,
     )?;
-    write_route_artifacts(project, &graph, &routes, &config.constraints)?;
+    write_route_artifacts(project, &graph, &routes)?;
     fs::write(
         project.join("reports/generated.md"),
-        render_project_report(
-            project,
-            "Generated Hiking Routes",
-            &graph,
-            &routes,
-            &config.constraints,
-        )?,
+        render_generated_report(project, &graph, &routes)?,
     )
     .with_context(|| "write generated report")?;
     write_bytes(
@@ -2081,12 +2093,7 @@ fn milp_incumbent_generate_options(
     }
 }
 
-fn write_route_artifacts(
-    project: &Path,
-    graph: &TrailGraph,
-    routes: &[Route],
-    constraints: &LoopConstraints,
-) -> Result<()> {
+fn write_route_artifacts(project: &Path, graph: &TrailGraph, routes: &[Route]) -> Result<()> {
     for route in routes {
         write_json(
             project.join(format!("routes/{}.geojson", route.name)),
@@ -2115,12 +2122,11 @@ fn write_route_artifacts(
         .with_context(|| format!("write KMZ for {}", route.name))?;
         write_bytes(
             project.join(format!("reports/{}.md", route.name)),
-            render_project_report(
+            render_generated_report_with_title(
                 project,
                 "Generated Hiking Route",
                 graph,
                 std::slice::from_ref(route),
-                constraints,
             )?,
         )
         .with_context(|| format!("write report for {}", route.name))?;
@@ -2598,11 +2604,13 @@ fn render_generated_report_with_title(
         Some(manifest) => Some(manifest),
         None => load_source_manifest(project)?,
     };
-    Ok(render_report_with_source_manifest(
+    let ledger = load_generated_ledger(project)?;
+    Ok(render_report(
         title,
         graph,
         routes,
         &constraints,
+        ledger.as_ref(),
         source_manifest.as_ref(),
     ))
 }
@@ -2925,26 +2933,70 @@ fn render_project_report(
     constraints: &LoopConstraints,
 ) -> Result<String> {
     let source_manifest = load_source_manifest(project)?;
-    Ok(render_report_with_source_manifest(
+    Ok(render_report(
         title,
         graph,
         routes,
         constraints,
+        None,
         source_manifest.as_ref(),
     ))
 }
 
-fn render_report_with_source_manifest(
+fn render_report(
     title: &str,
     graph: &TrailGraph,
     routes: &[Route],
     constraints: &LoopConstraints,
+    ledger: Option<&GenerationLedger>,
     source_manifest: Option<&SourceManifest>,
 ) -> String {
     let mut text = report::render_titled(title, graph, routes);
+    render_generation_ledger_section(&mut text, ledger);
     render_constraints_section(&mut text, constraints);
     render_source_manifest_section(&mut text, source_manifest);
     text
+}
+
+fn render_generation_ledger_section(text: &mut String, ledger: Option<&GenerationLedger>) {
+    let Some(ledger) = ledger else {
+        return;
+    };
+    text.push_str("## Generation Ledger\n\n");
+    let _ = writeln!(text, "- app version: {}", ledger.app_version);
+    let _ = writeln!(
+        text,
+        "- solver: requested {:?}, concrete {}",
+        ledger.requested_solver, ledger.solver
+    );
+    let _ = writeln!(text, "- random seed: {}", ledger.random_seed);
+    let _ = writeln!(
+        text,
+        "- requested start: {:.6},{:.6}",
+        ledger.requested_start.lon, ledger.requested_start.lat
+    );
+    let _ = writeln!(
+        text,
+        "- snapped start: vertex {}, {:.6},{:.6} ({:.0} m)",
+        ledger.snapped_start_vertex.0,
+        ledger.snapped_start_coord.lon,
+        ledger.snapped_start_coord.lat,
+        ledger.start_snap_m
+    );
+    let _ = writeln!(text, "- emitted artifacts: {}", ledger.artifacts.len());
+    if ledger.forbidden_areas.is_empty() {
+        text.push_str("- forbidden areas: none\n");
+    } else {
+        text.push_str("- forbidden areas:\n");
+        for area in &ledger.forbidden_areas {
+            let _ = writeln!(
+                text,
+                "  - {} via {}, {} overlay(s), {} touched edge(s)",
+                area.path, area.adapter_id, area.overlays, area.touched_edges
+            );
+        }
+    }
+    text.push('\n');
 }
 
 fn render_constraints_section(text: &mut String, constraints: &LoopConstraints) {
@@ -4250,6 +4302,12 @@ fn load_generated_config(project: &Path) -> Result<Option<ProjectConfig>> {
 fn load_generated_source_manifest(project: &Path) -> Result<Option<SourceManifest>> {
     Ok(load_generated_manifest_value(project)?
         .and_then(|manifest| manifest.get("source_manifest").cloned())
+        .map(serde_json::from_value)
+        .transpose()?)
+}
+
+fn load_generated_ledger(project: &Path) -> Result<Option<GenerationLedger>> {
+    Ok(load_generated_manifest_value(project)?
         .map(serde_json::from_value)
         .transpose()?)
 }
@@ -5733,6 +5791,12 @@ mod tests {
                 .is_some_and(|xs| !xs.is_empty())
         );
         assert_generation_artifacts_manifest(&manifest);
+        let generated_report = fs::read_to_string(project.join("reports/generated.md"))?;
+        assert!(generated_report.contains("## Generation Ledger"));
+        assert!(generated_report.contains("- app version:"));
+        assert!(generated_report.contains("- solver: requested Exact, concrete exact-enumerator"));
+        assert!(generated_report.contains("- random seed: 77"));
+        assert!(generated_report.contains("- snapped start: vertex"));
 
         Ok(())
     }
@@ -6094,6 +6158,9 @@ mod tests {
     fn assert_selected_route_reports(md: &Path, sidecar: &Path) -> Result<()> {
         let report = fs::read_to_string(md)?;
         assert!(report.contains("candidate-1"));
+        assert!(report.contains("## Generation Ledger"));
+        assert!(report.contains("- random seed: 0"));
+        assert!(report.contains("- solver: requested Auto, concrete"));
         assert!(report.contains("## Constraint Envelope"));
         assert!(report.contains("distance: 3.00–8.00 km"));
         assert!(report.contains("scalar difficulty: 0.00–90.00"));
@@ -6108,6 +6175,8 @@ mod tests {
         let sidecar_report = fs::read_to_string(sidecar)?;
         assert!(sidecar_report.starts_with("# Generated Hiking Route"));
         assert!(sidecar_report.contains("candidate-1"));
+        assert!(sidecar_report.contains("## Generation Ledger"));
+        assert!(sidecar_report.contains("- emitted artifacts:"));
         assert!(sidecar_report.contains("Difficulty decomposition"));
         assert!(sidecar_report.contains("Source provenance:"));
         assert!(sidecar_report.contains("Coverage summary:"));
