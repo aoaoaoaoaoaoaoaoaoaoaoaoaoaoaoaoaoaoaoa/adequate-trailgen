@@ -1753,6 +1753,7 @@
           0,
           3
         ],
+        "low_confidence_edges": [],
         "low_confidence_fraction": 0.0,
         "name": "candidate-1",
         "pareto_rank": 1,
@@ -3271,6 +3272,7 @@
           1,
           4
         ],
+        "low_confidence_edges": [],
         "low_confidence_fraction": 0.0,
         "name": "candidate-2",
         "pareto_rank": 1,
@@ -5064,6 +5066,7 @@
           1,
           2
         ],
+        "low_confidence_edges": [],
         "low_confidence_fraction": 0.0,
         "name": "candidate-3",
         "pareto_rank": 2,
@@ -6582,6 +6585,7 @@
           1,
           2
         ],
+        "low_confidence_edges": [],
         "low_confidence_fraction": 0.0,
         "name": "candidate-4",
         "pareto_rank": 2,

@@ -1,4 +1,4 @@
-# Generated Hiking Routes
+# Generated Hiking Route
 
 ## candidate-1
 

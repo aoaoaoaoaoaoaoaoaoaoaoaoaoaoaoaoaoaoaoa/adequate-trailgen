@@ -1753,6 +1753,7 @@
           1,
           2
         ],
+        "low_confidence_edges": [],
         "low_confidence_fraction": 0.0,
         "name": "candidate-3",
         "pareto_rank": 2,

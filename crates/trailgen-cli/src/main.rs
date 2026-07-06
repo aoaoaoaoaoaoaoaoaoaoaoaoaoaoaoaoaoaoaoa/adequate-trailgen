@@ -4423,6 +4423,7 @@ mod tests {
         assert!(selected_properties["terrain_fraction"].is_object());
         assert!(selected_properties["access_fraction"].is_object());
         assert!(selected_properties["difficulty_hotspots"].is_array());
+        assert!(selected_properties["low_confidence_edges"].is_array());
         assert!(selected_properties["dubious_edges"].is_array());
         let report = fs::read_to_string(md)?;
         assert!(report.contains("candidate-1"));

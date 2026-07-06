@@ -581,16 +581,18 @@ fn route_geojson_exports_full_diagnostics() {
         geojson::access_overlays_from_str(include_str!("fixtures/closure_overlay.geojson"))
             .unwrap();
     apply_access_overlays(&mut graph, &overlays, None, DifficultyWeights::default());
-    let edge = graph
+    let closed_edge = graph
         .edges
         .iter()
         .find(|edge| edge.attr.access == Access::Closed)
+        .map(|edge| (edge.id, edge.a))
         .expect("fixture closure should touch an edge");
+    graph.edges[closed_edge.0.0].attr.confidence = 0.42;
     let mut route = Route::from_edges(
         "closed-segment",
         &graph,
-        edge.a,
-        vec![edge.id],
+        closed_edge.1,
+        vec![closed_edge.0],
         &LoopConstraints {
             min_distance_m: 0.0,
             max_distance_m: 10_000.0,
@@ -622,8 +624,16 @@ fn route_geojson_exports_full_diagnostics() {
             .is_some_and(|x| x > 0.0)
     );
     assert_eq!(properties["edge_count"], 1);
-    assert_eq!(properties["difficulty_hotspots"][0]["edge_id"], edge.id.0);
-    assert_eq!(properties["dubious_edges"][0]["edge_id"], edge.id.0);
+    assert_eq!(
+        properties["difficulty_hotspots"][0]["edge_id"],
+        closed_edge.0.0
+    );
+    assert_eq!(
+        properties["low_confidence_edges"][0]["edge_id"],
+        closed_edge.0.0
+    );
+    assert_eq!(properties["low_confidence_edges"][0]["confidence"], 0.42);
+    assert_eq!(properties["dubious_edges"][0]["edge_id"], closed_edge.0.0);
     assert!(
         properties["source_provenance"]
             .as_array()
