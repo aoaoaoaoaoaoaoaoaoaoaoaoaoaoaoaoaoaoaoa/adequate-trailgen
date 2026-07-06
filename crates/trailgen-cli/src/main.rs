@@ -1638,7 +1638,10 @@ fn verify_generation(project: &Path) -> Result<()> {
             .as_ref()
             .with_context(|| "generated manifest lacks source_manifest snapshot")?,
     )?;
-    println!("verified generation: {artifacts} artifact(s), {sources} source candidate(s)");
+    let routes = verify_generated_route_sequences(project, &ledger)?;
+    println!(
+        "verified generation: {artifacts} artifact(s), {sources} source candidate(s), {routes} route sequence(s)"
+    );
     Ok(())
 }
 
@@ -1713,6 +1716,120 @@ fn resolve_generated_artifact_path(project: &Path, raw: &str) -> Result<PathBuf>
     let path = PathBuf::from(raw);
     ensure_safe_relative_project_path(&path)?;
     Ok(project.join(path))
+}
+
+fn verify_generated_route_sequences(project: &Path, ledger: &GeneratedRunLedger) -> Result<usize> {
+    let graph = load_generated_graph(project)?;
+    let routes = load_generated_routes(project)?;
+    let routes_by_name = routes
+        .iter()
+        .map(|route| (route.name.as_str(), route))
+        .collect::<BTreeMap<_, _>>();
+    let mut failures = Vec::new();
+    let mut seen = BTreeSet::new();
+    for entry in &ledger.routes {
+        if !seen.insert(entry.name.as_str()) {
+            failures.push(format!(
+                "{} appears twice in generation manifest routes",
+                entry.name
+            ));
+            continue;
+        }
+        let Some(route) = routes_by_name.get(entry.name.as_str()) else {
+            failures.push(format!(
+                "{} missing from routes/generated.routes.json",
+                entry.name
+            ));
+            continue;
+        };
+        verify_generated_route_record(&graph, entry, route, &mut failures);
+    }
+    for route in &routes {
+        if !seen.contains(route.name.as_str()) {
+            failures.push(format!(
+                "{} exists in routes/generated.routes.json but not in generation manifest",
+                route.name
+            ));
+        }
+    }
+    if !failures.is_empty() {
+        bail!(
+            "generated route verification failed:\n{}",
+            failures.join("\n")
+        );
+    }
+    Ok(ledger.routes.len())
+}
+
+fn verify_generated_route_record(
+    graph: &TrailGraph,
+    entry: &RouteManifestEntry,
+    route: &Route,
+    failures: &mut Vec<String>,
+) {
+    if route.start != entry.start {
+        failures.push(format!(
+            "{} start mismatch: manifest {:?}, route {:?}",
+            entry.name, entry.start, route.start
+        ));
+    }
+    if route.edges != entry.edges {
+        failures.push(format!(
+            "{} edge sequence differs from manifest",
+            entry.name
+        ));
+    }
+    if route.pareto_rank != entry.rank {
+        failures.push(format!(
+            "{} rank mismatch: manifest {}, route {}",
+            entry.name, entry.rank, route.pareto_rank
+        ));
+    }
+    if route.verdict.satisfied != entry.satisfied {
+        failures.push(format!(
+            "{} satisfied mismatch: manifest {}, route {}",
+            entry.name, entry.satisfied, route.verdict.satisfied
+        ));
+    }
+    if route.verdict.violations != entry.violations {
+        failures.push(format!(
+            "{} violation ledger differs from manifest",
+            entry.name
+        ));
+    }
+    if let Err(error) = verify_route_edge_walk(graph, route.start, &route.edges) {
+        failures.push(format!("{} invalid edge walk: {error:#}", entry.name));
+    }
+}
+
+fn verify_route_edge_walk(graph: &TrailGraph, start: VertexId, edges: &[EdgeId]) -> Result<()> {
+    if graph
+        .vertices
+        .get(start.0)
+        .is_none_or(|vertex| vertex.id != start)
+    {
+        bail!("missing start vertex {start:?}");
+    }
+    let mut at = start;
+    for edge_id in edges {
+        let edge = graph
+            .edges
+            .get(edge_id.0)
+            .with_context(|| format!("missing edge {edge_id:?}"))?;
+        if edge.id != *edge_id {
+            bail!(
+                "edge index {} contains id {:?}, not {:?}",
+                edge_id.0,
+                edge.id,
+                edge_id
+            );
+        }
+        let Some(next) = edge.traverse(at) else {
+            bail!("edge {edge_id:?} is not traversable from {at:?}");
+        };
+        at = next;
+    }
+    Ok(())
 }
 
 fn vet_sources(project: &Path, level: SourceGateLevel, require: &[SourceKind]) -> Result<()> {
@@ -2023,6 +2140,8 @@ struct GeneratedRunLedger {
     #[serde(default)]
     source_manifest: Option<SourceManifest>,
     #[serde(default)]
+    routes: Vec<RouteManifestEntry>,
+    #[serde(default)]
     artifacts: Vec<String>,
     #[serde(default)]
     artifact_fingerprints: Vec<GeneratedArtifactFingerprint>,
@@ -2075,7 +2194,7 @@ struct GraphManifest {
     terrain_km: BTreeMap<Terrain, f64>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct RouteManifestEntry {
     name: String,
     start: VertexId,
@@ -6270,6 +6389,18 @@ mod tests {
         assert!(format!("{source_error:#}").contains("source verification failed"));
         assert!(format!("{source_error:#}").contains("trails.geojson drifted"));
         fs::write(&network, original_network)?;
+        verify_generation(project)?;
+
+        let manifest_path = project.join("routes/generated.manifest.json");
+        let original_manifest = fs::read_to_string(&manifest_path)?;
+        let mut manifest: Value = serde_json::from_str(&original_manifest)?;
+        manifest["routes"][0]["edges"][0] = serde_json::json!(999_999);
+        write_json(&manifest_path, &manifest)?;
+        let route_error =
+            verify_generation(project).expect_err("route manifest drift should fail verification");
+        assert!(format!("{route_error:#}").contains("generated route verification failed"));
+        assert!(format!("{route_error:#}").contains("edge sequence differs"));
+        fs::write(&manifest_path, original_manifest)?;
         verify_generation(project)?;
 
         let report = project.join("reports/generated.md");
