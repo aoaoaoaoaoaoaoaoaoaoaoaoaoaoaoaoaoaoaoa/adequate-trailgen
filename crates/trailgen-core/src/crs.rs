@@ -30,6 +30,15 @@ impl CoordProjector {
     }
 }
 
+#[must_use]
+pub(crate) fn wgs84_to_web_mercator(coord: Coord) -> (f64, f64) {
+    let lat = coord.lat.clamp(-85.051_128_78, 85.051_128_78).to_radians();
+    (
+        WEB_MERCATOR_R_M * coord.lon.to_radians(),
+        WEB_MERCATOR_R_M * (std::f64::consts::FRAC_PI_4 + lat / 2.0).tan().ln(),
+    )
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VectorCrsKind {
     GeoJson,

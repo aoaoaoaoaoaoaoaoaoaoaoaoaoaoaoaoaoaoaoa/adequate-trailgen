@@ -10,8 +10,8 @@ use trailgen_core::source::{
 };
 use trailgen_core::{
     Access, ArcAsciiGrid, CrossingKind, EdgeId, EdgeTravel, ElevationSampler, ExactLoopSolver,
-    GeoTiffDem, PlanningDate, Route, RouteMetrics, RouteShape, SearchParams, SolverKind, VertexId,
-    VrtDem,
+    GeoTiffDem, PlanningDate, RasterCrs, Route, RouteMetrics, RouteShape, SearchParams, SolverKind,
+    VertexId, VrtDem,
 };
 use trailgen_core::{
     Coord, DifficultyWeights, EnrichmentConfig, GraphBuilder, LineString, LoopConstraints,
@@ -2119,6 +2119,7 @@ fn geotiff_dem_samples_and_reenriches_graph() {
     .unwrap();
     assert_eq!(raster.width, 3);
     assert_eq!(raster.height, 3);
+    assert_eq!(raster.crs, RasterCrs::Wgs84Degrees);
     let sample = raster.sample(Coord::new(-104.995, 40.005)).unwrap();
     assert!((sample.ele_m - 1_600.0).abs() <= 1.0e-9);
     assert!(raster.sample(Coord::new(-106.0, 40.0)).is_none());
@@ -2142,6 +2143,43 @@ fn geotiff_dem_samples_and_reenriches_graph() {
             .any(|p| p.source == "fixture-geotiff-dem")
     }));
     assert!(graph.edges.iter().any(|edge| edge.attr.grade_abs_max > 0.0));
+}
+
+#[test]
+fn web_mercator_geotiff_dem_samples_and_rejects_other_projected_crs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dem = tmp.path().join("web_mercator_dem.tif");
+    write_web_mercator_geotiff_dem(&dem, 3857);
+    let raster = GeoTiffDem::from_path(
+        &dem,
+        Provenance {
+            source: "fixture-web-mercator-dem".to_owned(),
+            layer: Some("geotiff".to_owned()),
+            source_id: Some("web_mercator_dem.tif".to_owned()),
+            license: Some("CC0-fixture".to_owned()),
+        },
+        0.79,
+    )
+    .unwrap();
+    assert_eq!(raster.crs, RasterCrs::WebMercatorMeters);
+    let sample = raster.sample(Coord::new(-104.995, 40.005)).unwrap();
+    assert!((sample.ele_m - 1_600.0).abs() <= 1.0e-9);
+    assert!(raster.sample(Coord::new(-106.0, 40.0)).is_none());
+
+    let unsupported = tmp.path().join("utm_dem.tif");
+    write_web_mercator_geotiff_dem(&unsupported, 26913);
+    let error = GeoTiffDem::from_path(
+        &unsupported,
+        Provenance {
+            source: "fixture-utm-dem".to_owned(),
+            layer: Some("geotiff".to_owned()),
+            source_id: Some("utm_dem.tif".to_owned()),
+            license: Some("CC0-fixture".to_owned()),
+        },
+        0.79,
+    )
+    .unwrap_err();
+    assert!(format!("{error}").contains("projected GeoTIFF DEM must be EPSG:3857"));
 }
 
 #[test]
@@ -2171,6 +2209,28 @@ fn vrt_dem_wraps_geotiff_source_and_samples() {
         |sample| sample.ele_m > 1_500.0 && (sample.confidence - 0.76).abs() <= f64::EPSILON
     ));
     assert_eq!(VrtDem::referenced_sources(&vrt).unwrap(), vec![tif]);
+}
+
+#[test]
+fn vrt_dem_rejects_projected_geotiff_source() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tif = tmp.path().join("web_mercator_dem.tif");
+    let vrt = tmp.path().join("web_mercator_dem.vrt");
+    write_web_mercator_geotiff_dem(&tif, 3857);
+    write_vrt_dem(&vrt, "web_mercator_dem.tif");
+
+    let error = VrtDem::from_path(
+        &vrt,
+        Provenance {
+            source: "fixture-vrt-dem".to_owned(),
+            layer: Some("vrt".to_owned()),
+            source_id: Some("web_mercator_dem.vrt".to_owned()),
+            license: None,
+        },
+        0.76,
+    )
+    .unwrap_err();
+    assert!(format!("{error}").contains("VRT DEM currently requires a geographic GeoTIFF source"));
 }
 
 fn write_geotiff_dem(path: &std::path::Path) {
@@ -2209,6 +2269,72 @@ fn write_geotiff_dem(path: &std::path::Path) {
             1_500_i16, 1_510, 1_520, 1_590, 1_600, 1_610, 1_700, 1_710, 1_720,
         ])
         .unwrap();
+}
+
+fn write_web_mercator_geotiff_dem(path: &std::path::Path, projected_epsg: u16) {
+    use tiff::encoder::{TiffEncoder, colortype};
+    use tiff::tags::Tag;
+
+    let scale = 1_000.0;
+    let (x, y) = web_mercator_xy(Coord::new(-104.995, 40.005));
+    let origin_x = 1.5_f64.mul_add(-scale, x);
+    let origin_y = 1.5_f64.mul_add(scale, y);
+    let file = std::fs::File::create(path).unwrap();
+    let mut tiff = TiffEncoder::new(file).unwrap();
+    let mut image = tiff.new_image::<colortype::GrayI16>(3, 3).unwrap();
+    image
+        .encoder()
+        .write_tag(Tag::ModelPixelScaleTag, &[scale, scale, 0.0][..])
+        .unwrap();
+    image
+        .encoder()
+        .write_tag(
+            Tag::ModelTiepointTag,
+            &[0.0_f64, 0.0, 0.0, origin_x, origin_y, 0.0][..],
+        )
+        .unwrap();
+    image
+        .encoder()
+        .write_tag(
+            Tag::GeoKeyDirectoryTag,
+            &[
+                1_u16,
+                1,
+                0,
+                3,
+                1024,
+                0,
+                1,
+                1,
+                3072,
+                0,
+                1,
+                projected_epsg,
+                3076,
+                0,
+                1,
+                9001,
+            ][..],
+        )
+        .unwrap();
+    image
+        .encoder()
+        .write_tag(Tag::GdalNodata, "-32768")
+        .unwrap();
+    image
+        .write_data(&[
+            1_500_i16, 1_510, 1_520, 1_590, 1_600, 1_610, 1_700, 1_710, 1_720,
+        ])
+        .unwrap();
+}
+
+fn web_mercator_xy(coord: Coord) -> (f64, f64) {
+    let r = 6_378_137.0;
+    let lat = coord.lat.clamp(-85.051_128_78, 85.051_128_78).to_radians();
+    (
+        r * coord.lon.to_radians(),
+        r * (std::f64::consts::FRAC_PI_4 + lat / 2.0).tan().ln(),
+    )
 }
 
 fn write_vrt_dem(path: &std::path::Path, source: &str) {

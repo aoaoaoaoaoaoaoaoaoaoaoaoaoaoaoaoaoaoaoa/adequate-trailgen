@@ -36,7 +36,7 @@ pub use overlay::{
     AccessOverlay, AccessWindow, ContextOverlay, OverlayGeometry, PlanningDate, TerrainOverlay,
     apply_access_overlays, apply_context_overlays, apply_terrain_overlays,
 };
-pub use raster::{ArcAsciiGrid, GeoTiffDem, VrtDem};
+pub use raster::{ArcAsciiGrid, GeoTiffDem, RasterCrs, VrtDem};
 pub use route::{
     LOW_CONFIDENCE_THRESHOLD, Route, RouteMetrics, RouteShape, is_restricted_access, rank_routes,
 };

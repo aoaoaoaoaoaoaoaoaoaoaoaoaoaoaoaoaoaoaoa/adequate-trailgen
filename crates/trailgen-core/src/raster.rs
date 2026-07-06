@@ -1,3 +1,4 @@
+use crate::crs::wgs84_to_web_mercator;
 use crate::enrich::{ElevationSample, ElevationSampler};
 use crate::geo::Coord;
 use crate::model::Provenance;
@@ -28,15 +29,36 @@ pub struct ArcAsciiGrid {
 pub struct GeoTiffDem {
     pub width: usize,
     pub height: usize,
-    pub origin_lon: f64,
-    pub origin_lat: f64,
-    pub pixel_width_deg: f64,
-    pub pixel_height_deg: f64,
+    pub crs: RasterCrs,
+    #[serde(alias = "origin_lon")]
+    pub origin_x: f64,
+    #[serde(alias = "origin_lat")]
+    pub origin_y: f64,
+    #[serde(alias = "pixel_width_deg")]
+    pub pixel_width: f64,
+    #[serde(alias = "pixel_height_deg")]
+    pub pixel_height: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nodata_value: Option<f64>,
     pub confidence: f64,
     pub provenance: Provenance,
     values: Vec<f64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RasterCrs {
+    Wgs84Degrees,
+    WebMercatorMeters,
+}
+
+impl RasterCrs {
+    fn xy(self, coord: Coord) -> (f64, f64) {
+        match self {
+            Self::Wgs84Degrees => (coord.lon, coord.lat),
+            Self::WebMercatorMeters => wgs84_to_web_mercator(coord),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -200,10 +222,11 @@ impl GeoTiffDem {
         Ok(Self {
             width,
             height,
-            origin_lon: georef.origin_lon,
-            origin_lat: georef.origin_lat,
-            pixel_width_deg: georef.pixel_width_deg,
-            pixel_height_deg: georef.pixel_height_deg,
+            crs: georef.crs,
+            origin_x: georef.origin_x,
+            origin_y: georef.origin_y,
+            pixel_width: georef.pixel_width,
+            pixel_height: georef.pixel_height,
             nodata_value,
             confidence: confidence.clamp(0.0, 1.0),
             provenance,
@@ -213,23 +236,24 @@ impl GeoTiffDem {
 
     #[must_use]
     pub fn contains(&self, coord: Coord) -> bool {
+        let (x, y) = self.crs.xy(coord);
         let east = self
-            .pixel_width_deg
-            .mul_add(usize_to_f64(self.width), self.origin_lon);
+            .pixel_width
+            .mul_add(usize_to_f64(self.width), self.origin_x);
         let south = self
-            .pixel_height_deg
-            .mul_add(-usize_to_f64(self.height), self.origin_lat);
-        (self.origin_lon..=east).contains(&coord.lon)
-            && (south..=self.origin_lat).contains(&coord.lat)
+            .pixel_height
+            .mul_add(-usize_to_f64(self.height), self.origin_y);
+        (self.origin_x..=east).contains(&x) && (south..=self.origin_y).contains(&y)
     }
 
     fn interpolated_elevation_m(&self, coord: Coord) -> Option<f64> {
         if !self.contains(coord) {
             return None;
         }
-        let col = ((coord.lon - self.origin_lon) / self.pixel_width_deg - 0.5)
+        let (x, y) = self.crs.xy(coord);
+        let col = ((x - self.origin_x) / self.pixel_width - 0.5)
             .clamp(0.0, usize_to_f64(self.width.saturating_sub(1)));
-        let row = ((self.origin_lat - coord.lat) / self.pixel_height_deg - 0.5)
+        let row = ((self.origin_y - y) / self.pixel_height - 0.5)
             .clamp(0.0, usize_to_f64(self.height.saturating_sub(1)));
         let col0 = f64_to_index(col.floor(), self.width)?;
         let col1 = f64_to_index(col.ceil(), self.width)?;
@@ -279,6 +303,12 @@ impl VrtDem {
             },
             confidence,
         )?;
+        if source.crs != RasterCrs::Wgs84Degrees {
+            return Err(TrailgenError::UnsupportedFormat(
+                "VRT DEM currently requires a geographic GeoTIFF source; sample EPSG:3857 GeoTIFFs directly"
+                    .to_owned(),
+            ));
+        }
         if source.width != spec.width || source.height != spec.height {
             return Err(TrailgenError::UnsupportedFormat(format!(
                 "VRT source raster dimensions {}x{} do not match VRT {}x{}",
@@ -556,15 +586,16 @@ fn resolve_vrt_source(
 
 #[derive(Clone, Copy)]
 struct GeoTiffGeoref {
-    origin_lon: f64,
-    origin_lat: f64,
-    pixel_width_deg: f64,
-    pixel_height_deg: f64,
+    crs: RasterCrs,
+    origin_x: f64,
+    origin_y: f64,
+    pixel_width: f64,
+    pixel_height: f64,
 }
 
 impl GeoTiffGeoref {
     fn read<R: std::io::Read + std::io::Seek>(decoder: &mut Decoder<R>) -> Result<Self> {
-        validate_geokeys(decoder)?;
+        let crs = validate_geokeys(decoder)?;
         if optional_f64_vec(decoder, Tag::ModelTransformationTag)?.is_some() {
             return Err(TrailgenError::UnsupportedFormat(
                 "GeoTIFF DEM with ModelTransformationTag rotation/shear is unsupported".to_owned(),
@@ -578,37 +609,41 @@ impl GeoTiffGeoref {
                     .to_owned(),
             ));
         }
-        let pixel_width_deg = scale[0].abs();
-        let pixel_height_deg = scale[1].abs();
-        if !pixel_width_deg.is_finite()
-            || !pixel_height_deg.is_finite()
-            || pixel_width_deg <= 0.0
-            || pixel_height_deg <= 0.0
+        let pixel_width = scale[0].abs();
+        let pixel_height = scale[1].abs();
+        if !pixel_width.is_finite()
+            || !pixel_height.is_finite()
+            || pixel_width <= 0.0
+            || pixel_height <= 0.0
         {
             return Err(TrailgenError::InvalidData(
                 "GeoTIFF DEM pixel scale must be finite and positive".to_owned(),
             ));
         }
-        let origin_lon = tiepoint[0].mul_add(-pixel_width_deg, tiepoint[3]);
-        let origin_lat = tiepoint[1].mul_add(pixel_height_deg, tiepoint[4]);
-        if !origin_lon.is_finite() || !origin_lat.is_finite() {
+        let origin_x = tiepoint[0].mul_add(-pixel_width, tiepoint[3]);
+        let origin_y = tiepoint[1].mul_add(pixel_height, tiepoint[4]);
+        if !origin_x.is_finite() || !origin_y.is_finite() {
             return Err(TrailgenError::InvalidData(
                 "GeoTIFF DEM tiepoint georeference must be finite".to_owned(),
             ));
         }
         Ok(Self {
-            origin_lon,
-            origin_lat,
-            pixel_width_deg,
-            pixel_height_deg,
+            crs,
+            origin_x,
+            origin_y,
+            pixel_width,
+            pixel_height,
         })
     }
 }
 
-fn validate_geokeys<R: std::io::Read + std::io::Seek>(decoder: &mut Decoder<R>) -> Result<()> {
+fn validate_geokeys<R: std::io::Read + std::io::Seek>(
+    decoder: &mut Decoder<R>,
+) -> Result<RasterCrs> {
     let Some(keys) = optional_u16_vec(decoder, Tag::GeoKeyDirectoryTag)? else {
         return Err(TrailgenError::InvalidData(
-            "GeoTIFF DEM requires GeoKeyDirectoryTag with geographic degree CRS".to_owned(),
+            "GeoTIFF DEM requires GeoKeyDirectoryTag declaring WGS84 geographic or EPSG:3857 projected CRS"
+                .to_owned(),
         ));
     };
     if keys.len() < 4 {
@@ -624,29 +659,42 @@ fn validate_geokeys<R: std::io::Read + std::io::Seek>(decoder: &mut Decoder<R>) 
     }
     let mut model_type = None;
     let mut angular_units = None;
+    let mut projected_crs = None;
+    let mut linear_units = None;
     for entry in keys[4..][..count * 4].chunks_exact(4) {
         match entry[0] {
             1024 if entry[1] == 0 => model_type = Some(entry[3]),
             2054 if entry[1] == 0 => angular_units = Some(entry[3]),
-            3072 => {
-                return Err(TrailgenError::UnsupportedFormat(
-                    "projected GeoTIFF DEM requires reprojection before ingestion".to_owned(),
-                ));
-            }
+            3072 if entry[1] == 0 => projected_crs = Some(entry[3]),
+            3076 if entry[1] == 0 => linear_units = Some(entry[3]),
             _ => {}
         }
     }
-    if model_type != Some(2) {
+    if model_type == Some(1) {
+        if projected_crs == Some(3857) {
+            if linear_units.is_some_and(|unit| unit != 9001) {
+                return Err(TrailgenError::UnsupportedFormat(
+                    "EPSG:3857 GeoTIFF DEM linear units must be metres".to_owned(),
+                ));
+            }
+            return Ok(RasterCrs::WebMercatorMeters);
+        }
         return Err(TrailgenError::UnsupportedFormat(
-            "GeoTIFF DEM must declare GTModelTypeGeoKey=geographic".to_owned(),
+            "projected GeoTIFF DEM must be EPSG:3857 Web Mercator or reprojected before ingestion"
+                .to_owned(),
         ));
     }
-    if angular_units.is_some_and(|unit| unit != 9102) {
-        return Err(TrailgenError::UnsupportedFormat(
-            "GeoTIFF DEM angular units must be degrees".to_owned(),
-        ));
+    if model_type == Some(2) {
+        if angular_units.is_some_and(|unit| unit != 9102) {
+            return Err(TrailgenError::UnsupportedFormat(
+                "GeoTIFF DEM angular units must be degrees".to_owned(),
+            ));
+        }
+        return Ok(RasterCrs::Wgs84Degrees);
     }
-    Ok(())
+    Err(TrailgenError::UnsupportedFormat(
+        "GeoTIFF DEM must declare GTModelTypeGeoKey=geographic or EPSG:3857 projected".to_owned(),
+    ))
 }
 
 fn decoding_result_to_f64(image: DecodingResult) -> Vec<f64> {
