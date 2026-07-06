@@ -1344,8 +1344,8 @@ fn cache_source(
     let path = cached_source_path(project, input, output)?;
     let (kind, adapter_id) = cached_source_kind_adapter(&path, kind, adapter)?;
     let bytes = read_source_input(input)?;
-    if source_ext(&path).as_deref() == Some("shp") && looks_like_zip(input, &bytes) {
-        extract_shapefile_archive(&bytes, &path)?;
+    if looks_like_zip(input, &bytes) {
+        extract_source_archive(&bytes, &path)?;
     } else {
         write_bytes(&path, &bytes)?;
         copy_shapefile_sidecars(input, &path)?;
@@ -5564,6 +5564,74 @@ fn extract_shapefile_archive(bytes: &[u8], cached_shp: &Path) -> Result<()> {
     Ok(())
 }
 
+fn extract_source_archive(bytes: &[u8], cached: &Path) -> Result<()> {
+    if source_ext(cached).as_deref() == Some("shp") {
+        return extract_shapefile_archive(bytes, cached);
+    }
+    let mut archive =
+        zip::ZipArchive::new(Cursor::new(bytes)).with_context(|| "read zipped source archive")?;
+    let index = source_archive_member_index(&mut archive, cached)?;
+    let mut file = archive.by_index(index)?;
+    let mut member = Vec::new();
+    file.read_to_end(&mut member)?;
+    write_bytes(cached, member)
+}
+
+fn source_archive_member_index(
+    archive: &mut zip::ZipArchive<Cursor<&[u8]>>,
+    cached: &Path,
+) -> Result<usize> {
+    let ext = source_ext(cached).with_context(|| {
+        format!(
+            "cached output {} has no extension; pass --output with the desired extracted source name",
+            cached.display()
+        )
+    })?;
+    let requested_name = cached
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_owned);
+    let mut matches = Vec::new();
+    for i in 0..archive.len() {
+        let file = archive.by_index(i)?;
+        if file.is_dir() {
+            continue;
+        }
+        let member = Path::new(file.name());
+        if !member
+            .extension()
+            .and_then(|member_ext| member_ext.to_str())
+            .is_some_and(|member_ext| member_ext.eq_ignore_ascii_case(&ext))
+        {
+            continue;
+        }
+        let name = member
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_else(|| file.name())
+            .to_owned();
+        if requested_name.as_deref() == Some(name.as_str()) {
+            return Ok(i);
+        }
+        matches.push((i, name));
+    }
+    match matches.len() {
+        0 => bail!(
+            "zipped source archive contains no .{ext} member for {}",
+            cached.display()
+        ),
+        1 => Ok(matches[0].0),
+        _ => bail!(
+            "zipped source archive contains multiple .{ext} members; pass --output with one of: {}",
+            matches
+                .into_iter()
+                .map(|(_, name)| name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
 fn shapefile_archive_stem(
     archive: &mut zip::ZipArchive<Cursor<&[u8]>>,
     cached_shp: &Path,
@@ -7972,6 +8040,96 @@ mod tests {
     }
 
     #[test]
+    fn cache_source_extracts_requested_zipped_geojson_member() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path().join("project");
+        let archive = tmp.path().join("agency-trails.zip");
+        write_zip_members(
+            &archive,
+            &[(
+                "exports/network.geojson",
+                include_bytes!("../../trailgen-core/tests/fixtures/mini_network.geojson"),
+            )],
+        )?;
+
+        init(&project, "Zip GeoJSON Cache Test".to_owned(), None)?;
+        cache_source(
+            &project,
+            archive.to_str().expect("utf-8 temp path"),
+            Some(Path::new("cached/network.geojson")),
+            None,
+            None,
+        )?;
+        verify_sources(&project)?;
+
+        let cached = project.join("sources/cached/network.geojson");
+        assert_eq!(
+            fs::read_to_string(cached)?,
+            include_str!("../../trailgen-core/tests/fixtures/mini_network.geojson")
+        );
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(project.join("sources/manifest.json"))?)?;
+        assert!(
+            manifest["candidates"]
+                .as_array()
+                .expect("candidates")
+                .iter()
+                .any(|candidate| {
+                    candidate["path"]
+                        .as_str()
+                        .is_some_and(|path| path.ends_with("cached/network.geojson"))
+                        && candidate["adapter_id"] == "geojson-network"
+                })
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn cache_source_rejects_ambiguous_zipped_non_shapefile_members() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path().join("project");
+        let archive = tmp.path().join("agency-trails.zip");
+        write_zip_members(
+            &archive,
+            &[
+                (
+                    "north.geojson",
+                    include_bytes!("../../trailgen-core/tests/fixtures/mini_network.geojson"),
+                ),
+                (
+                    "south.geojson",
+                    include_bytes!("../../trailgen-core/tests/fixtures/terrain_overlay.geojson"),
+                ),
+            ],
+        )?;
+
+        init(&project, "Ambiguous Zip Cache Test".to_owned(), None)?;
+        let error = cache_source(
+            &project,
+            archive.to_str().expect("utf-8 temp path"),
+            Some(Path::new("cached/network.geojson")),
+            None,
+            None,
+        )
+        .expect_err("ambiguous geojson archive should fail");
+        assert!(format!("{error:#}").contains("multiple .geojson members"));
+        assert!(format!("{error:#}").contains("north.geojson"));
+        assert!(format!("{error:#}").contains("south.geojson"));
+
+        cache_source(
+            &project,
+            archive.to_str().expect("utf-8 temp path"),
+            Some(Path::new("cached/north.geojson")),
+            None,
+            None,
+        )?;
+        verify_sources(&project)?;
+
+        Ok(())
+    }
+
+    #[test]
     fn geotiff_elevation_application_registers_source() -> Result<()> {
         let tmp = tempfile::tempdir()?;
         let project = tmp.path().join("project");
@@ -8163,6 +8321,19 @@ mod tests {
             let path = source.with_extension(ext);
             zip.start_file(format!("nested/{stem}.{ext}"), options)?;
             zip.write_all(&fs::read(path)?)?;
+        }
+        zip.finish()?;
+        Ok(())
+    }
+
+    fn write_zip_members(archive: &Path, members: &[(&str, &[u8])]) -> Result<()> {
+        use std::io::Write as _;
+        let file = fs::File::create(archive)?;
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, bytes) in members {
+            zip.start_file(*name, options)?;
+            zip.write_all(bytes)?;
         }
         zip.finish()?;
         Ok(())
