@@ -1760,6 +1760,7 @@ fn verify_generation(project: &Path) -> Result<()> {
         .with_context(|| "generated manifest lacks source_manifest snapshot")?;
     let sources = verify_source_fingerprints(project, source_manifest)?;
     verify_source_coverage_summary(&ledger, source_manifest)?;
+    verify_generated_run_metadata(project, &ledger)?;
     verify_generated_graph_manifest(project, &ledger)?;
     verify_forbidden_area_ledger(project, &ledger)?;
     let routes = verify_generated_route_sequences(project, &ledger)?;
@@ -1767,6 +1768,139 @@ fn verify_generation(project: &Path) -> Result<()> {
         "verified generation: {artifacts} artifact(s), {sources} source candidate(s), {routes} route sequence(s)"
     );
     Ok(())
+}
+
+fn verify_generated_run_metadata(project: &Path, ledger: &GeneratedRunLedger) -> Result<()> {
+    let config = ledger
+        .effective_config
+        .as_ref()
+        .with_context(|| "generated manifest lacks effective_config snapshot")?;
+    let graph = load_generated_graph(project)?;
+    let mut failures = Vec::new();
+    verify_generated_run_identity(ledger, config, &graph, &mut failures);
+    verify_generated_start_metadata(ledger, config, &graph, &mut failures);
+    if !failures.is_empty() {
+        bail!(
+            "generated run metadata verification failed:\n{}",
+            failures.join("\n")
+        );
+    }
+    Ok(())
+}
+
+fn verify_generated_run_identity(
+    ledger: &GeneratedRunLedger,
+    config: &ProjectConfig,
+    graph: &TrailGraph,
+    failures: &mut Vec<String>,
+) {
+    match ledger.schema_version {
+        Some(1) => {}
+        Some(actual) => failures.push(format!("schema_version mismatch: {actual} != 1")),
+        None => failures.push("missing schema_version".to_owned()),
+    }
+    match ledger.app_version.as_deref() {
+        Some(env!("CARGO_PKG_VERSION")) => {}
+        Some(actual) => failures.push(format!(
+            "app_version mismatch: {actual} != {}",
+            env!("CARGO_PKG_VERSION")
+        )),
+        None => failures.push("missing app_version".to_owned()),
+    }
+    let requested_solver = ledger.requested_solver.unwrap_or_else(|| {
+        failures.push("missing requested_solver".to_owned());
+        config.solver
+    });
+    if requested_solver != config.solver {
+        failures.push(format!(
+            "requested_solver mismatch: {requested_solver:?} != {:?}",
+            config.solver
+        ));
+    }
+    let solver = ledger.solver.as_deref().unwrap_or_else(|| {
+        failures.push("missing solver".to_owned());
+        ""
+    });
+    let expected_solver = requested_solver.resolve(graph).label();
+    if solver == "milp-incumbent-import" {
+        if ledger.random_seed != Some(0) {
+            failures.push(format!(
+                "random_seed mismatch: {:?} != 0 for MILP incumbent import",
+                ledger.random_seed
+            ));
+        }
+    } else {
+        if solver != expected_solver {
+            failures.push(format!("solver mismatch: {solver} != {expected_solver}"));
+        }
+        if ledger.random_seed != Some(config.search.seed) {
+            failures.push(format!(
+                "random_seed mismatch: {:?} != {}",
+                ledger.random_seed, config.search.seed
+            ));
+        }
+    }
+}
+
+fn verify_generated_start_metadata(
+    ledger: &GeneratedRunLedger,
+    config: &ProjectConfig,
+    graph: &TrailGraph,
+    failures: &mut Vec<String>,
+) {
+    if ledger.requested_start.is_none() {
+        failures.push("missing requested_start".to_owned());
+    }
+    if ledger.snapped_start_vertex.is_none() {
+        failures.push("missing snapped_start_vertex".to_owned());
+    }
+    if ledger.snapped_start_coord.is_none() {
+        failures.push("missing snapped_start_coord".to_owned());
+    }
+    if ledger.start_snap_m.is_none() {
+        failures.push("missing start_snap_m".to_owned());
+    }
+    if let (
+        Some(requested_start),
+        Some(snapped_start_vertex),
+        Some(snapped_start_coord),
+        Some(start_snap_m),
+    ) = (
+        ledger.requested_start,
+        ledger.snapped_start_vertex,
+        ledger.snapped_start_coord,
+        ledger.start_snap_m,
+    ) {
+        match graph.nearest_vertex_with_distance(requested_start) {
+            Some((expected_vertex, expected_m)) => {
+                if snapped_start_vertex != expected_vertex {
+                    failures.push(format!(
+                        "snapped_start_vertex mismatch: {snapped_start_vertex:?} != {expected_vertex:?}"
+                    ));
+                }
+                if let Some(vertex) = graph.vertices.get(snapped_start_vertex.0) {
+                    verify_coord(
+                        "snapped_start_coord",
+                        snapped_start_coord,
+                        vertex.coord,
+                        failures,
+                    );
+                } else {
+                    failures.push(format!(
+                        "snapped_start_vertex {snapped_start_vertex:?} is outside generated graph"
+                    ));
+                }
+                verify_f64("start_snap_m", start_snap_m, expected_m, failures);
+                if start_snap_m > config.max_start_snap_m {
+                    failures.push(format!(
+                        "start_snap_m exceeds max_start_snap_m: {start_snap_m:.12} > {:.12}",
+                        config.max_start_snap_m
+                    ));
+                }
+            }
+            None => failures.push("generated graph has no vertices".to_owned()),
+        }
+    }
 }
 
 fn verify_generated_artifact_fingerprints(
@@ -2378,6 +2512,21 @@ fn verify_f64(label: &str, actual: f64, expected: f64, failures: &mut Vec<String
     false
 }
 
+fn verify_coord(label: &str, actual: Coord, expected: Coord, failures: &mut Vec<String>) {
+    verify_f64(&format!("{label}.lon"), actual.lon, expected.lon, failures);
+    verify_f64(&format!("{label}.lat"), actual.lat, expected.lat, failures);
+    match (actual.ele, expected.ele) {
+        (Some(actual), Some(expected)) => {
+            verify_f64(&format!("{label}.ele"), actual, expected, failures);
+        }
+        (None, None) => {}
+        _ => failures.push(format!(
+            "{label}.ele mismatch: {:?} != {:?}",
+            actual.ele, expected.ele
+        )),
+    }
+}
+
 fn nearly_equal(a: f64, b: f64) -> bool {
     if a.to_bits() == b.to_bits() {
         return true;
@@ -2723,6 +2872,24 @@ struct GenerationLedger {
 
 #[derive(Clone, Debug, Deserialize)]
 struct GeneratedRunLedger {
+    #[serde(default)]
+    schema_version: Option<u32>,
+    #[serde(default)]
+    app_version: Option<String>,
+    #[serde(default)]
+    solver: Option<String>,
+    #[serde(default)]
+    requested_solver: Option<SolverKind>,
+    #[serde(default)]
+    random_seed: Option<u64>,
+    #[serde(default)]
+    requested_start: Option<Coord>,
+    #[serde(default)]
+    snapped_start_vertex: Option<VertexId>,
+    #[serde(default)]
+    snapped_start_coord: Option<Coord>,
+    #[serde(default)]
+    start_snap_m: Option<f64>,
     #[serde(default)]
     effective_config: Option<ProjectConfig>,
     #[serde(default)]
@@ -7362,16 +7529,7 @@ mod tests {
 
         let raw = fs::read_to_string(project.join("routes/generated.manifest.json"))?;
         let manifest: Value = serde_json::from_str(&raw)?;
-        assert_eq!(manifest["app_version"], env!("CARGO_PKG_VERSION"));
-        assert_eq!(manifest["solver"], "exact-enumerator");
-        assert_eq!(manifest["requested_solver"], "exact");
-        assert_eq!(manifest["random_seed"], 77);
-        assert_eq!(manifest["snapped_start_coord"]["lon"], -105.0);
-        assert!(
-            manifest["start_snap_m"]
-                .as_f64()
-                .is_some_and(|meters| meters <= 1.0)
-        );
+        assert_generation_run_header(&manifest);
         assert_eq!(manifest["effective_config"]["max_start_snap_m"], 500.0);
         assert_eq!(manifest["effective_config"]["search"]["max_hops"], 9);
         assert_eq!(
@@ -7428,6 +7586,20 @@ mod tests {
         assert!(generated_report.contains("- graph elevation:"));
 
         Ok(())
+    }
+
+    fn assert_generation_run_header(manifest: &Value) {
+        assert_eq!(manifest["schema_version"], 1);
+        assert_eq!(manifest["app_version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(manifest["solver"], "exact-enumerator");
+        assert_eq!(manifest["requested_solver"], "exact");
+        assert_eq!(manifest["random_seed"], 77);
+        assert_eq!(manifest["snapped_start_coord"]["lon"], -105.0);
+        assert!(
+            manifest["start_snap_m"]
+                .as_f64()
+                .is_some_and(|meters| meters <= 1.0)
+        );
     }
 
     fn assert_generation_graph_manifest(manifest: &Value) {
@@ -7512,6 +7684,7 @@ mod tests {
         verify_generation(project)?;
 
         expect_source_drift(project, &network)?;
+        expect_generated_run_metadata_drift(project)?;
         expect_generated_manifest_drift(
             project,
             |manifest| {
@@ -7575,6 +7748,55 @@ mod tests {
         assert!(format!("{error:#}").contains("trails.geojson drifted"));
         fs::write(network, original_network)?;
         verify_generation(project)?;
+        Ok(())
+    }
+
+    struct ManifestDriftCase {
+        mutate: fn(&mut Value),
+        detail: &'static str,
+    }
+
+    fn expect_generated_run_metadata_drift(project: &Path) -> Result<()> {
+        let cases = [
+            ManifestDriftCase {
+                mutate: |manifest| manifest["schema_version"] = serde_json::json!(2),
+                detail: "schema_version mismatch",
+            },
+            ManifestDriftCase {
+                mutate: |manifest| manifest["app_version"] = serde_json::json!("rotted"),
+                detail: "app_version mismatch",
+            },
+            ManifestDriftCase {
+                mutate: |manifest| manifest["solver"] = serde_json::json!("loop-hunter"),
+                detail: "solver mismatch",
+            },
+            ManifestDriftCase {
+                mutate: |manifest| manifest["random_seed"] = serde_json::json!(42),
+                detail: "random_seed mismatch",
+            },
+            ManifestDriftCase {
+                mutate: |manifest| manifest["requested_start"]["lon"] = serde_json::json!(-104.5),
+                detail: "snapped_start_vertex mismatch",
+            },
+            ManifestDriftCase {
+                mutate: |manifest| {
+                    manifest["snapped_start_coord"]["lat"] = serde_json::json!(40.5);
+                },
+                detail: "snapped_start_coord.lat mismatch",
+            },
+            ManifestDriftCase {
+                mutate: |manifest| manifest["start_snap_m"] = serde_json::json!(42.0),
+                detail: "start_snap_m mismatch",
+            },
+        ];
+        for case in cases {
+            expect_generated_manifest_drift(
+                project,
+                case.mutate,
+                "generated run metadata verification failed",
+                case.detail,
+            )?;
+        }
         Ok(())
     }
 
