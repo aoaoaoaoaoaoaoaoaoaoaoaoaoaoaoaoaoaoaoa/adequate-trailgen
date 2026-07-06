@@ -1139,6 +1139,12 @@ fn route_geojson_exports_full_diagnostics() {
         closed_edge.0.0
     );
     assert_eq!(properties["low_confidence_edges"][0]["confidence"], 0.42);
+    assert!(properties["low_confidence_edges"][0]["terrain_evidence"].is_array());
+    assert!(properties["low_confidence_edges"][0]["difficulty"].is_number());
+    assert!(properties["low_confidence_edges"][0]["difficulty_breakdown"].is_object());
+    assert!(properties["low_confidence_edges"][0]["elevation_provenance"].is_array());
+    assert!(properties["low_confidence_edges"][0]["source_provenance"].is_array());
+    assert!(properties["low_confidence_edges"][0]["road_exposure"].is_number());
     assert_eq!(properties["dubious_edges"][0]["edge_id"], closed_edge.0.0);
     assert!(
         properties["source_provenance"]
@@ -1477,6 +1483,8 @@ fn report_explains_difficulty_decomposition() {
     assert!(rendered.contains("Largest difficulty contributors:"));
     assert!(rendered.contains("Low-confidence segments:"));
     assert!(rendered.contains("confidence 0.42"));
+    assert!(rendered.contains("terrain evidence"));
+    assert!(rendered.contains("elevation sources"));
     assert!(rendered.contains("Source provenance:"));
     assert!(rendered.contains("fixture:"));
     assert!(rendered.contains("edge "));

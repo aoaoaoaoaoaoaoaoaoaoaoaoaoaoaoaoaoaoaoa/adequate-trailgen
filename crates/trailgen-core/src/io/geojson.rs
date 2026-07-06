@@ -360,13 +360,20 @@ fn route_edge_diagnostic(edge: &Edge) -> Value {
         "travel": edge.attr.travel,
         "confidence": edge.attr.confidence,
         "terrain_confidence": edge.attr.terrain_confidence,
+        "terrain_evidence": edge.attr.terrain_evidence,
         "access_confidence": edge.attr.access_confidence,
         "access_provenance": edge.attr.access_provenance,
+        "difficulty": edge.attr.difficulty,
+        "difficulty_breakdown": edge.attr.difficulty_breakdown,
         "grade_abs_max": edge.attr.grade_abs_max,
         "grade_distribution": edge.attr.grade_distribution,
         "crossings": &edge.attr.crossings,
+        "road_exposure": edge.attr.road_exposure,
         "seed_count": edge.attr.seed_count,
+        "seed_provenance": edge.attr.seed_provenance,
+        "elevation_provenance": edge.attr.elevation_provenance,
         "provenance": primary_provenance_label(edge),
+        "source_provenance": edge.attr.provenance,
     })
 }
 

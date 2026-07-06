@@ -337,9 +337,11 @@ fn render_dubious_edge(edge: &Edge, s: &mut String) {
         .provenance
         .first()
         .map_or_else(|| "unknown".to_owned(), provenance_label);
+    let terrain_evidence = terrain_evidence_summary(&edge.attr.terrain_evidence);
+    let elevation_sources = provenance_summary(&edge.attr.elevation_provenance);
     let _ = writeln!(
         s,
-        "- edge {}: {:.0} m, {:?}, surface {}, grade max {:.1}%, grade bins {}, crossings {}, confidence {:.2}, seed count {}, provenance {prov}",
+        "- edge {}: {:.0} m, {:?}, surface {}, grade max {:.1}%, grade bins {}, crossings {}, confidence {:.2}, seed count {}, provenance {prov}, terrain evidence {}, elevation sources {}",
         edge.id.0,
         edge.attr.length_m,
         edge.attr.terrain,
@@ -348,7 +350,9 @@ fn render_dubious_edge(edge: &Edge, s: &mut String) {
         grade_bins(edge),
         edge.attr.crossings.iter().map(|x| x.count).sum::<u32>(),
         edge.attr.confidence,
-        edge.attr.seed_count
+        edge.attr.seed_count,
+        terrain_evidence,
+        elevation_sources
     );
 }
 
