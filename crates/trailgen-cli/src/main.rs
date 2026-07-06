@@ -1761,6 +1761,7 @@ fn verify_generation(project: &Path) -> Result<()> {
             .as_ref()
             .with_context(|| "generated manifest lacks source_manifest snapshot")?,
     )?;
+    verify_generated_graph_manifest(project, &ledger)?;
     let routes = verify_generated_route_sequences(project, &ledger)?;
     println!(
         "verified generation: {artifacts} artifact(s), {sources} source candidate(s), {routes} route sequence(s)"
@@ -1833,6 +1834,141 @@ fn verify_generated_artifact_fingerprints(
         );
     }
     Ok(checked)
+}
+
+fn verify_generated_graph_manifest(project: &Path, ledger: &GeneratedRunLedger) -> Result<()> {
+    let actual = ledger
+        .graph
+        .as_ref()
+        .with_context(|| "generated manifest lacks graph summary")?;
+    let graph = load_generated_graph(project)?;
+    let expected = graph_manifest(&graph);
+    let mut failures = Vec::new();
+    verify_graph_manifest("graph", actual, &expected, &mut failures);
+    if !failures.is_empty() {
+        bail!(
+            "generated graph verification failed:\n{}",
+            failures.join("\n")
+        );
+    }
+    Ok(())
+}
+
+fn verify_graph_manifest(
+    label: &str,
+    actual: &GraphManifest,
+    expected: &GraphManifest,
+    failures: &mut Vec<String>,
+) {
+    for (field, actual, expected) in [
+        ("vertices", actual.vertices, expected.vertices),
+        ("edges", actual.edges, expected.edges),
+        (
+            "directed_travel_edges",
+            actual.directed_travel_edges,
+            expected.directed_travel_edges,
+        ),
+        (
+            "low_confidence_edges",
+            actual.low_confidence_edges,
+            expected.low_confidence_edges,
+        ),
+    ] {
+        if actual != expected {
+            failures.push(format!("{label}.{field} mismatch: {actual} != {expected}"));
+        }
+    }
+    verify_f64(
+        &format!("{label}.edge_km"),
+        actual.edge_km,
+        expected.edge_km,
+        failures,
+    );
+    verify_turn_ban_manifest(
+        &format!("{label}.turn_bans"),
+        &actual.turn_bans,
+        &expected.turn_bans,
+        failures,
+    );
+    verify_graph_elevation_stats(
+        &format!("{label}.elevation"),
+        &actual.elevation,
+        &expected.elevation,
+        failures,
+    );
+    if actual.crossings != expected.crossings {
+        failures.push(format!(
+            "{label}.crossings mismatch: {:?} != {:?}",
+            actual.crossings, expected.crossings
+        ));
+    }
+    verify_f64_map(
+        &format!("{label}.terrain_km"),
+        &actual.terrain_km,
+        &expected.terrain_km,
+        failures,
+    );
+}
+
+fn verify_turn_ban_manifest(
+    label: &str,
+    actual: &TurnBanManifest,
+    expected: &TurnBanManifest,
+    failures: &mut Vec<String>,
+) {
+    if actual.count != expected.count {
+        failures.push(format!(
+            "{label}.count mismatch: {} != {}",
+            actual.count, expected.count
+        ));
+    }
+    if actual.provenance != expected.provenance {
+        failures.push(format!(
+            "{label}.provenance mismatch: {:?} != {:?}",
+            actual.provenance, expected.provenance
+        ));
+    }
+}
+
+fn verify_graph_elevation_stats(
+    label: &str,
+    actual: &GraphElevationStats,
+    expected: &GraphElevationStats,
+    failures: &mut Vec<String>,
+) {
+    for (field, actual, expected) in [
+        (
+            "attributed_edge_m",
+            actual.attributed_edge_m,
+            expected.attributed_edge_m,
+        ),
+        (
+            "sampled_grade_m",
+            actual.sampled_grade_m,
+            expected.sampled_grade_m,
+        ),
+        ("ascent_m", actual.ascent_m, expected.ascent_m),
+        ("descent_m", actual.descent_m, expected.descent_m),
+        (
+            "sustained_steep_m",
+            actual.sustained_steep_m,
+            expected.sustained_steep_m,
+        ),
+    ] {
+        verify_f64(&format!("{label}.{field}"), actual, expected, failures);
+    }
+    verify_grade_distribution(
+        &format!("{label}.grade_distribution_m"),
+        actual.grade_distribution_m,
+        expected.grade_distribution_m,
+        failures,
+    );
+    if actual.provenance_edges != expected.provenance_edges {
+        failures.push(format!(
+            "{label}.provenance_edges mismatch: {:?} != {:?}",
+            actual.provenance_edges, expected.provenance_edges
+        ));
+    }
 }
 
 fn resolve_generated_artifact_path(project: &Path, raw: &str) -> Result<PathBuf> {
@@ -2487,6 +2623,8 @@ struct GeneratedRunLedger {
     #[serde(default)]
     source_manifest: Option<SourceManifest>,
     #[serde(default)]
+    graph: Option<GraphManifest>,
+    #[serde(default)]
     routes: Vec<RouteManifestEntry>,
     #[serde(default)]
     artifacts: Vec<String>,
@@ -2531,7 +2669,7 @@ struct BuildSource {
     adapter_id: &'static str,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct GraphManifest {
     vertices: usize,
     edges: usize,
@@ -2544,7 +2682,7 @@ struct GraphManifest {
     terrain_km: BTreeMap<Terrain, f64>,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct GraphElevationStats {
     attributed_edge_m: f64,
     sampled_grade_m: f64,
@@ -2555,7 +2693,7 @@ struct GraphElevationStats {
     provenance_edges: BTreeMap<String, usize>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct TurnBanManifest {
     count: usize,
     provenance: BTreeMap<String, usize>,
@@ -7254,75 +7392,93 @@ mod tests {
         )?;
         verify_generation(project)?;
 
-        let original_network = fs::read(&network)?;
-        fs::write(
-            &network,
-            b"{\"type\":\"FeatureCollection\",\"features\":[]}",
+        expect_source_drift(project, &network)?;
+        expect_generated_manifest_drift(
+            project,
+            |manifest| manifest["graph"]["edges"] = serde_json::json!(0),
+            "generated graph verification failed",
+            "graph.edges mismatch",
         )?;
-        let source_error =
-            verify_generation(project).expect_err("source drift should fail run verification");
-        assert!(format!("{source_error:#}").contains("source verification failed"));
-        assert!(format!("{source_error:#}").contains("trails.geojson drifted"));
-        fs::write(&network, original_network)?;
-        verify_generation(project)?;
+        expect_generated_manifest_drift(
+            project,
+            |manifest| manifest["graph"]["elevation"]["sampled_grade_m"] = serde_json::json!(42.0),
+            "generated graph verification failed",
+            "graph.elevation.sampled_grade_m mismatch",
+        )?;
+        expect_generated_manifest_drift(
+            project,
+            |manifest| manifest["routes"][0]["edges"][0] = serde_json::json!(999_999),
+            "generated route verification failed",
+            "edge sequence differs",
+        )?;
+        expect_generated_manifest_drift(
+            project,
+            |manifest| manifest["routes"][0]["metrics"]["distance_m"] = serde_json::json!(42.0),
+            "generated route verification failed",
+            "manifest metrics.distance_m mismatch",
+        )?;
+        expect_generated_manifest_drift(
+            project,
+            |manifest| {
+                manifest["routes"][0]["metrics"]["sustained_steep_m"] = serde_json::json!(42.0);
+            },
+            "generated route verification failed",
+            "manifest metrics.sustained_steep_m mismatch",
+        )?;
+        expect_generated_manifest_drift(
+            project,
+            |manifest| {
+                manifest["routes"][0]["metrics"]["grade_distribution"]["flat_m"] =
+                    serde_json::json!(42.0);
+            },
+            "generated route verification failed",
+            "manifest metrics.grade_distribution.flat_m mismatch",
+        )?;
+        expect_generated_artifact_drift(project)?;
 
+        Ok(())
+    }
+
+    fn expect_source_drift(project: &Path, network: &Path) -> Result<()> {
+        let original_network = fs::read(network)?;
+        fs::write(network, b"{\"type\":\"FeatureCollection\",\"features\":[]}")?;
+        let error = verify_generation(project).expect_err("source drift should fail verification");
+        assert!(format!("{error:#}").contains("source verification failed"));
+        assert!(format!("{error:#}").contains("trails.geojson drifted"));
+        fs::write(network, original_network)?;
+        verify_generation(project)?;
+        Ok(())
+    }
+
+    fn expect_generated_manifest_drift(
+        project: &Path,
+        mutate: impl FnOnce(&mut Value),
+        headline: &str,
+        detail: &str,
+    ) -> Result<()> {
         let manifest_path = project.join("routes/generated.manifest.json");
         let original_manifest = fs::read_to_string(&manifest_path)?;
         let mut manifest: Value = serde_json::from_str(&original_manifest)?;
-        manifest["routes"][0]["edges"][0] = serde_json::json!(999_999);
+        mutate(&mut manifest);
         write_json(&manifest_path, &manifest)?;
-        let route_error =
-            verify_generation(project).expect_err("route manifest drift should fail verification");
-        assert!(format!("{route_error:#}").contains("generated route verification failed"));
-        assert!(format!("{route_error:#}").contains("edge sequence differs"));
+        let error =
+            verify_generation(project).expect_err("manifest drift should fail verification");
+        assert!(format!("{error:#}").contains(headline));
+        assert!(format!("{error:#}").contains(detail));
         fs::write(&manifest_path, original_manifest)?;
         verify_generation(project)?;
+        Ok(())
+    }
 
-        let original_manifest = fs::read_to_string(&manifest_path)?;
-        let mut manifest: Value = serde_json::from_str(&original_manifest)?;
-        manifest["routes"][0]["metrics"]["distance_m"] = serde_json::json!(42.0);
-        write_json(&manifest_path, &manifest)?;
-        let metric_error =
-            verify_generation(project).expect_err("route metric drift should fail verification");
-        assert!(format!("{metric_error:#}").contains("generated route verification failed"));
-        assert!(format!("{metric_error:#}").contains("manifest metrics.distance_m mismatch"));
-        fs::write(&manifest_path, original_manifest)?;
-        verify_generation(project)?;
-
-        let original_manifest = fs::read_to_string(&manifest_path)?;
-        let mut manifest: Value = serde_json::from_str(&original_manifest)?;
-        manifest["routes"][0]["metrics"]["sustained_steep_m"] = serde_json::json!(42.0);
-        write_json(&manifest_path, &manifest)?;
-        let steep_error = verify_generation(project)
-            .expect_err("route sustained-steep drift should fail verification");
-        assert!(format!("{steep_error:#}").contains("generated route verification failed"));
-        assert!(format!("{steep_error:#}").contains("manifest metrics.sustained_steep_m mismatch"));
-        fs::write(&manifest_path, original_manifest)?;
-        verify_generation(project)?;
-
-        let original_manifest = fs::read_to_string(&manifest_path)?;
-        let mut manifest: Value = serde_json::from_str(&original_manifest)?;
-        manifest["routes"][0]["metrics"]["grade_distribution"]["flat_m"] = serde_json::json!(42.0);
-        write_json(&manifest_path, &manifest)?;
-        let grade_error =
-            verify_generation(project).expect_err("route grade drift should fail verification");
-        assert!(format!("{grade_error:#}").contains("generated route verification failed"));
-        assert!(
-            format!("{grade_error:#}")
-                .contains("manifest metrics.grade_distribution.flat_m mismatch")
-        );
-        fs::write(&manifest_path, original_manifest)?;
-        verify_generation(project)?;
-
+    fn expect_generated_artifact_drift(project: &Path) -> Result<()> {
         let report = project.join("reports/generated.md");
         let mut report_text = fs::read_to_string(&report)?;
         report_text.push_str("\nmanual drift\n");
         fs::write(&report, report_text)?;
-        let artifact_error =
-            verify_generation(project).expect_err("artifact drift should fail run verification");
-        assert!(format!("{artifact_error:#}").contains("generated artifact verification failed"));
-        assert!(format!("{artifact_error:#}").contains("reports/generated.md drifted"));
-
+        let error =
+            verify_generation(project).expect_err("artifact drift should fail verification");
+        assert!(format!("{error:#}").contains("generated artifact verification failed"));
+        assert!(format!("{error:#}").contains("reports/generated.md drifted"));
         Ok(())
     }
 
