@@ -65,3 +65,7 @@ Use `trailgen verify-sources <project>` before reproduction-sensitive generation
 Use `trailgen alltrails-status` to print the current manual AllTrails exchange contract. The machine-readable section exposes typed, verification-dated bridge plans for import, manual custom-route upload, manual activity upload, and the intentionally unsupported direct-write API.
 
 See [docs/installation.md](docs/installation.md), [docs/model.md](docs/model.md), [docs/data-sources.md](docs/data-sources.md), [docs/source-adapters.md](docs/source-adapters.md), [docs/difficulty.md](docs/difficulty.md), [docs/optimizer.md](docs/optimizer.md), [docs/alltrails.md](docs/alltrails.md), and [docs/limitations.md](docs/limitations.md).
+
+## License
+
+Licensed under either of [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option.
