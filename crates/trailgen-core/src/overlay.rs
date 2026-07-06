@@ -4,7 +4,7 @@ use crate::model::{
     Access, CrossingEvidence, CrossingKind, Edge, Provenance, Terrain, TerrainEvidence, TrailGraph,
 };
 use crate::{Result, TrailgenError};
-use serde::de::Visitor;
+use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
@@ -23,6 +23,29 @@ impl PlanningDate {
             Some(Self { year, month, day })
         } else {
             None
+        }
+    }
+
+    #[must_use]
+    pub const fn weekday(self) -> Weekday {
+        const OFFSETS: [i32; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+        let month = self.month as usize;
+        let year = if month < 3 {
+            self.year as i32 - 1
+        } else {
+            self.year as i32
+        };
+        match (year + year / 4 - year / 100 + year / 400 + OFFSETS[month - 1] + self.day as i32)
+            .rem_euclid(7)
+        {
+            0 => Weekday::Sunday,
+            1 => Weekday::Monday,
+            2 => Weekday::Tuesday,
+            3 => Weekday::Wednesday,
+            4 => Weekday::Thursday,
+            5 => Weekday::Friday,
+            6 => Weekday::Saturday,
+            _ => unreachable!(),
         }
     }
 }
@@ -184,6 +207,289 @@ impl<'de> Deserialize<'de> for MonthDay {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub enum Weekday {
+    Monday,
+    Tuesday,
+    Wednesday,
+    Thursday,
+    Friday,
+    Saturday,
+    Sunday,
+}
+
+impl Weekday {
+    const ALL: [Self; 7] = [
+        Self::Monday,
+        Self::Tuesday,
+        Self::Wednesday,
+        Self::Thursday,
+        Self::Friday,
+        Self::Saturday,
+        Self::Sunday,
+    ];
+
+    const fn bit(self) -> u8 {
+        1 << self.index()
+    }
+
+    const fn index(self) -> u8 {
+        match self {
+            Self::Monday => 0,
+            Self::Tuesday => 1,
+            Self::Wednesday => 2,
+            Self::Thursday => 3,
+            Self::Friday => 4,
+            Self::Saturday => 5,
+            Self::Sunday => 6,
+        }
+    }
+
+    const fn from_index(index: u8) -> Self {
+        match index % 7 {
+            0 => Self::Monday,
+            1 => Self::Tuesday,
+            2 => Self::Wednesday,
+            3 => Self::Thursday,
+            4 => Self::Friday,
+            5 => Self::Saturday,
+            6 => Self::Sunday,
+            _ => unreachable!(),
+        }
+    }
+
+    fn parse_token(raw: &str) -> std::result::Result<Self, String> {
+        match weekday_atom(raw).as_str() {
+            "mon" | "monday" => Ok(Self::Monday),
+            "tue" | "tues" | "tuesday" => Ok(Self::Tuesday),
+            "wed" | "weds" | "wednesday" => Ok(Self::Wednesday),
+            "thu" | "thur" | "thurs" | "thursday" => Ok(Self::Thursday),
+            "fri" | "friday" => Ok(Self::Friday),
+            "sat" | "saturday" => Ok(Self::Saturday),
+            "sun" | "sunday" => Ok(Self::Sunday),
+            _ => Err(format!("invalid weekday {raw:?}")),
+        }
+    }
+}
+
+impl Display for Weekday {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Monday => "monday",
+            Self::Tuesday => "tuesday",
+            Self::Wednesday => "wednesday",
+            Self::Thursday => "thursday",
+            Self::Friday => "friday",
+            Self::Saturday => "saturday",
+            Self::Sunday => "sunday",
+        })
+    }
+}
+
+impl FromStr for Weekday {
+    type Err = String;
+
+    fn from_str(raw: &str) -> std::result::Result<Self, Self::Err> {
+        Self::parse_token(raw)
+    }
+}
+
+impl Serialize for Weekday {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for Weekday {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct WeekdayVisitor;
+
+        impl Visitor<'_> for WeekdayVisitor {
+            type Value = Weekday;
+
+            fn expecting(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a weekday name or abbreviation")
+            }
+
+            fn visit_str<E>(self, v: &str) -> std::result::Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                v.parse::<Weekday>().map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_str(WeekdayVisitor)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct WeekdaySet(u8);
+
+impl WeekdaySet {
+    const ALL_BITS: u8 = 0b0111_1111;
+    const WEEKDAYS: [Weekday; 5] = [
+        Weekday::Monday,
+        Weekday::Tuesday,
+        Weekday::Wednesday,
+        Weekday::Thursday,
+        Weekday::Friday,
+    ];
+    const WEEKENDS: [Weekday; 2] = [Weekday::Saturday, Weekday::Sunday];
+
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.0 == 0
+    }
+
+    #[must_use]
+    pub const fn contains(self, weekday: Weekday) -> bool {
+        self.0 & weekday.bit() != 0
+    }
+
+    #[must_use]
+    pub const fn union(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
+
+    const fn insert(&mut self, weekday: Weekday) {
+        self.0 |= weekday.bit();
+    }
+
+    fn insert_many(&mut self, weekdays: impl IntoIterator<Item = Weekday>) {
+        weekdays
+            .into_iter()
+            .for_each(|weekday| self.insert(weekday));
+    }
+
+    fn insert_range(&mut self, from: Weekday, to: Weekday) {
+        let mut index = from.index();
+        loop {
+            let weekday = Weekday::from_index(index);
+            self.insert(weekday);
+            if weekday == to {
+                break;
+            }
+            index = (index + 1) % 7;
+        }
+    }
+
+    fn ingest_token(&mut self, raw: &str) -> std::result::Result<(), String> {
+        let token = weekday_atom(raw);
+        match token.as_str() {
+            "" | "none" => Ok(()),
+            "all" | "daily" | "everyday" => {
+                self.0 = Self::ALL_BITS;
+                Ok(())
+            }
+            "weekday" | "weekdays" => {
+                self.insert_many(Self::WEEKDAYS);
+                Ok(())
+            }
+            "weekend" | "weekends" => {
+                self.insert_many(Self::WEEKENDS);
+                Ok(())
+            }
+            _ => {
+                if let Some((from, to)) = token.split_once('-') {
+                    self.insert_range(Weekday::parse_token(from)?, Weekday::parse_token(to)?);
+                } else {
+                    self.insert(Weekday::parse_token(&token)?);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn iter(self) -> impl Iterator<Item = Weekday> {
+        Weekday::ALL
+            .into_iter()
+            .filter(move |weekday| self.contains(*weekday))
+    }
+}
+
+impl FromStr for WeekdaySet {
+    type Err = String;
+
+    fn from_str(raw: &str) -> std::result::Result<Self, Self::Err> {
+        let mut set = Self::empty();
+        for token in
+            raw.split(|c: char| c == ',' || c == ';' || c == '|' || c == '/' || c.is_whitespace())
+        {
+            set.ingest_token(token)?;
+        }
+        Ok(set)
+    }
+}
+
+impl Serialize for WeekdaySet {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let weekdays = self.iter().collect::<Vec<_>>();
+        weekdays.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for WeekdaySet {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct WeekdaySetVisitor;
+
+        impl<'de> Visitor<'de> for WeekdaySetVisitor {
+            type Value = WeekdaySet;
+
+            fn expecting(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a weekday string or sequence")
+            }
+
+            fn visit_str<E>(self, v: &str) -> std::result::Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                v.parse::<WeekdaySet>().map_err(E::custom)
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut set = WeekdaySet::empty();
+                while let Some(raw) = seq.next_element::<String>()? {
+                    set = set.union(
+                        raw.parse::<WeekdaySet>()
+                            .map_err(serde::de::Error::custom)?,
+                    );
+                }
+                Ok(set)
+            }
+        }
+
+        deserializer.deserialize_any(WeekdaySetVisitor)
+    }
+}
+
+fn weekday_atom(raw: &str) -> String {
+    raw.trim()
+        .trim_matches('.')
+        .to_ascii_lowercase()
+        .replace('_', "-")
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct SeasonalWindow {
@@ -217,12 +523,17 @@ pub struct AccessWindow {
     pub to: Option<PlanningDate>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seasonal: Option<SeasonalWindow>,
+    #[serde(default, skip_serializing_if = "WeekdaySet::is_empty")]
+    pub weekdays: WeekdaySet,
 }
 
 impl AccessWindow {
     #[must_use]
     pub const fn is_always(&self) -> bool {
-        self.from.is_none() && self.to.is_none() && self.seasonal.is_none()
+        self.from.is_none()
+            && self.to.is_none()
+            && self.seasonal.is_none()
+            && self.weekdays.is_empty()
     }
 
     #[must_use]
@@ -233,6 +544,7 @@ impl AccessWindow {
         self.from.is_none_or(|from| from <= date)
             && self.to.is_none_or(|to| date <= to)
             && self.seasonal.is_none_or(|season| season.contains(date))
+            && (self.weekdays.is_empty() || self.weekdays.contains(date.weekday()))
     }
 }
 

@@ -4,7 +4,7 @@ use crate::geo::{Coord, LineString};
 use crate::model::{Access, CrossingKind, EdgeTravel, Provenance, Terrain};
 use crate::overlay::{
     AccessOverlay, AccessWindow, ContextOverlay, MonthDay, OverlayGeometry, PlanningDate,
-    SeasonalWindow, TerrainOverlay,
+    SeasonalWindow, TerrainOverlay, WeekdaySet,
 };
 use crate::{Result, TrailgenError};
 use ::shapefile::dbase::{FieldValue, Record};
@@ -105,6 +105,7 @@ fn access_window_from_props(props: &ShpProps<'_>) -> Result<AccessWindow> {
         from: props.date(&["active_from", "start_date", "starts_on", "from"])?,
         to: props.date(&["active_to", "end_date", "ends_on", "to"])?,
         seasonal: props.seasonal_window()?,
+        weekdays: props.weekdays()?,
     })
 }
 
@@ -465,6 +466,23 @@ impl<'a> ShpProps<'a> {
                 "recurring seasonal access windows require both from and to month-days".to_owned(),
             )),
         }
+    }
+
+    fn weekdays(&self) -> Result<WeekdaySet> {
+        [
+            "weekdays",
+            "weekday",
+            "days",
+            "day_of_week",
+            "active_weekdays",
+            "active_days",
+        ]
+        .into_iter()
+        .find_map(|key| self.str(key))
+        .map(str::parse::<WeekdaySet>)
+        .transpose()
+        .map(Option::unwrap_or_default)
+        .map_err(TrailgenError::InvalidData)
     }
 
     fn bool(&self, key: &str) -> Option<bool> {

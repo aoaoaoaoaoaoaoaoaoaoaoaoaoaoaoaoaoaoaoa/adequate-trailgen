@@ -5,7 +5,7 @@ use crate::io::route_file::{RouteFile, RouteFileMetadata};
 use crate::model::{Access, CrossingKind, Edge, EdgeTravel, Provenance, Terrain, TrailGraph};
 use crate::overlay::{
     AccessOverlay, AccessWindow, ContextOverlay, MonthDay, OverlayGeometry, PlanningDate,
-    SeasonalWindow, TerrainOverlay, polygon,
+    SeasonalWindow, TerrainOverlay, WeekdaySet, polygon,
 };
 use crate::route::{LOW_CONFIDENCE_THRESHOLD, Route, is_restricted_access};
 use crate::{Result, TrailgenError};
@@ -543,6 +543,17 @@ fn access_window_from_properties(properties: &Map<String, Value>) -> Result<Acce
         )?,
         to: prop_date(properties, &["active_to", "end_date", "ends_on", "to"])?,
         seasonal: seasonal_window_from_properties(properties)?,
+        weekdays: prop_weekdays(
+            properties,
+            &[
+                "weekdays",
+                "weekday",
+                "days",
+                "day_of_week",
+                "active_weekdays",
+                "active_days",
+            ],
+        )?,
     })
 }
 
@@ -850,6 +861,39 @@ fn prop_month_day(props: &Map<String, Value>, keys: &[&str]) -> Result<Option<Mo
         .map(str::parse::<MonthDay>)
         .transpose()
         .map_err(TrailgenError::InvalidData)
+}
+
+fn prop_weekdays(props: &Map<String, Value>, keys: &[&str]) -> Result<WeekdaySet> {
+    keys.iter()
+        .find_map(|key| props.get(*key))
+        .map_or_else(|| Ok(WeekdaySet::empty()), weekdays_from_value)
+}
+
+fn weekdays_from_value(value: &Value) -> Result<WeekdaySet> {
+    match value {
+        Value::String(raw) => raw
+            .parse::<WeekdaySet>()
+            .map_err(TrailgenError::InvalidData),
+        Value::Array(values) => {
+            let mut set = WeekdaySet::empty();
+            for value in values {
+                let raw = value.as_str().ok_or_else(|| {
+                    TrailgenError::InvalidData(
+                        "weekday arrays must contain only strings".to_owned(),
+                    )
+                })?;
+                set = set.union(
+                    raw.parse::<WeekdaySet>()
+                        .map_err(TrailgenError::InvalidData)?,
+                );
+            }
+            Ok(set)
+        }
+        Value::Null => Ok(WeekdaySet::empty()),
+        _ => Err(TrailgenError::InvalidData(
+            "weekday fields must be strings or string arrays".to_owned(),
+        )),
+    }
 }
 
 fn travel_from_properties(props: &Map<String, Value>) -> EdgeTravel {

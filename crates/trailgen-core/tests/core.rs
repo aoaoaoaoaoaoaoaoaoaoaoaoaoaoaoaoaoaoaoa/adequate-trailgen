@@ -16,7 +16,8 @@ use trailgen_core::source::{
 use trailgen_core::{
     Access, ArcAsciiGrid, CrossingKind, EdgeId, EdgeTravel, ElevationSampler, ExactLoopSolver,
     GeoTiffDem, LoopMilpFormulation, MilpSelectedArc, MonthDay, PlanningDate, RasterCrs, Route,
-    RouteMetrics, RouteShape, SearchParams, SeasonalWindow, SolverKind, VertexId, VrtDem,
+    RouteMetrics, RouteShape, SearchParams, SeasonalWindow, SolverKind, VertexId, VrtDem, Weekday,
+    WeekdaySet,
 };
 use trailgen_core::{
     Coord, DifficultyWeights, EnrichmentConfig, GraphBuilder, LineString, LoopConstraints,
@@ -712,6 +713,91 @@ fn seasonal_access_window_wraps_winter_year_boundary() {
     assert!(winter.contains(PlanningDate::new(2027, 12, 1).unwrap()));
     assert!(winter.contains(PlanningDate::new(2028, 2, 1).unwrap()));
     assert!(!winter.contains(PlanningDate::new(2028, 7, 1).unwrap()));
+}
+
+#[test]
+fn planning_dates_derive_weekdays() {
+    assert_eq!(
+        PlanningDate::new(2026, 7, 4).unwrap().weekday(),
+        Weekday::Saturday
+    );
+    assert_eq!(
+        PlanningDate::new(2026, 7, 6).unwrap().weekday(),
+        Weekday::Monday
+    );
+}
+
+#[test]
+fn weekday_sets_parse_shortcuts_and_ranges() {
+    let workweek = "mon-fri".parse::<WeekdaySet>().unwrap();
+    assert!(workweek.contains(Weekday::Monday));
+    assert!(workweek.contains(Weekday::Friday));
+    assert!(!workweek.contains(Weekday::Sunday));
+
+    let weekend = "weekends".parse::<WeekdaySet>().unwrap();
+    assert!(weekend.contains(Weekday::Saturday));
+    assert!(weekend.contains(Weekday::Sunday));
+    assert!(!weekend.contains(Weekday::Wednesday));
+}
+
+#[test]
+fn weekday_access_overlay_only_bites_on_listed_days() {
+    let drafts = geojson::network_from_str(include_str!("fixtures/mini_network.geojson")).unwrap();
+    let overlays = geojson::access_overlays_from_str(
+        r#"{
+          "type": "FeatureCollection",
+          "features": [{
+            "type": "Feature",
+            "properties": {
+              "id": "weekend-maintenance",
+              "source": "fixture-closure",
+              "access": "closed",
+              "weekdays": ["sat", "sun"]
+            },
+            "geometry": {
+              "type": "Polygon",
+              "coordinates": [[
+                [-105.0000, 40.0020],
+                [-104.9900, 40.0020],
+                [-104.9900, 40.0100],
+                [-105.0000, 40.0100],
+                [-105.0000, 40.0020]
+              ]]
+            }
+          }]
+        }"#,
+    )
+    .unwrap();
+
+    let mut saturday = GraphBuilder::default().build(&drafts).unwrap();
+    let mut monday = GraphBuilder::default().build(&drafts).unwrap();
+    let saturday_hits = apply_access_overlays(
+        &mut saturday,
+        &overlays,
+        Some(PlanningDate::new(2026, 7, 4).unwrap()),
+        DifficultyWeights::default(),
+    );
+    let monday_hits = apply_access_overlays(
+        &mut monday,
+        &overlays,
+        Some(PlanningDate::new(2026, 7, 6).unwrap()),
+        DifficultyWeights::default(),
+    );
+
+    assert!(saturday_hits > 0);
+    assert_eq!(monday_hits, 0);
+    assert!(
+        saturday
+            .edges
+            .iter()
+            .any(|edge| edge.attr.access == Access::Closed)
+    );
+    assert!(
+        !monday
+            .edges
+            .iter()
+            .any(|edge| edge.attr.access == Access::Closed)
+    );
 }
 
 #[test]
@@ -2242,6 +2328,8 @@ fn shapefile_adapters_normalize_networks_and_overlays() {
     assert_eq!(overlays.len(), 1);
     assert_eq!(overlays[0].access, Access::Closed);
     assert_eq!(overlays[0].name, "closure-1");
+    assert!(overlays[0].active_on(Some(PlanningDate::new(2026, 7, 4).unwrap())));
+    assert!(!overlays[0].active_on(Some(PlanningDate::new(2026, 7, 6).unwrap())));
     assert!(matches!(
         overlays[0].geometry,
         trailgen_core::OverlayGeometry::Polygon(_)
@@ -2484,6 +2572,7 @@ fn write_access_shapefile(path: &std::path::Path) {
     let table = ::shapefile::dbase::TableWriterBuilder::new()
         .add_character_field("name".try_into().unwrap(), 32)
         .add_character_field("status".try_into().unwrap(), 16)
+        .add_character_field("weekdays".try_into().unwrap(), 16)
         .add_character_field("source".try_into().unwrap(), 32);
     let mut writer = ::shapefile::Writer::from_path(path, table).unwrap();
     let polygon = ::shapefile::Polygon::with_rings(vec![::shapefile::PolygonRing::Outer(vec![
@@ -2496,6 +2585,7 @@ fn write_access_shapefile(path: &std::path::Path) {
     let mut record = ::shapefile::dbase::Record::default();
     record.insert("name".to_owned(), "closure-1".to_owned().into());
     record.insert("status".to_owned(), "closed".to_owned().into());
+    record.insert("weekdays".to_owned(), "weekends".to_owned().into());
     record.insert("source".to_owned(), "agency".to_owned().into());
     writer.write_shape_and_record(&polygon, &record).unwrap();
 }

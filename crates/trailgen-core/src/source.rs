@@ -593,7 +593,7 @@ const CLOSURE_HINTS: &[AcquisitionHintSpec] = &[
         label: "Agency closure and alert GIS",
         url: "https://public-nps.opendata.arcgis.com/",
         formats: &["GeoJSON", "Shapefile", "Feature Service"],
-        note: "Use current official closure/restriction features; preserve dates and alert provenance in cached overlays.",
+        note: "Use current official closure/restriction features; preserve dates, weekdays, and alert provenance in cached overlays.",
     },
     AcquisitionHintSpec {
         label: "Local park or forest alerts",
