@@ -1066,6 +1066,22 @@
       "count": 0,
       "provenance": {}
     },
+    "elevation": {
+      "attributed_edge_m": 7075.078308484313,
+      "sampled_grade_m": 7075.078308484313,
+      "ascent_m": 209.19999999999732,
+      "descent_m": 152.99999999999022,
+      "sustained_steep_m": 0.0,
+      "grade_distribution_m": {
+        "flat_m": 3706.383106702844,
+        "rolling_m": 3368.6952017814697,
+        "steep_m": 0.0,
+        "savage_m": 0.0
+      },
+      "provenance_edges": {
+        "arc-ascii-grid:mini_dem.asc": 6
+      }
+    },
     "low_confidence_edges": 0,
     "crossings": {
       "road": 3,
@@ -1287,8 +1303,8 @@
     {
       "path": "reports/generated.md",
       "fingerprint": {
-        "bytes": 16535,
-        "sha256": "41fb535c9f79ad3e01f42459058488af1f5beefbc8ba1abcbe697723e75f6e4c"
+        "bytes": 16631,
+        "sha256": "7520a1c9d09a8532731e94c223c25cbd858e9e6df42ff4951b9879fda623ef87"
       }
     },
     {
@@ -1336,8 +1352,8 @@
     {
       "path": "reports/candidate-1.md",
       "fingerprint": {
-        "bytes": 8423,
-        "sha256": "16133141dfd19093bbbae80ccd2c8d675d79fadacc601dcf6da1d39f80c6063a"
+        "bytes": 8519,
+        "sha256": "865efef2b070beb9663c53bdc2e75526a77ffadd1e3d6367ffeb79ac4bf7abc7"
       }
     },
     {
@@ -1378,8 +1394,8 @@
     {
       "path": "reports/candidate-2.md",
       "fingerprint": {
-        "bytes": 7951,
-        "sha256": "d3c7e22933cc5827b5adaea424b6da6f8167ca6465babfaadf49758c58d17712"
+        "bytes": 8047,
+        "sha256": "e24b2db39db2331e343c6ba6291062f201067f92a6de5e860cf07646dd24a0c6"
       }
     },
     {
@@ -1420,8 +1436,8 @@
     {
       "path": "reports/candidate-3.md",
       "fingerprint": {
-        "bytes": 7914,
-        "sha256": "25c9e8279a706bbafa867725cf996bd875614f699b681aeedd21a31c4fb6d6a5"
+        "bytes": 8010,
+        "sha256": "2b1b6793fa519149380f34bdd0a8c3d54a8d65f36e0e0e07b0ece326ee1dcba1"
       }
     }
   ]

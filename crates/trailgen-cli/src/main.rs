@@ -23,10 +23,10 @@ use trailgen_core::source::{
 use trailgen_core::{
     Access, AccessOverlay, AccessWindow, ArcAsciiGrid, Coord, CrossingKind, DifficultyBreakdown,
     DifficultyWeights, EdgeAttr, EdgeId, EdgeTravel, ElevationMosaic, EnrichmentConfig, GeoTiffDem,
-    GraphBuilder, LOW_CONFIDENCE_THRESHOLD, LineString, LoopConstraints, LoopMilpFormulation,
-    PlanningDate, PlanningMoment, PlanningTime, Provenance, RasterDem, Route, RouteMetrics,
-    RouteShape, RouteSnapStats, SearchParams, SeedRoute, SegmentDraft, SolverKind, Terrain,
-    TrailGraph, VertexId, VrtDem, apply_access_overlays, apply_access_overlays_at,
+    GradeDistribution, GraphBuilder, LOW_CONFIDENCE_THRESHOLD, LineString, LoopConstraints,
+    LoopMilpFormulation, PlanningDate, PlanningMoment, PlanningTime, Provenance, RasterDem, Route,
+    RouteMetrics, RouteShape, RouteSnapStats, SearchParams, SeedRoute, SegmentDraft, SolverKind,
+    Terrain, TrailGraph, VertexId, VrtDem, apply_access_overlays, apply_access_overlays_at,
     apply_context_overlays, apply_terrain_overlays, enrich_graph, rank_routes,
     route_edges_from_solution, slug,
 };
@@ -1141,9 +1141,9 @@ fn stats_text(graph: &TrailGraph) -> String {
     let mut road_m = 0.0;
     let mut low_conf_m = 0.0;
     let mut restricted_m = 0.0;
-    let mut elevation_m = 0.0;
     let mut seed_m = 0.0;
     let mut difficulty = 0.0;
+    let elevation = graph_elevation_stats(graph);
     for edge in &graph.edges {
         let a = &edge.attr;
         *terrain_m.entry(a.terrain).or_default() += a.length_m;
@@ -1164,9 +1164,6 @@ fn stats_text(graph: &TrailGraph) -> String {
             Access::Restricted | Access::Closed | Access::Private
         ) {
             restricted_m += a.length_m;
-        }
-        if edge_has_elevation(a) {
-            elevation_m += a.length_m;
         }
         if a.seed_count > 0 {
             seed_m += a.length_m;
@@ -1210,12 +1207,7 @@ fn stats_text(graph: &TrailGraph) -> String {
         road_m / 1_000.0,
         percent(road_m, total_m)
     );
-    let _ = writeln!(
-        text,
-        "elevation-attributed edge-km: {:.2} ({:.1}%)",
-        elevation_m / 1_000.0,
-        percent(elevation_m, total_m)
-    );
+    write_elevation_stats(&mut text, &elevation, total_m);
     let _ = writeln!(
         text,
         "seed-attributed edge-km: {:.2} ({:.1}%)",
@@ -1229,6 +1221,67 @@ fn stats_text(graph: &TrailGraph) -> String {
     write_turn_ban_provenance(&mut text, graph);
     write_crossing_totals(&mut text, graph);
     text
+}
+
+fn write_elevation_stats(text: &mut String, elevation: &GraphElevationStats, total_m: f64) {
+    let _ = writeln!(
+        text,
+        "elevation-attributed edge-km: {:.2} ({:.1}%)",
+        elevation.attributed_edge_m / 1_000.0,
+        percent(elevation.attributed_edge_m, total_m)
+    );
+    let _ = writeln!(
+        text,
+        "elevation-sampled grade-km: {:.2} ({:.1}%)",
+        elevation.sampled_grade_m / 1_000.0,
+        percent(elevation.sampled_grade_m, total_m)
+    );
+    let _ = writeln!(
+        text,
+        "graph ascent/descent: {:.0} m / {:.0} m",
+        elevation.ascent_m, elevation.descent_m
+    );
+    let _ = writeln!(
+        text,
+        "sustained-steep edge-km: {:.2} ({:.1}% of sampled grade)",
+        elevation.sustained_steep_m / 1_000.0,
+        percent(elevation.sustained_steep_m, elevation.sampled_grade_m)
+    );
+    write_grade_distribution(text, elevation.grade_distribution_m);
+    write_elevation_provenance(text, &elevation.provenance_edges);
+}
+
+fn write_grade_distribution(text: &mut String, grade: GradeDistribution) {
+    text.push_str("Grade distribution:\n");
+    let total = grade.total_m();
+    if total <= f64::EPSILON {
+        text.push_str("- none\n");
+        return;
+    }
+    for (label, meters) in [
+        ("flat <5%", grade.flat_m),
+        ("rolling 5–15%", grade.rolling_m),
+        ("steep 15–30%", grade.steep_m),
+        ("savage ≥30%", grade.savage_m),
+    ] {
+        let _ = writeln!(
+            text,
+            "- {label}: {:.2} km ({:.1}%)",
+            meters / 1_000.0,
+            percent(meters, total)
+        );
+    }
+}
+
+fn write_elevation_provenance(text: &mut String, provenance: &BTreeMap<String, usize>) {
+    text.push_str("Elevation provenance:\n");
+    if provenance.is_empty() {
+        text.push_str("- none\n");
+        return;
+    }
+    for (source, edges) in provenance {
+        let _ = writeln!(text, "- {source}: {edges} edge(s)");
+    }
 }
 
 fn write_turn_ban_provenance(text: &mut String, graph: &TrailGraph) {
@@ -2460,9 +2513,21 @@ struct GraphManifest {
     edge_km: f64,
     directed_travel_edges: usize,
     turn_bans: TurnBanManifest,
+    elevation: GraphElevationStats,
     low_confidence_edges: usize,
     crossings: BTreeMap<CrossingKind, u32>,
     terrain_km: BTreeMap<Terrain, f64>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+struct GraphElevationStats {
+    attributed_edge_m: f64,
+    sampled_grade_m: f64,
+    ascent_m: f64,
+    descent_m: f64,
+    sustained_steep_m: f64,
+    grade_distribution_m: GradeDistribution,
+    provenance_edges: BTreeMap<String, usize>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -3707,26 +3772,7 @@ fn render_generation_ledger_section(
         ledger.snapped_start_coord.lat,
         ledger.start_snap_m
     );
-    let _ = writeln!(
-        text,
-        "- graph: {} vertices, {} edges, {:.2} km, {} directed-travel edge(s), {} turn ban(s)",
-        graph.vertices.len(),
-        graph.edges.len(),
-        graph
-            .edges
-            .iter()
-            .map(|edge| edge.attr.length_m)
-            .sum::<f64>()
-            / 1_000.0,
-        directed_travel_edge_count(graph),
-        graph.turn_bans.len()
-    );
-    if !graph.turn_bans.is_empty() {
-        text.push_str("- turn-ban provenance:\n");
-        for (source, count) in turn_ban_sources(graph) {
-            let _ = writeln!(text, "  - {source}: {count}");
-        }
-    }
+    render_generation_graph_ledger(text, graph);
     let _ = writeln!(text, "- emitted artifacts: {}", ledger.artifacts.len());
     if ledger.forbidden_areas.is_empty() {
         text.push_str("- forbidden areas: none\n");
@@ -3741,6 +3787,38 @@ fn render_generation_ledger_section(
         }
     }
     text.push('\n');
+}
+
+fn render_generation_graph_ledger(text: &mut String, graph: &TrailGraph) {
+    let elevation = graph_elevation_stats(graph);
+    let edge_km = graph
+        .edges
+        .iter()
+        .map(|edge| edge.attr.length_m)
+        .sum::<f64>()
+        / 1_000.0;
+    let _ = writeln!(
+        text,
+        "- graph: {} vertices, {} edges, {edge_km:.2} km, {} directed-travel edge(s), {} turn ban(s)",
+        graph.vertices.len(),
+        graph.edges.len(),
+        directed_travel_edge_count(graph),
+        graph.turn_bans.len()
+    );
+    let _ = writeln!(
+        text,
+        "- graph elevation: {:.0} m ascent / {:.0} m descent, {:.2} sampled grade-km, {:.2} sustained-steep km",
+        elevation.ascent_m,
+        elevation.descent_m,
+        elevation.sampled_grade_m / 1_000.0,
+        elevation.sustained_steep_m / 1_000.0
+    );
+    if !graph.turn_bans.is_empty() {
+        text.push_str("- turn-ban provenance:\n");
+        for (source, count) in turn_ban_sources(graph) {
+            let _ = writeln!(text, "  - {source}: {count}");
+        }
+    }
 }
 
 fn render_constraints_section(text: &mut String, constraints: &LoopConstraints) {
@@ -5684,6 +5762,7 @@ fn graph_manifest(graph: &TrailGraph) -> GraphManifest {
             count: graph.turn_bans.len(),
             provenance: turn_ban_sources(graph),
         },
+        elevation: graph_elevation_stats(graph),
         low_confidence_edges: graph
             .edges
             .iter()
@@ -5692,6 +5771,31 @@ fn graph_manifest(graph: &TrailGraph) -> GraphManifest {
         crossings: crossing_totals(graph),
         terrain_km,
     }
+}
+
+fn graph_elevation_stats(graph: &TrailGraph) -> GraphElevationStats {
+    let mut stats = GraphElevationStats::default();
+    for edge in &graph.edges {
+        let a = &edge.attr;
+        if edge_has_elevation(a) {
+            stats.attributed_edge_m += a.length_m;
+        }
+        stats.sampled_grade_m += a.grade_distribution.total_m();
+        stats.ascent_m += a.ascent_m;
+        stats.descent_m += a.descent_m;
+        stats.sustained_steep_m += a.sustained_steep_m;
+        stats.grade_distribution_m.flat_m += a.grade_distribution.flat_m;
+        stats.grade_distribution_m.rolling_m += a.grade_distribution.rolling_m;
+        stats.grade_distribution_m.steep_m += a.grade_distribution.steep_m;
+        stats.grade_distribution_m.savage_m += a.grade_distribution.savage_m;
+        for provenance in &a.elevation_provenance {
+            *stats
+                .provenance_edges
+                .entry(provenance_label(provenance))
+                .or_default() += 1;
+        }
+    }
+    stats
 }
 
 fn directed_travel_edge_count(graph: &TrailGraph) -> usize {
@@ -6441,6 +6545,13 @@ mod tests {
         assert!(text.contains("restricted-access edge-km:"));
         assert!(text.contains("road/pavement edge-km:"));
         assert!(text.contains("elevation-attributed edge-km:"));
+        assert!(text.contains("elevation-sampled grade-km:"));
+        assert!(text.contains("graph ascent/descent:"));
+        assert!(text.contains("sustained-steep edge-km:"));
+        assert!(text.contains("Grade distribution:"));
+        assert!(text.contains("- flat <5%:"));
+        assert!(text.contains("Elevation provenance:"));
+        assert!(text.contains("- embedded-geometry-elevation:"));
         assert!(text.contains("seed-attributed edge-km:"));
         assert!(text.contains("Terrain mix:"));
         assert!(text.contains("- Trail:"));
@@ -6459,6 +6570,16 @@ mod tests {
         let manifest = graph_manifest(&graph);
         assert_eq!(manifest.directed_travel_edges, 0);
         assert_eq!(manifest.turn_bans.count, 1);
+        assert!(manifest.elevation.attributed_edge_m > 1_000.0);
+        assert!(manifest.elevation.sampled_grade_m > 1_000.0);
+        assert!((manifest.elevation.ascent_m - 30.0).abs() <= f64::EPSILON);
+        assert_eq!(
+            manifest
+                .elevation
+                .provenance_edges
+                .get("embedded-geometry-elevation"),
+            Some(&2)
+        );
         assert_eq!(
             manifest
                 .turn_bans
@@ -7010,6 +7131,7 @@ mod tests {
         assert!(generated_report.contains("- random seed: 77"));
         assert!(generated_report.contains("- snapped start: vertex"));
         assert!(generated_report.contains("directed-travel edge(s), 0 turn ban(s)"));
+        assert!(generated_report.contains("- graph elevation:"));
 
         Ok(())
     }
@@ -7018,6 +7140,21 @@ mod tests {
         assert!(manifest["graph"]["edges"].as_u64().is_some_and(|n| n > 0));
         assert_eq!(manifest["graph"]["directed_travel_edges"], 0);
         assert_eq!(manifest["graph"]["turn_bans"]["count"], 0);
+        assert!(
+            manifest["graph"]["elevation"]["ascent_m"]
+                .as_f64()
+                .is_some_and(|meters| meters > 0.0)
+        );
+        assert!(
+            manifest["graph"]["elevation"]["sampled_grade_m"]
+                .as_f64()
+                .is_some_and(|meters| meters > 0.0)
+        );
+        assert!(
+            manifest["graph"]["elevation"]["grade_distribution_m"]["flat_m"]
+                .as_f64()
+                .is_some()
+        );
         assert!(
             manifest["graph"]["turn_bans"]["provenance"]
                 .as_object()

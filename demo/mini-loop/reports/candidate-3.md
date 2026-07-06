@@ -100,6 +100,7 @@ Terrain/elevation evidence:
 - requested start: -105.000000,40.000000
 - snapped start: vertex 3, -105.000000,40.000000 (0 m)
 - graph: 5 vertices, 6 edges, 7.08 km, 0 directed-travel edge(s), 0 turn ban(s)
+- graph elevation: 209 m ascent / 153 m descent, 7.08 sampled grade-km, 0.00 sustained-steep km
 - emitted artifacts: 24
 - forbidden areas: none
 
