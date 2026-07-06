@@ -22,6 +22,8 @@ use trailgen_core::{
 
 const WGS84_PRJ: &str = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["Degree",0.0174532925199433]]"#;
 const WEB_MERCATOR_PRJ: &str = r#"PROJCS["WGS 84 / Pseudo-Mercator",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PROJECTION["Mercator_1SP"],UNIT["metre",1],AUTHORITY["EPSG","3857"]]"#;
+const UTM_PRJ: &str = r#"PROJCS["WGS 84 / UTM zone 13N",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PROJECTION["Transverse_Mercator"],UNIT["metre",1],AUTHORITY["EPSG","32613"]]"#;
+const WEB_MERCATOR_0_01_LON_M: f64 = 1_113.194_907_932_735_8;
 
 #[test]
 fn builder_splits_crossing_lines() {
@@ -1748,25 +1750,44 @@ fn shapefile_adapters_normalize_networks_and_overlays() {
 }
 
 #[test]
-fn vector_adapters_reject_advertised_projected_crs() {
-    let projected_geojson = r#"{
+fn vector_adapters_reproject_web_mercator_and_reject_other_projected_crs() {
+    let web_mercator_geojson = r#"{
       "type": "FeatureCollection",
       "crs": {"type": "name", "properties": {"name": "EPSG:3857"}},
       "features": [{
         "type": "Feature",
         "properties": {"terrain": "trail"},
-        "geometry": {"type": "LineString", "coordinates": [[0,0], [1,1]]}
+        "geometry": {"type": "LineString", "coordinates": [[0,0], [1113.1949079327358,0]]}
       }]
     }"#;
-    let error = geojson::network_from_str(projected_geojson).unwrap_err();
-    assert!(format!("{error}").contains("reproject input"));
+    let drafts = geojson::network_from_str(web_mercator_geojson).unwrap();
+    assert!((drafts[0].geometry.points[1].lon - 0.01).abs() < 1.0e-12);
+    assert!(drafts[0].geometry.points[1].lat.abs() < 1.0e-12);
+
+    let unsupported_geojson = r#"{
+      "type": "FeatureCollection",
+      "crs": {"type": "name", "properties": {"name": "EPSG:32613"}},
+      "features": []
+    }"#;
+    let error = geojson::network_from_str(unsupported_geojson).unwrap_err();
+    assert!(format!("{error}").contains("not supported"));
 
     let tmp = tempfile::tempdir().unwrap();
     let network = tmp.path().join("trails.shp");
-    write_network_shapefile(&network);
+    write_network_shapefile_points(
+        &network,
+        ::shapefile::Point::new(0.0, 0.0),
+        ::shapefile::Point::new(WEB_MERCATOR_0_01_LON_M, 0.0),
+    );
     std::fs::write(network.with_extension("prj"), WEB_MERCATOR_PRJ).unwrap();
-    let error = shp_io::network_from_path(&network).unwrap_err();
-    assert!(format!("{error}").contains("projected CRS"));
+    let drafts = shp_io::network_from_path(&network).unwrap();
+    assert!((drafts[0].geometry.points[1].lon - 0.01).abs() < 1.0e-12);
+
+    let unsupported = tmp.path().join("utm-trails.shp");
+    write_network_shapefile(&unsupported);
+    std::fs::write(unsupported.with_extension("prj"), UTM_PRJ).unwrap();
+    let error = shp_io::network_from_path(&unsupported).unwrap_err();
+    assert!(format!("{error}").contains("unsupported projected CRS"));
 }
 
 #[test]
@@ -1834,6 +1855,18 @@ const fn trailhead_bounds() -> trailgen_core::source::GeoBounds {
 }
 
 fn write_network_shapefile(path: &std::path::Path) {
+    write_network_shapefile_points(
+        path,
+        ::shapefile::Point::new(0.0, 0.0),
+        ::shapefile::Point::new(0.01, 0.0),
+    );
+}
+
+fn write_network_shapefile_points(
+    path: &std::path::Path,
+    a: ::shapefile::Point,
+    b: ::shapefile::Point,
+) {
     let table = ::shapefile::dbase::TableWriterBuilder::new()
         .add_character_field("id".try_into().unwrap(), 32)
         .add_character_field("terrain".try_into().unwrap(), 16)
@@ -1843,10 +1876,7 @@ fn write_network_shapefile(path: &std::path::Path) {
         .add_character_field("source".try_into().unwrap(), 32)
         .add_numeric_field("confidence".try_into().unwrap(), 5, 2);
     let mut writer = ::shapefile::Writer::from_path(path, table).unwrap();
-    let line = ::shapefile::Polyline::new(vec![
-        ::shapefile::Point::new(0.0, 0.0),
-        ::shapefile::Point::new(0.01, 0.0),
-    ]);
+    let line = ::shapefile::Polyline::new(vec![a, b]);
     let mut record = ::shapefile::dbase::Record::default();
     record.insert("id".to_owned(), "trail-1".to_owned().into());
     record.insert("terrain".to_owned(), "trail".to_owned().into());

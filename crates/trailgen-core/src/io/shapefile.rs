@@ -1,5 +1,5 @@
 use crate::builder::SegmentDraft;
-use crate::crs::validate_prj_wkt;
+use crate::crs::{CoordProjector, CrsVerdict, projector, validate_prj_wkt};
 use crate::geo::{Coord, LineString};
 use crate::model::{Access, CrossingKind, EdgeTravel, Provenance, Terrain};
 use crate::overlay::{
@@ -13,6 +13,7 @@ use std::path::Path;
 
 pub fn network_from_path(path: &Path) -> Result<Vec<SegmentDraft>> {
     let mut drafts = Vec::new();
+    let crs = shapefile_projector(path)?;
     for (i, row) in read(path)?.into_iter().enumerate() {
         let (shape, record) = row;
         let props = ShpProps::new(&record);
@@ -44,7 +45,7 @@ pub fn network_from_path(path: &Path) -> Result<Vec<SegmentDraft>> {
                 .or_else(|| Some(format!("feature-{i}"))),
             license: props.str("license").map(str::to_owned),
         };
-        for line in lines(&shape)? {
+        for line in lines(&shape, crs)? {
             drafts.push(SegmentDraft {
                 geometry: line,
                 terrain,
@@ -62,6 +63,7 @@ pub fn network_from_path(path: &Path) -> Result<Vec<SegmentDraft>> {
 
 pub fn access_overlays_from_path(path: &Path) -> Result<Vec<AccessOverlay>> {
     let mut overlays = Vec::new();
+    let crs = shapefile_projector(path)?;
     for (i, row) in read(path)?.into_iter().enumerate() {
         let (shape, record) = row;
         let props = ShpProps::new(&record);
@@ -82,7 +84,7 @@ pub fn access_overlays_from_path(path: &Path) -> Result<Vec<AccessOverlay>> {
             source_id: Some(name.clone()),
             license: props.str("license").map(str::to_owned),
         };
-        for geometry in overlay_geometries(&shape)? {
+        for geometry in overlay_geometries(&shape, crs)? {
             overlays.push(AccessOverlay {
                 name: name.clone(),
                 access,
@@ -106,6 +108,7 @@ fn access_window_from_props(props: &ShpProps<'_>) -> Result<AccessWindow> {
 
 pub fn terrain_overlays_from_path(path: &Path) -> Result<Vec<TerrainOverlay>> {
     let mut overlays = Vec::new();
+    let crs = shapefile_projector(path)?;
     for (i, row) in read(path)?.into_iter().enumerate() {
         let (shape, record) = row;
         let props = ShpProps::new(&record);
@@ -126,7 +129,7 @@ pub fn terrain_overlays_from_path(path: &Path) -> Result<Vec<TerrainOverlay>> {
             .or_else(|| props.str("id"))
             .map_or_else(|| format!("terrain-{i}"), str::to_owned);
         let provenance = provenance(&props, "shapefile-terrain-overlay", &name);
-        for geometry in overlay_geometries(&shape)? {
+        for geometry in overlay_geometries(&shape, crs)? {
             overlays.push(TerrainOverlay {
                 name: name.clone(),
                 terrain,
@@ -143,6 +146,7 @@ pub fn terrain_overlays_from_path(path: &Path) -> Result<Vec<TerrainOverlay>> {
 
 pub fn context_overlays_from_path(path: &Path) -> Result<Vec<ContextOverlay>> {
     let mut overlays = Vec::new();
+    let crs = shapefile_projector(path)?;
     for (i, row) in read(path)?.into_iter().enumerate() {
         let (shape, record) = row;
         let props = ShpProps::new(&record);
@@ -160,7 +164,7 @@ pub fn context_overlays_from_path(path: &Path) -> Result<Vec<ContextOverlay>> {
             .or_else(|| props.str("id"))
             .map_or_else(|| format!("context-{i}"), str::to_owned);
         let provenance = provenance(&props, default_context_source(kind), &name);
-        for geometry in lines(&shape)? {
+        for geometry in lines(&shape, crs)? {
             overlays.push(ContextOverlay {
                 name: name.clone(),
                 kind,
@@ -174,22 +178,20 @@ pub fn context_overlays_from_path(path: &Path) -> Result<Vec<ContextOverlay>> {
 }
 
 fn read(path: &Path) -> Result<Vec<(Shape, Record)>> {
-    validate_shapefile_crs(path)?;
     ::shapefile::read(path).map_err(|error| {
         TrailgenError::InvalidData(format!("read shapefile {}: {error}", path.display()))
     })
 }
 
-fn validate_shapefile_crs(path: &Path) -> Result<()> {
+fn shapefile_projector(path: &Path) -> Result<CoordProjector> {
     let prj = path.with_extension("prj");
     if !prj.exists() {
-        return Ok(());
+        return Ok(projector(CrsVerdict::AssumedGeographic));
     }
     let wkt = fs::read_to_string(&prj).map_err(|error| {
         TrailgenError::InvalidData(format!("read shapefile CRS {}: {error}", prj.display()))
     })?;
-    validate_prj_wkt(&wkt)?;
-    Ok(())
+    Ok(projector(validate_prj_wkt(&wkt)?))
 }
 
 fn provenance(props: &ShpProps<'_>, default_source: &str, source_id: &str) -> Provenance {
@@ -247,11 +249,23 @@ fn travel_from_props(props: &ShpProps<'_>) -> EdgeTravel {
         .unwrap_or_default()
 }
 
-fn lines(shape: &Shape) -> Result<Vec<LineString>> {
+fn lines(shape: &Shape, crs: CoordProjector) -> Result<Vec<LineString>> {
     match shape {
-        Shape::Polyline(polyline) => polyline.parts().iter().map(|part| line_xy(part)).collect(),
-        Shape::PolylineM(polyline) => polyline.parts().iter().map(|part| line_xym(part)).collect(),
-        Shape::PolylineZ(polyline) => polyline.parts().iter().map(|part| line_xyz(part)).collect(),
+        Shape::Polyline(polyline) => polyline
+            .parts()
+            .iter()
+            .map(|part| line_xy(part, crs))
+            .collect(),
+        Shape::PolylineM(polyline) => polyline
+            .parts()
+            .iter()
+            .map(|part| line_xym(part, crs))
+            .collect(),
+        Shape::PolylineZ(polyline) => polyline
+            .parts()
+            .iter()
+            .map(|part| line_xyz(part, crs))
+            .collect(),
         other => Err(TrailgenError::UnsupportedFormat(format!(
             "shapefile network geometry {:?}",
             other.shapetype()
@@ -259,25 +273,29 @@ fn lines(shape: &Shape) -> Result<Vec<LineString>> {
     }
 }
 
-fn overlay_geometries(shape: &Shape) -> Result<Vec<OverlayGeometry>> {
+fn overlay_geometries(shape: &Shape, crs: CoordProjector) -> Result<Vec<OverlayGeometry>> {
     match shape {
-        Shape::Polygon(polygon) => Ok(outer_rings(polygon.rings(), ring_xy)),
-        Shape::PolygonM(polygon) => Ok(outer_rings(polygon.rings(), ring_xym)),
-        Shape::PolygonZ(polygon) => Ok(outer_rings(polygon.rings(), ring_xyz)),
+        Shape::Polygon(polygon) => Ok(outer_rings(polygon.rings(), |points| ring_xy(points, crs))),
+        Shape::PolygonM(polygon) => {
+            Ok(outer_rings(polygon.rings(), |points| ring_xym(points, crs)))
+        }
+        Shape::PolygonZ(polygon) => {
+            Ok(outer_rings(polygon.rings(), |points| ring_xyz(points, crs)))
+        }
         Shape::Polyline(polyline) => polyline
             .parts()
             .iter()
-            .map(|part| Ok(OverlayGeometry::Line(line_xy(part)?)))
+            .map(|part| Ok(OverlayGeometry::Line(line_xy(part, crs)?)))
             .collect(),
         Shape::PolylineM(polyline) => polyline
             .parts()
             .iter()
-            .map(|part| Ok(OverlayGeometry::Line(line_xym(part)?)))
+            .map(|part| Ok(OverlayGeometry::Line(line_xym(part, crs)?)))
             .collect(),
         Shape::PolylineZ(polyline) => polyline
             .parts()
             .iter()
-            .map(|part| Ok(OverlayGeometry::Line(line_xyz(part)?)))
+            .map(|part| Ok(OverlayGeometry::Line(line_xyz(part, crs)?)))
             .collect(),
         other => Err(TrailgenError::UnsupportedFormat(format!(
             "shapefile overlay geometry {:?}",
@@ -299,35 +317,35 @@ where
         .collect()
 }
 
-fn line_xy(points: &[Point]) -> Result<LineString> {
-    LineString::new(points.iter().map(|p| Coord::new(p.x, p.y)).collect())
+fn line_xy(points: &[Point], crs: CoordProjector) -> Result<LineString> {
+    LineString::new(points.iter().map(|p| crs.project(p.x, p.y, None)).collect())
 }
 
-fn line_xym(points: &[PointM]) -> Result<LineString> {
-    LineString::new(points.iter().map(|p| Coord::new(p.x, p.y)).collect())
+fn line_xym(points: &[PointM], crs: CoordProjector) -> Result<LineString> {
+    LineString::new(points.iter().map(|p| crs.project(p.x, p.y, None)).collect())
 }
 
-fn line_xyz(points: &[PointZ]) -> Result<LineString> {
+fn line_xyz(points: &[PointZ], crs: CoordProjector) -> Result<LineString> {
     LineString::new(
         points
             .iter()
-            .map(|p| Coord::with_ele(p.x, p.y, p.z))
+            .map(|p| crs.project(p.x, p.y, Some(p.z)))
             .collect(),
     )
 }
 
-fn ring_xy(points: &[Point]) -> Vec<Coord> {
-    points.iter().map(|p| Coord::new(p.x, p.y)).collect()
+fn ring_xy(points: &[Point], crs: CoordProjector) -> Vec<Coord> {
+    points.iter().map(|p| crs.project(p.x, p.y, None)).collect()
 }
 
-fn ring_xym(points: &[PointM]) -> Vec<Coord> {
-    points.iter().map(|p| Coord::new(p.x, p.y)).collect()
+fn ring_xym(points: &[PointM], crs: CoordProjector) -> Vec<Coord> {
+    points.iter().map(|p| crs.project(p.x, p.y, None)).collect()
 }
 
-fn ring_xyz(points: &[PointZ]) -> Vec<Coord> {
+fn ring_xyz(points: &[PointZ], crs: CoordProjector) -> Vec<Coord> {
     points
         .iter()
-        .map(|p| Coord::with_ele(p.x, p.y, p.z))
+        .map(|p| crs.project(p.x, p.y, Some(p.z)))
         .collect()
 }
 

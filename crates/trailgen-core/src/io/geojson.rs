@@ -1,5 +1,5 @@
 use crate::builder::SegmentDraft;
-use crate::crs::{VectorCrsKind, validate_crs_name};
+use crate::crs::{CoordProjector, CrsVerdict, VectorCrsKind, projector, validate_crs_name};
 use crate::geo::{Coord, LineString};
 use crate::io::route_file::{RouteFile, RouteFileMetadata};
 use crate::model::{Access, CrossingKind, Edge, EdgeTravel, Provenance, Terrain, TrailGraph};
@@ -14,7 +14,7 @@ use std::collections::BTreeSet;
 
 pub fn network_from_str(s: &str) -> Result<Vec<SegmentDraft>> {
     let root: Value = serde_json::from_str(s)?;
-    validate_geojson_crs(&root)?;
+    let crs = geojson_projector(&root)?;
     let features = root
         .get("features")
         .and_then(Value::as_array)
@@ -54,7 +54,7 @@ pub fn network_from_str(s: &str) -> Result<Vec<SegmentDraft>> {
         let Some(geometry) = feature.get("geometry") else {
             continue;
         };
-        for line in lines_from_geometry(geometry)? {
+        for line in lines_from_geometry(geometry, crs)? {
             drafts.push(SegmentDraft {
                 geometry: line,
                 terrain,
@@ -76,7 +76,7 @@ pub fn route_line_from_str(s: &str) -> Result<LineString> {
 
 pub fn route_file_from_str(s: &str) -> Result<RouteFile> {
     let root: Value = serde_json::from_str(s)?;
-    validate_geojson_crs(&root)?;
+    let crs = geojson_projector(&root)?;
     if root.get("type").and_then(Value::as_str) == Some("FeatureCollection") {
         let features = root
             .get("features")
@@ -86,22 +86,25 @@ pub fn route_file_from_str(s: &str) -> Result<RouteFile> {
             })?;
         for feature in features {
             if let Some(geometry) = feature.get("geometry")
-                && let Some(line) = lines_from_geometry(geometry)?.into_iter().next()
+                && let Some(line) = lines_from_geometry(geometry, crs)?.into_iter().next()
             {
                 return Ok(RouteFile::new(line, metadata_from_feature(feature)));
             }
         }
     }
     if root.get("type").and_then(Value::as_str) == Some("Feature") {
-        let line = lines_from_geometry(root.get("geometry").ok_or_else(|| {
-            TrailgenError::InvalidData("GeoJSON feature has no geometry".to_owned())
-        })?)?
+        let line = lines_from_geometry(
+            root.get("geometry").ok_or_else(|| {
+                TrailgenError::InvalidData("GeoJSON feature has no geometry".to_owned())
+            })?,
+            crs,
+        )?
         .into_iter()
         .next()
         .ok_or_else(|| TrailgenError::InvalidGeometry("no LineString in GeoJSON".to_owned()))?;
         return Ok(RouteFile::new(line, metadata_from_feature(&root)));
     }
-    let line = lines_from_geometry(&root)?
+    let line = lines_from_geometry(&root, crs)?
         .into_iter()
         .next()
         .ok_or_else(|| TrailgenError::InvalidGeometry("no LineString in GeoJSON".to_owned()))?;
@@ -110,7 +113,7 @@ pub fn route_file_from_str(s: &str) -> Result<RouteFile> {
 
 pub fn access_overlays_from_str(s: &str) -> Result<Vec<AccessOverlay>> {
     let root: Value = serde_json::from_str(s)?;
-    validate_geojson_crs(&root)?;
+    let crs = geojson_projector(&root)?;
     let features = root
         .get("features")
         .and_then(Value::as_array)
@@ -120,13 +123,13 @@ pub fn access_overlays_from_str(s: &str) -> Result<Vec<AccessOverlay>> {
     features
         .iter()
         .enumerate()
-        .map(|(i, feature)| overlay_from_feature(feature, i))
+        .map(|(i, feature)| overlay_from_feature(feature, i, crs))
         .collect()
 }
 
 pub fn terrain_overlays_from_str(s: &str) -> Result<Vec<TerrainOverlay>> {
     let root: Value = serde_json::from_str(s)?;
-    validate_geojson_crs(&root)?;
+    let crs = geojson_projector(&root)?;
     let features = root
         .get("features")
         .and_then(Value::as_array)
@@ -136,13 +139,13 @@ pub fn terrain_overlays_from_str(s: &str) -> Result<Vec<TerrainOverlay>> {
     features
         .iter()
         .enumerate()
-        .map(|(i, feature)| terrain_overlay_from_feature(feature, i))
+        .map(|(i, feature)| terrain_overlay_from_feature(feature, i, crs))
         .collect()
 }
 
 pub fn context_overlays_from_str(s: &str) -> Result<Vec<ContextOverlay>> {
     let root: Value = serde_json::from_str(s)?;
-    validate_geojson_crs(&root)?;
+    let crs = geojson_projector(&root)?;
     let features = root
         .get("features")
         .and_then(Value::as_array)
@@ -152,7 +155,7 @@ pub fn context_overlays_from_str(s: &str) -> Result<Vec<ContextOverlay>> {
     Ok(features
         .iter()
         .enumerate()
-        .map(|(i, feature)| context_from_feature(feature, i))
+        .map(|(i, feature)| context_from_feature(feature, i, crs))
         .collect::<Result<Vec<_>>>()?
         .into_iter()
         .flatten()
@@ -418,21 +421,33 @@ fn metadata_from_feature(feature: &Value) -> RouteFileMetadata {
     }
 }
 
-fn validate_geojson_crs(value: &Value) -> Result<()> {
+fn geojson_projector(value: &Value) -> Result<CoordProjector> {
+    let mut crs = None;
+    collect_geojson_projector(value, &mut crs)?;
+    Ok(crs.map_or_else(|| projector(CrsVerdict::AssumedGeographic), projector))
+}
+
+fn collect_geojson_projector(value: &Value, seen: &mut Option<CrsVerdict>) -> Result<()> {
     if let Some(crs) = value.get("crs") {
-        validate_crs_name(VectorCrsKind::GeoJson, geojson_crs_name(crs)?)?;
+        let verdict = validate_crs_name(VectorCrsKind::GeoJson, geojson_crs_name(crs)?)?;
+        if seen.is_some_and(|previous| previous != verdict) {
+            return Err(TrailgenError::InvalidData(
+                "GeoJSON contains conflicting CRS declarations".to_owned(),
+            ));
+        }
+        *seen = Some(verdict);
     }
     match value.get("type").and_then(Value::as_str) {
         Some("FeatureCollection") => {
             if let Some(features) = value.get("features").and_then(Value::as_array) {
                 for feature in features {
-                    validate_geojson_crs(feature)?;
+                    collect_geojson_projector(feature, seen)?;
                 }
             }
         }
         Some("Feature") => {
             if let Some(geometry) = value.get("geometry") {
-                validate_geojson_crs(geometry)?;
+                collect_geojson_projector(geometry, seen)?;
             }
         }
         _ => {}
@@ -453,12 +468,13 @@ fn geojson_crs_name(crs: &Value) -> Result<&str> {
         })
 }
 
-fn lines_from_geometry(geometry: &Value) -> Result<Vec<LineString>> {
+fn lines_from_geometry(geometry: &Value, crs: CoordProjector) -> Result<Vec<LineString>> {
     match geometry.get("type").and_then(Value::as_str) {
         Some("LineString") => Ok(vec![LineString::new(coords(
             geometry.get("coordinates").ok_or_else(|| {
                 TrailgenError::InvalidGeometry("LineString lacks coordinates".to_owned())
             })?,
+            crs,
         )?)?]),
         Some("MultiLineString") => geometry
             .get("coordinates")
@@ -467,7 +483,7 @@ fn lines_from_geometry(geometry: &Value) -> Result<Vec<LineString>> {
                 TrailgenError::InvalidGeometry("MultiLineString lacks coordinates".to_owned())
             })?
             .iter()
-            .map(|xs| LineString::new(coords(xs)?))
+            .map(|xs| LineString::new(coords(xs, crs)?))
             .collect(),
         Some(other) => Err(TrailgenError::UnsupportedFormat(format!(
             "GeoJSON geometry {other}"
@@ -478,7 +494,7 @@ fn lines_from_geometry(geometry: &Value) -> Result<Vec<LineString>> {
     }
 }
 
-fn overlay_from_feature(feature: &Value, i: usize) -> Result<AccessOverlay> {
+fn overlay_from_feature(feature: &Value, i: usize, crs: CoordProjector) -> Result<AccessOverlay> {
     let properties = feature
         .get("properties")
         .and_then(Value::as_object)
@@ -510,9 +526,12 @@ fn overlay_from_feature(feature: &Value, i: usize) -> Result<AccessOverlay> {
             .unwrap_or(20.0)
             .max(0.0),
         provenance,
-        geometry: overlay_geometry(feature.get("geometry").ok_or_else(|| {
-            TrailgenError::InvalidData("GeoJSON overlay feature has no geometry".to_owned())
-        })?)?,
+        geometry: overlay_geometry(
+            feature.get("geometry").ok_or_else(|| {
+                TrailgenError::InvalidData("GeoJSON overlay feature has no geometry".to_owned())
+            })?,
+            crs,
+        )?,
     })
 }
 
@@ -526,7 +545,11 @@ fn access_window_from_properties(properties: &Map<String, Value>) -> Result<Acce
     })
 }
 
-fn terrain_overlay_from_feature(feature: &Value, i: usize) -> Result<TerrainOverlay> {
+fn terrain_overlay_from_feature(
+    feature: &Value,
+    i: usize,
+    crs: CoordProjector,
+) -> Result<TerrainOverlay> {
     let properties = feature
         .get("properties")
         .and_then(Value::as_object)
@@ -565,13 +588,18 @@ fn terrain_overlay_from_feature(feature: &Value, i: usize) -> Result<TerrainOver
             .unwrap_or(20.0)
             .max(0.0),
         provenance,
-        geometry: overlay_geometry(feature.get("geometry").ok_or_else(|| {
-            TrailgenError::InvalidData("GeoJSON terrain overlay feature has no geometry".to_owned())
-        })?)?,
+        geometry: overlay_geometry(
+            feature.get("geometry").ok_or_else(|| {
+                TrailgenError::InvalidData(
+                    "GeoJSON terrain overlay feature has no geometry".to_owned(),
+                )
+            })?,
+            crs,
+        )?,
     })
 }
 
-fn overlay_geometry(geometry: &Value) -> Result<OverlayGeometry> {
+fn overlay_geometry(geometry: &Value, crs: CoordProjector) -> Result<OverlayGeometry> {
     match geometry.get("type").and_then(Value::as_str) {
         Some("Polygon") => {
             let rings = geometry
@@ -580,9 +608,12 @@ fn overlay_geometry(geometry: &Value) -> Result<OverlayGeometry> {
                 .ok_or_else(|| {
                     TrailgenError::InvalidGeometry("Polygon lacks coordinates".to_owned())
                 })?;
-            polygon(coords(rings.first().ok_or_else(|| {
-                TrailgenError::InvalidGeometry("Polygon lacks exterior ring".to_owned())
-            })?)?)
+            polygon(coords(
+                rings.first().ok_or_else(|| {
+                    TrailgenError::InvalidGeometry("Polygon lacks exterior ring".to_owned())
+                })?,
+                crs,
+            )?)
         }
         Some("MultiPolygon") => {
             let rings = geometry
@@ -596,22 +627,25 @@ fn overlay_geometry(geometry: &Value) -> Result<OverlayGeometry> {
                     let rings = poly.as_array().ok_or_else(|| {
                         TrailgenError::InvalidGeometry("MultiPolygon member expected".to_owned())
                     })?;
-                    coords(rings.first().ok_or_else(|| {
-                        TrailgenError::InvalidGeometry(
-                            "MultiPolygon member lacks exterior ring".to_owned(),
-                        )
-                    })?)
+                    coords(
+                        rings.first().ok_or_else(|| {
+                            TrailgenError::InvalidGeometry(
+                                "MultiPolygon member lacks exterior ring".to_owned(),
+                            )
+                        })?,
+                        crs,
+                    )
                 })
                 .collect::<Result<Vec<_>>>()?;
             Ok(OverlayGeometry::MultiPolygon(rings))
         }
-        Some("LineString") => lines_from_geometry(geometry)?
+        Some("LineString") => lines_from_geometry(geometry, crs)?
             .into_iter()
             .next()
             .map(OverlayGeometry::Line)
             .ok_or_else(|| TrailgenError::InvalidGeometry("empty LineString".to_owned())),
         Some("MultiLineString") => {
-            let lines = lines_from_geometry(geometry)?;
+            let lines = lines_from_geometry(geometry, crs)?;
             if lines.is_empty() {
                 Err(TrailgenError::InvalidGeometry(
                     "empty MultiLineString".to_owned(),
@@ -629,7 +663,11 @@ fn overlay_geometry(geometry: &Value) -> Result<OverlayGeometry> {
     }
 }
 
-fn context_from_feature(feature: &Value, i: usize) -> Result<Vec<ContextOverlay>> {
+fn context_from_feature(
+    feature: &Value,
+    i: usize,
+    crs: CoordProjector,
+) -> Result<Vec<ContextOverlay>> {
     let properties = feature
         .get("properties")
         .and_then(Value::as_object)
@@ -660,7 +698,7 @@ fn context_from_feature(feature: &Value, i: usize) -> Result<Vec<ContextOverlay>
     let geometry = feature.get("geometry").ok_or_else(|| {
         TrailgenError::InvalidData("GeoJSON context feature has no geometry".to_owned())
     })?;
-    let lines = lines_from_geometry(geometry)?;
+    let lines = lines_from_geometry(geometry, crs)?;
     let multi = lines.len() > 1;
     let confidence = prop_f64(&properties, "confidence")
         .unwrap_or(0.8)
@@ -682,7 +720,7 @@ fn context_from_feature(feature: &Value, i: usize) -> Result<Vec<ContextOverlay>
         .collect())
 }
 
-fn coords(value: &Value) -> Result<Vec<Coord>> {
+fn coords(value: &Value, crs: CoordProjector) -> Result<Vec<Coord>> {
     value
         .as_array()
         .ok_or_else(|| TrailgenError::InvalidGeometry("coordinate array expected".to_owned()))?
@@ -700,7 +738,7 @@ fn coords(value: &Value) -> Result<Vec<Coord>> {
                 .and_then(Value::as_f64)
                 .ok_or_else(|| TrailgenError::InvalidGeometry("latitude missing".to_owned()))?;
             let ele = xs.get(2).and_then(Value::as_f64);
-            Ok(Coord { lon, lat, ele })
+            Ok(crs.project(lon, lat, ele))
         })
         .collect()
 }

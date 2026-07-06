@@ -28,7 +28,7 @@ Normalization targets:
 Adapter invariants:
 
 - never crown a provider as authoritative inside core types
-- validate advertised CRS metadata; vector geometries must be lon/lat WGS84/CRS84 unless a real reprojection adapter is added
+- validate advertised CRS metadata; vector geometries must normalize to lon/lat WGS84/CRS84 at the adapter boundary. Native WGS84/CRS84 and declared EPSG:3857 Web Mercator are implemented; other projected CRS require an explicit reprojection adapter rather than silent ingestion
 - keep source provenance on every derived edge attribute
 - attach confidence to inferred or transformed attributes
 - fail on unsupported shapes or ambiguous units instead of inventing precision
