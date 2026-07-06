@@ -12,7 +12,7 @@ cargo run -p trailgen -- import-seed demo/mini-loop --route demo/mini-loop/route
 cargo run -p trailgen -- apply-access demo/mini-loop --source crates/trailgen-core/tests/fixtures/access_overlay.geojson --source crates/trailgen-core/tests/fixtures/closure_overlay.geojson --date 2026-05-15
 cargo run -p trailgen -- verify-sources demo/mini-loop
 cargo run -p trailgen -- generate demo/mini-loop --start=-105.0000,40.0000 --min-km 3 --max-km 8 --count 4 --seed 0
-cargo run -p trailgen -- export demo/mini-loop --route candidate-1 --format geojson --output demo/mini-loop/routes/candidate-1.selected.geojson
+cargo run -p trailgen -- export demo/mini-loop --route candidate-1 --format geojson --output demo/mini-loop/routes/candidate-1.selected.geojson --report-output demo/mini-loop/reports/candidate-1.selected.md
 cargo run -p trailgen -- export demo/mini-loop --route candidate-1 --format csv --output demo/mini-loop/routes/candidate-1.selected.csv
 cargo run -p trailgen -- report demo/mini-loop --route candidate-1 --output demo/mini-loop/reports/candidate-1.md
 cargo run -p trailgen -- map demo/mini-loop --output demo/mini-loop/reports/map.html

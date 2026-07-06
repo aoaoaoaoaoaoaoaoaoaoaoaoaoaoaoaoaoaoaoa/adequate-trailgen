@@ -20,9 +20,9 @@ cargo run -p trailgen -- apply-access demo/mini-loop --source crates/trailgen-co
 cargo run -p trailgen -- verify-sources demo/mini-loop
 cargo run -p trailgen -- stats demo/mini-loop
 cargo run -p trailgen -- generate demo/mini-loop --start=-105.0000,40.0000 --min-km 4 --max-km 9 --count 4 --seed 0
-cargo run -p trailgen -- export demo/mini-loop --route candidate-1 --format gpx --output /tmp/candidate-1.gpx
+cargo run -p trailgen -- export demo/mini-loop --route candidate-1 --format gpx --output /tmp/candidate-1.gpx --report-output /tmp/candidate-1.md
 cargo run -p trailgen -- export demo/mini-loop --route candidate-1 --format csv --output /tmp/candidate-1.csv
-cargo run -p trailgen -- report demo/mini-loop --route candidate-1 --output /tmp/candidate-1.md
+cargo run -p trailgen -- report demo/mini-loop --output /tmp/generated.md
 cargo run -p trailgen -- map demo/mini-loop --output /tmp/mini-loop-map.html
 ```
 
@@ -54,7 +54,7 @@ Generated artifacts land in the project directory:
 - `reports/candidate-*.md`: one-route reports emitted during generation for direct handoff
 - `reports/map.html`: self-contained offline SVG map of graph terrain, edge difficulty, confidence, generated routes, and selected route diagnostics
 
-Use `trailgen export <project> --route candidate-1 --format gpx|geojson|csv|kml|kmz --output file` to re-export a selected generated route after the search run; GeoJSON route exports carry the same route-level diagnostic fields as `routes/generated.geojson`. Use `trailgen report <project> [--route candidate-1] [--output file.md]` to render either all generated routes or one named route, including the constraint envelope used for that generation run. Use `trailgen map <project> [--output file.html]` to regenerate the offline diagnostic map without rerunning the solver. These commands read `routes/generated.graph.json` when generated routes exist, so later cached-graph rerating or access-date changes do not silently reinterpret an old route.
+Use `trailgen export <project> --route candidate-1 --format gpx|geojson|csv|kml|kmz --output file [--report-output file.md]` to re-export a selected generated route after the search run, optionally with the same human-readable report sidecar emitted during generation. GeoJSON route exports carry the same route-level diagnostic fields as `routes/generated.geojson`. Use `trailgen report <project> [--route candidate-1] [--output file.md]` to render either all generated routes or one named route, including the constraint envelope used for that generation run. Use `trailgen map <project> [--output file.html]` to regenerate the offline diagnostic map without rerunning the solver. These commands read `routes/generated.graph.json` when generated routes exist, so later cached-graph rerating or access-date changes do not silently reinterpret an old route.
 
 Use `trailgen rate <project> --route completed.gpx [--output reports/completed.md]` to score a completed hike against the current graph and optionally persist the full diagnostic report. Route-file snapping is bounded by `max_route_snap_m`; use `--max-route-snap-m N` only for deliberately coarse tracks. Use `trailgen calibrate <project> --route completed.gpx --target-difficulty N --family elevation|technical|navigation` to dry-run a difficulty-weight patch from that hike; add `--write` to update `trailgen.toml` and rerate cached edge costs. `trailgen rerate <project>` reapplies hand-edited `[difficulty]` weights to every cached graph surface under `cache/`.
 

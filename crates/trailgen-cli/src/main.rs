@@ -186,6 +186,9 @@ enum Cmd {
         /// Destination file.
         #[arg(long)]
         output: PathBuf,
+        /// Optional Markdown report sidecar for the same selected route.
+        #[arg(long)]
+        report_output: Option<PathBuf>,
         /// Export format.
         #[arg(long, value_enum)]
         format: ExportFormat,
@@ -481,8 +484,9 @@ fn main() -> Result<()> {
             project,
             route,
             output,
+            report_output,
             format,
-        } => export_route(&project, &route, format, &output),
+        } => export_route(&project, &route, format, &output, report_output.as_deref()),
         Cmd::Report {
             project,
             route,
@@ -1763,6 +1767,7 @@ fn export_route(
     route_name: &str,
     format: ExportFormat,
     output: &Path,
+    report_output: Option<&Path>,
 ) -> Result<()> {
     let graph = load_generated_graph(project)?;
     let routes = load_generated_routes(project)?;
@@ -1778,31 +1783,24 @@ fn export_route(
         ExportFormat::Kmz => write_bytes(output, kmz::route_to_kmz(&graph, route)?),
     }?;
     println!("exported {} to {}", route.name, output.display());
+    if let Some(report_output) = report_output {
+        write_bytes(
+            report_output,
+            render_selected_generated_report(project, &graph, route)?,
+        )?;
+        println!("wrote report {}", report_output.display());
+    }
     Ok(())
 }
 
 fn report_generated(project: &Path, route_name: Option<&str>, output: Option<&Path>) -> Result<()> {
     let graph = load_generated_graph(project)?;
     let routes = load_generated_routes(project)?;
-    let selected;
-    let report_routes = if let Some(route_name) = route_name {
-        selected = vec![select_route(&routes, route_name)?.clone()];
-        selected.as_slice()
+    let text = if let Some(route_name) = route_name {
+        render_selected_generated_report(project, &graph, select_route(&routes, route_name)?)?
     } else {
-        routes.as_slice()
+        render_generated_report(project, &graph, &routes)?
     };
-    let constraints = load_generated_constraints(project)?.unwrap_or_else(|| {
-        load_config(project)
-            .map(|config| config.constraints)
-            .unwrap_or_default()
-    });
-    let text = render_project_report(
-        project,
-        "Generated Hiking Routes",
-        &graph,
-        report_routes,
-        &constraints,
-    )?;
     if let Some(output) = output {
         write_bytes(output, text)?;
         println!("wrote report {}", output.display());
@@ -1810,6 +1808,37 @@ fn report_generated(project: &Path, route_name: Option<&str>, output: Option<&Pa
         println!("{text}");
     }
     Ok(())
+}
+
+fn render_selected_generated_report(
+    project: &Path,
+    graph: &TrailGraph,
+    route: &Route,
+) -> Result<String> {
+    render_generated_report_with_title(
+        project,
+        "Generated Hiking Route",
+        graph,
+        std::slice::from_ref(route),
+    )
+}
+
+fn render_generated_report(project: &Path, graph: &TrailGraph, routes: &[Route]) -> Result<String> {
+    render_generated_report_with_title(project, "Generated Hiking Routes", graph, routes)
+}
+
+fn render_generated_report_with_title(
+    project: &Path,
+    title: &str,
+    graph: &TrailGraph,
+    routes: &[Route],
+) -> Result<String> {
+    let constraints = load_generated_constraints(project)?.unwrap_or_else(|| {
+        load_config(project)
+            .map(|config| config.constraints)
+            .unwrap_or_default()
+    });
+    render_project_report(project, title, graph, routes, &constraints)
 }
 
 fn map_html(project: &Path, output: Option<&Path>) -> Result<()> {
@@ -4481,6 +4510,7 @@ mod tests {
         )?;
 
         let gpx = project.join("exports/candidate-1.gpx");
+        let gpx_report = project.join("exports/candidate-1.md");
         let csv = project.join("exports/candidate-1.csv");
         let geojson = project.join("exports/candidate-1.geojson");
         let md = project.join("reports/candidate-1.md");
@@ -4488,12 +4518,37 @@ mod tests {
         let generated_candidate_report = fs::read_to_string(&md)?;
         assert!(generated_candidate_report.starts_with("# Generated Hiking Route"));
         assert!(generated_candidate_report.contains("Source provenance:"));
-        export_route(project, "candidate-1", ExportFormat::Gpx, &gpx)?;
-        export_route(project, "candidate-1", ExportFormat::Csv, &csv)?;
-        export_route(project, "candidate-1", ExportFormat::Geojson, &geojson)?;
+        export_route(
+            project,
+            "candidate-1",
+            ExportFormat::Gpx,
+            &gpx,
+            Some(&gpx_report),
+        )?;
+        export_route(project, "candidate-1", ExportFormat::Csv, &csv, None)?;
+        export_route(
+            project,
+            "candidate-1",
+            ExportFormat::Geojson,
+            &geojson,
+            None,
+        )?;
         report_generated(project, Some("candidate-1"), Some(&md))?;
         map_html(project, Some(&map))?;
 
+        assert_selected_route_exports(project, &gpx, &csv, &geojson)?;
+        assert_selected_route_reports(&md, &gpx_report)?;
+        assert_selected_route_maps(project, &map)?;
+
+        Ok(())
+    }
+
+    fn assert_selected_route_exports(
+        project: &Path,
+        gpx: &Path,
+        csv: &Path,
+        geojson: &Path,
+    ) -> Result<()> {
         assert!(fs::read_to_string(gpx)?.contains("<gpx"));
         let csv_text = fs::read_to_string(csv)?;
         assert!(csv_text.starts_with("longitude,latitude,elevation_m\n"));
@@ -4515,6 +4570,10 @@ mod tests {
         assert!(selected_properties["access_warning_edges"].is_array());
         assert!(selected_properties["low_confidence_edges"].is_array());
         assert!(selected_properties["dubious_edges"].is_array());
+        Ok(())
+    }
+
+    fn assert_selected_route_reports(md: &Path, sidecar: &Path) -> Result<()> {
         let report = fs::read_to_string(md)?;
         assert!(report.contains("candidate-1"));
         assert!(report.contains("## Constraint Envelope"));
@@ -4526,6 +4585,15 @@ mod tests {
         assert!(report.contains("restricted-access fraction"));
         assert!(report.contains("## Source Manifest"));
         assert!(report.contains("sha256 "));
+        let sidecar_report = fs::read_to_string(sidecar)?;
+        assert!(sidecar_report.starts_with("# Generated Hiking Route"));
+        assert!(sidecar_report.contains("candidate-1"));
+        assert!(sidecar_report.contains("Difficulty decomposition"));
+        assert!(sidecar_report.contains("Source provenance:"));
+        Ok(())
+    }
+
+    fn assert_selected_route_maps(project: &Path, selected: &Path) -> Result<()> {
         let generated_map = fs::read_to_string(project.join("reports/map.html"))?;
         assert!(generated_map.contains("Offline diagnostic map"));
         assert!(generated_map.contains("const graph = {"));
@@ -4539,10 +4607,9 @@ mod tests {
         assert!(generated_map.contains("source provenance"));
         assert!(generated_map.contains("fixture:"));
         assert!(generated_map.contains("largest difficulty contributors"));
-        let selected_map = fs::read_to_string(map)?;
+        let selected_map = fs::read_to_string(selected)?;
         assert!(selected_map.contains("Export Test"));
         assert!(selected_map.contains("candidate-1"));
-
         Ok(())
     }
 
