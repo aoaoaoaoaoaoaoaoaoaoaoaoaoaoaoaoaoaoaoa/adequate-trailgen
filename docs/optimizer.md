@@ -7,7 +7,7 @@
 
 Select them with `solver = "auto"|"heuristic"|"exact"` in `trailgen.toml` or `trailgen generate --solver auto|heuristic|exact`. `auto` records the requested strategy but resolves per graph: small graphs use `ExactLoopSolver`, larger graphs use `LoopHunter`.
 
-Generation snaps the requested `--start lon,lat` to the nearest graph vertex only inside `max_start_snap_m`; a remote coordinate fails loudly instead of silently producing a route from the wrong trailhead. `LoopHunter` expands from that selected start vertex, orders fanout by edge difficulty, and keeps a bounded outward frontier using `[search]` parameters:
+Generation snaps the requested `--start lon,lat` to the nearest graph vertex only inside `max_start_snap_m`; a remote coordinate fails loudly instead of silently producing a route from the wrong trailhead. `LoopHunter` expands from that selected start vertex, orders fanout by edge difficulty, and keeps a bounded outward frontier using `[search]` parameters, which can be overridden per run with `generate --max-hops`, `--max-frontier`, and `--keep`:
 
 - `max_hops`: maximum edge count in the outward search
 - `max_frontier`: maximum expanded states before stopping

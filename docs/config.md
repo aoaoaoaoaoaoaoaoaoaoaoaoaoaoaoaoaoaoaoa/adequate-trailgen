@@ -24,7 +24,7 @@ The AOI is not a routing constraint. It is a discovery/reproducibility contract:
 - `heuristic`: always use `LoopHunter`
 - `exact`: always use `ExactLoopSolver`, bounded by `[search]`
 
-`trailgen generate --solver auto|heuristic|exact` overrides the config for one run. The manifest records both `requested_solver` and the concrete `solver`.
+`trailgen generate --solver auto|heuristic|exact` overrides the config for one run. `--max-hops`, `--max-frontier`, and `--keep` similarly override `[search]` only for that run. The manifest records both `requested_solver` and the concrete `solver`, and stores the effective search envelope under `effective_config.search`.
 
 `max_start_snap_m` bounds trailhead snapping during `generate`, defaulting to `500`. The requested `--start lon,lat` must be within this many meters of the nearest graph vertex, otherwise generation fails before emitting routes. Override one run with `--max-start-snap-m N` only when the coordinate is deliberately coarse. `routes/generated.manifest.json` records the requested coordinate, snapped vertex, snapped coordinate, and realized `start_snap_m`.
 

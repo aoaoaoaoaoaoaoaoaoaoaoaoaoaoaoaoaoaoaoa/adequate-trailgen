@@ -118,6 +118,15 @@ enum Cmd {
         /// Solver selection: auto, heuristic, or exact.
         #[arg(long, value_parser = parse_solver_kind)]
         solver: Option<SolverKind>,
+        /// Maximum edge count in the outward search for this run.
+        #[arg(long, value_parser = parse_positive_usize)]
+        max_hops: Option<usize>,
+        /// Maximum expanded solver states for this run.
+        #[arg(long, value_parser = parse_positive_usize)]
+        max_frontier: Option<usize>,
+        /// Maximum pre-truncation candidates retained by the solver.
+        #[arg(long, value_parser = parse_positive_usize)]
+        keep: Option<usize>,
         /// Planning date used to materialize dated access/closure overlays.
         #[arg(long, value_parser = parse_planning_date)]
         date: Option<PlanningDate>,
@@ -418,6 +427,9 @@ fn main() -> Result<()> {
             seed,
             max_start_snap_m,
             solver,
+            max_hops,
+            max_frontier,
+            keep,
             date,
             min_difficulty,
             max_difficulty,
@@ -444,6 +456,9 @@ fn main() -> Result<()> {
                 seed,
                 max_start_snap_m,
                 solver,
+                max_hops,
+                max_frontier,
+                keep,
                 date,
                 min_difficulty,
                 max_difficulty,
@@ -1068,6 +1083,9 @@ struct GenerateOptions {
     seed: u64,
     max_start_snap_m: Option<f64>,
     solver: Option<SolverKind>,
+    max_hops: Option<usize>,
+    max_frontier: Option<usize>,
+    keep: Option<usize>,
     date: Option<PlanningDate>,
     min_difficulty: Option<f64>,
     max_difficulty: Option<f64>,
@@ -1240,6 +1258,7 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
     if let Some(max_start_snap_m) = options.max_start_snap_m {
         config.max_start_snap_m = max_start_snap_m;
     }
+    apply_generate_search_options(&mut config.search, options);
     apply_generate_options(&mut config.constraints, options);
     let mut graph = materialize_effective_graph(project, &config)?;
     let forbidden_areas =
@@ -1421,6 +1440,18 @@ fn apply_generate_options(constraints: &mut LoopConstraints, options: &GenerateO
     }
     for TerrainFraction { terrain, fraction } in &options.max_terrain {
         constraints.max_terrain_fraction.insert(*terrain, *fraction);
+    }
+}
+
+const fn apply_generate_search_options(search: &mut SearchParams, options: &GenerateOptions) {
+    if let Some(max_hops) = options.max_hops {
+        search.max_hops = max_hops;
+    }
+    if let Some(max_frontier) = options.max_frontier {
+        search.max_frontier = max_frontier;
+    }
+    if let Some(keep) = options.keep {
+        search.keep = keep;
     }
 }
 
@@ -3762,6 +3793,17 @@ fn parse_solver_kind(raw: &str) -> Result<SolverKind, String> {
     }
 }
 
+fn parse_positive_usize(raw: &str) -> Result<usize, String> {
+    let value = raw
+        .parse::<usize>()
+        .map_err(|error| format!("expected positive integer: {error}"))?;
+    if value == 0 {
+        Err("expected positive integer".to_owned())
+    } else {
+        Ok(value)
+    }
+}
+
 fn parse_planning_date(raw: &str) -> Result<PlanningDate, String> {
     raw.parse()
 }
@@ -3816,6 +3858,37 @@ mod tests {
     use clap::CommandFactory as _;
     use serde_json::Value;
 
+    fn mini_generate_options() -> GenerateOptions {
+        GenerateOptions {
+            start: "-105.0000,40.0000".to_owned(),
+            min_km: 3.0,
+            max_km: 8.0,
+            count: 2,
+            seed: 0,
+            max_start_snap_m: None,
+            solver: None,
+            max_hops: None,
+            max_frontier: None,
+            keep: None,
+            date: None,
+            min_difficulty: None,
+            max_difficulty: None,
+            min_ascent_m: None,
+            max_ascent_m: None,
+            min_descent_m: None,
+            max_descent_m: None,
+            max_road_fraction: None,
+            max_low_confidence_fraction: None,
+            max_restricted_access_fraction: None,
+            shape: Vec::new(),
+            max_repeated_edge_fraction: None,
+            forbidden_terrain: Vec::new(),
+            forbidden_area: Vec::new(),
+            min_terrain: Vec::new(),
+            max_terrain: Vec::new(),
+        }
+    }
+
     #[test]
     fn cli_help_explains_operational_commands() {
         let mut root = Cli::command();
@@ -3833,6 +3906,7 @@ mod tests {
         assert!(generate_help.contains("trailhead/start coordinate"));
         assert!(generate_help.contains("Maximum road or pavement"));
         assert!(generate_help.contains("Allowed measured route shape"));
+        assert!(generate_help.contains("Maximum expanded solver states"));
 
         let mut access = Cli::command();
         let access_help = access
@@ -3857,6 +3931,9 @@ mod tests {
                 seed: 0,
                 max_start_snap_m: None,
                 solver: None,
+                max_hops: None,
+                max_frontier: None,
+                keep: None,
                 date: None,
                 min_difficulty: None,
                 max_difficulty: None,
@@ -4045,40 +4122,25 @@ mod tests {
         )?;
         discover(project, None)?;
         build(project, &fixture)?;
-        generate(
-            project,
-            &GenerateOptions {
-                start: "-105.0000,40.0000".to_owned(),
-                min_km: 3.0,
-                max_km: 8.0,
-                count: 2,
-                seed: 77,
-                max_start_snap_m: None,
-                solver: Some(SolverKind::Exact),
-                date: Some("2026-05-15".parse().unwrap()),
-                min_difficulty: None,
-                max_difficulty: None,
-                min_ascent_m: None,
-                max_ascent_m: None,
-                min_descent_m: None,
-                max_descent_m: None,
-                max_road_fraction: None,
-                max_low_confidence_fraction: None,
-                max_restricted_access_fraction: None,
-                shape: Vec::new(),
-                max_repeated_edge_fraction: None,
-                forbidden_terrain: vec![Terrain::Road],
-                forbidden_area: Vec::new(),
-                min_terrain: vec![TerrainFraction {
-                    terrain: Terrain::Trail,
-                    fraction: 0.50,
-                }],
-                max_terrain: vec![TerrainFraction {
-                    terrain: Terrain::Pavement,
-                    fraction: 0.05,
-                }],
-            },
-        )?;
+        let options = GenerateOptions {
+            seed: 77,
+            solver: Some(SolverKind::Exact),
+            max_hops: Some(9),
+            max_frontier: Some(1_234),
+            keep: Some(7),
+            date: Some("2026-05-15".parse().unwrap()),
+            forbidden_terrain: vec![Terrain::Road],
+            min_terrain: vec![TerrainFraction {
+                terrain: Terrain::Trail,
+                fraction: 0.50,
+            }],
+            max_terrain: vec![TerrainFraction {
+                terrain: Terrain::Pavement,
+                fraction: 0.05,
+            }],
+            ..mini_generate_options()
+        };
+        generate(project, &options)?;
 
         let raw = fs::read_to_string(project.join("routes/generated.manifest.json"))?;
         let manifest: Value = serde_json::from_str(&raw)?;
@@ -4093,6 +4155,12 @@ mod tests {
                 .is_some_and(|meters| meters <= 1.0)
         );
         assert_eq!(manifest["effective_config"]["max_start_snap_m"], 500.0);
+        assert_eq!(manifest["effective_config"]["search"]["max_hops"], 9);
+        assert_eq!(
+            manifest["effective_config"]["search"]["max_frontier"],
+            1_234
+        );
+        assert_eq!(manifest["effective_config"]["search"]["keep"], 7);
         assert_eq!(manifest["effective_config"]["planning_date"], "2026-05-15");
         assert_effective_constraints_manifest(&manifest);
         assert!(manifest["source_manifest"]["adapters"].as_array().is_some());
@@ -4151,6 +4219,9 @@ mod tests {
             seed: 0,
             max_start_snap_m: None,
             solver: Some(SolverKind::Exact),
+            max_hops: None,
+            max_frontier: None,
+            keep: None,
             date: None,
             min_difficulty: None,
             max_difficulty: None,
@@ -4211,6 +4282,9 @@ mod tests {
                 seed: 0,
                 max_start_snap_m: None,
                 solver: Some(SolverKind::Exact),
+                max_hops: None,
+                max_frontier: None,
+                keep: None,
                 date: None,
                 min_difficulty: None,
                 max_difficulty: Some(10_000.0),
@@ -4372,6 +4446,9 @@ mod tests {
                 seed: 0,
                 max_start_snap_m: None,
                 solver: None,
+                max_hops: None,
+                max_frontier: None,
+                keep: None,
                 date: None,
                 min_difficulty: None,
                 max_difficulty: None,
@@ -4623,6 +4700,9 @@ mod tests {
                 seed: 0,
                 max_start_snap_m: None,
                 solver: Some(SolverKind::Exact),
+                max_hops: None,
+                max_frontier: None,
+                keep: None,
                 date: Some("2026-07-15".parse().unwrap()),
                 min_difficulty: None,
                 max_difficulty: None,
@@ -4704,6 +4784,9 @@ mod tests {
                 seed: 0,
                 max_start_snap_m: None,
                 solver: Some(SolverKind::Exact),
+                max_hops: None,
+                max_frontier: None,
+                keep: None,
                 date: Some("2026-07-15".parse().unwrap()),
                 min_difficulty: None,
                 max_difficulty: None,
@@ -4782,6 +4865,9 @@ mod tests {
                 seed: 0,
                 max_start_snap_m: None,
                 solver: None,
+                max_hops: None,
+                max_frontier: None,
+                keep: None,
                 date: None,
                 min_difficulty: None,
                 max_difficulty: Some(10_000.0),
@@ -5260,68 +5346,14 @@ mod tests {
 
         init(project, "Seed Archive Test".to_owned(), None)?;
         build(project, &fixture)?;
-        generate(
-            project,
-            &GenerateOptions {
-                start: "-105.0000,40.0000".to_owned(),
-                min_km: 3.0,
-                max_km: 8.0,
-                count: 2,
-                seed: 0,
-                max_start_snap_m: None,
-                solver: None,
-                date: None,
-                min_difficulty: None,
-                max_difficulty: None,
-                min_ascent_m: None,
-                max_ascent_m: None,
-                min_descent_m: None,
-                max_descent_m: None,
-                max_road_fraction: None,
-                max_low_confidence_fraction: None,
-                max_restricted_access_fraction: None,
-                shape: Vec::new(),
-                max_repeated_edge_fraction: None,
-                forbidden_terrain: Vec::new(),
-                forbidden_area: Vec::new(),
-                min_terrain: Vec::new(),
-                max_terrain: Vec::new(),
-            },
-        )?;
+        generate(project, &mini_generate_options())?;
         import_seed(
             project,
             &project.join("routes/candidate-1.gpx"),
             Some("Known Good Loop".to_owned()),
             None,
         )?;
-        generate(
-            project,
-            &GenerateOptions {
-                start: "-105.0000,40.0000".to_owned(),
-                min_km: 3.0,
-                max_km: 8.0,
-                count: 2,
-                seed: 0,
-                max_start_snap_m: None,
-                solver: None,
-                date: None,
-                min_difficulty: None,
-                max_difficulty: None,
-                min_ascent_m: None,
-                max_ascent_m: None,
-                min_descent_m: None,
-                max_descent_m: None,
-                max_road_fraction: None,
-                max_low_confidence_fraction: None,
-                max_restricted_access_fraction: None,
-                shape: Vec::new(),
-                max_repeated_edge_fraction: None,
-                forbidden_terrain: Vec::new(),
-                forbidden_area: Vec::new(),
-                min_terrain: Vec::new(),
-                max_terrain: Vec::new(),
-            },
-        )?;
+        generate(project, &mini_generate_options())?;
         verify_sources(project)?;
 
         let manifest: Value =
