@@ -146,7 +146,7 @@
         "sampled elevation profile",
         "edge ascent/descent"
       ],
-      "note": "Affine WGS84 or EPSG:3857 single-band GeoTIFF DEM sampling."
+      "note": "Affine WGS84/NAD83, EPSG:3857, or WGS84/NAD83 UTM single-band GeoTIFF DEM sampling."
     },
     {
       "id": "vrt-elevation",
@@ -159,7 +159,7 @@
         "sampled elevation profile",
         "edge ascent/descent"
       ],
-      "note": "GDAL VRT SimpleSource DEM wrapper with affine WGS84 or EPSG:3857 GeoTransform sampling."
+      "note": "GDAL VRT SimpleSource DEM wrapper with affine WGS84/NAD83, EPSG:3857, or WGS84/NAD83 UTM GeoTransform sampling."
     },
     {
       "id": "geojson-terrain-overlay",
@@ -509,7 +509,7 @@
             "Shapefile",
             "Feature Service"
           ],
-          "note": "Use current official closure/restriction features; preserve dates and alert provenance in cached overlays."
+          "note": "Use current official closure/restriction features; preserve dates, weekdays, hours, direction rules, and alert provenance in cached overlays."
         },
         {
           "label": "Local park or forest alerts",
@@ -527,7 +527,7 @@
         "park access restriction GIS",
         "seasonal closure boundary GeoJSON"
       ],
-      "acceptance": "Closure, private, restricted, and open statuses can be attached to graph edges with dated provenance.",
+      "acceptance": "Closure, private, restricted, open, and directional statuses can be attached to graph edges with temporal provenance.",
       "rationale": "A beautiful generated loop is trash if it crosses a closed trail or forbidden parcel.",
       "area": {
         "west": -105.02,

@@ -28,7 +28,7 @@
       "distance_m": 4712.831226933267,
       "ascent_m": 136.9999999999991,
       "descent_m": 136.9999999999991,
-      "difficulty": 1014.0688608129842,
+      "difficulty": 14.2938608129841,
       "difficulty_breakdown": {
         "distance": 4.712831226933266,
         "ascent": 1.6439999999999888,
@@ -38,20 +38,19 @@
         "road": 0.12264895807970262,
         "technical": 3.1757314914698194,
         "navigation": 0.659565679411782,
-        "confidence": 1.0800000000000003,
-        "access": 1000.0
+        "confidence": 1.3049999999999995,
+        "access": 0.0
       },
       "road_fraction": 0.013012237461292745,
       "low_confidence_fraction": 0.0,
-      "restricted_access_fraction": 0.28312937564512086,
+      "restricted_access_fraction": 0.0,
       "repeated_edge_fraction": 0.0,
       "crossings": {
         "road": 2,
         "water": 2
       },
       "access_m": {
-        "open": 3378.490264130822,
-        "closed": 1334.340962802445
+        "open": 4712.831226933267
       },
       "terrain_m": {
         "trail": 2044.149301328377,
@@ -93,7 +92,7 @@
       "distance_m": 4712.831226933267,
       "ascent_m": 136.9999999999991,
       "descent_m": 136.9999999999991,
-      "difficulty": 1014.0688608129842,
+      "difficulty": 14.068860812984102,
       "difficulty_breakdown": {
         "distance": 4.712831226933266,
         "ascent": 1.6439999999999888,
@@ -104,19 +103,18 @@
         "technical": 3.1757314914698194,
         "navigation": 0.659565679411782,
         "confidence": 1.0800000000000003,
-        "access": 1000.0
+        "access": 0.0
       },
       "road_fraction": 0.013012237461292745,
       "low_confidence_fraction": 0.0,
-      "restricted_access_fraction": 0.28312937564512086,
+      "restricted_access_fraction": 0.0,
       "repeated_edge_fraction": 0.0,
       "crossings": {
         "road": 2,
         "water": 2
       },
       "access_m": {
-        "open": 3378.490264130822,
-        "closed": 1334.340962802445
+        "open": 4712.831226933267
       },
       "terrain_m": {
         "trail": 2044.149301328377,

@@ -518,13 +518,13 @@
         "seed_provenance": [
           {
             "source": "seed-route",
-            "layer": "gpx",
-            "source_id": "Known Good Loop"
+            "layer": "kmz",
+            "source_id": "Known Good KMZ Loop"
           },
           {
             "source": "seed-route",
-            "layer": "kmz",
-            "source_id": "Known Good KMZ Loop"
+            "layer": "gpx",
+            "source_id": "Known Good Loop"
           }
         ],
         "elevation_provenance": [
@@ -988,13 +988,13 @@
         "seed_provenance": [
           {
             "source": "seed-route",
-            "layer": "gpx",
-            "source_id": "Known Good Loop"
+            "layer": "kmz",
+            "source_id": "Known Good KMZ Loop"
           },
           {
             "source": "seed-route",
-            "layer": "kmz",
-            "source_id": "Known Good KMZ Loop"
+            "layer": "gpx",
+            "source_id": "Known Good Loop"
           }
         ],
         "elevation_provenance": [
@@ -1488,13 +1488,13 @@
         "seed_provenance": [
           {
             "source": "seed-route",
-            "layer": "gpx",
-            "source_id": "Known Good Loop"
+            "layer": "kmz",
+            "source_id": "Known Good KMZ Loop"
           },
           {
             "source": "seed-route",
-            "layer": "kmz",
-            "source_id": "Known Good KMZ Loop"
+            "layer": "gpx",
+            "source_id": "Known Good Loop"
           }
         ],
         "elevation_provenance": [
@@ -1949,13 +1949,13 @@
         "seed_provenance": [
           {
             "source": "seed-route",
-            "layer": "gpx",
-            "source_id": "Known Good Loop"
+            "layer": "kmz",
+            "source_id": "Known Good KMZ Loop"
           },
           {
             "source": "seed-route",
-            "layer": "kmz",
-            "source_id": "Known Good KMZ Loop"
+            "layer": "gpx",
+            "source_id": "Known Good Loop"
           }
         ],
         "elevation_provenance": [

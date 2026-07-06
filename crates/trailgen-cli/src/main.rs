@@ -4125,8 +4125,13 @@ fn import_seed(
 ) -> Result<()> {
     let config = load_config(project)?;
     let mut graph = load_graph(project)?;
+    let mut seeds = load_seeds(project)?;
+    let archived_seed_name = name
+        .is_none()
+        .then(|| seed_name_for_source(&seeds, route))
+        .flatten();
     let route_file = load_route_file(route)?;
-    let name = name.unwrap_or_else(|| {
+    let name = name.or(archived_seed_name).unwrap_or_else(|| {
         route_file
             .metadata
             .title_or(
@@ -4137,7 +4142,6 @@ fn import_seed(
             )
             .to_owned()
     });
-    let mut seeds = load_seeds(project)?;
     let previous_seed = seeds.iter().find(|old| old.name == name).cloned();
     let previous_source_path = previous_seed.as_ref().map(|old| old.source_path.clone());
     let previous_original_source_path = previous_seed
@@ -4203,6 +4207,24 @@ fn import_seed(
         seed.closed_loop
     );
     Ok(())
+}
+
+fn seed_name_for_source(seeds: &[SeedRoute], route: &Path) -> Option<String> {
+    seeds
+        .iter()
+        .find(|seed| same_seed_source(route, &seed.source_path))
+        .map(|seed| seed.name.clone())
+}
+
+fn same_seed_source(route: &Path, seed_source_path: &str) -> bool {
+    let seed_source = PathBuf::from(seed_source_path);
+    route
+        .canonicalize()
+        .ok()
+        .zip(seed_source.canonicalize().ok())
+        .is_some_and(|(route, seed_source)| route == seed_source)
+        || route == seed_source
+        || route.display().to_string() == seed_source_path
 }
 
 fn archive_seed_route(project: &Path, route: &Path, name: &str) -> Result<PathBuf> {
@@ -8215,6 +8237,43 @@ mod tests {
                 .any(|edge| edge.attr.access == Access::Closed)
         );
         assert!(project.join("seeds/seeds.json").exists());
+
+        Ok(())
+    }
+
+    #[test]
+    fn assemble_preserves_archived_seed_identity() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path().join("project");
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../trailgen-core/tests/fixtures/mini_network.geojson");
+        let route = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../demo/mini-loop/routes/candidate-1.gpx");
+
+        init(&project, "Seed Idempotence Test".to_owned(), None)?;
+        build(&project, &fixture)?;
+        import_seed(&project, &route, Some("Known Good Loop".to_owned()), None)?;
+
+        let seeds_once = load_seeds(&project)?;
+        assert_eq!(seeds_once.len(), 1);
+        assert_eq!(seeds_once[0].name, "Known Good Loop");
+        assert!(project.join("seeds/imports/known-good-loop.gpx").exists());
+        assert!(!project.join("seeds/imports/candidate-1.gpx").exists());
+
+        assemble_sources(&project, None, None, 0.82)?;
+
+        let seeds_twice = load_seeds(&project)?;
+        assert_eq!(seeds_twice.len(), 1);
+        assert_eq!(seeds_twice[0].name, "Known Good Loop");
+        assert!(
+            load_graph(&project)?
+                .edges
+                .iter()
+                .any(|edge| edge.attr.seed_count > 0)
+        );
+        assert!(project.join("seeds/imports/known-good-loop.gpx").exists());
+        assert!(!project.join("seeds/imports/candidate-1.gpx").exists());
+        assert!(!project.join("seeds/candidate-1.json").exists());
 
         Ok(())
     }
