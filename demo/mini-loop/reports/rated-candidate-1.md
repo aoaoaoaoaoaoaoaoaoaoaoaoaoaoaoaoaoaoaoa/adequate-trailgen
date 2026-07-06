@@ -14,6 +14,11 @@
 - repeated-edge fraction: 0.0%
 - constraint verdict: violated
 
+Route sequence:
+- start vertex: 3
+- edge ids: 2,1,0,3
+- vertex ids: 3,2,1,0,3
+
 Violations:
 - distance 4.71 km below minimum 35.00 km
 - difficulty 1014.07 above maximum 90.00

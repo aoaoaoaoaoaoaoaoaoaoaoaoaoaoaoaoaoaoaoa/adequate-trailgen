@@ -1408,6 +1408,10 @@ fn report_explains_difficulty_decomposition() {
     graph.edges[low_confidence_edge.0].attr.confidence = 0.42;
     let rendered = report::render(&graph, &[route]);
     assert!(rendered.contains("- score:"));
+    assert!(rendered.contains("Route sequence:"));
+    assert!(rendered.contains("- start vertex:"));
+    assert!(rendered.contains("- edge ids:"));
+    assert!(rendered.contains("- vertex ids:"));
     assert!(rendered.contains("Difficulty decomposition:"));
     assert!(rendered.contains("- distance:"));
     assert!(rendered.contains("- ascent:"));

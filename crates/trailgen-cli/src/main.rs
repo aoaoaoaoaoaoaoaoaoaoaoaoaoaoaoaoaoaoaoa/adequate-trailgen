@@ -6161,6 +6161,8 @@ mod tests {
         assert!(report.contains("## Generation Ledger"));
         assert!(report.contains("- random seed: 0"));
         assert!(report.contains("- solver: requested Auto, concrete"));
+        assert!(report.contains("Route sequence:"));
+        assert!(report.contains("- edge ids:"));
         assert!(report.contains("## Constraint Envelope"));
         assert!(report.contains("distance: 3.00–8.00 km"));
         assert!(report.contains("scalar difficulty: 0.00–90.00"));
@@ -6177,6 +6179,7 @@ mod tests {
         assert!(sidecar_report.contains("candidate-1"));
         assert!(sidecar_report.contains("## Generation Ledger"));
         assert!(sidecar_report.contains("- emitted artifacts:"));
+        assert!(sidecar_report.contains("Route sequence:"));
         assert!(sidecar_report.contains("Difficulty decomposition"));
         assert!(sidecar_report.contains("Source provenance:"));
         assert!(sidecar_report.contains("Coverage summary:"));

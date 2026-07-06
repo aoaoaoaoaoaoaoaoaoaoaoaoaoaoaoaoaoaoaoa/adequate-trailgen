@@ -44,6 +44,7 @@ fn render_route(graph: &TrailGraph, route: &Route, s: &mut String) {
             "violated"
         },
     );
+    render_route_sequence(graph, route, s);
     render_violations(route, s);
     render_constraint_audit(route, s);
     render_difficulty(route, s);
@@ -58,6 +59,53 @@ fn render_route(graph: &TrailGraph, route: &Route, s: &mut String) {
     render_dubious_edges(graph, route, s);
     render_evidence(graph, route, s);
     s.push('\n');
+}
+
+fn render_route_sequence(graph: &TrailGraph, route: &Route, s: &mut String) {
+    s.push_str("\nRoute sequence:\n");
+    let edges = route.edges.iter().map(|id| id.0).collect::<Vec<_>>();
+    let vertices = route_vertex_sequence(graph, route);
+    let _ = writeln!(s, "- start vertex: {}", route.start.0);
+    let _ = writeln!(s, "- edge ids: {}", grouped_ids(&edges));
+    let _ = writeln!(s, "- vertex ids: {}", grouped_ids(&vertices));
+}
+
+fn route_vertex_sequence(graph: &TrailGraph, route: &Route) -> Vec<usize> {
+    let mut at = route.start;
+    let mut vertices = vec![at.0];
+    for id in &route.edges {
+        let Some(edge) = graph.edges.get(id.0) else {
+            vertices.push(usize::MAX);
+            break;
+        };
+        let Some(next) = edge.traverse(at) else {
+            vertices.push(usize::MAX);
+            break;
+        };
+        vertices.push(next.0);
+        at = next;
+    }
+    vertices
+}
+
+fn grouped_ids(ids: &[usize]) -> String {
+    const GROUP: usize = 24;
+    ids.chunks(GROUP)
+        .map(|chunk| {
+            chunk
+                .iter()
+                .map(|id| {
+                    if *id == usize::MAX {
+                        "invalid".to_owned()
+                    } else {
+                        id.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
 }
 
 fn render_crossings(route: &Route, s: &mut String) {

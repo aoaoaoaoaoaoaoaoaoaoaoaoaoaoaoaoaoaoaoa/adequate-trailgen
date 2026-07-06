@@ -14,6 +14,11 @@
 - repeated-edge fraction: 0.0%
 - constraint verdict: violated
 
+Route sequence:
+- start vertex: 3
+- edge ids: 2,1,4
+- vertex ids: 3,2,1,3
+
 Violations:
 - difficulty 1010.87 above maximum 90.00
 - restricted-access fraction 41.6% above maximum 0.0%

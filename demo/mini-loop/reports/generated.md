@@ -14,6 +14,11 @@
 - repeated-edge fraction: 0.0%
 - constraint verdict: violated
 
+Route sequence:
+- start vertex: 3
+- edge ids: 2,1,0,3
+- vertex ids: 3,2,1,0,3
+
 Violations:
 - difficulty 1014.07 above maximum 90.00
 - restricted-access fraction 28.3% above maximum 0.0%
@@ -102,6 +107,11 @@ Terrain/elevation evidence:
 - repeated-edge fraction: 0.0%
 - constraint verdict: violated
 
+Route sequence:
+- start vertex: 3
+- edge ids: 2,1,4
+- vertex ids: 3,2,1,3
+
 Violations:
 - difficulty 1010.87 above maximum 90.00
 - restricted-access fraction 41.6% above maximum 0.0%
@@ -187,6 +197,11 @@ Terrain/elevation evidence:
 - restricted-access fraction: 28.3%
 - repeated-edge fraction: 0.0%
 - constraint verdict: violated
+
+Route sequence:
+- start vertex: 3
+- edge ids: 3,0,1,2
+- vertex ids: 3,0,1,2,3
 
 Violations:
 - difficulty 1014.07 above maximum 90.00
@@ -275,6 +290,11 @@ Terrain/elevation evidence:
 - restricted-access fraction: 41.6%
 - repeated-edge fraction: 0.0%
 - constraint verdict: violated
+
+Route sequence:
+- start vertex: 3
+- edge ids: 4,1,2
+- vertex ids: 3,1,2,3
 
 Violations:
 - difficulty 1010.87 above maximum 90.00
