@@ -226,12 +226,18 @@ Acquisition hints:
 
 ## Cache Command Sketches
 
-Replace `<artifact-url-or-path>` with a concrete downloaded artifact or local file selected from the listed source surface; keep the explicit kind and adapter when provider filenames are ambiguous.
+Replace `<artifact-url-or-path>` with a concrete downloaded artifact or local file selected from the listed source surface; keep the explicit kind and adapter when provider filenames are ambiguous. For OSM-backed trail, road, and hydrology layers, `acquire-osm` can materialize bbox-scoped XML directly from an Overpass endpoint.
 
 ### TrailNetwork
 
 ```sh
 trailgen cache-source <project> --input '<artifact-url-or-path>' --output trails.geojson --kind trail-network --adapter geojson-network
+```
+
+OSM/Overpass direct acquisition:
+
+```sh
+trailgen acquire-osm <project> --profile trails --output osm-trails.osm
 ```
 
 Primary source surface: NPS official GIS open data (https://www.nps.gov/subjects/gisandmapping/tools-and-data.htm)
@@ -279,6 +285,12 @@ Alternate surfaces: PAD-US protected areas overview
 trailgen cache-source <project> --input '<artifact-url-or-path>' --output roads.geojson --kind road --adapter geojson-road-context
 ```
 
+OSM/Overpass direct acquisition:
+
+```sh
+trailgen acquire-osm <project> --profile roads --output roads.osm
+```
+
 Primary source surface: USFS roads data (https://data.fs.usda.gov/geodata/edw/datasets.php?dsetCategory=transportation)
 Alternate surfaces: The National Map transportation, Geofabrik OpenStreetMap roads
 
@@ -286,6 +298,12 @@ Alternate surfaces: The National Map transportation, Geofabrik OpenStreetMap roa
 
 ```sh
 trailgen cache-source <project> --input '<artifact-url-or-path>' --output hydrology.geojson --kind hydrology --adapter geojson-hydrology-context
+```
+
+OSM/Overpass direct acquisition:
+
+```sh
+trailgen acquire-osm <project> --profile hydrology --output hydrology.osm
 ```
 
 Primary source surface: USGS National Hydrography products (https://www.usgs.gov/national-hydrography/access-national-hydrography-products)
