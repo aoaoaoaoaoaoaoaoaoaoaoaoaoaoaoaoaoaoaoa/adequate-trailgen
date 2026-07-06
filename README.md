@@ -4,7 +4,7 @@
 
 The current implementation is intentionally local-first: use GeoJSON/GPX fixtures, official GIS exports, park layers, OSM-derived extracts, or user-supplied AllTrails exports. The internal model is provider-agnostic; AllTrails is treated as an import/export workflow, not as a privileged dependency.
 
-`trailgen build` prefers provider-neutral GeoJSON, OSM XML/PBF, or shapefile trail/network layers and accepts repeated `--source` flags to merge multiple network files into one graph. It can also bootstrap a practical graph from supplied GPX, KML, KMZ, CSV, route GeoJSON, or route JSON files. Route-derived graphs preserve `route-file` provenance and lower confidence; use them as seed scaffolds when a real network layer is not yet available.
+`trailgen build` prefers provider-neutral GeoJSON, OSM XML/PBF, or shapefile trail/network layers and accepts repeated `--source` flags to merge multiple network files into one graph. `--snap-tolerance-m N` overrides and persists the cautious near-miss endpoint snapping tolerance used while constructing graph topology. It can also bootstrap a practical graph from supplied GPX, KML, KMZ, CSV, route GeoJSON, or route JSON files. Route-derived graphs preserve `route-file` provenance and lower confidence; use them as seed scaffolds when a real network layer is not yet available.
 
 ## Quickstart
 
@@ -12,7 +12,7 @@ The current implementation is intentionally local-first: use GeoJSON/GPX fixture
 cargo run -p trailgen -- init demo/mini-loop --name "Mini Loop" --bbox -105.02,39.99,-104.98,40.02
 cargo run -p trailgen -- discover demo/mini-loop
 cargo run -p trailgen -- source-plan demo/mini-loop --kind trail-network
-cargo run -p trailgen -- build demo/mini-loop --source crates/trailgen-core/tests/fixtures/mini_network.geojson
+cargo run -p trailgen -- build demo/mini-loop --source crates/trailgen-core/tests/fixtures/mini_network.geojson --snap-tolerance-m 8
 cargo run -p trailgen -- apply-elevation demo/mini-loop --source crates/trailgen-core/tests/fixtures/mini_dem.asc --confidence 0.81
 cargo run -p trailgen -- apply-terrain demo/mini-loop --source crates/trailgen-core/tests/fixtures/terrain_overlay.geojson
 cargo run -p trailgen -- apply-context demo/mini-loop --source crates/trailgen-core/tests/fixtures/context_overlay.geojson

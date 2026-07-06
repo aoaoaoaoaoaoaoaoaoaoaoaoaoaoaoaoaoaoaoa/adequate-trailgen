@@ -62,6 +62,9 @@ enum Cmd {
         /// `GeoJSON`, OSM XML/PBF, shapefile, `GPX`, `KML`/`KMZ`, `CSV`, or route `JSON` source; repeat to merge sources.
         #[arg(long, required = true)]
         source: Vec<PathBuf>,
+        /// Override and persist graph near-miss snap tolerance in meters.
+        #[arg(long, value_parser = parse_positive_f64)]
+        snap_tolerance_m: Option<f64>,
     },
     /// Print graph terrain, access, provenance, confidence, crossing, and seed statistics.
     Stats {
@@ -625,7 +628,15 @@ fn main() -> Result<()> {
             name,
             bbox,
         } => init(&project, name, bbox),
-        Cmd::Build { project, source } => build_many(&project, source.iter().map(PathBuf::as_path)),
+        Cmd::Build {
+            project,
+            source,
+            snap_tolerance_m,
+        } => build_many(
+            &project,
+            source.iter().map(PathBuf::as_path),
+            snap_tolerance_m,
+        ),
         Cmd::Stats { project } => stats(&project),
         Cmd::Discover { project, bbox } => discover(&project, bbox),
         Cmd::SourcePlan { project, kind, all } => source_plan(&project, &kind, all),
@@ -936,15 +947,23 @@ fn init(project: &Path, name: String, area: Option<GeoBounds>) -> Result<()> {
 
 #[cfg(test)]
 fn build(project: &Path, source: &Path) -> Result<()> {
-    build_many(project, std::iter::once(source))
+    build_many(project, std::iter::once(source), None)
 }
 
-fn build_many<'a>(project: &Path, sources: impl IntoIterator<Item = &'a Path>) -> Result<()> {
+fn build_many<'a>(
+    project: &Path,
+    sources: impl IntoIterator<Item = &'a Path>,
+    snap_tolerance_m: Option<f64>,
+) -> Result<()> {
     let sources = sources.into_iter().collect::<Vec<_>>();
     if sources.is_empty() {
         bail!("build requires at least one --source");
     }
-    let config = load_config(project)?;
+    let mut config = load_config(project)?;
+    if let Some(snap_tolerance_m) = snap_tolerance_m {
+        config.snap_tolerance_m = snap_tolerance_m;
+        save_config(project, &config)?;
+    }
     let mut drafts = Vec::new();
     let mut candidates = Vec::new();
     let mut adapter_counts = BTreeMap::<&'static str, usize>::new();
@@ -2181,7 +2200,7 @@ fn assemble_sources(
         bail!("assemble requires at least one trail-network candidate or seed-route scaffold");
     }
 
-    build_many(project, build_sources.iter().map(PathBuf::as_path))?;
+    build_many(project, build_sources.iter().map(PathBuf::as_path), None)?;
     let elevation_sources = manifest_phase_paths(project, &candidates, &[SourceKind::Elevation]);
     if elevation_sources.len() > 1 {
         apply_elevation_mosaic(project, &elevation_sources, elevation_confidence)
@@ -5998,6 +6017,17 @@ fn parse_positive_usize(raw: &str) -> Result<usize, String> {
     }
 }
 
+fn parse_positive_f64(raw: &str) -> Result<f64, String> {
+    let value = raw
+        .parse::<f64>()
+        .map_err(|error| format!("expected positive number: {error}"))?;
+    if value.is_finite() && value > 0.0 {
+        Ok(value)
+    } else {
+        Err("expected positive finite number".to_owned())
+    }
+}
+
 fn parse_planning_date(raw: &str) -> Result<PlanningDate, String> {
     raw.parse()
 }
@@ -6108,6 +6138,14 @@ mod tests {
         assert!(help.contains("source coverage satisfies a planning gate"));
         assert!(help.contains("Verify generated route artifacts"));
         assert!(help.contains("AllTrails"));
+
+        let mut build = Cli::command();
+        let build_help = build
+            .find_subcommand_mut("build")
+            .expect("build command")
+            .render_help()
+            .to_string();
+        assert!(build_help.contains("near-miss snap tolerance"));
 
         let mut generate = Cli::command();
         let generate_help = generate
@@ -7460,7 +7498,7 @@ mod tests {
         )?;
 
         init(project, "Multi Source Build Test".to_owned(), None)?;
-        build_many(project, [fixture.as_path(), spur.as_path()])?;
+        build_many(project, [fixture.as_path(), spur.as_path()], None)?;
 
         let graph = load_graph(project)?;
         assert!(graph.edges.iter().any(|edge| {
@@ -7488,6 +7526,52 @@ mod tests {
                 .iter()
                 .any(|entry| entry["kind"] == "trail-network" && entry["status"] == "satisfied")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn build_snap_tolerance_override_persists_topology_policy() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path().join("project");
+        let source = tmp.path().join("near-miss.geojson");
+        fs::write(
+            &source,
+            r#"{"type":"FeatureCollection","features":[
+                {
+                    "type":"Feature",
+                    "properties":{"id":"main","source":"fixture","terrain":"trail","access":"open","confidence":1.0},
+                    "geometry":{"type":"LineString","coordinates":[[-105.0000,40.0000],[-104.9900,40.0000]]}
+                },
+                {
+                    "type":"Feature",
+                    "properties":{"id":"spur","source":"fixture","terrain":"trail","access":"open","confidence":1.0},
+                    "geometry":{"type":"LineString","coordinates":[[-104.9950,40.00005],[-104.9950,40.0040]]}
+                }
+            ]}"#,
+        )?;
+
+        init(&project, "Snap Override Test".to_owned(), None)?;
+        build_many(&project, std::iter::once(source.as_path()), Some(8.0))?;
+        let graph = load_graph(&project)?;
+        assert!(graph.edges.iter().any(|edge| {
+            edge.attr.provenance.iter().any(|p| {
+                p.source == "graph-builder"
+                    && p.layer.as_deref() == Some("near-miss-snap")
+                    && p.source_id.as_deref() == Some("tolerance 8.0 m")
+            })
+        }));
+        assert!((load_config(&project)?.snap_tolerance_m - 8.0).abs() <= f64::EPSILON);
+
+        build_many(&project, std::iter::once(source.as_path()), Some(1.0))?;
+        let graph = load_graph(&project)?;
+        assert!(!graph.edges.iter().any(|edge| {
+            edge.attr
+                .provenance
+                .iter()
+                .any(|p| p.layer.as_deref() == Some("near-miss-snap"))
+        }));
+        assert!((load_config(&project)?.snap_tolerance_m - 1.0).abs() <= f64::EPSILON);
+
         Ok(())
     }
 
