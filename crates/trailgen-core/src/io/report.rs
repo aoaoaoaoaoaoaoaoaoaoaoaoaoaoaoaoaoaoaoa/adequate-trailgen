@@ -1,6 +1,6 @@
 use crate::difficulty::DifficultyFactor;
-use crate::model::{Access, Edge, Provenance, TerrainEvidence, TrailGraph};
-use crate::route::{LOW_CONFIDENCE_THRESHOLD, Route};
+use crate::model::{Edge, Provenance, TerrainEvidence, TrailGraph};
+use crate::route::{LOW_CONFIDENCE_THRESHOLD, Route, is_restricted_access};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
@@ -115,7 +115,7 @@ fn render_access_warnings(graph: &TrailGraph, route: &Route, s: &mut String) {
         .edges
         .iter()
         .map(|id| &graph.edges[id.0])
-        .filter(|edge| !matches!(edge.attr.access, Access::Unknown | Access::Open))
+        .filter(|edge| is_restricted_access(edge.attr.access))
         .collect::<Vec<_>>();
     if warnings.is_empty() {
         return;

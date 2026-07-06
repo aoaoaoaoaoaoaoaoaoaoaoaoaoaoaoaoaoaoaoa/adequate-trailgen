@@ -7,7 +7,7 @@ use crate::overlay::{
     AccessOverlay, AccessWindow, ContextOverlay, OverlayGeometry, PlanningDate, TerrainOverlay,
     polygon,
 };
-use crate::route::{LOW_CONFIDENCE_THRESHOLD, Route};
+use crate::route::{LOW_CONFIDENCE_THRESHOLD, Route, is_restricted_access};
 use crate::{Result, TrailgenError};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeSet;
@@ -241,6 +241,7 @@ fn route_feature(graph: &TrailGraph, route: &Route) -> Value {
             "edge_count": route.edges.len(),
             "edges": route.edges.iter().map(|id| id.0).collect::<Vec<_>>(),
             "difficulty_hotspots": route_difficulty_hotspots(graph, route),
+            "access_warning_edges": route_access_warning_edges(graph, route),
             "low_confidence_edges": route_low_confidence_edges(graph, route),
             "dubious_edges": route_dubious_edges(graph, route),
             "source_provenance": route_source_provenance(graph, route),
@@ -299,6 +300,22 @@ fn route_low_confidence_edges(graph: &TrailGraph, route: &Route) -> Vec<Value> {
     edges.into_iter().map(route_edge_diagnostic).collect()
 }
 
+fn route_access_warning_edges(graph: &TrailGraph, route: &Route) -> Vec<Value> {
+    let mut edges = route
+        .edges
+        .iter()
+        .map(|id| &graph.edges[id.0])
+        .filter(|edge| is_restricted_access(edge.attr.access))
+        .collect::<Vec<_>>();
+    edges.sort_by(|a, b| {
+        b.attr
+            .access
+            .cmp(&a.attr.access)
+            .then_with(|| b.attr.length_m.total_cmp(&a.attr.length_m))
+    });
+    edges.into_iter().map(route_edge_diagnostic).collect()
+}
+
 fn route_dubious_edges(graph: &TrailGraph, route: &Route) -> Vec<Value> {
     let mut dubious = route
         .edges
@@ -328,6 +345,7 @@ fn route_edge_diagnostic(edge: &Edge) -> Value {
         "confidence": edge.attr.confidence,
         "terrain_confidence": edge.attr.terrain_confidence,
         "access_confidence": edge.attr.access_confidence,
+        "access_provenance": edge.attr.access_provenance,
         "grade_abs_max": edge.attr.grade_abs_max,
         "grade_distribution": edge.attr.grade_distribution,
         "crossings": &edge.attr.crossings,

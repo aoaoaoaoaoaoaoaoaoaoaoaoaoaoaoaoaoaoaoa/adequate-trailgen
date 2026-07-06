@@ -292,7 +292,8 @@ impl RouteMetrics {
     }
 }
 
-const fn is_restricted_access(access: Access) -> bool {
+#[must_use]
+pub const fn is_restricted_access(access: Access) -> bool {
     matches!(
         access,
         Access::Restricted | Access::Closed | Access::Private

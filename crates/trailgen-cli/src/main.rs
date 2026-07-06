@@ -1943,6 +1943,10 @@ function sourceText(p) {{
   }});
   return xs.length ? xs.join(', ') : 'none';
 }}
+function accessWarningText(e) {{
+  const prov = (e.access_provenance || []).map(p => p.source_id ? `${{p.source}}:${{p.source_id}}` : p.source).join(', ') || e.provenance || 'unknown';
+  return `edge ${{e.edge_id}} ${{e.access || 'unknown'}} ${{pct(e.access_confidence)}} ${{prov}}`;
+}}
 function routeText(p) {{
   return `${{p.name}} | rank ${{p.pareto_rank}} | ${{km(p.distance_m)}} | ascent ${{(p.ascent_m || 0).toFixed(0)}} m | difficulty ${{(p.difficulty || 0).toFixed(1)}} | road ${{pct(p.road_fraction)}} | low confidence ${{pct(p.low_confidence_fraction)}} | restricted ${{pct(p.restricted_access_fraction)}}`;
 }}
@@ -1977,8 +1981,10 @@ function routeDiagnostics(p) {{
   const brutal = edges.slice().sort((a, b) => Number(b.difficulty || 0) - Number(a.difficulty || 0)).slice(0, 5);
   const routeDubious = (p.dubious_edges || []).map(e => `edge ${{e.edge_id}} ${{pct(e.confidence)}} ${{e.terrain || 'unknown'}}`);
   const routeLowConfidence = (p.low_confidence_edges || []).map(e => `edge ${{e.edge_id}} ${{pct(e.confidence)}} ${{e.terrain || 'unknown'}}`);
+  const routeAccessWarnings = (p.access_warning_edges || []).map(accessWarningText);
   const routeHotspots = (p.difficulty_hotspots || []).map(e => `edge ${{e.edge_id}} ${{e.factor}} ${{scalar(e.value)}} ${{e.terrain || 'unknown'}}`);
   return {{
+    accessWarnings: routeAccessWarnings.join(', ') || 'none',
     lowConfidence: routeLowConfidence.join(', ') || 'none',
     dubious: routeDubious.join(', ') || dubious.map(e => `edge ${{e.edge_id}} ${{pct(e.confidence)}} ${{e.terrain || 'unknown'}}`).join(', ') || 'none',
     brutal: routeHotspots.join(', ') || brutal.map(e => `edge ${{e.edge_id}} ${{scalar(e.difficulty)}} ${{e.terrain || 'unknown'}}`).join(', ') || 'none'
@@ -2003,6 +2009,7 @@ function routeSummary(p) {{
     ${{metricRow('terrain mix', mixText(p.terrain_fraction))}}
     ${{metricRow('access mix', mixText(p.access_fraction))}}
     ${{metricRow('violations', (p.violations || []).join(' | ') || 'none')}}
+    ${{metricRow('access warnings', d.accessWarnings)}}
     ${{metricRow('low-confidence segments', d.lowConfidence)}}
     ${{metricRow('dubious segments', d.dubious)}}
     ${{metricRow('largest difficulty contributors', d.brutal)}}
@@ -4503,6 +4510,7 @@ mod tests {
         assert!(selected_properties["terrain_fraction"].is_object());
         assert!(selected_properties["access_fraction"].is_object());
         assert!(selected_properties["difficulty_hotspots"].is_array());
+        assert!(selected_properties["access_warning_edges"].is_array());
         assert!(selected_properties["low_confidence_edges"].is_array());
         assert!(selected_properties["dubious_edges"].is_array());
         let report = fs::read_to_string(md)?;
@@ -4521,6 +4529,7 @@ mod tests {
         assert!(generated_map.contains("const graph = {"));
         assert!(generated_map.contains("edge width"));
         assert!(generated_map.contains("difficulty factors"));
+        assert!(generated_map.contains("access warnings"));
         assert!(generated_map.contains("low-confidence segments"));
         assert!(generated_map.contains("dubious segments"));
         assert!(generated_map.contains("restricted access"));

@@ -629,6 +629,12 @@ fn route_geojson_exports_full_diagnostics() {
         closed_edge.0.0
     );
     assert_eq!(
+        properties["access_warning_edges"][0]["edge_id"],
+        closed_edge.0.0
+    );
+    assert_eq!(properties["access_warning_edges"][0]["access"], "closed");
+    assert!(properties["access_warning_edges"][0]["access_provenance"].is_array());
+    assert_eq!(
         properties["low_confidence_edges"][0]["edge_id"],
         closed_edge.0.0
     );

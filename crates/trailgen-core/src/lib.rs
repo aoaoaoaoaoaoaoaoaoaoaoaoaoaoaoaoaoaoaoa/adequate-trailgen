@@ -37,7 +37,9 @@ pub use overlay::{
     apply_access_overlays, apply_context_overlays, apply_terrain_overlays,
 };
 pub use raster::{ArcAsciiGrid, GeoTiffDem, VrtDem};
-pub use route::{LOW_CONFIDENCE_THRESHOLD, Route, RouteMetrics, RouteShape, rank_routes};
+pub use route::{
+    LOW_CONFIDENCE_THRESHOLD, Route, RouteMetrics, RouteShape, is_restricted_access, rank_routes,
+};
 pub use seed::{SeedRoute, slug};
 
 #[derive(Debug, thiserror::Error)]

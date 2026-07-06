@@ -1555,6 +1555,44 @@
           "closed": 1334.340962802445,
           "open": 3378.490264130822
         },
+        "access_warning_edges": [
+          {
+            "access": "closed",
+            "access_confidence": 0.93,
+            "access_provenance": [
+              {
+                "layer": "seasonal-closures",
+                "source": "fixture-closure",
+                "source_id": "diagonal-closure"
+              }
+            ],
+            "confidence": 0.82,
+            "crossings": [
+              {
+                "count": 1,
+                "kind": "water",
+                "provenance": {
+                  "source": "fixture-hydrology-context",
+                  "source_id": "test-creek"
+                }
+              }
+            ],
+            "edge_id": 3,
+            "grade_abs_max": 0.09007592763064971,
+            "grade_distribution": {
+              "flat_m": 0.0,
+              "rolling_m": 1334.340962802445,
+              "savage_m": 0.0,
+              "steep_m": 0.0
+            },
+            "length_m": 1334.340962802445,
+            "provenance": "fixture:west",
+            "seed_count": 2,
+            "surface": null,
+            "terrain": "talus",
+            "terrain_confidence": 0.9
+          }
+        ],
         "ascent_m": 136.9999999999991,
         "constraint_penalty": 3858.036935132302,
         "crossings": {
@@ -1632,6 +1670,7 @@
           {
             "access": "open",
             "access_confidence": 0.9,
+            "access_provenance": [],
             "confidence": 0.82,
             "crossings": [
               {
@@ -1661,6 +1700,13 @@
           {
             "access": "closed",
             "access_confidence": 0.93,
+            "access_provenance": [
+              {
+                "layer": "seasonal-closures",
+                "source": "fixture-closure",
+                "source_id": "diagonal-closure"
+              }
+            ],
             "confidence": 0.82,
             "crossings": [
               {
@@ -1690,6 +1736,7 @@
           {
             "access": "open",
             "access_confidence": 0.9,
+            "access_provenance": [],
             "confidence": 0.82,
             "crossings": [
               {
@@ -1719,6 +1766,7 @@
           {
             "access": "open",
             "access_confidence": 0.9,
+            "access_provenance": [],
             "confidence": 0.82,
             "crossings": [
               {
@@ -3096,6 +3144,52 @@
           "closed": 1680.8040950311952,
           "open": 2356.505442582826
         },
+        "access_warning_edges": [
+          {
+            "access": "closed",
+            "access_confidence": 0.93,
+            "access_provenance": [
+              {
+                "layer": "seasonal-closures",
+                "source": "fixture-closure",
+                "source_id": "diagonal-closure"
+              }
+            ],
+            "confidence": 0.81,
+            "crossings": [
+              {
+                "count": 1,
+                "kind": "road",
+                "provenance": {
+                  "source": "fixture-road-context",
+                  "source_id": "service-road"
+                }
+              },
+              {
+                "count": 1,
+                "kind": "water",
+                "provenance": {
+                  "source": "fixture-hydrology-context",
+                  "source_id": "test-creek"
+                }
+              }
+            ],
+            "edge_id": 4,
+            "grade_abs_max": 0.05711527963281148,
+            "grade_distribution": {
+              "flat_m": 980.7908188546152,
+              "rolling_m": 700.0132761765799,
+              "savage_m": 0.0,
+              "steep_m": 0.0
+            },
+            "length_m": 1680.8040950311952,
+            "provenance": "fixture:diagonal",
+            "seed_count": 0,
+            "surface": null,
+            "terrain": "alpine",
+            "terrain_confidence": 0.9
+          }
+        ],
         "ascent_m": 96.19999999999914,
         "constraint_penalty": 5186.362792909272,
         "crossings": {
@@ -3173,6 +3267,13 @@
           {
             "access": "closed",
             "access_confidence": 0.93,
+            "access_provenance": [
+              {
+                "layer": "seasonal-closures",
+                "source": "fixture-closure",
+                "source_id": "diagonal-closure"
+              }
+            ],
             "confidence": 0.81,
             "crossings": [
               {
@@ -3210,6 +3311,7 @@
           {
             "access": "open",
             "access_confidence": 0.9,
+            "access_provenance": [],
             "confidence": 0.82,
             "crossings": [
               {
@@ -3239,6 +3341,7 @@
           {
             "access": "open",
             "access_confidence": 0.9,
+            "access_provenance": [],
             "confidence": 0.82,
             "crossings": [
               {
@@ -4868,6 +4971,44 @@
           "closed": 1334.340962802445,
           "open": 3378.4902641308217
         },
+        "access_warning_edges": [
+          {
+            "access": "closed",
+            "access_confidence": 0.93,
+            "access_provenance": [
+              {
+                "layer": "seasonal-closures",
+                "source": "fixture-closure",
+                "source_id": "diagonal-closure"
+              }
+            ],
+            "confidence": 0.82,
+            "crossings": [
+              {
+                "count": 1,
+                "kind": "water",
+                "provenance": {
+                  "source": "fixture-hydrology-context",
+                  "source_id": "test-creek"
+                }
+              }
+            ],
+            "edge_id": 3,
+            "grade_abs_max": 0.09007592763064971,
+            "grade_distribution": {
+              "flat_m": 0.0,
+              "rolling_m": 1334.340962802445,
+              "savage_m": 0.0,
+              "steep_m": 0.0
+            },
+            "length_m": 1334.340962802445,
+            "provenance": "fixture:west",
+            "seed_count": 2,
+            "surface": null,
+            "terrain": "talus",
+            "terrain_confidence": 0.9
+          }
+        ],
         "ascent_m": 136.9999999999991,
         "constraint_penalty": 3858.036935132303,
         "crossings": {
@@ -4945,6 +5086,13 @@
           {
             "access": "closed",
             "access_confidence": 0.93,
+            "access_provenance": [
+              {
+                "layer": "seasonal-closures",
+                "source": "fixture-closure",
+                "source_id": "diagonal-closure"
+              }
+            ],
             "confidence": 0.82,
             "crossings": [
               {
@@ -4974,6 +5122,7 @@
           {
             "access": "open",
             "access_confidence": 0.9,
+            "access_provenance": [],
             "confidence": 0.82,
             "crossings": [
               {
@@ -5003,6 +5152,7 @@
           {
             "access": "open",
             "access_confidence": 0.9,
+            "access_provenance": [],
             "confidence": 0.82,
             "crossings": [
               {
@@ -5032,6 +5182,7 @@
           {
             "access": "open",
             "access_confidence": 0.9,
+            "access_provenance": [],
             "confidence": 0.82,
             "crossings": [
               {
@@ -6409,6 +6560,52 @@
           "closed": 1680.8040950311952,
           "open": 2356.505442582826
         },
+        "access_warning_edges": [
+          {
+            "access": "closed",
+            "access_confidence": 0.93,
+            "access_provenance": [
+              {
+                "layer": "seasonal-closures",
+                "source": "fixture-closure",
+                "source_id": "diagonal-closure"
+              }
+            ],
+            "confidence": 0.81,
+            "crossings": [
+              {
+                "count": 1,
+                "kind": "road",
+                "provenance": {
+                  "source": "fixture-road-context",
+                  "source_id": "service-road"
+                }
+              },
+              {
+                "count": 1,
+                "kind": "water",
+                "provenance": {
+                  "source": "fixture-hydrology-context",
+                  "source_id": "test-creek"
+                }
+              }
+            ],
+            "edge_id": 4,
+            "grade_abs_max": 0.05711527963281148,
+            "grade_distribution": {
+              "flat_m": 980.7908188546152,
+              "rolling_m": 700.0132761765799,
+              "savage_m": 0.0,
+              "steep_m": 0.0
+            },
+            "length_m": 1680.8040950311952,
+            "provenance": "fixture:diagonal",
+            "seed_count": 0,
+            "surface": null,
+            "terrain": "alpine",
+            "terrain_confidence": 0.9
+          }
+        ],
         "ascent_m": 96.19999999999914,
         "constraint_penalty": 5186.362792909272,
         "crossings": {
@@ -6486,6 +6683,13 @@
           {
             "access": "closed",
             "access_confidence": 0.93,
+            "access_provenance": [
+              {
+                "layer": "seasonal-closures",
+                "source": "fixture-closure",
+                "source_id": "diagonal-closure"
+              }
+            ],
             "confidence": 0.81,
             "crossings": [
               {
@@ -6523,6 +6727,7 @@
           {
             "access": "open",
             "access_confidence": 0.9,
+            "access_provenance": [],
             "confidence": 0.82,
             "crossings": [
               {
@@ -6552,6 +6757,7 @@
           {
             "access": "open",
             "access_confidence": 0.9,
+            "access_provenance": [],
             "confidence": 0.82,
             "crossings": [
               {
