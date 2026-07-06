@@ -12,8 +12,8 @@ use trailgen_core::source::{
 };
 use trailgen_core::{
     Access, ArcAsciiGrid, CrossingKind, EdgeId, EdgeTravel, ElevationSampler, ExactLoopSolver,
-    GeoTiffDem, PlanningDate, RasterCrs, Route, RouteMetrics, RouteShape, SearchParams, SolverKind,
-    VertexId, VrtDem,
+    GeoTiffDem, MonthDay, PlanningDate, RasterCrs, Route, RouteMetrics, RouteShape, SearchParams,
+    SeasonalWindow, SolverKind, VertexId, VrtDem,
 };
 use trailgen_core::{
     Coord, DifficultyWeights, EnrichmentConfig, GraphBuilder, LineString, LoopConstraints,
@@ -543,6 +543,79 @@ fn dated_access_overlay_only_bites_inside_active_window() {
             .iter()
             .any(|edge| edge.attr.access == Access::Closed)
     );
+}
+
+#[test]
+fn seasonal_access_overlay_recurs_across_years() {
+    let drafts = geojson::network_from_str(include_str!("fixtures/mini_network.geojson")).unwrap();
+    let overlays = geojson::access_overlays_from_str(
+        r#"{
+          "type": "FeatureCollection",
+          "features": [{
+            "type": "Feature",
+            "properties": {
+              "id": "elk-calving-closure",
+              "source": "fixture-closure",
+              "access": "closed",
+              "seasonal_from": "04-15",
+              "seasonal_to": "06-30"
+            },
+            "geometry": {
+              "type": "Polygon",
+              "coordinates": [[
+                [-105.0000, 40.0020],
+                [-104.9900, 40.0020],
+                [-104.9900, 40.0100],
+                [-105.0000, 40.0100],
+                [-105.0000, 40.0020]
+              ]]
+            }
+          }]
+        }"#,
+    )
+    .unwrap();
+
+    let mut spring = GraphBuilder::default().build(&drafts).unwrap();
+    let mut winter = GraphBuilder::default().build(&drafts).unwrap();
+    let spring_hits = apply_access_overlays(
+        &mut spring,
+        &overlays,
+        Some(PlanningDate::new(2027, 5, 1).unwrap()),
+        DifficultyWeights::default(),
+    );
+    let winter_hits = apply_access_overlays(
+        &mut winter,
+        &overlays,
+        Some(PlanningDate::new(2027, 1, 1).unwrap()),
+        DifficultyWeights::default(),
+    );
+
+    assert!(spring_hits > 0);
+    assert_eq!(winter_hits, 0);
+    assert!(
+        spring
+            .edges
+            .iter()
+            .any(|edge| edge.attr.access == Access::Closed)
+    );
+    assert!(
+        !winter
+            .edges
+            .iter()
+            .any(|edge| edge.attr.access == Access::Closed)
+    );
+}
+
+#[test]
+fn seasonal_access_window_wraps_winter_year_boundary() {
+    let winter = SeasonalWindow::new(
+        MonthDay::new(11, 15).unwrap(),
+        MonthDay::new(3, 31).unwrap(),
+    );
+
+    assert!(winter.contains(PlanningDate::new(2027, 12, 1).unwrap()));
+    assert!(winter.contains(PlanningDate::new(2028, 2, 1).unwrap()));
+    assert!(!winter.contains(PlanningDate::new(2028, 7, 1).unwrap()));
 }
 
 #[test]

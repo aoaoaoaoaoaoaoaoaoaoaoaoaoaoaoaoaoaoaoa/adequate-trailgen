@@ -4,8 +4,8 @@ use crate::geo::{Coord, LineString};
 use crate::io::route_file::{RouteFile, RouteFileMetadata};
 use crate::model::{Access, CrossingKind, Edge, EdgeTravel, Provenance, Terrain, TrailGraph};
 use crate::overlay::{
-    AccessOverlay, AccessWindow, ContextOverlay, OverlayGeometry, PlanningDate, TerrainOverlay,
-    polygon,
+    AccessOverlay, AccessWindow, ContextOverlay, MonthDay, OverlayGeometry, PlanningDate,
+    SeasonalWindow, TerrainOverlay, polygon,
 };
 use crate::route::{LOW_CONFIDENCE_THRESHOLD, Route, is_restricted_access};
 use crate::{Result, TrailgenError};
@@ -542,7 +542,40 @@ fn access_window_from_properties(properties: &Map<String, Value>) -> Result<Acce
             &["active_from", "start_date", "starts_on", "from"],
         )?,
         to: prop_date(properties, &["active_to", "end_date", "ends_on", "to"])?,
+        seasonal: seasonal_window_from_properties(properties)?,
     })
+}
+
+fn seasonal_window_from_properties(
+    properties: &Map<String, Value>,
+) -> Result<Option<SeasonalWindow>> {
+    let from = prop_month_day(
+        properties,
+        &[
+            "seasonal_from",
+            "active_month_from",
+            "season_from",
+            "month_from",
+            "recurs_from",
+        ],
+    )?;
+    let to = prop_month_day(
+        properties,
+        &[
+            "seasonal_to",
+            "active_month_to",
+            "season_to",
+            "month_to",
+            "recurs_to",
+        ],
+    )?;
+    match (from, to) {
+        (None, None) => Ok(None),
+        (Some(from), Some(to)) => Ok(Some(SeasonalWindow::new(from, to))),
+        _ => Err(TrailgenError::InvalidData(
+            "recurring seasonal access windows require both from and to month-days".to_owned(),
+        )),
+    }
 }
 
 fn terrain_overlay_from_feature(
@@ -777,6 +810,14 @@ fn prop_date(props: &Map<String, Value>, keys: &[&str]) -> Result<Option<Plannin
     keys.iter()
         .find_map(|key| prop_str(props, key))
         .map(str::parse::<PlanningDate>)
+        .transpose()
+        .map_err(TrailgenError::InvalidData)
+}
+
+fn prop_month_day(props: &Map<String, Value>, keys: &[&str]) -> Result<Option<MonthDay>> {
+    keys.iter()
+        .find_map(|key| prop_str(props, key))
+        .map(str::parse::<MonthDay>)
         .transpose()
         .map_err(TrailgenError::InvalidData)
 }

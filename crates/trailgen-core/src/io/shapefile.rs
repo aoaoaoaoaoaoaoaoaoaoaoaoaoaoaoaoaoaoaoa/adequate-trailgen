@@ -3,7 +3,8 @@ use crate::crs::{CoordProjector, CrsVerdict, projector, validate_prj_wkt};
 use crate::geo::{Coord, LineString};
 use crate::model::{Access, CrossingKind, EdgeTravel, Provenance, Terrain};
 use crate::overlay::{
-    AccessOverlay, AccessWindow, ContextOverlay, OverlayGeometry, PlanningDate, TerrainOverlay,
+    AccessOverlay, AccessWindow, ContextOverlay, MonthDay, OverlayGeometry, PlanningDate,
+    SeasonalWindow, TerrainOverlay,
 };
 use crate::{Result, TrailgenError};
 use ::shapefile::dbase::{FieldValue, Record};
@@ -103,6 +104,7 @@ fn access_window_from_props(props: &ShpProps<'_>) -> Result<AccessWindow> {
     Ok(AccessWindow {
         from: props.date(&["active_from", "start_date", "starts_on", "from"])?,
         to: props.date(&["active_to", "end_date", "ends_on", "to"])?,
+        seasonal: props.seasonal_window()?,
     })
 }
 
@@ -392,6 +394,38 @@ impl<'a> ShpProps<'a> {
             .map(str::parse::<PlanningDate>)
             .transpose()
             .map_err(TrailgenError::InvalidData)
+    }
+
+    fn month_day(&self, keys: &[&str]) -> Result<Option<MonthDay>> {
+        keys.iter()
+            .find_map(|key| self.str(key))
+            .map(str::parse::<MonthDay>)
+            .transpose()
+            .map_err(TrailgenError::InvalidData)
+    }
+
+    fn seasonal_window(&self) -> Result<Option<SeasonalWindow>> {
+        let from = self.month_day(&[
+            "seasonal_from",
+            "active_month_from",
+            "season_from",
+            "month_from",
+            "recurs_from",
+        ])?;
+        let to = self.month_day(&[
+            "seasonal_to",
+            "active_month_to",
+            "season_to",
+            "month_to",
+            "recurs_to",
+        ])?;
+        match (from, to) {
+            (None, None) => Ok(None),
+            (Some(from), Some(to)) => Ok(Some(SeasonalWindow::new(from, to))),
+            _ => Err(TrailgenError::InvalidData(
+                "recurring seasonal access windows require both from and to month-days".to_owned(),
+            )),
+        }
     }
 
     fn bool(&self, key: &str) -> Option<bool> {

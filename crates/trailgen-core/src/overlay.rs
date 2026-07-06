@@ -95,6 +95,119 @@ impl<'de> Deserialize<'de> for PlanningDate {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct MonthDay {
+    pub month: u8,
+    pub day: u8,
+}
+
+impl MonthDay {
+    #[must_use]
+    pub const fn new(month: u8, day: u8) -> Option<Self> {
+        if month >= 1 && month <= 12 && day >= 1 && day <= days_in_month(2024, month) {
+            Some(Self { month, day })
+        } else {
+            None
+        }
+    }
+}
+
+impl From<PlanningDate> for MonthDay {
+    fn from(value: PlanningDate) -> Self {
+        Self {
+            month: value.month,
+            day: value.day,
+        }
+    }
+}
+
+impl Display for MonthDay {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:02}-{:02}", self.month, self.day)
+    }
+}
+
+impl FromStr for MonthDay {
+    type Err = String;
+
+    fn from_str(raw: &str) -> std::result::Result<Self, Self::Err> {
+        let mut parts = raw.trim().split('-');
+        let month = parts
+            .next()
+            .ok_or_else(|| "month-day must be MM-DD".to_owned())?
+            .parse::<u8>()
+            .map_err(|error| error.to_string())?;
+        let day = parts
+            .next()
+            .ok_or_else(|| "month-day must be MM-DD".to_owned())?
+            .parse::<u8>()
+            .map_err(|error| error.to_string())?;
+        if parts.next().is_some() {
+            return Err("month-day must be MM-DD".to_owned());
+        }
+        Self::new(month, day).ok_or_else(|| "invalid recurring month-day".to_owned())
+    }
+}
+
+impl Serialize for MonthDay {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for MonthDay {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct MonthDayVisitor;
+
+        impl Visitor<'_> for MonthDayVisitor {
+            type Value = MonthDay;
+
+            fn expecting(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+                f.write_str("an MM-DD recurring month-day")
+            }
+
+            fn visit_str<E>(self, v: &str) -> std::result::Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                v.parse::<MonthDay>().map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_str(MonthDayVisitor)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct SeasonalWindow {
+    pub from: MonthDay,
+    pub to: MonthDay,
+}
+
+impl SeasonalWindow {
+    #[must_use]
+    pub const fn new(from: MonthDay, to: MonthDay) -> Self {
+        Self { from, to }
+    }
+
+    #[must_use]
+    pub fn contains(self, date: PlanningDate) -> bool {
+        let day = MonthDay::from(date);
+        if self.from <= self.to {
+            self.from <= day && day <= self.to
+        } else {
+            self.from <= day || day <= self.to
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct AccessWindow {
@@ -102,12 +215,14 @@ pub struct AccessWindow {
     pub from: Option<PlanningDate>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to: Option<PlanningDate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seasonal: Option<SeasonalWindow>,
 }
 
 impl AccessWindow {
     #[must_use]
     pub const fn is_always(&self) -> bool {
-        self.from.is_none() && self.to.is_none()
+        self.from.is_none() && self.to.is_none() && self.seasonal.is_none()
     }
 
     #[must_use]
@@ -115,7 +230,9 @@ impl AccessWindow {
         let Some(date) = date else {
             return true;
         };
-        self.from.is_none_or(|from| from <= date) && self.to.is_none_or(|to| date <= to)
+        self.from.is_none_or(|from| from <= date)
+            && self.to.is_none_or(|to| date <= to)
+            && self.seasonal.is_none_or(|season| season.contains(date))
     }
 }
 
