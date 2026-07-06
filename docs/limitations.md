@@ -7,7 +7,7 @@ The app is useful today as a local-first route generator over normalized project
 - Input vector geometries normalize to geographic lon/lat decimal degrees inside the adapters. Native WGS84/CRS84 and declared EPSG:3857 Web Mercator are supported; other projected CRS inputs are rejected instead of silently ingested.
 - Dated access/closure overlays are represented with `active_from`/`active_to` windows and a project planning date. Turn restrictions, hourly rules, recurring seasonal direction rules, and timed reservation systems are not represented. Edges are bidirectional by default, with one-way travel preserved only when GeoJSON or shapefile source attributes prove it.
 - The exact backend is a bounded edge-simple enumerator for small graphs, not a MILP/CP-SAT formulation and not a stochastic annealer. Large graphs still rely on the deterministic `LoopHunter` heuristic.
-- The map UI is a static offline SVG/HTML diagnostic, not an interactive tile-backed planner or editor.
+- The map UI is an interactive offline SVG/HTML diagnostic, not a tile-backed planner or editor.
 - AllTrails write-back uses only manual-compatible exports. The core deliberately avoids brittle private APIs.
 - Terrain inference is transparent but coarse. Explicit tags, overlays, road context, slope, and confidence are preserved; they do not replace field judgment.
 - Large real regions will need careful source curation and search-parameter tuning. The fixture demo proves the pipeline, not global performance.

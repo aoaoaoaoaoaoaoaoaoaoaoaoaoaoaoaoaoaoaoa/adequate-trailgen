@@ -14,17 +14,25 @@ h1, h2, h3 { margin: 0 0 12px; }
 .edge { fill: none; stroke-linecap: round; vector-effect: non-scaling-stroke; }
 .route { fill: none; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; cursor: pointer; }
 .route:hover { stroke-width: 7; }
+.route.selected { stroke-width: 8; }
+.route.dimmed { opacity: .22; }
 .halo { fill: none; stroke: #05070a; stroke-width: 8; opacity: .7; vector-effect: non-scaling-stroke; }
+.halo.dimmed { opacity: .18; }
 .closed { stroke-dasharray: 6 4; }
 .legend { display: grid; grid-template-columns: 18px 1fr; gap: 6px 8px; font-size: 13px; margin: 12px 0 18px; }
 .swatch { width: 18px; height: 12px; border-radius: 3px; align-self: center; }
-.route-card { border: 1px solid #2d3748; border-radius: 8px; padding: 10px; margin: 10px 0; background: #101318; }
+.route-card { border: 1px solid #2d3748; border-radius: 8px; padding: 10px; margin: 10px 0; background: #101318; cursor: pointer; }
+.route-card.selected { border-color: #faf089; box-shadow: 0 0 0 1px #faf089 inset; }
 .diag { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; margin: 8px 0; font-size: 13px; }
 .diag dt { color: #a0aec0; }
 .diag dd { margin: 0; font-variant-numeric: tabular-nums; }
+.controls { display: grid; gap: 6px; margin: 8px 0 14px; font-size: 13px; color: #cbd5e0; }
+.controls label { display: flex; gap: 8px; align-items: center; }
 .meter { height: 8px; border-radius: 999px; background: #2d3748; overflow: hidden; margin: 4px 0 10px; }
 .meter > span { display: block; height: 100%; background: #63b3ed; }
 .raw { max-height: 320px; overflow: auto; border: 1px solid #2d3748; border-radius: 8px; padding: 8px; background: #0b0f14; }
+.audit { margin: 8px 0; padding-left: 18px; font-size: 13px; }
+.audit li { margin: 4px 0; }
 .ok { color: #68d391; }
 .bad { color: #fc8181; }
 code { color: #f6ad55; }
@@ -48,6 +56,10 @@ small { color: #a0aec0; }
 <dt>dashed edge</dt><dd>closed access</dd>
 </div>
 <h2>Routes</h2>
+<div class="controls">
+<label><input id="dim-unselected" type="checkbox" checked> dim unselected routes after selection</label>
+<label><input id="show-raw" type="checkbox" checked> show raw selected properties</label>
+</div>
 <div id="routes"></div>
 <h2>Selected</h2>
 <div id="details"><small>Click a route or edge.</small></div>
@@ -62,16 +74,20 @@ const terrainColors = {
 const routeColors = ['#f56565', '#f6ad55', '#faf089', '#68d391', '#63b3ed', '#b794f4', '#f687b3'];
 const svg = document.getElementById('map');
 const details = document.getElementById('details');
+const dimUnselected = document.getElementById('dim-unselected');
+const showRaw = document.getElementById('show-raw');
 const edgeById = Object.fromEntries(graph.features.map(f => [f.properties.edge_id, f.properties]));
+let selectedRouteName = null;
+const routeHandles = [];
 function coords(feature) { return feature.geometry && feature.geometry.coordinates || []; }
 function allPoints() {
   return graph.features.concat(routes.features).flatMap(f => coords(f).map(c => [c[0], c[1]]));
 }
 const pts = allPoints();
 const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
-const bounds = {
-  west: Math.min(...xs), east: Math.max(...xs), south: Math.min(...ys), north: Math.max(...ys)
-};
+const bounds = pts.length
+  ? { west: Math.min(...xs), east: Math.max(...xs), south: Math.min(...ys), north: Math.max(...ys) }
+  : { west: 0, east: 1, south: 0, north: 1 };
 const W = 1200, H = 850, P = 36;
 svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
 function project(c) {
@@ -118,6 +134,7 @@ function escapeHtml(x) {
   return String(x).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 }
 function rawBlock(kind, p) {
+  if (!showRaw.checked) return '';
   return `<h3>Raw ${kind} properties</h3><pre class="raw">${escapeHtml(JSON.stringify({kind, ...p}, null, 2))}</pre>`;
 }
 function metricRow(k, v) { return `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`; }
@@ -154,6 +171,11 @@ function routeDiagnostics(p) {
     brutal: routeHotspots.join(', ') || brutal.map(e => `edge ${e.edge_id} ${scalar(e.difficulty)} ${e.terrain || 'unknown'}`).join(', ') || 'none'
   };
 }
+function constraintAudit(p) {
+  const rows = p.constraint_audit || [];
+  if (!rows.length) return '';
+  return `<h3>Constraint audit</h3><ul class="audit">${rows.map(row => `<li class="${row.satisfied ? 'ok' : 'bad'}">${escapeHtml(row.metric)}: measured ${escapeHtml(row.measured)}, requires ${escapeHtml(row.requirement)}, margin ${escapeHtml(row.margin)}</li>`).join('')}</ul>`;
+}
 function routeSummary(p) {
   const d = routeDiagnostics(p);
   return `<h3>${escapeHtml(p.name || 'route')}</h3><dl class="diag">
@@ -177,9 +199,32 @@ function routeSummary(p) {
     ${metricRow('low-confidence segments', d.lowConfidence)}
     ${metricRow('dubious segments', d.dubious)}
     ${metricRow('largest difficulty contributors', d.brutal)}
-  </dl>${rawBlock('route', p)}`;
+  </dl>${constraintAudit(p)}${rawBlock('route', p)}`;
 }
-function show(kind, p) { details.innerHTML = kind === 'route' ? routeSummary(p) : edgeSummary(p); }
+function refreshRouteSelection() {
+  for (const h of routeHandles) {
+    const selected = selectedRouteName && h.name === selectedRouteName;
+    h.route.classList.toggle('selected', selected);
+    h.card.classList.toggle('selected', selected);
+    const dim = Boolean(selectedRouteName && dimUnselected.checked && !selected);
+    h.route.classList.toggle('dimmed', dim);
+    h.halo.classList.toggle('dimmed', dim);
+  }
+}
+function show(kind, p) {
+  if (kind === 'route') {
+    selectedRouteName = p.name || null;
+    refreshRouteSelection();
+  }
+  details.innerHTML = kind === 'route' ? routeSummary(p) : edgeSummary(p);
+}
+dimUnselected.addEventListener('change', refreshRouteSelection);
+showRaw.addEventListener('change', () => {
+  if (selectedRouteName) {
+    const route = routes.features.map(f => f.properties || {}).find(p => p.name === selectedRouteName);
+    if (route) show('route', route);
+  }
+});
 for (const [terrain, color] of Object.entries(terrainColors)) {
   document.getElementById('legend').append(Object.assign(document.createElement('span'), {className: 'swatch', style: `background:${color}`}), terrain);
 }
@@ -204,7 +249,8 @@ const list = document.getElementById('routes');
 routes.features.forEach((f, i) => {
   const p = f.properties || {};
   const color = routeColors[i % routeColors.length];
-  routeLayer.append(el('path', {d: path(f), class: 'halo'}));
+  const halo = el('path', {d: path(f), class: 'halo'});
+  routeLayer.append(halo);
   const r = el('path', {d: path(f), class: 'route', stroke: color, 'stroke-width': 4});
   r.addEventListener('click', () => show('route', p));
   routeLayer.append(r);
@@ -212,6 +258,7 @@ routes.features.forEach((f, i) => {
   card.className = 'route-card';
   card.innerHTML = `<h3 style="color:${color}">${p.name}</h3><div class="${p.satisfied ? 'ok' : 'bad'}">${p.satisfied ? 'satisfied' : 'violates constraints'}</div><small>${routeText(p)}</small>`;
   card.addEventListener('click', () => show('route', p));
+  routeHandles.push({name: p.name, route: r, halo, card});
   list.append(card);
 });
 </script>
