@@ -33,11 +33,10 @@ cargo run -p trailgen -- map demo/mini-loop --output /tmp/mini-loop-map.html
 
 ```sh
 cargo test --workspace
-cargo test -p trailgen --test harriman -- --ignored
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-The ignored Harriman cases are large, deterministic generation-and-replay proofs over route-derived graphs. They verify that tight distance, ascent/descent, shape, start, and difficulty constraints recover both real loops without silently mutating their geometry. They do not claim independent rediscovery from public OSM: the current Harriman OSM extract has three genuine unmatched transitions, which seed import reports and rejects rather than bridging fictitious trail.
+The standing Harriman cases are deterministic generation-and-replay proofs over route-derived graphs. They verify that tight distance, ascent/descent, shape, start, and difficulty constraints recover both real loops without silently mutating their geometry. They do not claim independent rediscovery from public OSM: the current Harriman OSM extract has three genuine unmatched transitions, which seed import reports and rejects rather than bridging fictitious trail.
 
 `trailgen assemble <project>` is the manifest-driven rebuild path: after `discover` or `cache-source` has populated `sources/manifest.json`, it verifies source fingerprints, builds from trail-network candidates or seed-route scaffolds, applies DEM, terrain, and road/hydrology candidates, imports seed routes, then applies access/closure candidates. The explicit `build`/`apply-*`/`import-seed` commands remain available when you want manual phase control or are experimenting with one source at a time.
 

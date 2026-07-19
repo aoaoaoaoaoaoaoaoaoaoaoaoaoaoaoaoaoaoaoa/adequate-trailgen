@@ -34,13 +34,11 @@ const WEST: HarrimanCase = HarrimanCase {
 };
 
 #[test]
-#[ignore = "large real-route case; run `cargo test -p trailgen --test harriman -- --ignored`"]
 fn harriman_south_lows_emerges_from_constraints() {
     prove(&SOUTH_LOWS);
 }
 
 #[test]
-#[ignore = "large real-route case; run `cargo test -p trailgen --test harriman -- --ignored`"]
 fn harriman_west_emerges_from_constraints() {
     prove(&WEST);
 }
