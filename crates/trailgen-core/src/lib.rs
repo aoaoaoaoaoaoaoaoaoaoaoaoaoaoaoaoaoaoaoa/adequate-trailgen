@@ -16,9 +16,10 @@ pub mod raster;
 pub mod route;
 pub mod seed;
 pub mod source;
-pub mod units;
 
-pub use builder::{GraphBuilder, SegmentDraft, TurnRestrictionDraft, TurnRestrictionRule};
+pub use builder::{
+    GraphBuilder, JunctionPolicy, SegmentDraft, TurnRestrictionDraft, TurnRestrictionRule,
+};
 pub use constraints::{ConstraintAudit, ConstraintVerdict, LoopConstraints};
 pub use difficulty::{
     DifficultyBreakdown, DifficultyFactor, DifficultyWeights, TerrainMultipliers,
@@ -48,7 +49,7 @@ pub use raster::{ArcAsciiGrid, GeoTiffDem, RasterCrs, RasterDem, RasterTransform
 pub use route::{
     LOW_CONFIDENCE_THRESHOLD, Route, RouteMetrics, RouteShape, is_restricted_access, rank_routes,
 };
-pub use seed::{SeedRoute, slug};
+pub use seed::{SeedRoute, artifact_key};
 
 #[derive(Debug, thiserror::Error)]
 pub enum TrailgenError {

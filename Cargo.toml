@@ -15,6 +15,7 @@ roxmltree = "0.20.0"
 osmpbfreader = "0.19.1"
 protobuf = "3.7.2"
 reqwest = { version = "0.12.22", default-features = false, features = ["blocking", "rustls-tls"] }
+rstar = "0.12.2"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 sha2 = "0.10.9"

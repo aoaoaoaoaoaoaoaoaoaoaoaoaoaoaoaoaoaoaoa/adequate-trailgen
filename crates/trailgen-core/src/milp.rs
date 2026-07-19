@@ -88,6 +88,8 @@ pub enum MilpIncumbentError {
     Subtour(usize),
     #[error("MILP incumbent leaves {0} selected arc(s) outside the reconstructed start loop")]
     DisconnectedArcs(usize),
+    #[error("MILP incumbent uses forbidden turn from edge {from} via vertex {via} to edge {to}")]
+    ForbiddenTurn { from: usize, via: usize, to: usize },
 }
 
 #[derive(Clone, Copy)]
@@ -171,6 +173,7 @@ impl LoopMilpFormulation {
 
         rows.extend(bound_rows(graph, &arcs, constraints));
         rows.extend(terrain_rows(graph, &arcs, constraints));
+        rows.extend(turn_ban_rows(graph, &arcs));
 
         Self {
             name: "trailgen_loop_milp".to_owned(),
@@ -272,9 +275,18 @@ pub fn route_edges_from_selected_arcs(
     let mut at = start;
     let mut seen_vertices = BTreeSet::from([start]);
     let mut edges = Vec::new();
+    let mut previous = None;
     loop {
         let arc = out.remove(&at).ok_or(MilpIncumbentError::OpenWalk(at.0))?;
+        if !graph.turn_allowed(previous, at, arc.edge) {
+            return Err(MilpIncumbentError::ForbiddenTurn {
+                from: previous.expect("a forbidden turn has a previous edge").0,
+                via: at.0,
+                to: arc.edge.0,
+            });
+        }
         edges.push(arc.edge);
+        previous = Some(arc.edge);
         at = arc.to;
         if at == start {
             break;
@@ -287,6 +299,27 @@ pub fn route_edges_from_selected_arcs(
         return Err(MilpIncumbentError::DisconnectedArcs(out.len()));
     }
     Ok(edges)
+}
+
+fn turn_ban_rows(graph: &TrailGraph, arcs: &[ArcVar]) -> Vec<LinearRow> {
+    graph
+        .turn_bans
+        .iter()
+        .filter_map(|ban| {
+            let incoming = arcs
+                .iter()
+                .find(|arc| arc.edge == ban.from && arc.to == ban.via)?;
+            let outgoing = arcs
+                .iter()
+                .find(|arc| arc.edge == ban.to && arc.from == ban.via)?;
+            Some(LinearRow {
+                name: format!("forbid_turn_e{}_v{}_e{}", ban.from.0, ban.via.0, ban.to.0),
+                terms: vec![term(1.0, incoming.z()), term(1.0, outgoing.z())],
+                sense: LinearSense::Le,
+                rhs: 1.0,
+            })
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy)]

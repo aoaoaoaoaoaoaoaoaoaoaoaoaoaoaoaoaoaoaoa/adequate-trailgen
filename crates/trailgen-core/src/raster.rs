@@ -302,8 +302,7 @@ impl GeoTiffDem {
         let file = File::open(path)
             .map_err(|error| TrailgenError::InvalidData(format!("open GeoTIFF: {error}")))?;
         let mut decoder = Decoder::new(file)
-            .map_err(|error| TrailgenError::InvalidData(format!("decode GeoTIFF: {error}")))?
-            .with_limits(tiff::decoder::Limits::unlimited());
+            .map_err(|error| TrailgenError::InvalidData(format!("decode GeoTIFF: {error}")))?;
         let (width, height) = decoder.dimensions().map_err(|error| {
             TrailgenError::InvalidData(format!("read GeoTIFF dimensions: {error}"))
         })?;

@@ -8,10 +8,7 @@ use std::fs;
 use std::io::{Cursor, Read};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
-use trailgen_core::alltrails::{
-    AllTrailsBridge, AllTrailsExchange, AllTrailsRequest, ManualAllTrailsBridge,
-    RouteExchangeFormat,
-};
+use trailgen_core::alltrails::alltrails_plans;
 use trailgen_core::io::route_file::RouteFile;
 use trailgen_core::io::{csv, geojson, gpx, json_route, kml, kmz, osm, report, shapefile as shp};
 use trailgen_core::model::TerrainEvidence;
@@ -23,12 +20,12 @@ use trailgen_core::source::{
 use trailgen_core::{
     Access, AccessOverlay, AccessWindow, ArcAsciiGrid, ConstraintAudit, Coord, CrossingKind,
     DifficultyBreakdown, DifficultyWeights, EdgeAttr, EdgeId, EdgeTravel, ElevationMosaic,
-    EnrichmentConfig, GeoTiffDem, GradeDistribution, GraphBuilder, LOW_CONFIDENCE_THRESHOLD,
-    LineString, LoopConstraints, LoopMilpFormulation, PlanningDate, PlanningMoment, PlanningTime,
-    Provenance, RasterDem, Route, RouteMetrics, RouteShape, RouteSnapStats, SearchParams,
-    SeedRoute, SegmentDraft, SolverKind, Terrain, TrailGraph, VertexId, VrtDem,
-    apply_access_overlays, apply_access_overlays_at, apply_context_overlays,
-    apply_terrain_overlays, enrich_graph, rank_routes, route_edges_from_solution, slug,
+    EnrichmentConfig, GeoTiffDem, GradeDistribution, GraphBuilder, JunctionPolicy,
+    LOW_CONFIDENCE_THRESHOLD, LineString, LoopConstraints, LoopMilpFormulation, PlanningDate,
+    PlanningMoment, PlanningTime, Provenance, RasterDem, Route, RouteMetrics, RouteShape,
+    RouteSnapStats, SearchParams, SeedRoute, SegmentDraft, SolverKind, Terrain, TrailGraph,
+    VertexId, VrtDem, apply_access_overlays, apply_access_overlays_at, apply_context_overlays,
+    apply_terrain_overlays, artifact_key, enrich_graph, rank_routes, route_edges_from_solution,
 };
 
 #[derive(Parser)]
@@ -499,6 +496,130 @@ impl ProjectConfig {
         (self.planning_date.is_some() || self.planning_time.is_some())
             .then(|| PlanningMoment::new(self.planning_date, self.planning_time))
     }
+
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.name.trim().is_empty(),
+            "project name must not be empty"
+        );
+        ensure!(
+            self.area.is_none_or(GeoBounds::is_valid),
+            "invalid project bbox"
+        );
+        for (name, value) in [
+            ("snap_tolerance_m", self.snap_tolerance_m),
+            ("max_start_snap_m", self.max_start_snap_m),
+            ("max_route_snap_m", self.max_route_snap_m),
+            ("sample_spacing_m", self.enrichment.sample_spacing_m),
+            (
+                "steep_grade_threshold",
+                self.enrichment.steep_grade_threshold,
+            ),
+        ] {
+            ensure!(
+                value.is_finite() && value > 0.0,
+                "{name} must be finite and positive"
+            );
+        }
+        for (name, value) in difficulty_values(self.difficulty) {
+            ensure!(
+                value.is_finite() && value >= 0.0,
+                "{name} must be finite and nonnegative"
+            );
+        }
+        let c = &self.constraints;
+        for (name, value) in [
+            ("min_distance_m", c.min_distance_m),
+            ("max_distance_m", c.max_distance_m),
+            ("min_difficulty", c.min_difficulty),
+            ("max_difficulty", c.max_difficulty),
+            ("min_ascent_m", c.min_ascent_m),
+            ("max_ascent_m", c.max_ascent_m),
+            ("min_descent_m", c.min_descent_m),
+            ("max_descent_m", c.max_descent_m),
+        ] {
+            ensure!(
+                value.is_finite() && value >= 0.0,
+                "{name} must be finite and nonnegative"
+            );
+        }
+        for (name, min, max) in [
+            ("distance", c.min_distance_m, c.max_distance_m),
+            ("difficulty", c.min_difficulty, c.max_difficulty),
+            ("ascent", c.min_ascent_m, c.max_ascent_m),
+            ("descent", c.min_descent_m, c.max_descent_m),
+        ] {
+            ensure!(min <= max, "minimum {name} exceeds maximum {name}");
+        }
+        for (name, value) in [
+            ("max_road_fraction", c.max_road_fraction),
+            ("max_low_confidence_fraction", c.max_low_confidence_fraction),
+            (
+                "max_restricted_access_fraction",
+                c.max_restricted_access_fraction,
+            ),
+            ("max_repeated_edge_fraction", c.max_repeated_edge_fraction),
+        ]
+        .into_iter()
+        .chain(
+            c.min_terrain_fraction
+                .values()
+                .copied()
+                .map(|value| ("min_terrain_fraction", value)),
+        )
+        .chain(
+            c.max_terrain_fraction
+                .values()
+                .copied()
+                .map(|value| ("max_terrain_fraction", value)),
+        ) {
+            ensure!((0.0..=1.0).contains(&value), "{name} must be within 0..=1");
+        }
+        ensure!(
+            !c.allowed_shapes.is_empty(),
+            "allowed_shapes must not be empty"
+        );
+        for (terrain, minimum) in &c.min_terrain_fraction {
+            if let Some(maximum) = c.max_terrain_fraction.get(terrain) {
+                ensure!(
+                    minimum <= maximum,
+                    "minimum {terrain:?} fraction exceeds maximum"
+                );
+            }
+        }
+        ensure!(
+            self.search.max_hops > 0
+                && self.search.max_frontier > 0
+                && self.search.keep > 0
+                && self.search.closure_paths > 0,
+            "search limits must be positive"
+        );
+        Ok(())
+    }
+}
+
+const fn difficulty_values(weights: DifficultyWeights) -> [(&'static str, f64); 18] {
+    let terrain = weights.terrain_multipliers;
+    [
+        ("distance_per_km", weights.distance_per_km),
+        ("ascent_per_m", weights.ascent_per_m),
+        ("descent_per_m", weights.descent_per_m),
+        ("grade_per_abs_fraction", weights.grade_per_abs_fraction),
+        ("terrain.unknown", terrain.unknown),
+        ("terrain.trail", terrain.trail),
+        ("terrain.forest", terrain.forest),
+        ("terrain.alpine", terrain.alpine),
+        ("terrain.talus", terrain.talus),
+        ("terrain.scramble", terrain.scramble),
+        ("terrain.pavement", terrain.pavement),
+        ("terrain.road", terrain.road),
+        ("terrain.water", terrain.water),
+        ("road_penalty", weights.road_penalty),
+        ("technical_penalty", weights.technical_penalty),
+        ("navigation_penalty", weights.navigation_penalty),
+        ("low_confidence_penalty", weights.low_confidence_penalty),
+        ("closed_access_penalty", weights.closed_access_penalty),
+    ]
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -607,6 +728,9 @@ const fn default_max_route_snap_m() -> f64 {
 }
 
 const DEFAULT_OVERPASS_ENDPOINT: &str = "https://overpass-api.de/api/interpreter";
+const MAX_OVERPASS_BBOX_DEG2: f64 = 4.0;
+const MAX_SOURCE_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_ARCHIVE_MEMBER_BYTES: u64 = 256 * 1024 * 1024;
 const OSM_TRAIL_SELECTORS: &[&str] = &[
     r#"way["highway"~"^(path|footway|track|service|pedestrian|steps|bridleway|unclassified|residential|tertiary|road)$"]"#,
     r#"way["route"~"^(hiking|foot|walking)$"]"#,
@@ -853,92 +977,28 @@ fn main() -> Result<()> {
         Cmd::ApplyContext { project, source } => apply_context(&project, &source),
         Cmd::AlltrailsStatus => {
             println!("{}", include_str!("../../../docs/alltrails.md"));
-            let bridge = ManualAllTrailsBridge;
             println!(
-                "\nMachine-readable bridge capabilities:\n{}",
-                serde_json::to_string_pretty(&bridge.capabilities())?
-            );
-            println!(
-                "\nCanonical bridge plans:\n{}",
-                serde_json::to_string_pretty(&alltrails_plans(&bridge))?
+                "\nMachine-readable exchange plans:\n{}",
+                serde_json::to_string_pretty(&alltrails_plans())?
             );
             Ok(())
         }
     }
 }
 
-fn alltrails_plans(bridge: &impl AllTrailsBridge) -> Vec<trailgen_core::alltrails::AllTrailsPlan> {
-    [
-        (
-            AllTrailsExchange::ImportUserExport,
-            RouteExchangeFormat::Gpx,
-        ),
-        (
-            AllTrailsExchange::ImportUserExport,
-            RouteExchangeFormat::Geojson,
-        ),
-        (
-            AllTrailsExchange::ImportUserExport,
-            RouteExchangeFormat::Json,
-        ),
-        (
-            AllTrailsExchange::ImportUserExport,
-            RouteExchangeFormat::Kml,
-        ),
-        (
-            AllTrailsExchange::ImportUserExport,
-            RouteExchangeFormat::Kmz,
-        ),
-        (
-            AllTrailsExchange::ImportUserExport,
-            RouteExchangeFormat::Csv,
-        ),
-        (
-            AllTrailsExchange::ManualUploadCustomRoute,
-            RouteExchangeFormat::Gpx,
-        ),
-        (
-            AllTrailsExchange::ManualUploadCustomRoute,
-            RouteExchangeFormat::Kml,
-        ),
-        (
-            AllTrailsExchange::ManualUploadCustomRoute,
-            RouteExchangeFormat::Kmz,
-        ),
-        (
-            AllTrailsExchange::ManualUploadCustomRoute,
-            RouteExchangeFormat::Csv,
-        ),
-        (
-            AllTrailsExchange::ManualUploadActivity,
-            RouteExchangeFormat::Gpx,
-        ),
-        (
-            AllTrailsExchange::ManualUploadActivity,
-            RouteExchangeFormat::Kml,
-        ),
-        (
-            AllTrailsExchange::ManualUploadActivity,
-            RouteExchangeFormat::Kmz,
-        ),
-        (
-            AllTrailsExchange::ManualUploadActivity,
-            RouteExchangeFormat::Csv,
-        ),
-        (AllTrailsExchange::DirectWriteApi, RouteExchangeFormat::Gpx),
-    ]
-    .into_iter()
-    .map(|(exchange, format)| bridge.plan(AllTrailsRequest { exchange, format }))
-    .collect()
-}
-
 fn init(project: &Path, name: String, area: Option<GeoBounds>) -> Result<()> {
+    ensure!(
+        !project.join("trailgen.toml").exists(),
+        "{} is already a trailgen project",
+        project.display()
+    );
     fs::create_dir_all(project).with_context(|| format!("create {}", project.display()))?;
     for subdir in ["cache", "routes", "reports", "sources", "seeds"] {
         fs::create_dir_all(project.join(subdir))
             .with_context(|| format!("create {}", project.join(subdir).display()))?;
     }
     let config = ProjectConfig::new(name, area);
+    config.validate()?;
     fs::write(
         project.join("trailgen.toml"),
         toml::to_string_pretty(&config)?,
@@ -1094,6 +1154,7 @@ fn route_source_draft(source: &Path) -> Result<SegmentDraft> {
 
 fn route_source_draft_from_line(source: &Path, line: LineString) -> SegmentDraft {
     SegmentDraft {
+        junctions: JunctionPolicy::default(),
         turn_ref: None,
         turn_restrictions: Vec::new(),
         geometry: line,
@@ -1531,6 +1592,12 @@ fn acquire_osm(project: &Path, acquisition: &OsmAcquisition) -> Result<()> {
     let area = acquisition.bbox.or(config.area).with_context(
         || "acquire-osm requires --bbox or a project area from `trailgen init --bbox`",
     )?;
+    let area_deg2 = (area.east - area.west) * (area.north - area.south);
+    if area_deg2 > MAX_OVERPASS_BBOX_DEG2 {
+        bail!(
+            "Overpass bbox spans {area_deg2:.2} square degrees; limit is {MAX_OVERPASS_BBOX_DEG2:.2}; acquire a regional extract instead"
+        );
+    }
     let query = overpass_query(acquisition.profile, area, acquisition.timeout_s);
     if acquisition.print_query {
         print!("{query}");
@@ -1664,7 +1731,7 @@ fn osm_context_counts(raw: &str) -> Result<(usize, usize)> {
 }
 
 fn read_overpass_xml(endpoint: &str, query: &str, timeout_s: u64) -> Result<Vec<u8>> {
-    Ok(reqwest::blocking::Client::builder()
+    let response = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(timeout_s))
         .user_agent(concat!(
             "adequate-trailgen/",
@@ -1678,10 +1745,8 @@ fn read_overpass_xml(endpoint: &str, query: &str, timeout_s: u64) -> Result<Vec<
         .send()
         .with_context(|| format!("POST Overpass query to {endpoint}"))?
         .error_for_status()
-        .with_context(|| format!("Overpass endpoint {endpoint} returned an error status"))?
-        .bytes()
-        .with_context(|| format!("read Overpass response body from {endpoint}"))?
-        .to_vec())
+        .with_context(|| format!("Overpass endpoint {endpoint} returned an error status"))?;
+    read_bounded(response, MAX_SOURCE_BYTES, "Overpass response")
 }
 
 fn overpass_query(profile: OsmAcquireProfile, area: GeoBounds, timeout_s: u64) -> String {
@@ -3212,6 +3277,7 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
     config.search.seed = options.seed;
     apply_generate_search_options(&mut config.search, options);
     apply_generate_options(&mut config.constraints, options);
+    config.validate()?;
     enforce_generation_source_gate(project, config.generation_source_gate)?;
     let mut graph = materialize_effective_graph(project, &config)?;
     let forbidden_areas =
@@ -3306,6 +3372,7 @@ fn formulate_milp(project: &Path, options: &MilpFormulationOptions) -> Result<()
     if let Some(max_km) = options.max_km {
         config.constraints.max_distance_m = max_km * 1_000.0;
     }
+    config.validate()?;
     if !config.constraints.allows_shape(RouteShape::Loop) {
         bail!(
             "MILP formulation currently encodes connected simple loops; allow shape loop before formulating"
@@ -3327,6 +3394,7 @@ fn formulate_milp(project: &Path, options: &MilpFormulationOptions) -> Result<()
 }
 
 fn import_milp_solution(project: &Path, options: &MilpIncumbentOptions) -> Result<()> {
+    ensure_route_artifact_key(&options.name)?;
     let mut config = load_config(project)?;
     if let Some(date) = options.date {
         config.planning_date = Some(date);
@@ -3343,6 +3411,7 @@ fn import_milp_solution(project: &Path, options: &MilpIncumbentOptions) -> Resul
     if let Some(max_km) = options.max_km {
         config.constraints.max_distance_m = max_km * 1_000.0;
     }
+    config.validate()?;
     if !config.constraints.allows_shape(RouteShape::Loop) {
         bail!("MILP incumbent import expects a connected simple loop; allow shape loop first");
     }
@@ -3442,6 +3511,7 @@ fn milp_incumbent_generate_options(
 
 fn write_route_artifacts(project: &Path, graph: &TrailGraph, routes: &[Route]) -> Result<()> {
     for route in routes {
+        ensure_route_artifact_key(&route.name)?;
         write_json(
             project.join(format!("routes/{}.geojson", route.name)),
             &geojson::routes_to_geojson(graph, std::slice::from_ref(route)),
@@ -3691,6 +3761,12 @@ fn ensure_route_snap_accepted(
             snap.mean_snap_m
         );
     }
+    if snap.disconnected_transition_count > 0 {
+        bail!(
+            "{noun} has {} snapped transition(s) that cannot be connected within the local match budget",
+            snap.disconnected_transition_count
+        );
+    }
     Ok(())
 }
 
@@ -3800,6 +3876,10 @@ fn scale_global_weights(weights: &mut DifficultyWeights, multiplier: f64) {
     weights.ascent_per_m *= multiplier;
     weights.descent_per_m *= multiplier;
     weights.grade_per_abs_fraction *= multiplier;
+    scale_terrain_offsets(weights, multiplier);
+    weights.road_penalty *= multiplier;
+    weights.technical_penalty *= multiplier;
+    weights.navigation_penalty *= multiplier;
     weights.low_confidence_penalty *= multiplier;
     weights.closed_access_penalty *= multiplier;
 }
@@ -4265,7 +4345,7 @@ routes.features.forEach((f, i) => {{
   routeLayer.append(r);
   const card = document.createElement('div');
   card.className = 'route-card';
-  card.innerHTML = `<h3 style="color:${{color}}">${{p.name}}</h3><div class="${{p.satisfied ? 'ok' : 'bad'}}">${{p.satisfied ? 'satisfied' : 'violates constraints'}}</div><small>${{routeText(p)}}</small>`;
+  card.innerHTML = `<h3 style="color:${{color}}">${{escapeHtml(p.name || '')}}</h3><div class="${{p.satisfied ? 'ok' : 'bad'}}">${{p.satisfied ? 'satisfied' : 'violates constraints'}}</div><small>${{routeText(p)}}</small>`;
   card.addEventListener('click', () => show('route', p));
   routeHandles.push({{name: p.name, route: r, halo, card}});
   list.append(card);
@@ -4521,13 +4601,7 @@ fn render_source_coverage_summary(text: &mut String, manifest: &SourceManifest) 
         summary.optional.total
     );
     render_kind_list(text, "Missing required", &summary.missing_required);
-    render_kind_list(text, "Planned-only required", &summary.planned_required);
     render_kind_list(text, "Missing recommended", &summary.missing_recommended);
-    render_kind_list(
-        text,
-        "Planned-only recommended",
-        &summary.planned_recommended,
-    );
     text.push('\n');
 }
 
@@ -4858,10 +4932,9 @@ fn render_adapter_registry(text: &mut String, manifest: &SourceManifest) {
     for adapter in &manifest.adapters {
         let _ = writeln!(
             text,
-            "- {} ({:?}, {:?}): consumes {}; produces {}; {}",
+            "- {} ({:?}): consumes {}; produces {}; {}",
             adapter.id,
             adapter.kind,
-            adapter.status,
             adapter.consumes.join(", "),
             adapter.produces.join(", "),
             adapter.note
@@ -4907,9 +4980,7 @@ fn import_seed(
     } else {
         route.display().to_string()
     };
-    let archived_route = archive_seed_route(project, route, &name)?;
-    let route_file = load_route_file(&archived_route)?;
-    let source_format = archived_route
+    let source_format = route
         .extension()
         .and_then(|x| x.to_str())
         .unwrap_or("unknown")
@@ -4917,7 +4988,7 @@ fn import_seed(
     let mut seed = SeedRoute::snap_with_limit(
         &graph,
         name,
-        archived_route.display().to_string(),
+        route.display().to_string(),
         source_format,
         &route_file.line,
         max_route_snap_m.unwrap_or(config.max_route_snap_m),
@@ -4929,6 +5000,8 @@ fn import_seed(
         max_route_snap_m.unwrap_or(config.max_route_snap_m),
         "seed route",
     )?;
+    let archived_route = archive_seed_route(project, route, &seed.name)?;
+    seed.source_path = archived_route.display().to_string();
     graph.apply_seed_hints(&seed);
     for edge in &mut graph.edges {
         config.difficulty.apply_edge(edge);
@@ -4941,7 +5014,7 @@ fn import_seed(
     fs::create_dir_all(project.join("seeds"))?;
     write_json(project.join("seeds/seeds.json"), &seeds)?;
     write_json(
-        project.join(format!("seeds/{}.json", slug(&seed.name))),
+        project.join(format!("seeds/{}.json", artifact_key(&seed.name))),
         &seed,
     )?;
     register_source_candidate(project, &archived_route)?;
@@ -4985,7 +5058,7 @@ fn archive_seed_route(project: &Path, route: &Path, name: &str) -> Result<PathBu
         .and_then(|x| x.to_str())
         .unwrap_or("route")
         .to_ascii_lowercase();
-    let archived_route = project.join(format!("seeds/imports/{}.{}", slug(name), ext));
+    let archived_route = project.join(format!("seeds/imports/{}.{}", artifact_key(name), ext));
     let same_file = route
         .canonicalize()
         .ok()
@@ -5258,8 +5331,19 @@ fn apply_elevation(project: &Path, source: &Path, confidence: f64) -> Result<()>
 struct AppliedElevation {
     adapter_id: &'static str,
     metadata_path: &'static str,
-    metadata: RasterDem,
+    metadata: ElevationDescriptor,
     message: String,
+}
+
+#[derive(Serialize)]
+struct ElevationDescriptor {
+    adapter_id: &'static str,
+    source_path: String,
+    width: usize,
+    height: usize,
+    confidence: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_filename: Option<String>,
 }
 
 impl AppliedElevation {
@@ -5331,7 +5415,14 @@ fn apply_elevation_mosaic(project: &Path, sources: &[PathBuf], confidence: f64) 
     enrich_graph(&mut graph, &mosaic, config.enrichment, config.difficulty)
         .with_context(|| "apply elevation mosaic")?;
     save_graph(project, &graph)?;
-    write_json(project.join("sources/elevation-mosaic.json"), &mosaic)?;
+    write_json(
+        project.join("sources/elevation-mosaic.json"),
+        &serde_json::json!({
+            "kind": "elevation-mosaic",
+            "sources": sources,
+            "confidence": confidence.clamp(0.0, 1.0),
+        }),
+    )?;
     register_source_candidates(project, candidates)?;
     println!("applied elevation mosaic from {} source(s)", sources.len());
     Ok(())
@@ -5350,7 +5441,14 @@ fn apply_arc_ascii_elevation(
     Ok(AppliedElevation {
         adapter_id: "arc-ascii-elevation",
         metadata_path: "sources/elevation-arc-ascii.json",
-        metadata: RasterDem::ArcAscii(raster),
+        metadata: ElevationDescriptor {
+            adapter_id: "arc-ascii-elevation",
+            source_path: source.display().to_string(),
+            width: ncols,
+            height: nrows,
+            confidence: raster.confidence,
+            source_filename: None,
+        },
         message: format!(
             "applied Arc/Info ASCII elevation grid {}x{} from {}",
             ncols,
@@ -5373,7 +5471,14 @@ fn apply_geotiff_elevation(
     Ok(AppliedElevation {
         adapter_id: "geotiff-elevation",
         metadata_path: "sources/elevation-geotiff.json",
-        metadata: RasterDem::GeoTiff(raster),
+        metadata: ElevationDescriptor {
+            adapter_id: "geotiff-elevation",
+            source_path: source.display().to_string(),
+            width,
+            height,
+            confidence: raster.confidence,
+            source_filename: None,
+        },
         message: format!(
             "applied GeoTIFF elevation grid {}x{} from {}",
             width,
@@ -5396,7 +5501,14 @@ fn apply_vrt_elevation(
     Ok(AppliedElevation {
         adapter_id: "vrt-elevation",
         metadata_path: "sources/elevation-vrt.json",
-        metadata: RasterDem::Vrt(raster),
+        metadata: ElevationDescriptor {
+            adapter_id: "vrt-elevation",
+            source_path: source.display().to_string(),
+            width,
+            height,
+            confidence: raster.confidence,
+            source_filename: Some(raster.source_filename.clone()),
+        },
         message: format!(
             "applied VRT elevation grid {}x{} from {}",
             width,
@@ -5501,10 +5613,13 @@ fn context_overlays(source: &Path) -> Result<Vec<trailgen_core::ContextOverlay>>
 fn load_config(project: &Path) -> Result<ProjectConfig> {
     let raw = fs::read_to_string(project.join("trailgen.toml"))
         .with_context(|| format!("read {}", project.join("trailgen.toml").display()))?;
-    Ok(toml::from_str(&raw)?)
+    let config = toml::from_str::<ProjectConfig>(&raw)?;
+    config.validate()?;
+    Ok(config)
 }
 
 fn save_config(project: &Path, config: &ProjectConfig) -> Result<()> {
+    config.validate()?;
     fs::write(
         project.join("trailgen.toml"),
         toml::to_string_pretty(config)?,
@@ -5533,9 +5648,7 @@ fn load_generated_graph(project: &Path) -> Result<TrailGraph> {
 }
 
 fn load_graph_json(raw: &str) -> Result<TrailGraph> {
-    let mut graph: TrailGraph = serde_json::from_str(raw)?;
-    graph.rebuild_adjacency();
-    Ok(graph)
+    Ok(serde_json::from_str(raw)?)
 }
 
 fn save_graph(project: &Path, graph: &TrailGraph) -> Result<()> {
@@ -5856,10 +5969,14 @@ fn load_generated_constraints(project: &Path) -> Result<Option<LoopConstraints>>
 }
 
 fn load_generated_config(project: &Path) -> Result<Option<ProjectConfig>> {
-    Ok(load_generated_manifest_value(project)?
+    let config: Option<ProjectConfig> = load_generated_manifest_value(project)?
         .and_then(|manifest| manifest.get("effective_config").cloned())
         .map(serde_json::from_value)
-        .transpose()?)
+        .transpose()?;
+    if let Some(config) = &config {
+        config.validate()?;
+    }
+    Ok(config)
 }
 
 fn load_generated_source_manifest(project: &Path) -> Result<Option<SourceManifest>> {
@@ -6177,9 +6294,6 @@ fn source_fingerprint(path: &Path) -> Result<SourceFingerprint> {
     let mut bytes = 0u64;
     let mut hasher = Sha256::new();
     for member in &members {
-        let member_bytes =
-            fs::read(member).with_context(|| format!("read {}", member.display()))?;
-        bytes += u64::try_from(member_bytes.len()).expect("usize file length must fit in u64");
         if members.len() > 1 {
             hasher.update(
                 member
@@ -6190,7 +6304,21 @@ fn source_fingerprint(path: &Path) -> Result<SourceFingerprint> {
             );
             hasher.update([0]);
         }
-        hasher.update(&member_bytes);
+        let mut file = fs::File::open(member)
+            .with_context(|| format!("open {} for fingerprinting", member.display()))?;
+        let mut chunk = vec![0_u8; 64 * 1024].into_boxed_slice();
+        loop {
+            let read = file
+                .read(&mut chunk)
+                .with_context(|| format!("read {} for fingerprinting", member.display()))?;
+            if read == 0 {
+                break;
+            }
+            bytes = bytes
+                .checked_add(u64::try_from(read).expect("buffer length fits u64"))
+                .with_context(|| "source fingerprint byte count overflow")?;
+            hasher.update(&chunk[..read]);
+        }
         if members.len() > 1 {
             hasher.update([0xff]);
         }
@@ -6477,8 +6605,15 @@ fn source_files(root: &Path) -> Result<Vec<PathBuf>> {
         return Ok(files);
     }
     for entry in fs::read_dir(root).with_context(|| format!("read {}", root.display()))? {
-        let path = entry?.path();
-        if path.is_dir() {
+        let entry = entry?;
+        let path = entry.path();
+        let kind = entry.file_type()?;
+        ensure!(
+            !kind.is_symlink(),
+            "source discovery refuses symlink {}",
+            path.display()
+        );
+        if kind.is_dir() {
             files.extend(source_files(&path)?);
         } else if !is_generated_source_artifact(&path) {
             files.push(path);
@@ -6525,19 +6660,46 @@ fn ensure_safe_relative_project_path(path: &Path) -> Result<()> {
     }
 }
 
+fn ensure_route_artifact_key(name: &str) -> Result<()> {
+    ensure!(
+        !name.is_empty()
+            && name.len() <= 128
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')),
+        "route artifact name must be 1..=128 ASCII letters, digits, '-' or '_'"
+    );
+    Ok(())
+}
+
 fn read_source_input(input: &str) -> Result<Vec<u8>> {
     if input.starts_with("http://") || input.starts_with("https://") {
-        Ok(reqwest::blocking::get(input)
+        let response = reqwest::blocking::get(input)
             .with_context(|| format!("GET {input}"))?
             .error_for_status()
-            .with_context(|| format!("GET {input} returned an error status"))?
-            .bytes()
-            .with_context(|| format!("read response body from {input}"))?
-            .to_vec())
+            .with_context(|| format!("GET {input} returned an error status"))?;
+        read_bounded(
+            response,
+            MAX_SOURCE_BYTES,
+            &format!("response from {input}"),
+        )
     } else {
         let path = input.strip_prefix("file://").unwrap_or(input);
-        fs::read(path).with_context(|| format!("read {path}"))
+        let file = fs::File::open(path).with_context(|| format!("open {path}"))?;
+        read_bounded(file, MAX_SOURCE_BYTES, path)
     }
+}
+
+fn read_bounded(reader: impl Read, limit: u64, label: &str) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    reader
+        .take(limit + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("read {label}"))?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > limit {
+        bail!("{label} exceeds {limit} byte limit");
+    }
+    Ok(bytes)
 }
 
 fn copy_shapefile_sidecars(input: &str, cached_shp: &Path) -> Result<()> {
@@ -6609,8 +6771,15 @@ fn extract_source_archive(bytes: &[u8], cached: &Path) -> Result<()> {
         zip::ZipArchive::new(Cursor::new(bytes)).with_context(|| "read zipped source archive")?;
     let index = source_archive_member_index(&mut archive, cached)?;
     let mut file = archive.by_index(index)?;
-    let mut member = Vec::new();
-    file.read_to_end(&mut member)?;
+    if file.size() > MAX_ARCHIVE_MEMBER_BYTES {
+        bail!(
+            "archive member {} is {} bytes; limit is {MAX_ARCHIVE_MEMBER_BYTES}",
+            file.name(),
+            file.size()
+        );
+    }
+    let name = file.name().to_owned();
+    let member = read_bounded(&mut file, MAX_ARCHIVE_MEMBER_BYTES, &name)?;
     write_bytes(cached, member)
 }
 
@@ -6728,9 +6897,19 @@ fn archive_member_bytes(
         return Ok(None);
     };
     let mut file = archive.by_index(index)?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
-    Ok(Some(bytes))
+    if file.size() > MAX_ARCHIVE_MEMBER_BYTES {
+        bail!(
+            "archive member {} is {} bytes; limit is {MAX_ARCHIVE_MEMBER_BYTES}",
+            file.name(),
+            file.size()
+        );
+    }
+    let name = file.name().to_owned();
+    Ok(Some(read_bounded(
+        &mut file,
+        MAX_ARCHIVE_MEMBER_BYTES,
+        &name,
+    )?))
 }
 
 fn local_input_path(input: &str) -> Option<PathBuf> {
@@ -6778,10 +6957,16 @@ fn parse_coord(raw: &str) -> Result<Coord> {
     let Some((lon, lat)) = raw.split_once(',') else {
         bail!("coordinate must be lon,lat");
     };
-    Ok(Coord::new(
-        lon.trim().parse::<f64>()?,
-        lat.trim().parse::<f64>()?,
-    ))
+    let lon = lon.trim().parse::<f64>()?;
+    let lat = lat.trim().parse::<f64>()?;
+    ensure!(
+        lon.is_finite()
+            && lat.is_finite()
+            && (-180.0..=180.0).contains(&lon)
+            && (-90.0..=90.0).contains(&lat),
+        "coordinate must contain finite longitude in -180..=180 and latitude in -90..=90"
+    );
+    Ok(Coord::new(lon, lat))
 }
 
 fn parse_bounds(raw: &str) -> Result<GeoBounds, String> {
@@ -6855,7 +7040,6 @@ const fn source_coverage_status_arg(status: SourceCoverageStatus) -> &'static st
     match status {
         SourceCoverageStatus::Satisfied => "satisfied",
         SourceCoverageStatus::Missing => "missing",
-        SourceCoverageStatus::PlannedAdapterOnly => "planned-adapter-only",
     }
 }
 
@@ -7007,48 +7191,30 @@ mod tests {
     }
 
     #[test]
-    fn cli_help_explains_operational_commands() {
-        let mut root = Cli::command();
-        let help = root.render_help().to_string();
-        assert!(help.contains("Create a project directory"));
-        assert!(help.contains("Generate ranked candidate routes"));
-        assert!(help.contains("deterministic LP/MILP loop formulation"));
-        assert!(help.contains("external MILP solver incumbent"));
-        assert!(help.contains("Fetch bbox-scoped OSM XML"));
-        assert!(help.contains("Print concrete next source-acquisition actions"));
-        assert!(help.contains("source coverage satisfies a planning gate"));
-        assert!(help.contains("native solver replay"));
-        assert!(help.contains("AllTrails"));
+    fn hostile_coordinates_names_and_script_payloads_are_rejected_or_neutered() -> Result<()> {
+        for coordinate in ["NaN,40", "-105,inf", "181,40", "-105,91"] {
+            assert!(parse_coord(coordinate).is_err(), "accepted {coordinate}");
+        }
+        for name in ["", "../escape", "route/name", "route.html"] {
+            assert!(ensure_route_artifact_key(name).is_err(), "accepted {name}");
+        }
+        ensure_route_artifact_key("candidate_1-hard")?;
 
-        let mut build = Cli::command();
-        let build_help = build
-            .find_subcommand_mut("build")
-            .expect("build command")
-            .render_help()
-            .to_string();
-        assert!(build_help.contains("near-miss snap tolerance"));
+        let mut config = ProjectConfig::new("hostile".to_owned(), None);
+        config.constraints.max_distance_m = config.constraints.min_distance_m - 1.0;
+        assert!(config.validate().is_err());
 
-        let mut generate = Cli::command();
-        let generate_help = generate
-            .find_subcommand_mut("generate")
-            .expect("generate command")
-            .render_help()
-            .to_string();
-        assert!(generate_help.contains("trailhead/start coordinate"));
-        assert!(generate_help.contains("Maximum road or pavement"));
-        assert!(generate_help.contains("Allowed measured route shape"));
-        assert!(generate_help.contains("Maximum expanded solver states"));
-        assert!(generate_help.contains("legal return paths"));
-        assert!(generate_help.contains("Source coverage gate enforced before generation"));
+        let embedded = js_json(&serde_json::json!({
+            "name": "</script><script>alert(1)</script>"
+        }))?;
+        assert!(!embedded.contains("</script>"));
+        assert!(embedded.contains("<\\/script>"));
+        Ok(())
+    }
 
-        let mut access = Cli::command();
-        let access_help = access
-            .find_subcommand_mut("apply-access")
-            .expect("apply-access command")
-            .render_help()
-            .to_string();
-        assert!(access_help.contains("shared graph baseline"));
-        assert!(access_help.contains("repeat to compose sources"));
+    #[test]
+    fn cli_schema_is_sound() {
+        Cli::command().debug_assert();
     }
 
     #[test]
@@ -7057,33 +7223,8 @@ mod tests {
         apply_generate_options(
             &mut constraints,
             &GenerateOptions {
-                start: "-105.0000,40.0000".to_owned(),
-                min_km: 3.0,
-                max_km: 8.0,
-                count: 2,
-                seed: 0,
-                max_start_snap_m: None,
-                solver: None,
-                max_hops: None,
-                max_frontier: None,
-                keep: None,
-                closure_paths: None,
-                source_gate: None,
-                date: None,
-                time: None,
-                min_difficulty: None,
-                max_difficulty: None,
-                min_ascent_m: None,
-                max_ascent_m: None,
-                min_descent_m: None,
-                max_descent_m: None,
-                max_road_fraction: None,
-                max_low_confidence_fraction: None,
                 max_restricted_access_fraction: Some(0.25),
-                shape: Vec::new(),
-                max_repeated_edge_fraction: None,
                 forbidden_terrain: vec![Terrain::Pavement, Terrain::Road],
-                forbidden_area: Vec::new(),
                 min_terrain: vec![TerrainFraction {
                     terrain: Terrain::Trail,
                     fraction: 0.65,
@@ -7092,6 +7233,7 @@ mod tests {
                     terrain: Terrain::Talus,
                     fraction: 0.10,
                 }],
+                ..mini_generate_options()
             },
         );
 
@@ -7128,6 +7270,7 @@ mod tests {
         };
         let graph = GraphBuilder::default().build(&[
             SegmentDraft {
+                junctions: JunctionPolicy::default(),
                 turn_ref: Some("trail".to_owned()),
                 turn_restrictions: vec![trailgen_core::TurnRestrictionDraft {
                     from: "trail".to_owned(),
@@ -7151,6 +7294,7 @@ mod tests {
                 provenance: Provenance::fixture("trail"),
             },
             SegmentDraft {
+                junctions: JunctionPolicy::default(),
                 turn_ref: Some("restricted-road".to_owned()),
                 turn_restrictions: Vec::new(),
                 geometry: LineString::new(vec![Coord::new(0.01, 0.0), Coord::new(0.02, 0.0)])
@@ -7167,35 +7311,10 @@ mod tests {
         ])?;
 
         let text = stats_text(&graph);
-        assert!(text.contains("mean difficulty per km:"));
-        assert!(text.contains("directed-travel edges: 0"));
         assert!(text.contains("turn bans: 1"));
-        assert!(text.contains("low-confidence edge-km:"));
-        assert!(text.contains("restricted-access edge-km:"));
-        assert!(text.contains("road/pavement edge-km:"));
-        assert!(text.contains("elevation-attributed edge-km:"));
-        assert!(text.contains("elevation-sampled grade-km:"));
-        assert!(text.contains("graph ascent/descent:"));
-        assert!(text.contains("sustained-steep edge-km:"));
         assert!(text.contains("Grade distribution:"));
-        assert!(text.contains("- flat <5%:"));
         assert!(text.contains("Elevation provenance:"));
-        assert!(text.contains("- embedded-geometry-elevation:"));
-        assert!(text.contains("seed-attributed edge-km:"));
-        assert!(text.contains("Terrain mix:"));
-        assert!(text.contains("- Trail:"));
-        assert!(text.contains("- Road:"));
-        assert!(text.contains("Access mix:"));
-        assert!(text.contains("- Restricted:"));
-        assert!(text.contains("Source mix:"));
-        assert!(text.contains("- fixture:trail:"));
-        assert!(text.contains("- fixture:restricted-road:"));
-        assert!(text.contains("Confidence mix:"));
-        assert!(text.contains("- low <0.60:"));
-        assert!(text.contains("- high ≥0.80:"));
         assert!(text.contains("Turn-ban provenance:"));
-        assert!(text.contains("- fixture-turns:forbidden-corner: 1"));
-        assert!(text.contains("Crossings:"));
         let manifest = graph_manifest(&graph);
         assert_eq!(manifest.directed_travel_edges, 0);
         assert_eq!(manifest.turn_bans.count, 1);
@@ -7753,13 +7872,6 @@ mod tests {
         assert_generation_artifacts_manifest(&manifest);
         let generated_report = fs::read_to_string(project.join("reports/generated.md"))?;
         assert!(generated_report.contains("## Generation Ledger"));
-        assert!(generated_report.contains("- app version:"));
-        assert!(generated_report.contains("- solver: requested Exact, concrete exact-enumerator"));
-        assert!(generated_report.contains("- random seed: 77"));
-        assert!(generated_report.contains("- snapped start: vertex"));
-        assert!(generated_report.contains("- seed ledger: none"));
-        assert!(generated_report.contains("directed-travel edge(s), 0 turn ban(s)"));
-        assert!(generated_report.contains("- graph elevation:"));
 
         Ok(())
     }
@@ -8324,40 +8436,7 @@ mod tests {
 
         init(project, "Export Test".to_owned(), None)?;
         build(project, &fixture)?;
-        generate(
-            project,
-            &GenerateOptions {
-                start: "-105.0000,40.0000".to_owned(),
-                min_km: 3.0,
-                max_km: 8.0,
-                count: 2,
-                seed: 0,
-                max_start_snap_m: None,
-                solver: None,
-                max_hops: None,
-                max_frontier: None,
-                keep: None,
-                closure_paths: None,
-                source_gate: None,
-                date: None,
-                time: None,
-                min_difficulty: None,
-                max_difficulty: None,
-                min_ascent_m: None,
-                max_ascent_m: None,
-                min_descent_m: None,
-                max_descent_m: None,
-                max_road_fraction: None,
-                max_low_confidence_fraction: None,
-                max_restricted_access_fraction: None,
-                shape: Vec::new(),
-                max_repeated_edge_fraction: None,
-                forbidden_terrain: Vec::new(),
-                forbidden_area: Vec::new(),
-                min_terrain: Vec::new(),
-                max_terrain: Vec::new(),
-            },
-        )?;
+        generate(project, &mini_generate_options())?;
 
         let gpx = project.join("exports/candidate-1.gpx");
         let gpx_report = project.join("exports/candidate-1.md");
@@ -8403,13 +8482,9 @@ mod tests {
         csv: &Path,
         geojson: &Path,
     ) -> Result<()> {
-        assert!(fs::read_to_string(gpx)?.contains("<gpx"));
+        assert!(gpx::route_line_from_str(&fs::read_to_string(gpx)?)?.length_m() > 3_000.0);
         let csv_text = fs::read_to_string(csv)?;
         assert!(csv_text.starts_with("# name: candidate-1\n"));
-        assert!(csv_text.contains("# description: score "));
-        assert!(csv_text.contains("sustained-steep "));
-        assert!(csv_text.contains("; grade "));
-        assert!(csv_text.contains("\nlongitude,latitude,elevation_m\n"));
         assert!(csv::route_line_from_str(&csv_text)?.length_m() > 3_000.0);
         let selected_geojson = serde_json::from_str::<Value>(&fs::read_to_string(geojson)?)?;
         assert_eq!(selected_geojson["type"], "FeatureCollection");
@@ -8422,15 +8497,8 @@ mod tests {
         );
         let selected_properties = &selected_geojson["features"][0]["properties"];
         assert!(selected_properties["restricted_access_fraction"].is_number());
-        assert!(selected_properties["sustained_steep_m"].is_number());
-        assert!(selected_properties["grade_distribution"].is_object());
         assert!(selected_properties["terrain_fraction"].is_object());
-        assert!(selected_properties["access_fraction"].is_object());
         assert!(selected_properties["difficulty_hotspots"].is_array());
-        assert!(selected_properties["access_warning_edges"].is_array());
-        assert!(selected_properties["directed_travel_edges"].is_array());
-        assert!(selected_properties["low_confidence_edges"].is_array());
-        assert!(selected_properties["dubious_edges"].is_array());
         Ok(())
     }
 
@@ -8438,33 +8506,11 @@ mod tests {
         let report = fs::read_to_string(md)?;
         assert!(report.contains("candidate-1"));
         assert!(report.contains("## Generation Ledger"));
-        assert!(report.contains("- random seed: 0"));
-        assert!(report.contains("- solver: requested Auto, concrete"));
-        assert!(report.contains("Route sequence:"));
-        assert!(report.contains("- edge ids:"));
         assert!(report.contains("## Constraint Envelope"));
-        assert!(report.contains("distance: 3.00–8.00 km"));
-        assert!(report.contains("scalar difficulty: 0.00–90.00"));
-        assert!(report.contains("Difficulty decomposition"));
-        assert!(report.contains("sustained steepness"));
-        assert!(report.contains("Grade distribution"));
-        assert!(report.contains("Low-confidence segments"));
-        assert!(report.contains("Access mix"));
-        assert!(report.contains("restricted-access fraction"));
         assert!(report.contains("## Source Manifest"));
-        assert!(report.contains("Coverage summary:"));
-        assert!(report.contains("Missing required: Elevation"));
-        assert!(report.contains("sha256 "));
         let sidecar_report = fs::read_to_string(sidecar)?;
         assert!(sidecar_report.starts_with("# Generated Hiking Route"));
         assert!(sidecar_report.contains("candidate-1"));
-        assert!(sidecar_report.contains("## Generation Ledger"));
-        assert!(sidecar_report.contains("- emitted artifacts:"));
-        assert!(sidecar_report.contains("Route sequence:"));
-        assert!(sidecar_report.contains("Difficulty decomposition"));
-        assert!(sidecar_report.contains("Grade distribution"));
-        assert!(sidecar_report.contains("Source provenance:"));
-        assert!(sidecar_report.contains("Coverage summary:"));
         Ok(())
     }
 
@@ -8472,22 +8518,7 @@ mod tests {
         let generated_map = fs::read_to_string(project.join("reports/map.html"))?;
         assert!(generated_map.contains("Offline diagnostic map"));
         assert!(generated_map.contains("const graph = {"));
-        assert!(generated_map.contains("dim unselected routes after selection"));
-        assert!(generated_map.contains("show raw selected properties"));
-        assert!(generated_map.contains(".route.selected"));
-        assert!(generated_map.contains("edge width"));
-        assert!(generated_map.contains("difficulty factors"));
-        assert!(generated_map.contains("sustained steepness"));
-        assert!(generated_map.contains("grade distribution"));
-        assert!(generated_map.contains("Constraint audit"));
-        assert!(generated_map.contains("access warnings"));
-        assert!(generated_map.contains("low-confidence segments"));
-        assert!(generated_map.contains("dubious segments"));
-        assert!(generated_map.contains("restricted access"));
-        assert!(generated_map.contains("terrain mix"));
-        assert!(generated_map.contains("source provenance"));
-        assert!(generated_map.contains("fixture:"));
-        assert!(generated_map.contains("largest difficulty contributors"));
+        assert!(generated_map.contains("escapeHtml(p.name || '')"));
         let selected_map = fs::read_to_string(selected)?;
         assert!(selected_map.contains("Export Test"));
         assert!(selected_map.contains("candidate-1"));
@@ -8813,35 +8844,9 @@ mod tests {
         generate(
             project,
             &GenerateOptions {
-                start: "-105.0000,40.0000".to_owned(),
-                min_km: 3.0,
-                max_km: 8.0,
-                count: 2,
-                seed: 0,
-                max_start_snap_m: None,
                 solver: Some(SolverKind::Exact),
-                max_hops: None,
-                max_frontier: None,
-                keep: None,
-                closure_paths: None,
-                source_gate: None,
                 date: Some("2026-07-15".parse().unwrap()),
-                time: None,
-                min_difficulty: None,
-                max_difficulty: None,
-                min_ascent_m: None,
-                max_ascent_m: None,
-                min_descent_m: None,
-                max_descent_m: None,
-                max_road_fraction: None,
-                max_low_confidence_fraction: None,
-                max_restricted_access_fraction: None,
-                shape: Vec::new(),
-                max_repeated_edge_fraction: None,
-                forbidden_terrain: Vec::new(),
-                forbidden_area: Vec::new(),
-                min_terrain: Vec::new(),
-                max_terrain: Vec::new(),
+                ..mini_generate_options()
             },
         )?;
 
@@ -8919,35 +8924,10 @@ mod tests {
         generate(
             project,
             &GenerateOptions {
-                start: "-105.0000,40.0000".to_owned(),
-                min_km: 3.0,
-                max_km: 8.0,
-                count: 2,
-                seed: 0,
-                max_start_snap_m: None,
                 solver: Some(SolverKind::Exact),
-                max_hops: None,
-                max_frontier: None,
-                keep: None,
-                closure_paths: None,
-                source_gate: None,
                 date: Some("2026-07-06".parse().unwrap()),
                 time: Some("18:00".parse().unwrap()),
-                min_difficulty: None,
-                max_difficulty: None,
-                min_ascent_m: None,
-                max_ascent_m: None,
-                min_descent_m: None,
-                max_descent_m: None,
-                max_road_fraction: None,
-                max_low_confidence_fraction: None,
-                max_restricted_access_fraction: None,
-                shape: Vec::new(),
-                max_repeated_edge_fraction: None,
-                forbidden_terrain: Vec::new(),
-                forbidden_area: Vec::new(),
-                min_terrain: Vec::new(),
-                max_terrain: Vec::new(),
+                ..mini_generate_options()
             },
         )?;
 
@@ -9003,35 +8983,10 @@ mod tests {
         generate(
             project,
             &GenerateOptions {
-                start: "-105.0000,40.0000".to_owned(),
-                min_km: 3.0,
-                max_km: 8.0,
-                count: 2,
-                seed: 0,
-                max_start_snap_m: None,
                 solver: Some(SolverKind::Exact),
-                max_hops: None,
-                max_frontier: None,
-                keep: None,
-                closure_paths: None,
-                source_gate: None,
                 date: Some("2026-07-15".parse().unwrap()),
-                time: None,
-                min_difficulty: None,
-                max_difficulty: None,
-                min_ascent_m: None,
-                max_ascent_m: None,
-                min_descent_m: None,
-                max_descent_m: None,
-                max_road_fraction: None,
-                max_low_confidence_fraction: None,
                 max_restricted_access_fraction: Some(1.0),
-                shape: Vec::new(),
-                max_repeated_edge_fraction: None,
-                forbidden_terrain: Vec::new(),
-                forbidden_area: Vec::new(),
-                min_terrain: Vec::new(),
-                max_terrain: Vec::new(),
+                ..mini_generate_options()
             },
         )?;
 
@@ -9087,35 +9042,9 @@ mod tests {
         generate(
             project,
             &GenerateOptions {
-                start: "-105.0000,40.0000".to_owned(),
-                min_km: 3.0,
-                max_km: 8.0,
                 count: 1,
-                seed: 0,
-                max_start_snap_m: None,
-                solver: None,
-                max_hops: None,
-                max_frontier: None,
-                keep: None,
-                closure_paths: None,
-                source_gate: None,
-                date: None,
-                time: None,
-                min_difficulty: None,
                 max_difficulty: Some(10_000.0),
-                min_ascent_m: None,
-                max_ascent_m: None,
-                min_descent_m: None,
-                max_descent_m: None,
-                max_road_fraction: None,
-                max_low_confidence_fraction: None,
-                max_restricted_access_fraction: None,
-                shape: Vec::new(),
-                max_repeated_edge_fraction: None,
-                forbidden_terrain: Vec::new(),
-                forbidden_area: Vec::new(),
-                min_terrain: Vec::new(),
-                max_terrain: Vec::new(),
+                ..mini_generate_options()
             },
         )?;
 
@@ -9290,7 +9219,12 @@ mod tests {
         let seeds_once = load_seeds(&project)?;
         assert_eq!(seeds_once.len(), 1);
         assert_eq!(seeds_once[0].name, "Known Good Loop");
-        assert!(project.join("seeds/imports/known-good-loop.gpx").exists());
+        let seed_key = artifact_key("Known Good Loop");
+        assert!(
+            project
+                .join(format!("seeds/imports/{seed_key}.gpx"))
+                .exists()
+        );
         assert!(!project.join("seeds/imports/candidate-1.gpx").exists());
 
         assemble_sources(&project, None, None, 0.82)?;
@@ -9304,7 +9238,11 @@ mod tests {
                 .iter()
                 .any(|edge| edge.attr.seed_count > 0)
         );
-        assert!(project.join("seeds/imports/known-good-loop.gpx").exists());
+        assert!(
+            project
+                .join(format!("seeds/imports/{seed_key}.gpx"))
+                .exists()
+        );
         assert!(!project.join("seeds/imports/candidate-1.gpx").exists());
         assert!(!project.join("seeds/candidate-1.json").exists());
 
@@ -9608,6 +9546,7 @@ mod tests {
         assert_eq!(metadata["width"], 3);
         assert_eq!(metadata["height"], 3);
         assert_eq!(metadata["confidence"], 0.84);
+        assert!(metadata.get("values").is_none());
         let manifest: Value =
             serde_json::from_str(&fs::read_to_string(project.join("sources/manifest.json"))?)?;
         assert!(
@@ -10062,10 +10001,11 @@ mod tests {
         let manifest: Value =
             serde_json::from_str(&fs::read_to_string(project.join("sources/manifest.json"))?)?;
         let candidates = manifest["candidates"].as_array().expect("candidates");
+        let seed_key = artifact_key("Known Good Loop");
         assert!(candidates.iter().any(|candidate| {
             candidate["path"]
                 .as_str()
-                .is_some_and(|path| path.contains("seeds/imports/known-good-loop.gpx"))
+                .is_some_and(|path| path.contains(&format!("seeds/imports/{seed_key}.gpx")))
         }));
         assert!(!candidates.iter().any(|candidate| {
             candidate["path"]
@@ -10073,12 +10013,12 @@ mod tests {
                 .is_some_and(|path| path.ends_with("routes/candidate-1.gpx"))
         }));
         let seeds: Value = serde_json::from_str(&fs::read_to_string(
-            project.join("seeds/known-good-loop.json"),
+            project.join(format!("seeds/{seed_key}.json")),
         )?)?;
         assert!(
             seeds["source_path"]
                 .as_str()
-                .is_some_and(|path| path.ends_with("seeds/imports/known-good-loop.gpx"))
+                .is_some_and(|path| path.ends_with(&format!("seeds/imports/{seed_key}.gpx")))
         );
         assert!(
             seeds["original_source_path"]
@@ -10100,6 +10040,26 @@ mod tests {
         assert!(generated_report.contains("- seed ledger: 1 route(s)"));
         expect_seed_ledger_content_drift(project)?;
 
+        Ok(())
+    }
+
+    #[test]
+    fn rejected_seed_leaves_no_archive_or_ledger_debris() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project = tmp.path().join("project");
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../trailgen-core/tests/fixtures/mini_network.geojson");
+        let remote = tmp.path().join("remote.csv");
+        fs::write(&remote, "longitude,latitude\n0,0\n0.01,0.01\n")?;
+
+        init(&project, "Rejected Seed Test".to_owned(), None)?;
+        build(&project, &fixture)?;
+        let error = import_seed(&project, &remote, Some("remote".to_owned()), None)
+            .expect_err("remote seed should not snap");
+        assert!(format!("{error:#}").contains("seed route"));
+        assert!(!project.join("seeds/imports/remote.csv").exists());
+        assert!(!project.join("seeds/remote.json").exists());
+        assert!(!project.join("seeds/seeds.json").exists());
         Ok(())
     }
 

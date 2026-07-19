@@ -6,7 +6,6 @@ The current registry is `adapter_registry()` in `crates/trailgen-core/src/source
 
 - stable `id`
 - `SourceKind`
-- implemented/planned status
 - consumed file extensions or protocol names
 - produced normalized artifacts
 - a terse note about scope and limitations

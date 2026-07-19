@@ -65,11 +65,11 @@ impl Default for LoopConstraints {
 impl LoopConstraints {
     #[must_use]
     pub fn judge(&self, metrics: &RouteMetrics) -> ConstraintVerdict {
-        let mut violations = Vec::new();
-        self.append_distance_violations(metrics, &mut violations);
-        self.append_difficulty_violations(metrics, &mut violations);
-        self.append_elevation_violations(metrics, &mut violations);
-        self.append_fraction_violations(metrics, &mut violations);
+        let mut violations = self
+            .core_checks(metrics)
+            .into_iter()
+            .filter_map(BoundCheck::violation)
+            .collect();
         self.append_shape_violations(metrics, &mut violations);
         self.append_terrain_violations(metrics, &mut violations);
         ConstraintVerdict {
@@ -88,92 +88,70 @@ impl LoopConstraints {
     }
 
     fn core_audit(&self, metrics: &RouteMetrics) -> Vec<ConstraintAudit> {
-        vec![
-            min_check(
-                "minimum distance",
-                metrics.distance_m / 1_000.0,
+        self.core_checks(metrics)
+            .into_iter()
+            .map(BoundCheck::audit)
+            .chain(std::iter::once(shape_check(
+                metrics.shape,
+                &self.allowed_shapes,
+            )))
+            .collect()
+    }
+
+    fn core_checks(&self, m: &RouteMetrics) -> [BoundCheck<'_>; 12] {
+        [
+            BoundCheck::min(
+                "distance",
+                m.distance_m / 1_000.0,
                 self.min_distance_m / 1_000.0,
                 "km",
                 2,
             ),
-            max_check(
-                "maximum distance",
-                metrics.distance_m / 1_000.0,
+            BoundCheck::max(
+                "distance",
+                m.distance_m / 1_000.0,
                 self.max_distance_m / 1_000.0,
                 "km",
                 2,
             ),
-            min_check(
-                "minimum difficulty",
-                metrics.difficulty,
-                self.min_difficulty,
-                "",
-                2,
-            ),
-            max_check(
-                "maximum difficulty",
-                metrics.difficulty,
-                self.max_difficulty,
-                "",
-                2,
-            ),
-            min_check(
-                "minimum ascent",
-                metrics.ascent_m,
-                self.min_ascent_m,
-                "m",
-                0,
-            ),
-            max_check(
-                "maximum ascent",
-                metrics.ascent_m,
-                self.max_ascent_m,
-                "m",
-                0,
-            ),
-            min_check(
-                "minimum descent",
-                metrics.descent_m,
-                self.min_descent_m,
-                "m",
-                0,
-            ),
-            max_check(
-                "maximum descent",
-                metrics.descent_m,
-                self.max_descent_m,
-                "m",
-                0,
-            ),
-            max_check(
-                "maximum road/pavement exposure",
-                metrics.road_fraction * 100.0,
+            BoundCheck::min("difficulty", m.difficulty, self.min_difficulty, "", 2),
+            BoundCheck::max("difficulty", m.difficulty, self.max_difficulty, "", 2),
+            BoundCheck::min("ascent", m.ascent_m, self.min_ascent_m, "m", 0),
+            BoundCheck::max("ascent", m.ascent_m, self.max_ascent_m, "m", 0),
+            BoundCheck::min("descent", m.descent_m, self.min_descent_m, "m", 0),
+            BoundCheck::max("descent", m.descent_m, self.max_descent_m, "m", 0),
+            BoundCheck::max_named(
+                "road/pavement exposure",
+                "road/pavement fraction",
+                m.road_fraction * 100.0,
                 self.max_road_fraction * 100.0,
                 "%",
                 1,
             ),
-            max_check(
-                "maximum low-confidence exposure",
-                metrics.low_confidence_fraction * 100.0,
+            BoundCheck::max_named(
+                "low-confidence exposure",
+                "low-confidence fraction",
+                m.low_confidence_fraction * 100.0,
                 self.max_low_confidence_fraction * 100.0,
                 "%",
                 1,
             ),
-            max_check(
-                "maximum restricted-access exposure",
-                metrics.restricted_access_fraction * 100.0,
+            BoundCheck::max_named(
+                "restricted-access exposure",
+                "restricted-access fraction",
+                m.restricted_access_fraction * 100.0,
                 self.max_restricted_access_fraction * 100.0,
                 "%",
                 1,
             ),
-            max_check(
-                "maximum repeated-edge exposure",
-                metrics.repeated_edge_fraction * 100.0,
+            BoundCheck::max_named(
+                "repeated-edge exposure",
+                "repeated-edge fraction",
+                m.repeated_edge_fraction * 100.0,
                 self.max_repeated_edge_fraction * 100.0,
                 "%",
                 1,
             ),
-            shape_check(metrics.shape, &self.allowed_shapes),
         ]
     }
 
@@ -211,120 +189,6 @@ impl LoopConstraints {
                 1,
             )
         }));
-    }
-
-    fn append_distance_violations(&self, metrics: &RouteMetrics, violations: &mut Vec<String>) {
-        push_violation(
-            violations,
-            metrics.distance_m < self.min_distance_m,
-            format!(
-                "distance {:.2} km below minimum {:.2} km",
-                metrics.distance_m / 1_000.0,
-                self.min_distance_m / 1_000.0
-            ),
-        );
-        push_violation(
-            violations,
-            metrics.distance_m > self.max_distance_m,
-            format!(
-                "distance {:.2} km above maximum {:.2} km",
-                metrics.distance_m / 1_000.0,
-                self.max_distance_m / 1_000.0
-            ),
-        );
-    }
-
-    fn append_difficulty_violations(&self, metrics: &RouteMetrics, violations: &mut Vec<String>) {
-        push_violation(
-            violations,
-            metrics.difficulty < self.min_difficulty,
-            format!(
-                "difficulty {:.2} below minimum {:.2}",
-                metrics.difficulty, self.min_difficulty
-            ),
-        );
-        push_violation(
-            violations,
-            metrics.difficulty > self.max_difficulty,
-            format!(
-                "difficulty {:.2} above maximum {:.2}",
-                metrics.difficulty, self.max_difficulty
-            ),
-        );
-    }
-
-    fn append_elevation_violations(&self, metrics: &RouteMetrics, violations: &mut Vec<String>) {
-        push_violation(
-            violations,
-            metrics.ascent_m < self.min_ascent_m,
-            format!(
-                "ascent {:.0} m below minimum {:.0} m",
-                metrics.ascent_m, self.min_ascent_m
-            ),
-        );
-        push_violation(
-            violations,
-            metrics.ascent_m > self.max_ascent_m,
-            format!(
-                "ascent {:.0} m above maximum {:.0} m",
-                metrics.ascent_m, self.max_ascent_m
-            ),
-        );
-        push_violation(
-            violations,
-            metrics.descent_m < self.min_descent_m,
-            format!(
-                "descent {:.0} m below minimum {:.0} m",
-                metrics.descent_m, self.min_descent_m
-            ),
-        );
-        push_violation(
-            violations,
-            metrics.descent_m > self.max_descent_m,
-            format!(
-                "descent {:.0} m above maximum {:.0} m",
-                metrics.descent_m, self.max_descent_m
-            ),
-        );
-    }
-
-    fn append_fraction_violations(&self, metrics: &RouteMetrics, violations: &mut Vec<String>) {
-        push_violation(
-            violations,
-            metrics.road_fraction > self.max_road_fraction,
-            format!(
-                "road/pavement fraction {:.1}% above maximum {:.1}%",
-                metrics.road_fraction * 100.0,
-                self.max_road_fraction * 100.0
-            ),
-        );
-        push_violation(
-            violations,
-            metrics.low_confidence_fraction > self.max_low_confidence_fraction,
-            format!(
-                "low-confidence fraction {:.1}% above maximum {:.1}%",
-                metrics.low_confidence_fraction * 100.0,
-                self.max_low_confidence_fraction * 100.0
-            ),
-        );
-        push_violation(
-            violations,
-            metrics.repeated_edge_fraction > self.max_repeated_edge_fraction,
-            format!(
-                "repeated-edge fraction {:.1}% above maximum {:.1}%",
-                metrics.repeated_edge_fraction * 100.0,
-                self.max_repeated_edge_fraction * 100.0
-            ),
-        );
-        push_violation(
-            violations,
-            metrics.restricted_access_fraction > self.max_restricted_access_fraction,
-            format!(
-                "restricted-access fraction {:.1}% above maximum {:.1}%",
-                metrics.restricted_access_fraction * 100.0,
-                self.max_restricted_access_fraction * 100.0
-            ),
-        );
     }
 
     fn append_shape_violations(&self, metrics: &RouteMetrics, violations: &mut Vec<String>) {
@@ -384,33 +248,11 @@ impl LoopConstraints {
 
     #[must_use]
     pub fn penalty(&self, m: &RouteMetrics) -> f64 {
-        let distance_under =
-            ((self.min_distance_m - m.distance_m) / self.min_distance_m.max(1.0)).max(0.0);
-        let distance_over =
-            ((m.distance_m - self.max_distance_m) / self.max_distance_m.max(1.0)).max(0.0);
-        let difficulty_under =
-            ((self.min_difficulty - m.difficulty) / self.min_difficulty.max(1.0)).max(0.0);
-        let difficulty_over =
-            ((m.difficulty - self.max_difficulty) / self.max_difficulty.max(1.0)).max(0.0);
-        let ascent_under = ((self.min_ascent_m - m.ascent_m) / self.min_ascent_m.max(1.0)).max(0.0);
-        let ascent_over = ((m.ascent_m - self.max_ascent_m) / self.max_ascent_m.max(1.0)).max(0.0);
-        let descent_under =
-            ((self.min_descent_m - m.descent_m) / self.min_descent_m.max(1.0)).max(0.0);
-        let descent_over =
-            ((m.descent_m - self.max_descent_m) / self.max_descent_m.max(1.0)).max(0.0);
-        let road_over = ((m.road_fraction - self.max_road_fraction)
-            / self.max_road_fraction.max(0.01))
-        .max(0.0);
-        let low_conf_over = ((m.low_confidence_fraction - self.max_low_confidence_fraction)
-            / self.max_low_confidence_fraction.max(0.01))
-        .max(0.0);
-        let restricted_access_over = ((m.restricted_access_fraction
-            - self.max_restricted_access_fraction)
-            / self.max_restricted_access_fraction.max(0.01))
-        .max(0.0);
-        let repeated_over = ((m.repeated_edge_fraction - self.max_repeated_edge_fraction)
-            / self.max_repeated_edge_fraction.max(0.01))
-        .max(0.0);
+        let core = self
+            .core_checks(m)
+            .into_iter()
+            .map(BoundCheck::normalized_breach)
+            .sum::<f64>();
         let shape = if self.allows_shape(m.shape) { 0.0 } else { 4.0 };
         let terrain_fraction = m.terrain_percentages();
         let forbidden = self
@@ -436,23 +278,150 @@ impl LoopConstraints {
                 .max(0.0)
             })
             .sum::<f64>();
-        100.0
-            * (distance_under
-                + distance_over
-                + difficulty_under
-                + difficulty_over
-                + ascent_under
-                + ascent_over
-                + descent_under
-                + descent_over
-                + road_over
-                + low_conf_over
-                + restricted_access_over
-                + repeated_over
-                + shape
-                + forbidden
-                + terrain_under
-                + terrain_over)
+        100.0 * (core + shape + forbidden + terrain_under + terrain_over)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum BoundKind {
+    Minimum,
+    Maximum,
+}
+
+#[derive(Clone, Copy)]
+struct BoundCheck<'a> {
+    audit_subject: &'a str,
+    violation_subject: &'a str,
+    kind: BoundKind,
+    value: f64,
+    bound: f64,
+    unit: &'static str,
+    decimals: usize,
+}
+
+impl<'a> BoundCheck<'a> {
+    const fn min(
+        subject: &'a str,
+        value: f64,
+        bound: f64,
+        unit: &'static str,
+        decimals: usize,
+    ) -> Self {
+        Self::new(
+            subject,
+            subject,
+            BoundKind::Minimum,
+            value,
+            bound,
+            unit,
+            decimals,
+        )
+    }
+
+    const fn max(
+        subject: &'a str,
+        value: f64,
+        bound: f64,
+        unit: &'static str,
+        decimals: usize,
+    ) -> Self {
+        Self::new(
+            subject,
+            subject,
+            BoundKind::Maximum,
+            value,
+            bound,
+            unit,
+            decimals,
+        )
+    }
+
+    const fn max_named(
+        audit_subject: &'a str,
+        violation_subject: &'a str,
+        value: f64,
+        bound: f64,
+        unit: &'static str,
+        decimals: usize,
+    ) -> Self {
+        Self::new(
+            audit_subject,
+            violation_subject,
+            BoundKind::Maximum,
+            value,
+            bound,
+            unit,
+            decimals,
+        )
+    }
+
+    const fn new(
+        audit_subject: &'a str,
+        violation_subject: &'a str,
+        kind: BoundKind,
+        value: f64,
+        bound: f64,
+        unit: &'static str,
+        decimals: usize,
+    ) -> Self {
+        Self {
+            audit_subject,
+            violation_subject,
+            kind,
+            value,
+            bound,
+            unit,
+            decimals,
+        }
+    }
+
+    fn audit(self) -> ConstraintAudit {
+        let metric = match self.kind {
+            BoundKind::Minimum => format!("minimum {}", self.audit_subject),
+            BoundKind::Maximum => format!("maximum {}", self.audit_subject),
+        };
+        match self.kind {
+            BoundKind::Minimum => {
+                min_check(&metric, self.value, self.bound, self.unit, self.decimals)
+            }
+            BoundKind::Maximum => {
+                max_check(&metric, self.value, self.bound, self.unit, self.decimals)
+            }
+        }
+    }
+
+    fn violation(self) -> Option<String> {
+        (!self.satisfied()).then(|| {
+            let relation = match self.kind {
+                BoundKind::Minimum => "below minimum",
+                BoundKind::Maximum => "above maximum",
+            };
+            format!(
+                "{} {} {relation} {}",
+                self.violation_subject,
+                measure(self.value, self.unit, self.decimals),
+                measure(self.bound, self.unit, self.decimals)
+            )
+        })
+    }
+
+    fn normalized_breach(self) -> f64 {
+        let breach = match self.kind {
+            BoundKind::Minimum => self.bound - self.value,
+            BoundKind::Maximum => self.value - self.bound,
+        };
+        let floor = match self.unit {
+            "km" => 0.001,
+            _ => 1.0,
+        };
+        (breach / self.bound.max(floor)).max(0.0)
+    }
+
+    fn satisfied(self) -> bool {
+        match self.kind {
+            BoundKind::Minimum => self.value >= self.bound,
+            BoundKind::Maximum => self.value <= self.bound,
+        }
     }
 }
 

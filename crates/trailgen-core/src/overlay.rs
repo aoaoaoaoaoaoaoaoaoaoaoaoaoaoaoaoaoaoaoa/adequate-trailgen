@@ -738,14 +738,15 @@ pub enum OverlayGeometry {
 impl OverlayGeometry {
     #[must_use]
     pub fn affects(&self, edge: &Edge, tolerance_m: f64) -> bool {
-        let midpoint = edge_midpoint(edge);
         match self {
-            Self::Polygon(ring) => point_in_ring(midpoint, ring),
-            Self::MultiPolygon(rings) => rings.iter().any(|ring| point_in_ring(midpoint, ring)),
-            Self::Line(line) => point_line_distance_m(midpoint, line) <= tolerance_m,
+            Self::Polygon(ring) => line_intersects_ring(&edge.geometry, ring),
+            Self::MultiPolygon(rings) => rings
+                .iter()
+                .any(|ring| line_intersects_ring(&edge.geometry, ring)),
+            Self::Line(line) => line_distance_m(&edge.geometry, line) <= tolerance_m,
             Self::MultiLine(lines) => lines
                 .iter()
-                .any(|line| point_line_distance_m(midpoint, line) <= tolerance_m),
+                .any(|line| line_distance_m(&edge.geometry, line) <= tolerance_m),
         }
     }
 }
@@ -943,10 +944,35 @@ fn point_in_ring(point: Coord, ring: &[Coord]) -> bool {
     inside
 }
 
-fn point_line_distance_m(point: Coord, line: &LineString) -> f64 {
-    line.points
+fn line_intersects_ring(line: &LineString, ring: &[Coord]) -> bool {
+    line.points.iter().any(|point| point_in_ring(*point, ring))
+        || line.points.windows(2).any(|edge| {
+            ring_segments(ring)
+                .any(|boundary| segments_cross(edge[0], edge[1], boundary.0, boundary.1))
+        })
+}
+
+fn ring_segments(ring: &[Coord]) -> impl Iterator<Item = (Coord, Coord)> + '_ {
+    ring.windows(2)
+        .map(|segment| (segment[0], segment[1]))
+        .chain((ring.len() >= 2).then(|| (ring[ring.len() - 1], ring[0])))
+}
+
+fn line_distance_m(a: &LineString, b: &LineString) -> f64 {
+    a.points
         .windows(2)
-        .map(|segment| point_segment_distance_m(point, segment[0], segment[1]))
+        .flat_map(|lhs| {
+            b.points.windows(2).map(move |rhs| {
+                if segments_cross(lhs[0], lhs[1], rhs[0], rhs[1]) {
+                    0.0
+                } else {
+                    point_segment_distance_m(lhs[0], rhs[0], rhs[1])
+                        .min(point_segment_distance_m(lhs[1], rhs[0], rhs[1]))
+                        .min(point_segment_distance_m(rhs[0], lhs[0], lhs[1]))
+                        .min(point_segment_distance_m(rhs[1], lhs[0], lhs[1]))
+                }
+            })
+        })
         .min_by(f64::total_cmp)
         .unwrap_or(f64::INFINITY)
 }

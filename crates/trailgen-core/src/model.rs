@@ -1,6 +1,9 @@
 use crate::difficulty::DifficultyBreakdown;
 use crate::geo::{Coord, LineString};
+use crate::{Result, TrailgenError};
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, BinaryHeap};
 use std::ops::AddAssign;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
@@ -347,13 +350,40 @@ impl Edge {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct TrailGraph {
     pub vertices: Vec<Vertex>,
     pub edges: Vec<Edge>,
     #[serde(default)]
     pub turn_bans: Vec<TurnBan>,
+    #[serde(skip_serializing)]
     pub adjacency: Vec<Vec<EdgeId>>,
+}
+
+impl<'de> Deserialize<'de> for TrailGraph {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct StoredGraph {
+            vertices: Vec<Vertex>,
+            edges: Vec<Edge>,
+            #[serde(default)]
+            turn_bans: Vec<TurnBan>,
+        }
+
+        let stored = StoredGraph::deserialize(deserializer)?;
+        let mut graph = Self {
+            vertices: stored.vertices,
+            edges: stored.edges,
+            turn_bans: stored.turn_bans,
+            adjacency: Vec::new(),
+        };
+        graph.validate().map_err(serde::de::Error::custom)?;
+        graph.rebuild_adjacency();
+        Ok(graph)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -361,6 +391,8 @@ pub struct RouteSnapStats {
     pub segment_count: usize,
     pub snapped_segment_count: usize,
     pub rejected_segment_count: usize,
+    #[serde(default)]
+    pub disconnected_transition_count: usize,
     pub max_snap_m: f64,
     pub mean_snap_m: f64,
 }
@@ -369,6 +401,42 @@ pub struct RouteSnapStats {
 pub struct LineSnap {
     pub edges: Vec<EdgeId>,
     pub stats: RouteSnapStats,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct WalkState {
+    at: VertexId,
+    previous: Option<EdgeId>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct WalkFrontier {
+    cost_m: f64,
+    state: WalkState,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SnapAnchor {
+    edge: EdgeId,
+    entry: VertexId,
+    budget_m: f64,
+}
+
+impl Eq for WalkFrontier {}
+
+impl Ord for WalkFrontier {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .cost_m
+            .total_cmp(&self.cost_m)
+            .then_with(|| other.state.cmp(&self.state))
+    }
+}
+
+impl PartialOrd for WalkFrontier {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl TrailGraph {
@@ -395,6 +463,68 @@ impl TrailGraph {
                 self.adjacency[edge.b.0].push(edge.id);
             }
         }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        for (index, vertex) in self.vertices.iter().enumerate() {
+            if vertex.id.0 != index {
+                return Err(TrailgenError::InvalidData(format!(
+                    "vertex slot {index} contains id {}",
+                    vertex.id.0
+                )));
+            }
+            if !valid_coord(vertex.coord) {
+                return Err(TrailgenError::InvalidData(format!(
+                    "vertex {index} has invalid coordinate"
+                )));
+            }
+        }
+        for (index, edge) in self.edges.iter().enumerate() {
+            if edge.id.0 != index {
+                return Err(TrailgenError::InvalidData(format!(
+                    "edge slot {index} contains id {}",
+                    edge.id.0
+                )));
+            }
+            if edge.a == edge.b
+                || edge.a.0 >= self.vertices.len()
+                || edge.b.0 >= self.vertices.len()
+            {
+                return Err(TrailgenError::InvalidData(format!(
+                    "edge {index} has invalid endpoints {} and {}",
+                    edge.a.0, edge.b.0
+                )));
+            }
+            if edge.geometry.points.len() < 2
+                || edge
+                    .geometry
+                    .points
+                    .iter()
+                    .copied()
+                    .any(|coord| !valid_coord(coord))
+                || !edge.attr.length_m.is_finite()
+                || edge.attr.length_m <= 0.0
+            {
+                return Err(TrailgenError::InvalidData(format!(
+                    "edge {index} has invalid geometry or length"
+                )));
+            }
+        }
+        for ban in &self.turn_bans {
+            if ban.via.0 >= self.vertices.len()
+                || ban.from.0 >= self.edges.len()
+                || ban.to.0 >= self.edges.len()
+                || self.edges[ban.from.0]
+                    .other(ban.via)
+                    .is_none_or(|_| self.edges[ban.to.0].other(ban.via).is_none())
+            {
+                return Err(TrailgenError::InvalidData(format!(
+                    "turn ban e{}→v{}→e{} does not reference incident graph members",
+                    ban.from.0, ban.via.0, ban.to.0
+                )));
+            }
+        }
+        Ok(())
     }
 
     #[must_use]
@@ -429,7 +559,7 @@ impl TrailGraph {
         line: &crate::geo::LineString,
         max_snap_m: f64,
     ) -> LineSnap {
-        let mut edges = Vec::new();
+        let mut anchors = Vec::new();
         let mut segment_count = 0usize;
         let mut snapped_segment_count = 0usize;
         let mut rejected_segment_count = 0usize;
@@ -451,16 +581,40 @@ impl TrailGraph {
                 continue;
             }
             snapped_segment_count += 1;
-            if edges.last().copied() != Some(edge_id) {
-                edges.push(edge_id);
+            if anchors
+                .last()
+                .is_none_or(|last: &SnapAnchor| last.edge != edge_id)
+            {
+                let observation_m = w[0].haversine_m(w[1]);
+                let snap_allowance_m = if max_snap_m.is_finite() {
+                    max_snap_m * 2.0
+                } else {
+                    500.0
+                };
+                let edge = &self.edges[edge_id.0];
+                let forward_m = self.vertices[edge.a.0].coord.haversine_m(w[0])
+                    + self.vertices[edge.b.0].coord.haversine_m(w[1]);
+                let backward_m = self.vertices[edge.b.0].coord.haversine_m(w[0])
+                    + self.vertices[edge.a.0].coord.haversine_m(w[1]);
+                anchors.push(SnapAnchor {
+                    edge: edge_id,
+                    entry: if forward_m <= backward_m {
+                        edge.a
+                    } else {
+                        edge.b
+                    },
+                    budget_m: observation_m.mul_add(3.0, snap_allowance_m).max(50.0),
+                });
             }
         }
+        let (edges, disconnected_transition_count) = self.connect_snap_anchors(&anchors);
         LineSnap {
             edges,
             stats: RouteSnapStats {
                 segment_count,
                 snapped_segment_count,
                 rejected_segment_count,
+                disconnected_transition_count,
                 max_snap_m: max_observed_m,
                 mean_snap_m: if observed_count <= f64::EPSILON {
                     0.0
@@ -469,6 +623,138 @@ impl TrailGraph {
                 },
             },
         }
+    }
+
+    fn connect_snap_anchors(&self, anchors: &[SnapAnchor]) -> (Vec<EdgeId>, usize) {
+        let Some(first_anchor) = anchors.first().copied() else {
+            return (Vec::new(), 0);
+        };
+        let first_id = first_anchor.edge;
+        let Some(first) = self.edges.get(first_id.0) else {
+            return (Vec::new(), 1);
+        };
+        let start = first_anchor.entry;
+        if first.traverse(start).is_none() {
+            return (Vec::new(), 1);
+        }
+        let mut edges = vec![first_id];
+        let mut at = first
+            .traverse(start)
+            .expect("start was filtered as traversable");
+        let mut previous = first_id;
+        let mut disconnected = 0;
+        for anchor in &anchors[1..] {
+            let target = anchor.edge;
+            if at == anchor.entry
+                && self.turn_allowed(Some(previous), at, target)
+                && let Some(next) = self.edges[target.0].traverse(at)
+            {
+                edges.push(target);
+                previous = target;
+                at = next;
+                continue;
+            }
+            let Some(connector) =
+                self.shortest_connector(at, previous, target, anchor.entry, anchor.budget_m)
+            else {
+                disconnected += 1;
+                if let Some(next) = self.edges[target.0].traverse(anchor.entry) {
+                    edges.clear();
+                    edges.push(target);
+                    at = next;
+                    previous = target;
+                    continue;
+                }
+                continue;
+            };
+            for edge_id in connector {
+                at = self.edges[edge_id.0]
+                    .traverse(at)
+                    .expect("connector reconstruction preserves direction");
+                previous = edge_id;
+                edges.push(edge_id);
+            }
+            if at == anchor.entry
+                && self.turn_allowed(Some(previous), at, target)
+                && let Some(next) = self.edges[target.0].traverse(at)
+            {
+                edges.push(target);
+                previous = target;
+                at = next;
+            } else {
+                disconnected += 1;
+            }
+        }
+        (edges, disconnected)
+    }
+
+    fn shortest_connector(
+        &self,
+        from: VertexId,
+        previous: EdgeId,
+        target: EdgeId,
+        target_entry: VertexId,
+        max_distance_m: f64,
+    ) -> Option<Vec<EdgeId>> {
+        let origin = WalkState {
+            at: from,
+            previous: Some(previous),
+        };
+        let mut frontier = BinaryHeap::from([WalkFrontier {
+            cost_m: 0.0,
+            state: origin,
+        }]);
+        let mut distance = BTreeMap::from([(origin, 0.0)]);
+        let mut predecessor = BTreeMap::<WalkState, (WalkState, EdgeId)>::new();
+        while let Some(WalkFrontier { cost_m, state }) = frontier.pop() {
+            if cost_m > max_distance_m
+                || distance
+                    .get(&state)
+                    .is_some_and(|best| cost_m > *best + f64::EPSILON)
+            {
+                continue;
+            }
+            if state.at == target_entry
+                && self.turn_allowed(state.previous, state.at, target)
+                && self.edges[target.0].traverse(state.at).is_some()
+            {
+                let mut path = Vec::new();
+                let mut cursor = state;
+                while cursor != origin {
+                    let (prior, edge) = predecessor.get(&cursor).copied()?;
+                    path.push(edge);
+                    cursor = prior;
+                }
+                path.reverse();
+                return Some(path);
+            }
+            for edge_id in self.adjacency.get(state.at.0)?.iter().copied() {
+                if edge_id == target || !self.turn_allowed(state.previous, state.at, edge_id) {
+                    continue;
+                }
+                let edge = self.edges.get(edge_id.0)?;
+                let Some(to) = edge.traverse(state.at) else {
+                    continue;
+                };
+                let next_cost = cost_m + edge.attr.length_m;
+                if next_cost > max_distance_m {
+                    continue;
+                }
+                let next = WalkState {
+                    at: to,
+                    previous: Some(edge_id),
+                };
+                if distance.get(&next).is_none_or(|best| next_cost < *best) {
+                    distance.insert(next, next_cost);
+                    predecessor.insert(next, (state, edge_id));
+                    frontier.push(WalkFrontier {
+                        cost_m: next_cost,
+                        state: next,
+                    });
+                }
+            }
+        }
+        None
     }
 
     #[must_use]
@@ -492,12 +778,15 @@ impl TrailGraph {
     ) -> Option<VertexId> {
         let first = self.edges.get(edges.first()?.0)?;
         let line_start = line.start();
-        [first.a, first.b].into_iter().min_by(|a, b| {
-            self.vertices[a.0]
-                .coord
-                .planar_distance2(line_start)
-                .total_cmp(&self.vertices[b.0].coord.planar_distance2(line_start))
-        })
+        [first.a, first.b]
+            .into_iter()
+            .filter(|start| self.walk_edges(*start, edges).is_some())
+            .min_by(|a, b| {
+                self.vertices[a.0]
+                    .coord
+                    .planar_distance2(line_start)
+                    .total_cmp(&self.vertices[b.0].coord.planar_distance2(line_start))
+            })
     }
 
     #[must_use]
@@ -537,6 +826,14 @@ impl TrailGraph {
             edge.attr.confidence = edge.attr.confidence.max(0.82);
         }
     }
+}
+
+fn valid_coord(coord: Coord) -> bool {
+    coord.lon.is_finite()
+        && coord.lat.is_finite()
+        && (-180.0..=180.0).contains(&coord.lon)
+        && (-90.0..=90.0).contains(&coord.lat)
+        && coord.ele.is_none_or(f64::is_finite)
 }
 
 fn edge_distance_m(edge: &Edge, coord: Coord) -> f64 {

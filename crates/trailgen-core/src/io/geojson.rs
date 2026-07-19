@@ -1,4 +1,4 @@
-use crate::builder::SegmentDraft;
+use crate::builder::{JunctionPolicy, SegmentDraft};
 use crate::crs::{CoordProjector, CrsVerdict, VectorCrsKind, projector, validate_crs_name};
 use crate::geo::{Coord, LineString};
 use crate::io::route_file::{RouteFile, RouteFileMetadata};
@@ -67,6 +67,7 @@ pub fn network_from_str(s: &str) -> Result<Vec<SegmentDraft>> {
         };
         for line in lines_from_geometry(geometry, crs)? {
             drafts.push(SegmentDraft {
+                junctions: JunctionPolicy::default(),
                 turn_ref: None,
                 turn_restrictions: Vec::new(),
                 geometry: line,

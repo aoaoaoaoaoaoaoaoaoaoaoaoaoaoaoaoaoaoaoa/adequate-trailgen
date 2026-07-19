@@ -88,7 +88,7 @@ impl SeedRoute {
             return None;
         }
         Some(Route::from_edges(
-            format!("seed-{}", slug(&self.name)),
+            format!("seed-{}", artifact_key(&self.name)),
             graph,
             start,
             self.snapped_edges.clone(),
@@ -98,19 +98,29 @@ impl SeedRoute {
 }
 
 #[must_use]
-pub fn slug(raw: &str) -> String {
-    let slug = raw
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>();
-    slug.split('-')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("-")
+pub fn artifact_key(raw: &str) -> String {
+    let mut stem = String::with_capacity(raw.len().min(64));
+    for c in raw.chars() {
+        if stem.len() == 64 {
+            break;
+        }
+        if c.is_ascii_alphanumeric() {
+            stem.push(c.to_ascii_lowercase());
+        } else if !stem.is_empty() && !stem.ends_with('-') {
+            stem.push('-');
+        }
+    }
+    while stem.ends_with('-') {
+        stem.pop();
+    }
+    if stem.is_empty() {
+        stem.push_str("route");
+    }
+    let scar = raw
+        .as_bytes()
+        .iter()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+        });
+    format!("{stem}-{scar:016x}")
 }

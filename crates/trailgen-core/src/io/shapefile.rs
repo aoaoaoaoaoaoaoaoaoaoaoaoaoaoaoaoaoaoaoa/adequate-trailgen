@@ -1,4 +1,4 @@
-use crate::builder::SegmentDraft;
+use crate::builder::{JunctionPolicy, SegmentDraft};
 use crate::crs::{CoordProjector, CrsVerdict, projector, validate_prj_wkt};
 use crate::geo::{Coord, LineString};
 use crate::model::{Access, CrossingKind, EdgeTravel, Provenance, Terrain};
@@ -58,6 +58,7 @@ pub fn network_from_path(path: &Path) -> Result<Vec<SegmentDraft>> {
         };
         for line in lines(&shape, crs)? {
             drafts.push(SegmentDraft {
+                junctions: JunctionPolicy::default(),
                 turn_ref: None,
                 turn_restrictions: Vec::new(),
                 geometry: line,

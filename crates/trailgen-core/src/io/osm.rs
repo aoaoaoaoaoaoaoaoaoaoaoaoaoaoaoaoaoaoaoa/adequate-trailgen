@@ -1,4 +1,4 @@
-use crate::builder::{SegmentDraft, TurnRestrictionDraft, TurnRestrictionRule};
+use crate::builder::{JunctionPolicy, SegmentDraft, TurnRestrictionDraft, TurnRestrictionRule};
 use crate::geo::{Coord, LineString};
 use crate::model::{Access, CrossingKind, EdgeTravel, Provenance, Terrain};
 use crate::overlay::ContextOverlay;
@@ -124,6 +124,7 @@ fn draft_from_xml_way(
         return Ok(None);
     }
     Ok(Some(SegmentDraft {
+        junctions: JunctionPolicy::ExplicitNodes,
         turn_ref: Some(id.clone()),
         turn_restrictions: relations.turn_restrictions.clone(),
         geometry: LineString::new(points)?,
@@ -216,6 +217,7 @@ fn draft_from_pbf_way(
         return Ok(None);
     }
     Ok(Some(SegmentDraft {
+        junctions: JunctionPolicy::ExplicitNodes,
         turn_ref: Some(way.id.0.to_string()),
         turn_restrictions: relations.turn_restrictions.clone(),
         geometry: LineString::new(points)?,

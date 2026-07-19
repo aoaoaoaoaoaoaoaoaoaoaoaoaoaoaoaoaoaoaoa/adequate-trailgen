@@ -13,6 +13,7 @@ categories = ["science::geo", "algorithms"]
 [dependencies]
 osmpbfreader.workspace = true
 roxmltree.workspace = true
+rstar.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 shapefile.workspace = true

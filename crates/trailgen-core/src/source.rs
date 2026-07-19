@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::Path;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
@@ -47,13 +47,6 @@ impl GeoBounds {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum AdapterStatus {
-    Implemented,
-    Planned,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
 pub enum SourcePriority {
     Required,
     Recommended,
@@ -65,14 +58,12 @@ pub enum SourcePriority {
 pub enum SourceCoverageStatus {
     Satisfied,
     Missing,
-    PlannedAdapterOnly,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SourceAdapter {
     pub id: String,
     pub kind: SourceKind,
-    pub status: AdapterStatus,
     pub consumes: Vec<String>,
     pub produces: Vec<String>,
     pub note: String,
@@ -125,7 +116,6 @@ pub struct SourceCoverage {
     pub status: SourceCoverageStatus,
     pub candidate_paths: Vec<String>,
     pub implemented_adapter_ids: Vec<String>,
-    pub planned_adapter_ids: Vec<String>,
     pub message: String,
 }
 
@@ -134,7 +124,6 @@ pub struct SourceCoverageTally {
     pub total: usize,
     pub satisfied: usize,
     pub missing: usize,
-    pub planned_adapter_only: usize,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -144,9 +133,7 @@ pub struct SourceCoverageSummary {
     pub recommended: SourceCoverageTally,
     pub optional: SourceCoverageTally,
     pub missing_required: Vec<SourceKind>,
-    pub planned_required: Vec<SourceKind>,
     pub missing_recommended: Vec<SourceKind>,
-    pub planned_recommended: Vec<SourceKind>,
 }
 
 impl SourceCoverageTally {
@@ -155,7 +142,6 @@ impl SourceCoverageTally {
         match status {
             SourceCoverageStatus::Satisfied => self.satisfied += 1,
             SourceCoverageStatus::Missing => self.missing += 1,
-            SourceCoverageStatus::PlannedAdapterOnly => self.planned_adapter_only += 1,
         }
     }
 }
@@ -163,12 +149,12 @@ impl SourceCoverageTally {
 impl SourceCoverageSummary {
     #[must_use]
     pub const fn required_complete(&self) -> bool {
-        self.required.missing == 0 && self.required.planned_adapter_only == 0
+        self.required.missing == 0
     }
 
     #[must_use]
     pub const fn recommended_complete(&self) -> bool {
-        self.recommended.missing == 0 && self.recommended.planned_adapter_only == 0
+        self.recommended.missing == 0
     }
 }
 
@@ -190,39 +176,23 @@ pub fn summarize_source_coverage(coverage: &[SourceCoverage]) -> SourceCoverageS
         match entry.priority {
             SourcePriority::Required => {
                 summary.required.record(entry.status);
-                record_gap(
-                    entry,
-                    &mut summary.missing_required,
-                    &mut summary.planned_required,
-                );
+                record_gap(entry, &mut summary.missing_required);
             }
             SourcePriority::Recommended => {
                 summary.recommended.record(entry.status);
-                record_gap(
-                    entry,
-                    &mut summary.missing_recommended,
-                    &mut summary.planned_recommended,
-                );
+                record_gap(entry, &mut summary.missing_recommended);
             }
             SourcePriority::Optional => summary.optional.record(entry.status),
         }
     }
     summary.missing_required.sort();
-    summary.planned_required.sort();
     summary.missing_recommended.sort();
-    summary.planned_recommended.sort();
     summary
 }
 
-fn record_gap(
-    entry: &SourceCoverage,
-    missing: &mut Vec<SourceKind>,
-    planned: &mut Vec<SourceKind>,
-) {
-    match entry.status {
-        SourceCoverageStatus::Satisfied => {}
-        SourceCoverageStatus::Missing => missing.push(entry.kind),
-        SourceCoverageStatus::PlannedAdapterOnly => planned.push(entry.kind),
+fn record_gap(entry: &SourceCoverage, missing: &mut Vec<SourceKind>) {
+    if entry.status == SourceCoverageStatus::Missing {
+        missing.push(entry.kind);
     }
 }
 
@@ -232,22 +202,20 @@ pub fn source_coverage(
     recommendations: &[SourceRecommendation],
     candidates: &[SourceCandidate],
 ) -> Vec<SourceCoverage> {
-    let adapter_status = adapters
+    let adapter_ids = adapters
         .iter()
-        .map(|adapter| (adapter.id.as_str(), adapter.status))
-        .collect::<BTreeMap<_, _>>();
+        .map(|adapter| adapter.id.as_str())
+        .collect::<BTreeSet<_>>();
     recommendations
         .iter()
-        .map(|recommendation| {
-            coverage_for_recommendation(recommendation, candidates, &adapter_status)
-        })
+        .map(|recommendation| coverage_for_recommendation(recommendation, candidates, &adapter_ids))
         .collect()
 }
 
 fn coverage_for_recommendation(
     recommendation: &SourceRecommendation,
     candidates: &[SourceCandidate],
-    adapter_status: &BTreeMap<&str, AdapterStatus>,
+    adapter_ids: &BTreeSet<&str>,
 ) -> SourceCoverage {
     let matching = candidates
         .iter()
@@ -265,32 +233,15 @@ fn coverage_for_recommendation(
         .collect::<Vec<_>>();
     let implemented_adapter_ids = matching
         .iter()
-        .filter(|candidate| {
-            adapter_status
-                .get(candidate.adapter_id.as_str())
-                .is_some_and(|status| *status == AdapterStatus::Implemented)
-        })
+        .filter(|candidate| adapter_ids.contains(candidate.adapter_id.as_str()))
         .map(|candidate| candidate.adapter_id.clone())
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    let planned_adapter_ids = matching
-        .iter()
-        .filter(|candidate| {
-            adapter_status
-                .get(candidate.adapter_id.as_str())
-                .is_some_and(|status| *status == AdapterStatus::Planned)
-        })
-        .map(|candidate| candidate.adapter_id.clone())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    let status = if !implemented_adapter_ids.is_empty() {
-        SourceCoverageStatus::Satisfied
-    } else if !planned_adapter_ids.is_empty() {
-        SourceCoverageStatus::PlannedAdapterOnly
-    } else {
+    let status = if implemented_adapter_ids.is_empty() {
         SourceCoverageStatus::Missing
+    } else {
+        SourceCoverageStatus::Satisfied
     };
     SourceCoverage {
         kind: recommendation.kind,
@@ -298,7 +249,6 @@ fn coverage_for_recommendation(
         status,
         candidate_paths,
         implemented_adapter_ids,
-        planned_adapter_ids,
         message: coverage_message(recommendation, status),
     }
 }
@@ -317,10 +267,6 @@ fn coverage_message(recommendation: &SourceRecommendation, status: SourceCoverag
             recommendation.priority,
             recommendation.suggested_paths.join(", ")
         ),
-        SourceCoverageStatus::PlannedAdapterOnly => format!(
-            "{:?} candidate exists, but only through a planned adapter; normalize to an implemented adapter or finish the adapter.",
-            recommendation.kind
-        ),
     }
 }
 
@@ -338,7 +284,6 @@ fn network_adapters() -> Vec<SourceAdapter> {
         adapter(
             "geojson-network",
             SourceKind::TrailNetwork,
-            AdapterStatus::Implemented,
             ["geojson", "json"],
             ["SegmentDraft", "TrailGraph"],
             "Provider-neutral LineString and MultiLineString network ingestion.",
@@ -346,7 +291,6 @@ fn network_adapters() -> Vec<SourceAdapter> {
         adapter(
             "shapefile-network",
             SourceKind::TrailNetwork,
-            AdapterStatus::Implemented,
             ["shp", "dbf", "shx"],
             ["SegmentDraft", "TrailGraph"],
             "Official/agency polyline shapefile trail-network ingestion with DBF attribute normalization.",
@@ -354,7 +298,6 @@ fn network_adapters() -> Vec<SourceAdapter> {
         adapter(
             "osm-xml-network",
             SourceKind::TrailNetwork,
-            AdapterStatus::Implemented,
             ["osm"],
             ["SegmentDraft", "TrailGraph"],
             "OSM XML walkable-way trail-network ingestion with access, surface, direction, and provenance normalization.",
@@ -362,7 +305,6 @@ fn network_adapters() -> Vec<SourceAdapter> {
         adapter(
             "osm-pbf-network",
             SourceKind::TrailNetwork,
-            AdapterStatus::Implemented,
             ["osm.pbf"],
             ["SegmentDraft", "TrailGraph"],
             "OSM PBF extract ingestion for walkable ways with access, surface, direction, and ODbL provenance normalization.",
@@ -375,7 +317,6 @@ fn route_adapters() -> Vec<SourceAdapter> {
         adapter(
             "geojson-route",
             SourceKind::SeedRoute,
-            AdapterStatus::Implemented,
             ["geojson"],
             ["LineString", "snapped route metrics"],
             "GeoJSON seed route import.",
@@ -383,7 +324,6 @@ fn route_adapters() -> Vec<SourceAdapter> {
         adapter(
             "json-route",
             SourceKind::SeedRoute,
-            AdapterStatus::Implemented,
             ["json"],
             ["LineString", "snapped route metrics"],
             "Provider-neutral route JSON import for coordinate arrays and point-object app exports.",
@@ -391,7 +331,6 @@ fn route_adapters() -> Vec<SourceAdapter> {
         adapter(
             "gpx-route",
             SourceKind::SeedRoute,
-            AdapterStatus::Implemented,
             ["gpx"],
             ["LineString", "snapped route metrics"],
             "GPX route import/export, including user-supplied app exports.",
@@ -399,7 +338,6 @@ fn route_adapters() -> Vec<SourceAdapter> {
         adapter(
             "csv-route",
             SourceKind::SeedRoute,
-            AdapterStatus::Implemented,
             ["csv"],
             ["LineString", "snapped route metrics"],
             "CSV lon/lat/elevation route import/export for manual app exchange.",
@@ -407,7 +345,6 @@ fn route_adapters() -> Vec<SourceAdapter> {
         adapter(
             "kml-route",
             SourceKind::SeedRoute,
-            AdapterStatus::Implemented,
             ["kml", "kmz"],
             ["LineString", "snapped route metrics"],
             "KML/KMZ route import/export for manual map-app exchange.",
@@ -420,7 +357,6 @@ fn elevation_adapters() -> Vec<SourceAdapter> {
         adapter(
             "arc-ascii-elevation",
             SourceKind::Elevation,
-            AdapterStatus::Implemented,
             ["asc"],
             ["sampled elevation profile", "edge ascent/descent"],
             "Arc/Info ASCII Grid DEM sampling for local elevation enrichment.",
@@ -428,7 +364,6 @@ fn elevation_adapters() -> Vec<SourceAdapter> {
         adapter(
             "geotiff-elevation",
             SourceKind::Elevation,
-            AdapterStatus::Implemented,
             ["tif", "tiff"],
             ["sampled elevation profile", "edge ascent/descent"],
             "Affine WGS84/NAD83, EPSG:3857, or WGS84/NAD83 UTM single-band GeoTIFF DEM sampling.",
@@ -436,7 +371,6 @@ fn elevation_adapters() -> Vec<SourceAdapter> {
         adapter(
             "vrt-elevation",
             SourceKind::Elevation,
-            AdapterStatus::Implemented,
             ["vrt"],
             ["sampled elevation profile", "edge ascent/descent"],
             "GDAL VRT SimpleSource DEM wrapper with affine WGS84/NAD83, EPSG:3857, or WGS84/NAD83 UTM GeoTransform sampling.",
@@ -449,7 +383,6 @@ fn overlay_context_adapters() -> Vec<SourceAdapter> {
         adapter(
             "geojson-terrain-overlay",
             SourceKind::Terrain,
-            AdapterStatus::Implemented,
             ["geojson", "json"],
             ["terrain overrides", "confidence/provenance"],
             "GeoJSON land-cover, surface, or user terrain overlays applied after graph construction.",
@@ -457,7 +390,6 @@ fn overlay_context_adapters() -> Vec<SourceAdapter> {
         adapter(
             "shapefile-terrain-overlay",
             SourceKind::Terrain,
-            AdapterStatus::Implemented,
             ["shp", "dbf", "shx"],
             ["terrain overrides", "confidence/provenance"],
             "Polygon or line shapefile land-cover, surface, or terrain overlays applied after graph construction.",
@@ -465,7 +397,6 @@ fn overlay_context_adapters() -> Vec<SourceAdapter> {
         adapter(
             "geojson-access-overlay",
             SourceKind::Access,
-            AdapterStatus::Implemented,
             ["geojson", "json"],
             ["access overrides", "confidence/provenance"],
             "GeoJSON access/status overlay applied after graph construction.",
@@ -473,7 +404,6 @@ fn overlay_context_adapters() -> Vec<SourceAdapter> {
         adapter(
             "shapefile-access-overlay",
             SourceKind::Access,
-            AdapterStatus::Implemented,
             ["shp", "dbf", "shx"],
             ["access overrides", "confidence/provenance"],
             "Polygon or line shapefile access/status overlay applied after graph construction.",
@@ -481,7 +411,6 @@ fn overlay_context_adapters() -> Vec<SourceAdapter> {
         adapter(
             "geojson-closure-overlay",
             SourceKind::Closure,
-            AdapterStatus::Implemented,
             ["geojson", "json"],
             ["access overrides", "confidence/provenance"],
             "GeoJSON closure/restriction overlay applied after graph construction.",
@@ -489,7 +418,6 @@ fn overlay_context_adapters() -> Vec<SourceAdapter> {
         adapter(
             "geojson-road-context",
             SourceKind::Road,
-            AdapterStatus::Implemented,
             ["geojson", "json"],
             ["road crossings", "road exposure hints"],
             "GeoJSON road/street context lines used to infer trail crossings.",
@@ -497,7 +425,6 @@ fn overlay_context_adapters() -> Vec<SourceAdapter> {
         adapter(
             "shapefile-road-context",
             SourceKind::Road,
-            AdapterStatus::Implemented,
             ["shp", "dbf", "shx"],
             ["road crossings", "road exposure hints"],
             "Shapefile road/street centerlines used to infer trail crossings.",
@@ -505,7 +432,6 @@ fn overlay_context_adapters() -> Vec<SourceAdapter> {
         adapter(
             "osm-road-context",
             SourceKind::Road,
-            AdapterStatus::Implemented,
             ["osm", "osm.pbf"],
             ["road crossings", "road exposure hints"],
             "OSM XML/PBF highway centerlines used to infer trail crossings and road exposure.",
@@ -513,7 +439,6 @@ fn overlay_context_adapters() -> Vec<SourceAdapter> {
         adapter(
             "geojson-hydrology-context",
             SourceKind::Hydrology,
-            AdapterStatus::Implemented,
             ["geojson", "json"],
             ["water crossings"],
             "GeoJSON stream/river context lines used to infer water crossings.",
@@ -521,7 +446,6 @@ fn overlay_context_adapters() -> Vec<SourceAdapter> {
         adapter(
             "shapefile-hydrology-context",
             SourceKind::Hydrology,
-            AdapterStatus::Implemented,
             ["shp", "dbf", "shx"],
             ["water crossings"],
             "Shapefile stream/river centerlines used to infer water crossings.",
@@ -529,7 +453,6 @@ fn overlay_context_adapters() -> Vec<SourceAdapter> {
         adapter(
             "osm-hydrology-context",
             SourceKind::Hydrology,
-            AdapterStatus::Implemented,
             ["osm", "osm.pbf"],
             ["water crossings"],
             "OSM XML/PBF waterway linework used to infer stream, river, canal, drain, and ditch crossings.",
@@ -537,7 +460,6 @@ fn overlay_context_adapters() -> Vec<SourceAdapter> {
         adapter(
             "shapefile-closure-layer",
             SourceKind::Closure,
-            AdapterStatus::Implemented,
             ["shp", "dbf", "shx"],
             ["access overrides", "confidence/provenance"],
             "Official park/agency shapefile closure and restriction overlays.",
@@ -548,7 +470,6 @@ fn overlay_context_adapters() -> Vec<SourceAdapter> {
 fn adapter<const C: usize, const P: usize>(
     id: &str,
     kind: SourceKind,
-    status: AdapterStatus,
     consumes: [&str; C],
     produces: [&str; P],
     note: &str,
@@ -556,7 +477,6 @@ fn adapter<const C: usize, const P: usize>(
     SourceAdapter {
         id: id.to_owned(),
         kind,
-        status,
         consumes: consumes.into_iter().map(str::to_owned).collect(),
         produces: produces.into_iter().map(str::to_owned).collect(),
         note: note.to_owned(),

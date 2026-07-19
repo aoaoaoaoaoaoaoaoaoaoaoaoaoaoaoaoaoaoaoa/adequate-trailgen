@@ -91,18 +91,20 @@ impl DifficultyWeights {
     #[must_use]
     pub fn rate_edge(self, edge: &Edge) -> DifficultyBreakdown {
         let a = &edge.attr;
-        let distance = a.length_m / 1_000.0 * self.distance_per_km;
+        let distance_km = a.length_m / 1_000.0;
+        let distance = distance_km * self.distance_per_km;
         let ascent = a.ascent_m * self.ascent_per_m;
         let descent = a.descent_m * self.descent_per_m;
-        let grade = a.grade_abs_mean * self.grade_per_abs_fraction;
-        let terrain = distance * (self.terrain_multiplier(a.terrain) - 1.0);
-        let road = a.road_exposure.clamp(0.0, 1.0) * self.road_penalty * distance;
-        let technical = technical_pressure(edge) * self.technical_penalty * distance;
-        let navigation = navigation_pressure(edge) * self.navigation_penalty * distance;
-        let confidence = (1.0 - a.confidence.clamp(0.0, 1.0)) * self.low_confidence_penalty;
+        let grade = a.grade_abs_mean * self.grade_per_abs_fraction * distance_km;
+        let terrain = distance_km * (self.terrain_multiplier(a.terrain) - 1.0);
+        let road = a.road_exposure.clamp(0.0, 1.0) * self.road_penalty * distance_km;
+        let technical = technical_pressure(edge) * self.technical_penalty * distance_km;
+        let navigation = navigation_pressure(edge) * self.navigation_penalty * distance_km;
+        let confidence =
+            (1.0 - a.confidence.clamp(0.0, 1.0)) * self.low_confidence_penalty * distance_km;
         let access = match a.access {
-            Access::Closed | Access::Private => self.closed_access_penalty,
-            Access::Restricted => self.closed_access_penalty * 0.05,
+            Access::Closed | Access::Private => self.closed_access_penalty * distance_km,
+            Access::Restricted => self.closed_access_penalty * 0.05 * distance_km,
             Access::Unknown | Access::Open => 0.0,
         };
         DifficultyBreakdown {

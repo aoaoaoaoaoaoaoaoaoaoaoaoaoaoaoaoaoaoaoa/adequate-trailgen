@@ -11,32 +11,43 @@ pub fn route_line_from_str(s: &str) -> Result<LineString> {
 
 pub fn route_file_from_str(s: &str) -> Result<RouteFile> {
     let doc = roxmltree::Document::parse(s).map_err(|e| TrailgenError::Xml(e.to_string()))?;
-    let points = doc
+    let components = doc
         .descendants()
-        .filter(|n| n.has_tag_name("trkpt") || n.has_tag_name("rtept"))
-        .map(|n| {
-            let lon = n
-                .attribute("lon")
-                .ok_or_else(|| TrailgenError::InvalidData("GPX point missing lon".to_owned()))?
-                .parse::<f64>()
-                .map_err(|e| TrailgenError::InvalidData(format!("invalid GPX lon: {e}")))?;
-            let lat = n
-                .attribute("lat")
-                .ok_or_else(|| TrailgenError::InvalidData("GPX point missing lat".to_owned()))?
-                .parse::<f64>()
-                .map_err(|e| TrailgenError::InvalidData(format!("invalid GPX lat: {e}")))?;
-            let ele = n
-                .children()
-                .find(|c| c.has_tag_name("ele"))
-                .and_then(|e| e.text())
-                .and_then(|e| e.parse::<f64>().ok());
-            Ok(Coord { lon, lat, ele })
-        })
+        .filter(|node| node.has_tag_name("trkseg") || node.has_tag_name("rte"))
+        .collect::<Vec<_>>();
+    let [component] = components.as_slice() else {
+        return Err(TrailgenError::InvalidData(format!(
+            "GPX route must contain exactly one contiguous track segment or route, found {}",
+            components.len()
+        )));
+    };
+    let points = component
+        .children()
+        .filter(|node| node.has_tag_name("trkpt") || node.has_tag_name("rtept"))
+        .map(parse_point)
         .collect::<Result<Vec<_>>>()?;
     Ok(RouteFile::new(
         LineString::new(points)?,
         metadata_from_doc(&doc),
     ))
+}
+
+fn parse_point(node: roxmltree::Node<'_, '_>) -> Result<Coord> {
+    let coordinate = |name| {
+        node.attribute(name)
+            .ok_or_else(|| TrailgenError::InvalidData(format!("GPX point missing {name}")))?
+            .parse::<f64>()
+            .map_err(|error| TrailgenError::InvalidData(format!("invalid GPX {name}: {error}")))
+    };
+    Ok(Coord {
+        lon: coordinate("lon")?,
+        lat: coordinate("lat")?,
+        ele: node
+            .children()
+            .find(|child| child.has_tag_name("ele"))
+            .and_then(|elevation| elevation.text())
+            .and_then(|elevation| elevation.parse().ok()),
+    })
 }
 
 #[must_use]

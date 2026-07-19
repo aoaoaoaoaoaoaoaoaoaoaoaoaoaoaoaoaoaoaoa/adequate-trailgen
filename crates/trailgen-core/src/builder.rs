@@ -6,12 +6,15 @@ use crate::model::{
     TurnBan, Vertex, VertexId,
 };
 use crate::{Result, TrailgenError};
+use rstar::{AABB, RTree, RTreeObject};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, btree_map::Entry};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SegmentDraft {
     pub geometry: LineString,
+    #[serde(default)]
+    pub junctions: JunctionPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -26,6 +29,14 @@ pub struct SegmentDraft {
     pub road_exposure: f64,
     pub confidence: f64,
     pub provenance: Provenance,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum JunctionPolicy {
+    #[default]
+    Planar,
+    ExplicitNodes,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -66,6 +77,20 @@ struct Primitive {
     a: Coord,
     b: Coord,
     src: usize,
+}
+
+#[derive(Clone, Copy)]
+struct PrimitiveEnvelope {
+    index: usize,
+    envelope: AABB<[f64; 2]>,
+}
+
+impl RTreeObject for PrimitiveEnvelope {
+    type Envelope = AABB<[f64; 2]>;
+
+    fn envelope(&self) -> Self::Envelope {
+        self.envelope
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -128,8 +153,16 @@ impl GraphBuilder {
             .map(|p| vec![Cut::exact(0.0, p.a), Cut::exact(1.0, p.b)])
             .collect::<Vec<_>>();
 
-        for i in 0..primitives.len() {
-            for j in (i + 1)..primitives.len() {
+        let index = primitive_index(&primitives);
+        for (i, primitive) in primitives.iter().copied().enumerate() {
+            for candidate in index.locate_in_envelope_intersecting(&primitive_envelope(primitive)) {
+                let j = candidate.index;
+                if j <= i {
+                    continue;
+                }
+                if !junctions_may_be_inferred(drafts, primitives[i], primitives[j]) {
+                    continue;
+                }
                 if let Some((t, u, c)) = segment_intersection(primitives[i], primitives[j])
                     && (0.0..=1.0).contains(&t)
                     && (0.0..=1.0).contains(&u)
@@ -141,7 +174,7 @@ impl GraphBuilder {
         }
 
         let deg_tol = (self.snap_tolerance_m / 111_320.0).max(1.0e-9);
-        for snap in near_miss_snaps(&primitives, deg_tol) {
+        for snap in near_miss_snaps(drafts, &primitives, &index, deg_tol) {
             cuts[snap.src_primitive].push(Cut::snapped(snap.src_t, snap.coord));
             cuts[snap.target_primitive].push(Cut::snapped(snap.target_t, snap.coord));
         }
@@ -199,6 +232,32 @@ impl GraphBuilder {
         )?;
         Ok(graph)
     }
+}
+
+fn junctions_may_be_inferred(drafts: &[SegmentDraft], a: Primitive, b: Primitive) -> bool {
+    drafts[a.src].junctions == JunctionPolicy::Planar
+        && drafts[b.src].junctions == JunctionPolicy::Planar
+}
+
+fn primitive_index(primitives: &[Primitive]) -> RTree<PrimitiveEnvelope> {
+    RTree::bulk_load(
+        primitives
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, primitive)| PrimitiveEnvelope {
+                index,
+                envelope: primitive_envelope(primitive),
+            })
+            .collect(),
+    )
+}
+
+fn primitive_envelope(p: Primitive) -> AABB<[f64; 2]> {
+    AABB::from_corners(
+        [p.a.lon.min(p.b.lon), p.a.lat.min(p.b.lat)],
+        [p.a.lon.max(p.b.lon), p.a.lat.max(p.b.lat)],
+    )
 }
 
 fn turn_bans(
@@ -357,13 +416,27 @@ fn normalize_cuts(mut cuts: Vec<Cut>) -> Vec<Cut> {
     normalized
 }
 
-fn near_miss_snaps(primitives: &[Primitive], deg_tol: f64) -> Vec<SnapCandidate> {
+fn near_miss_snaps(
+    drafts: &[SegmentDraft],
+    primitives: &[Primitive],
+    index: &RTree<PrimitiveEnvelope>,
+    deg_tol: f64,
+) -> Vec<SnapCandidate> {
     let mut best = BTreeMap::<(usize, u8), SnapCandidate>::new();
     let tolerance2 = deg_tol * deg_tol;
     for (src_idx, primitive) in primitives.iter().copied().enumerate() {
         for (endpoint_ix, endpoint_t, endpoint) in [(0, 0.0, primitive.a), (1, 1.0, primitive.b)] {
-            for (target_idx, target) in primitives.iter().copied().enumerate() {
+            let neighborhood = AABB::from_corners(
+                [endpoint.lon - deg_tol, endpoint.lat - deg_tol],
+                [endpoint.lon + deg_tol, endpoint.lat + deg_tol],
+            );
+            for candidate in index.locate_in_envelope_intersecting(&neighborhood) {
+                let target_idx = candidate.index;
+                let target = primitives[target_idx];
                 if src_idx == target_idx || primitive.src == target.src {
+                    continue;
+                }
+                if !junctions_may_be_inferred(drafts, primitive, target) {
                     continue;
                 }
                 let Some((target_t, coord, distance2)) =
@@ -380,7 +453,10 @@ fn near_miss_snaps(primitives: &[Primitive], deg_tol: f64) -> Vec<SnapCandidate>
                     distance2,
                 };
                 match best.entry((src_idx, endpoint_ix)) {
-                    Entry::Occupied(mut entry) if candidate.distance2 < entry.get().distance2 => {
+                    Entry::Occupied(mut entry)
+                        if (candidate.distance2, candidate.target_primitive)
+                            < (entry.get().distance2, entry.get().target_primitive) =>
+                    {
                         entry.insert(candidate);
                     }
                     Entry::Vacant(entry) => {
