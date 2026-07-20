@@ -6,6 +6,7 @@ use std::{
     io::Write as _,
     path::{Path, PathBuf},
 };
+use trailgen_core::{Coord, LoopConstraints, SearchParams, SolverKind, VertexId};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -13,6 +14,17 @@ pub struct LayerSlate {
     pub basemap: bool,
     pub network: bool,
     pub terrain: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SearchDraft {
+    pub constraints: LoopConstraints,
+    pub params: SearchParams,
+    pub solver: SolverKind,
+    pub count: usize,
+    pub requested_start: Coord,
+    pub start: VertexId,
 }
 
 impl Default for LayerSlate {
@@ -35,6 +47,9 @@ pub struct Slate {
     pub sort: CandidateSort,
     pub selected: Option<usize>,
     pub focus: bool,
+    #[serde(default = "saved_routes_visible")]
+    pub saved_routes_visible: bool,
+    pub search: Option<SearchDraft>,
     pub layers: LayerSlate,
 }
 
@@ -48,9 +63,15 @@ impl Default for Slate {
             sort: CandidateSort::default(),
             selected: None,
             focus: false,
+            saved_routes_visible: true,
+            search: None,
             layers: LayerSlate::default(),
         }
     }
+}
+
+const fn saved_routes_visible() -> bool {
+    true
 }
 
 impl Slate {
@@ -113,6 +134,14 @@ mod tests {
             center: [0.29, 0.37],
             zoom: 15.5,
         });
+        slate.search = Some(SearchDraft {
+            constraints: LoopConstraints::default(),
+            params: SearchParams::default(),
+            solver: SolverKind::Exact,
+            count: 9,
+            requested_start: Coord::new(-74.1, 41.2),
+            start: VertexId(3),
+        });
         slate.shutters.insert("terrain".to_owned(), true);
         slate.save(&path)?;
         assert_eq!(Slate::load(&path, &alpha), slate);
@@ -120,6 +149,15 @@ mod tests {
         assert_eq!(foreign.project, beta);
         assert!(foreign.viewport.is_none());
         assert!(foreign.shutters.is_empty());
+        assert!(foreign.search.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn old_slates_keep_saved_candidates_visible() -> Result<()> {
+        let slate = toml::from_str::<Slate>("project = '/tmp/alpha'")?;
+        assert!(slate.saved_routes_visible);
+        assert!(slate.search.is_none());
         Ok(())
     }
 }

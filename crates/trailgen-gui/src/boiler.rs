@@ -1,4 +1,4 @@
-use crate::{genesis::Workbench, vector_map::VectorMapGpu};
+use crate::{projects::Workbench, vector_map::VectorMapGpu};
 use anyhow::{Context as _, Result};
 use dwemer_poolrooms::water::Engine;
 use egui_wgpu::{RenderState, RendererOptions, ScreenDescriptor, WgpuConfiguration, wgpu};
@@ -34,6 +34,7 @@ pub fn run(ctx: egui::Context, app: Workbench) -> Result<()> {
             app,
             alarm,
             rig: None,
+            force_redraw: false,
         })
         .context("run event loop")
 }
@@ -64,6 +65,7 @@ struct Boiler {
     app: Workbench,
     alarm: Alarm,
     rig: Option<Rig>,
+    force_redraw: bool,
 }
 
 impl Boiler {
@@ -89,6 +91,9 @@ impl Boiler {
             output.pixels_per_point,
             &water,
         );
+        if self.app.settle() {
+            self.force_redraw = true;
+        }
         if let Some(viewport) = output.viewport_output.get(&egui::ViewportId::ROOT) {
             if viewport.repaint_delay.is_zero() {
                 rig.window.request_redraw();
@@ -183,6 +188,13 @@ impl ApplicationHandler<Spark> for Boiler {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if std::mem::take(&mut self.force_redraw) {
+            if let Some(rig) = &self.rig {
+                rig.window.request_redraw();
+            }
+            event_loop.set_control_flow(ControlFlow::Poll);
+            return;
+        }
         self.tend_alarm();
         let deadline = *lock_alarm(&self.alarm);
         event_loop.set_control_flow(deadline.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
@@ -204,7 +216,7 @@ impl Rig {
             event_loop
                 .create_window(
                     WindowAttributes::default()
-                        .with_title("adequate trailgen · trail forge")
+                        .with_title("trailgen · trail workbench")
                         .with_inner_size(WINDOW_SIZE),
                 )
                 .context("create window")?,

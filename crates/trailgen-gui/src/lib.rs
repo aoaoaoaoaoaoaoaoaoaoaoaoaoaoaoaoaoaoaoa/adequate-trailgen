@@ -9,11 +9,11 @@ mod app;
 mod basemap;
 mod boiler;
 mod gallery;
-mod genesis;
 mod habitat;
 mod map;
 mod profile;
 mod project;
+mod projects;
 mod slate;
 mod vector_map;
 
@@ -31,6 +31,6 @@ pub fn run(intent: ProjectIntent, offline: bool) -> Result<()> {
     let habitat = habitat::Habitat::discover()?;
     let ctx = egui::Context::default();
     dwemer_poolrooms::chrome::install(&ctx);
-    let app = genesis::Workbench::launch(&ctx, habitat, intent, offline)?;
+    let app = projects::Workbench::launch(&ctx, habitat, intent, offline);
     boiler::run(ctx, app)
 }

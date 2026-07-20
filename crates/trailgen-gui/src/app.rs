@@ -4,7 +4,7 @@ use crate::{
     map::{self, ALLTRAILS_GREEN, Atlas, CANDIDATE_COLORS, Viewport},
     profile::ElevationProfile,
     project::{Project, SearchEvent, SearchForge, SearchRequest},
-    slate::{LayerSlate, Slate},
+    slate::{LayerSlate, SearchDraft, Slate},
     vector_map::VectorPaint,
 };
 use anyhow::Result;
@@ -58,7 +58,11 @@ pub struct TrailApp {
     count: usize,
     start: VertexId,
     requested_start: Coord,
+    project_search: SearchDraft,
+    saved_routes: Vec<Route>,
+    saved_routes_visible: bool,
     routes: Vec<Route>,
+    route_origin: Option<CandidateOrigin>,
     profiles: Vec<Option<ElevationProfile>>,
     selected: Option<usize>,
     sort: CandidateSort,
@@ -84,6 +88,7 @@ pub struct TrailApp {
     status: String,
     basemap_status: String,
     map_rect: egui::Rect,
+    project_deck_requested: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -108,6 +113,86 @@ enum ForgePhase {
     Striking,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CandidateOrigin {
+    Saved,
+    Search,
+}
+
+impl CandidateOrigin {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Saved => "SAVED",
+            Self::Search => "RESULTS",
+        }
+    }
+}
+
+struct LoadedCandidates {
+    saved: Vec<Route>,
+    visible: Vec<Route>,
+    profiles: Vec<Option<ElevationProfile>>,
+    selected: Option<usize>,
+    origin: Option<CandidateOrigin>,
+    count: usize,
+    status: String,
+}
+
+impl LoadedCandidates {
+    fn raise(graph: &TrailGraph, saved: Vec<Route>, slate: &Slate) -> Self {
+        let visible = if slate.saved_routes_visible {
+            saved.clone()
+        } else {
+            Vec::new()
+        };
+        let selected = slate
+            .selected
+            .filter(|slot| *slot < visible.len())
+            .or_else(|| (!visible.is_empty()).then_some(0));
+        let origin = (!visible.is_empty()).then_some(CandidateOrigin::Saved);
+        let status = if !slate.saved_routes_visible && !saved.is_empty() {
+            "saved candidates are hidden; restore them above the atlas or find new trails"
+                .to_owned()
+        } else if visible.is_empty() {
+            "choose a trailhead, tune the bounds, and strike FIND TRAILS".to_owned()
+        } else {
+            format!("loaded {} measured candidate(s)", visible.len())
+        };
+        Self {
+            count: saved.len().clamp(6, 12),
+            profiles: profiles(graph, &visible),
+            saved,
+            visible,
+            selected,
+            origin,
+            status,
+        }
+    }
+}
+
+struct LoadedSearch {
+    project: SearchDraft,
+    draft: SearchDraft,
+    start: VertexId,
+}
+
+impl LoadedSearch {
+    fn raise(graph: &TrailGraph, project: SearchDraft, saved: Option<&SearchDraft>) -> Self {
+        let draft = saved
+            .filter(|draft| {
+                usable_coord(draft.requested_start) && draft.start.0 < graph.vertices.len()
+            })
+            .cloned()
+            .unwrap_or_else(|| project.clone());
+        let start = draft.start;
+        Self {
+            project,
+            draft,
+            start,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Layers {
     basemap: bool,
@@ -127,8 +212,8 @@ impl TrailApp {
             graph,
             routes,
             config,
-            start,
-            requested_start,
+            start: project_start,
+            requested_start: project_requested_start,
         } = Project::open(root)?;
         let slate = Slate::load(&slate_path, &root);
         let forge = SearchForge::spawn(ctx.clone(), Arc::clone(&graph))?;
@@ -138,22 +223,24 @@ impl TrailApp {
             let source = BasemapSource::project(&root, &graph)?;
             Some(Basemap::spawn(ctx.clone(), source)?)
         };
-        let selected = slate
-            .selected
-            .filter(|slot| *slot < routes.len())
-            .or_else(|| (!routes.is_empty()).then_some(0));
-        let count = routes.len().clamp(6, 12);
-        let profiles = profiles(&graph, &routes);
+        let candidates = LoadedCandidates::raise(&graph, routes, &slate);
+        let search = LoadedSearch::raise(
+            &graph,
+            SearchDraft {
+                constraints: config.constraints.clone(),
+                params: config.search,
+                solver: config.solver,
+                count: candidates.count,
+                requested_start: project_requested_start,
+                start: project_start,
+            },
+            slate.search.as_ref(),
+        );
         let atlas = Atlas::forge(&graph);
         let water = forge_water();
-        let status = if routes.is_empty() {
-            "choose a trailhead, tune the bounds, and strike FIND TRAILS".to_owned()
-        } else {
-            format!("loaded {} measured candidate(s)", routes.len())
-        };
         let restored_viewport = slate.viewport;
         let viewport = restored_viewport.unwrap_or_else(|| Viewport {
-            center: map::world_from_coord(requested_start),
+            center: map::world_from_coord(search.draft.requested_start),
             zoom: 13.0,
         });
         let layers = Layers {
@@ -167,17 +254,21 @@ impl TrailApp {
             graph,
             atlas,
             forge,
-            constraints: config.constraints,
-            params: config.search,
-            solver: config.solver,
-            count,
-            start,
-            requested_start,
-            routes,
-            profiles,
-            selected,
+            constraints: search.draft.constraints.clone(),
+            params: search.draft.params,
+            solver: search.draft.solver,
+            count: search.draft.count,
+            start: search.start,
+            requested_start: search.draft.requested_start,
+            project_search: search.project,
+            saved_routes: candidates.saved,
+            saved_routes_visible: slate.saved_routes_visible,
+            routes: candidates.visible,
+            route_origin: candidates.origin,
+            profiles: candidates.profiles,
+            selected: candidates.selected,
             sort: slate.sort,
-            view: if slate.focus && selected.is_some() {
+            view: if slate.focus && candidates.selected.is_some() {
                 ViewMode::Focus
             } else {
                 ViewMode::Atlas
@@ -204,19 +295,20 @@ impl TrailApp {
             observed_slate: slate,
             slate_dirty: None,
             water,
-            status,
+            status: candidates.status,
             basemap_status: if offline {
                 "VECTOR MAP OFFLINE".to_owned()
             } else {
                 "PROTOMAPS · PREPARING PROJECT CUT".to_owned()
             },
             map_rect: egui::Rect::ZERO,
+            project_deck_requested: false,
         };
         app.observed_slate = app.snapshot();
         Ok(app)
     }
 
-    pub fn pulse(&mut self, ui: &mut egui::Ui) {
+    pub fn pulse(&mut self, ui: &mut egui::Ui) -> bool {
         self.absorb_events(ui.ctx());
         self.take_keys(ui.ctx());
         let _left = egui::Panel::left("trail-inspector")
@@ -237,6 +329,11 @@ impl TrailApp {
             });
         let _center = egui::CentralPanel::default().show_inside(ui, |ui| self.arena(ui));
         self.tend_slate(ui.ctx());
+        std::mem::take(&mut self.project_deck_requested)
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
     }
 
     pub fn water_frame(
@@ -250,6 +347,19 @@ impl TrailApp {
 
     fn inspector(&mut self, ui: &mut egui::Ui) {
         let _name = ui.label(chrome::title(self.name.to_ascii_uppercase()));
+        ui.add_space(3.0);
+
+        let project = ui.add_sized(
+            [ui.available_width(), 27.0],
+            chrome::glyph_button("▦  PROJECTS · CTRL+O", false),
+        );
+        chrome::tension(ui, &project);
+        let project =
+            project.on_hover_text(format!("Switch projects\nCurrent: {}", self.root.display()));
+        if project.clicked() {
+            self.project_deck_requested = true;
+            self.water.click(project.rect);
+        }
         ui.add_space(3.0);
 
         self.section(ui, "strike", "find trails", true, Self::strike_panel);
@@ -284,15 +394,24 @@ impl TrailApp {
 
     fn strike_panel(&mut self, ui: &mut egui::Ui) {
         let striking = self.forge_phase == ForgePhase::Striking;
+        let validation = self
+            .search_request(self.serial.saturating_add(1))
+            .validate(&self.graph)
+            .err()
+            .map(|err| err.to_string());
         let label = if striking {
             "⌁  FORGING…"
         } else {
             "⌖  FIND TRAILS"
         };
         let response = ui.add_enabled(
-            !striking,
+            !striking && validation.is_none(),
             chrome::glyph_button(label, striking).min_size(vec2(ui.available_width(), 34.0)),
         );
+        let response = match &validation {
+            Some(problem) => response.on_disabled_hover_text(problem),
+            None => response,
+        };
         chrome::tension(ui, &response);
         if response.hovered() {
             self.water.hover("find-trails", response.rect);
@@ -312,6 +431,26 @@ impl TrailApp {
             self.constraints.max_distance_m / 1_000.0,
             self.count
         )));
+        if let Some(problem) = validation {
+            let _problem = ui.label(
+                RichText::new(format!("FIX PARAMETERS · {problem}"))
+                    .monospace()
+                    .small()
+                    .color(Color32::from_rgb(203, 113, 91)),
+            );
+        }
+        if self.search_draft() != self.project_search {
+            ui.add_space(3.0);
+            let reset = ui.add_sized(
+                [ui.available_width(), 24.0],
+                chrome::glyph_button("↶  RESET PROJECT DEFAULTS", false),
+            );
+            chrome::tension(ui, &reset);
+            if reset.clicked() {
+                self.restore_project_search();
+                self.water.click(reset.rect);
+            }
+        }
     }
 
     fn trailhead_panel(&mut self, ui: &mut egui::Ui) {
@@ -699,6 +838,7 @@ impl TrailApp {
             }
         } else {
             let mut chosen = None;
+            let mut candidates = None;
             let _row = ui.horizontal_wrapped(|ui| {
                 let _label = ui.label(chrome::eyebrow("SORT"));
                 for sort in CandidateSort::ALL {
@@ -707,11 +847,36 @@ impl TrailApp {
                         chosen = Some((sort, response.rect));
                     }
                 }
-                let _count = ui.label(chrome::muted(format!("{} TRAILS", self.routes.len())));
+                let origin = self
+                    .route_origin
+                    .map_or("CANDIDATES", CandidateOrigin::label);
+                let _count = ui.label(chrome::muted(format!("{} {origin}", self.routes.len())));
+                if self.routes.is_empty() {
+                    if !self.saved_routes.is_empty() && !self.saved_routes_visible {
+                        let restore = chrome::glyph(ui, "↶ RESTORE SAVED", false);
+                        if restore.clicked() {
+                            candidates = Some((CandidateAction::Restore, restore.rect));
+                        }
+                    }
+                } else {
+                    let clear = chrome::glyph(ui, "× CLEAR", false).on_hover_text(
+                        "Remove candidates from this workbench. Project files remain untouched.",
+                    );
+                    if clear.clicked() {
+                        candidates = Some((CandidateAction::Clear, clear.rect));
+                    }
+                }
             });
             if let Some((sort, rect)) = chosen {
                 self.sort = sort;
                 self.water.select(rect);
+            }
+            if let Some((action, rect)) = candidates {
+                match action {
+                    CandidateAction::Clear => self.clear_candidates(),
+                    CandidateAction::Restore => self.restore_saved_candidates(),
+                }
+                self.water.click(rect);
             }
         }
     }
@@ -724,6 +889,8 @@ impl TrailApp {
                 egui::Align2::CENTER_CENTER,
                 if self.forge_phase == ForgePhase::Striking {
                     "THE FORGE IS WALKING THE GRAPH"
+                } else if !self.saved_routes.is_empty() && !self.saved_routes_visible {
+                    "SAVED CANDIDATES HIDDEN · RESTORE ABOVE OR FIND NEW TRAILS"
                 } else {
                     "NO CANDIDATES · STRIKE FIND TRAILS"
                 },
@@ -1035,14 +1202,7 @@ impl TrailApp {
     fn strike(&mut self) {
         self.serial = self.serial.saturating_add(1);
         self.params.keep = self.params.keep.max(self.count);
-        let request = SearchRequest {
-            serial: self.serial,
-            start: self.start,
-            constraints: self.constraints.clone(),
-            params: self.params,
-            solver: self.solver,
-            count: self.count,
-        };
+        let request = self.search_request(self.serial);
         match self.forge.strike(request) {
             Ok(()) => {
                 self.forge_phase = ForgePhase::Striking;
@@ -1141,6 +1301,8 @@ impl TrailApp {
     fn install_routes(&mut self, routes: Vec<Route>) {
         self.profiles = profiles(&self.graph, &routes);
         self.routes = routes;
+        self.route_origin = (!self.routes.is_empty()).then_some(CandidateOrigin::Search);
+        self.saved_routes_visible = false;
         self.selected = (!self.routes.is_empty()).then_some(0);
         self.view = ViewMode::Atlas;
         self.fit = if self.routes.is_empty() {
@@ -1148,6 +1310,69 @@ impl TrailApp {
         } else {
             Fit::Route(0)
         };
+    }
+
+    fn clear_candidates(&mut self) {
+        let count = self.routes.len();
+        self.routes.clear();
+        self.profiles.clear();
+        self.route_origin = None;
+        self.saved_routes_visible = false;
+        self.selected = None;
+        self.view = ViewMode::Atlas;
+        self.fit = Fit::Graph;
+        self.status =
+            format!("cleared {count} candidate(s) from the workbench; project files are untouched");
+    }
+
+    fn restore_saved_candidates(&mut self) {
+        self.routes.clone_from(&self.saved_routes);
+        self.profiles = profiles(&self.graph, &self.routes);
+        self.route_origin = (!self.routes.is_empty()).then_some(CandidateOrigin::Saved);
+        self.saved_routes_visible = true;
+        self.selected = (!self.routes.is_empty()).then_some(0);
+        self.view = ViewMode::Atlas;
+        self.fit = if self.routes.is_empty() {
+            Fit::Graph
+        } else {
+            Fit::Route(0)
+        };
+        self.status = format!("restored {} saved candidate(s)", self.routes.len());
+    }
+
+    fn search_request(&self, serial: u64) -> SearchRequest {
+        let mut params = self.params;
+        params.keep = params.keep.max(self.count);
+        SearchRequest {
+            serial,
+            start: self.start,
+            constraints: self.constraints.clone(),
+            params,
+            solver: self.solver,
+            count: self.count,
+        }
+    }
+
+    fn search_draft(&self) -> SearchDraft {
+        SearchDraft {
+            constraints: self.constraints.clone(),
+            params: self.params,
+            solver: self.solver,
+            count: self.count,
+            requested_start: self.requested_start,
+            start: self.start,
+        }
+    }
+
+    fn restore_project_search(&mut self) {
+        let project = self.project_search.clone();
+        self.constraints = project.constraints;
+        self.params = project.params;
+        self.solver = project.solver;
+        self.count = project.count;
+        self.requested_start = project.requested_start;
+        self.start = project.start;
+        "restored the project's search defaults".clone_into(&mut self.status);
     }
 
     fn snap_start(&mut self, requested: Coord, strike: egui::Rect) {
@@ -1179,6 +1404,10 @@ impl TrailApp {
     }
 
     fn take_keys(&mut self, ctx: &egui::Context) {
+        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::O)) {
+            self.project_deck_requested = true;
+            return;
+        }
         if ctx.text_edit_focused() {
             return;
         }
@@ -1260,6 +1489,8 @@ impl TrailApp {
             sort: self.sort,
             selected: self.selected,
             focus: self.view == ViewMode::Focus,
+            saved_routes_visible: self.saved_routes_visible,
+            search: Some(self.search_draft()),
             layers: LayerSlate {
                 basemap: self.basemap_preference,
                 network: self.layers.network,
@@ -1330,6 +1561,11 @@ enum FocusAction {
     Step(isize, egui::Rect),
 }
 
+enum CandidateAction {
+    Clear,
+    Restore,
+}
+
 struct VectorBank {
     ceiling: usize,
     bytes: usize,
@@ -1398,6 +1634,13 @@ impl VectorBank {
             self.bytes = self.bytes.saturating_sub(victim.bytes);
         }
     }
+}
+
+fn usable_coord(coord: Coord) -> bool {
+    coord.lon.is_finite()
+        && coord.lat.is_finite()
+        && (-180.0..=180.0).contains(&coord.lon)
+        && (-85.0..=85.0).contains(&coord.lat)
 }
 
 fn profiles(graph: &TrailGraph, routes: &[Route]) -> Vec<Option<ElevationProfile>> {

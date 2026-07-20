@@ -29,11 +29,11 @@ impl CandidateSort {
 
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Rank => "RANK",
-            Self::Distance => "DISTANCE",
-            Self::Ascent => "ASCENT",
-            Self::Difficulty => "DIFFICULTY",
-            Self::Trail => "TRAIL %",
+            Self::Rank => "RANK ↑",
+            Self::Distance => "DISTANCE ↓",
+            Self::Ascent => "ASCENT ↓",
+            Self::Difficulty => "DIFFICULTY ↑",
+            Self::Trail => "TRAIL % ↓",
         }
     }
 }
@@ -109,7 +109,7 @@ pub fn tile(
     let verdict = if route.verdict.satisfied {
         ("FIT", ALLTRAILS_GREEN)
     } else {
-        ("OFF", Color32::from_rgb(208, 116, 72))
+        ("OUTSIDE", Color32::from_rgb(208, 116, 72))
     };
     ui.painter().text(
         title.right_top(),

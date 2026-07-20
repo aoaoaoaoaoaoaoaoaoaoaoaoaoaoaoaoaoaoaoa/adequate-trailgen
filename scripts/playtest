@@ -44,8 +44,73 @@ if [ "${TRAILGEN_GUI_ONLINE:-0}" = 1 ] && [ "${TRAILGEN_GUI_RESUME:-0}" != 1 ]; 
     done
 fi
 
-sleep 1
-import -window "$window" "$out/atlas.png"
+attempts=0
+while :; do
+    import -window "$window" "$out/atlas.png"
+    mean=$(identify -format '%[mean]' "$out/atlas.png")
+    mean=${mean%%.*}
+    if [ "$mean" -gt 10 ]; then
+        break
+    fi
+    attempts=$((attempts + 1))
+    if [ "$attempts" -ge 200 ]; then
+        printf 'timed out waiting for the first rendered frame\n' >&2
+        exit 1
+    fi
+    sleep 0.1
+done
+
+if [ -n "${TRAILGEN_GUI_DECK_OPEN_ROOT:-}" ]; then
+    xdotool mousemove --sync --window "$window" 600 296 click 1
+    xdotool key --window "$window" ctrl+a
+    xdotool type --window "$window" --delay 1 "$TRAILGEN_GUI_DECK_OPEN_ROOT"
+    xdotool key --window "$window" Return
+    sleep 1
+    import -window "$window" "$out/project-opened.png"
+    exit 0
+fi
+
+if [ "${TRAILGEN_GUI_PROJECT_DECK:-0}" = 1 ]; then
+    exit 0
+fi
+
+if [ "${TRAILGEN_GUI_PROJECT_SWITCH:-0}" = 1 ]; then
+    xdotool key --window "$window" ctrl+o
+    sleep 0.5
+    import -window "$window" "$out/project-deck.png"
+    xdotool windowfocus --sync "$window"
+    xdotool key --window "$window" Escape
+    sleep 1
+    import -window "$window" "$out/project-return.png"
+    exit 0
+fi
+
+if [ "${TRAILGEN_GUI_CLEAR:-0}" = 1 ]; then
+    xdotool mousemove --sync --window "$window" 824 26
+    sleep 0.2
+    xdotool click 1
+    sleep 1
+    import -window "$window" "$out/cleared.png"
+    exit 0
+fi
+
+if [ "${TRAILGEN_GUI_RESTORE:-0}" = 1 ]; then
+    xdotool mousemove --sync --window "$window" 890 26
+    sleep 0.2
+    xdotool click 1
+    sleep 1
+    import -window "$window" "$out/restored.png"
+    exit 0
+fi
+
+if [ "${TRAILGEN_GUI_DRAFT:-0}" = 1 ]; then
+    xdotool mousemove --sync --window "$window" 38 709
+    sleep 0.2
+    xdotool click 1
+    sleep 1
+    import -window "$window" "$out/search-draft.png"
+    exit 0
+fi
 
 if [ "${TRAILGEN_GUI_ROAM:-0}" = 1 ]; then
     # Cross the project-local PMTiles cut from Colorado to Harriman at world zoom,
@@ -83,15 +148,6 @@ if [ "${TRAILGEN_GUI_ROAM_RESUME:-0}" = 1 ]; then
     sleep 1
     import -window "$window" "$out/harriman-resumed.png"
     exit 0
-fi
-
-if [ -n "${TRAILGEN_GUI_GENESIS_ROOT:-}" ]; then
-    xdotool mousemove --window "$window" 700 408 click 1
-    xdotool key --window "$window" ctrl+a
-    xdotool type --window "$window" --delay 1 "$TRAILGEN_GUI_GENESIS_ROOT"
-    xdotool mousemove --window "$window" 515 478 click 1
-    sleep 1
-    import -window "$window" "$out/genesis-forged.png"
 fi
 
 # The terrain-law recess carries the per-surface admissibility and mix envelope.
