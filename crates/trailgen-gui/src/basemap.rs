@@ -1,0 +1,1467 @@
+use crate::map::{self, Viewport};
+use anyhow::{Context as _, Result, ensure};
+use bytemuck::{Pod, Zeroable};
+use crossbeam_channel::{Receiver, Sender, bounded};
+use egui::Context;
+use fast_mvt::{MvtFeatureRef, MvtGeometry, MvtReaderRef, MvtValueRef};
+use futures_util::{StreamExt as _, stream};
+use geo_types::{Coord, LineString, Point, Polygon};
+use lyon_tessellation::{
+    BuffersBuilder, FillOptions, FillRule, FillTessellator, FillVertex, VertexBuffers, math::point,
+    path::Path,
+};
+use pmtiles::{
+    AsyncPmTilesReader, Compression, HashMapCache, HttpBackend, MmapBackend, PmTilesWriter,
+    TileCoord, TileId, TileType,
+};
+use serde::Deserialize;
+use std::{
+    fs::{self, File, OpenOptions},
+    path::{Path as FsPath, PathBuf},
+    sync::Arc,
+    thread,
+    time::{Duration, Instant, SystemTime},
+};
+use trailgen_core::{TrailGraph, source::GeoBounds};
+
+pub const ARCHIVE_NAME: &str = "basemap.pmtiles";
+pub const MAX_SOURCE_ZOOM: u8 = 15;
+pub const APPARITION_SPAN: f32 = 1.35;
+const BUILDS_INDEX: &str = "https://build-metadata.protomaps.dev/builds.json";
+const BUILDS_ORIGIN: &str = "https://build.protomaps.com";
+const FORGE_BATCH: usize = 64;
+const FORGE_CONCURRENCY: usize = 8;
+const MAX_FORGE_TILES: usize = 8_192;
+const RETAINED_DEPTH: u8 = 4;
+const WORKERS: usize = 8;
+
+#[derive(Clone, Debug)]
+pub struct Source {
+    archive: PathBuf,
+    forge_bounds: Option<GeoBounds>,
+}
+
+impl Source {
+    pub fn project(root: &FsPath, graph: &TrailGraph) -> Result<Self> {
+        if let Some(override_path) = std::env::var_os("TRAILGEN_BASEMAP_ARCHIVE") {
+            return Ok(Self {
+                archive: override_path.into(),
+                forge_bounds: None,
+            });
+        }
+        Ok(Self {
+            archive: root.join("cache").join(ARCHIVE_NAME),
+            forge_bounds: Some(forge_bounds(graph)?),
+        })
+    }
+}
+
+pub fn apparition(view_zoom: f32, onset_zoom: f32) -> f32 {
+    let phase = ((view_zoom - onset_zoom) / APPARITION_SPAN).clamp(0.0, 1.0);
+    phase * phase * 2.0_f32.mul_add(-phase, 3.0)
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct TileKey {
+    pub zoom: u8,
+    pub x: u32,
+    pub y: u32,
+}
+
+impl TileKey {
+    fn coordinate(self) -> Result<TileCoord> {
+        TileCoord::new(self.zoom, self.x, self.y).context("invalid PMTiles coordinate")
+    }
+}
+
+#[derive(Debug)]
+pub struct Cover {
+    pub strata: Vec<Stratum>,
+}
+
+impl Cover {
+    pub fn finest_ready(&self, mut resident: impl FnMut(TileKey) -> bool) -> Option<&Stratum> {
+        self.strata.iter().rev().find(|stratum| {
+            stratum.intent.presents() && stratum.keys.iter().all(|key| resident(*key))
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct Stratum {
+    pub intent: Intent,
+    pub keys: Vec<TileKey>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Intent {
+    Retained,
+    Required,
+    Prefetch,
+}
+
+impl Intent {
+    pub const fn demands(self) -> bool {
+        matches!(self, Self::Required | Self::Prefetch)
+    }
+
+    pub const fn presents(self) -> bool {
+        !matches!(self, Self::Prefetch)
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct FillPoint {
+    pub local: [f32; 2],
+    pub srgb: [u8; 4],
+    pub onset_zoom: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct StrokePoint {
+    pub local: [f32; 2],
+    pub extrusion: [f32; 2],
+    pub srgb: [u8; 4],
+    pub radius_points: f32,
+    /// Magnitude is `onset_zoom + 1`; sign selects the extrusion bank.
+    pub onset_side: f32,
+}
+
+#[derive(Clone, Debug)]
+pub struct Label {
+    pub world: [f64; 2],
+    pub text: Arc<str>,
+    pub rank: u16,
+    pub size: f32,
+    pub onset_zoom: f32,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Mesh<V> {
+    pub vertices: Arc<[V]>,
+    pub indices: Arc<[u32]>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CutTiming {
+    pub archive_us: u64,
+    pub decode_us: u64,
+    pub bytes: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct VectorTile {
+    pub key: TileKey,
+    pub fills: Mesh<FillPoint>,
+    pub strokes: Mesh<StrokePoint>,
+    pub labels: Arc<[Label]>,
+    pub timing: CutTiming,
+}
+
+impl VectorTile {
+    pub fn resident_bytes(&self) -> usize {
+        self.fills
+            .vertices
+            .len()
+            .saturating_mul(size_of::<FillPoint>())
+            .saturating_add(self.fills.indices.len().saturating_mul(size_of::<u32>()))
+            .saturating_add(
+                self.strokes
+                    .vertices
+                    .len()
+                    .saturating_mul(size_of::<StrokePoint>()),
+            )
+            .saturating_add(self.strokes.indices.len().saturating_mul(size_of::<u32>()))
+            .saturating_add(self.labels.len().saturating_mul(size_of::<Label>()))
+            .saturating_add(
+                self.labels
+                    .iter()
+                    .map(|label| label.text.len())
+                    .sum::<usize>(),
+            )
+    }
+}
+
+#[derive(Debug)]
+pub enum Event {
+    Forging {
+        complete: usize,
+        total: usize,
+    },
+    Ready {
+        source_zoom: u8,
+    },
+    Loaded(Arc<VectorTile>),
+    Missing(TileKey),
+    Fault {
+        key: Option<TileKey>,
+        message: String,
+    },
+}
+
+pub struct Basemap {
+    commands: Sender<TileKey>,
+    pub events: Receiver<Event>,
+    _thread: thread::JoinHandle<()>,
+}
+
+impl Basemap {
+    pub fn spawn(ctx: Context, source: Source) -> Result<Self> {
+        Self::spawn_with_workers(ctx, source, WORKERS)
+    }
+
+    fn spawn_with_workers(ctx: Context, source: Source, workers: usize) -> Result<Self> {
+        purge_partials(&source.archive)?;
+        let (commands, command_rx) = bounded(256);
+        let (event_tx, events) = bounded(256);
+        let thread = thread::Builder::new()
+            .name("vector-armory".to_owned())
+            .spawn(move || armory(&ctx, &source, command_rx, event_tx, workers))
+            .context("spawn vector basemap armory")?;
+        Ok(Self {
+            commands,
+            events,
+            _thread: thread,
+        })
+    }
+
+    pub fn request(&self, key: TileKey) -> bool {
+        self.commands.try_send(key).is_ok()
+    }
+}
+
+pub fn cover(view: Viewport, rect: egui::Rect) -> Cover {
+    let zoom = view.zoom.floor().clamp(0.0, f64::from(MAX_SOURCE_ZOOM)) as u8;
+    let ceiling = zoom.saturating_add(1).min(MAX_SOURCE_ZOOM);
+    let strata = (zoom.saturating_sub(RETAINED_DEPTH)..=ceiling)
+        .map(|level| Stratum {
+            intent: match level.cmp(&zoom) {
+                std::cmp::Ordering::Less => Intent::Retained,
+                std::cmp::Ordering::Equal => Intent::Required,
+                std::cmp::Ordering::Greater => Intent::Prefetch,
+            },
+            keys: keys_at(view, rect, level),
+        })
+        .collect();
+    Cover { strata }
+}
+
+fn keys_at(view: Viewport, rect: egui::Rect, zoom: u8) -> Vec<TileKey> {
+    let divisions = 1_u32 << zoom;
+    let bounds = map::world_bounds(view, rect);
+    let scale = f64::from(divisions);
+    let left = (bounds[0] * scale).floor() as i64;
+    let right = (bounds[2] * scale).floor() as i64;
+    let top = (bounds[1] * scale).floor().max(0.0) as i64;
+    let bottom = (bounds[3] * scale)
+        .floor()
+        .min(f64::from(divisions.saturating_sub(1))) as i64;
+    let mut keys = Vec::new();
+    for raw_y in top..=bottom {
+        for raw_x in left..=right {
+            keys.push(TileKey {
+                zoom,
+                x: raw_x.rem_euclid(i64::from(divisions)) as u32,
+                y: raw_y as u32,
+            });
+        }
+    }
+    keys.sort_unstable();
+    keys.dedup();
+    keys.sort_unstable_by(|left, right| {
+        tile_distance(*left, view.center).total_cmp(&tile_distance(*right, view.center))
+    });
+    keys
+}
+
+fn tile_distance(key: TileKey, center: [f64; 2]) -> f64 {
+    let scale = f64::from(1_u32 << key.zoom);
+    let x = (f64::from(key.x) + 0.5) / scale;
+    let y = (f64::from(key.y) + 0.5) / scale;
+    (x - center[0]).mul_add(x - center[0], (y - center[1]).powi(2))
+}
+
+type Archive = AsyncPmTilesReader<MmapBackend, HashMapCache>;
+type RemoteArchive = AsyncPmTilesReader<HttpBackend, HashMapCache>;
+
+fn armory(
+    ctx: &Context,
+    source: &Source,
+    commands: Receiver<TileKey>,
+    events: Sender<Event>,
+    worker_count: usize,
+) {
+    let runtime = match runtime() {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            send_fault(ctx, &events, None, &err);
+            return;
+        }
+    };
+    if !source.archive.is_file() {
+        let Some(bounds) = source.forge_bounds else {
+            send_fault(
+                ctx,
+                &events,
+                None,
+                &anyhow::anyhow!(
+                    "basemap override {} does not exist",
+                    source.archive.display()
+                ),
+            );
+            return;
+        };
+        if let Err(err) = forge_archive(&runtime, ctx, &events, &source.archive, bounds) {
+            send_fault(ctx, &events, None, &err);
+            return;
+        }
+    }
+    let reader = match runtime.block_on(Archive::new_with_cached_path(
+        HashMapCache::default(),
+        &source.archive,
+    )) {
+        Ok(reader) => Arc::new(reader),
+        Err(err) => {
+            send_fault(
+                ctx,
+                &events,
+                None,
+                &anyhow::Error::new(err).context(format!("open {}", source.archive.display())),
+            );
+            return;
+        }
+    };
+    let source_zoom = reader.get_header().max_zoom.min(MAX_SOURCE_ZOOM);
+    if events.send(Event::Ready { source_zoom }).is_err() {
+        return;
+    }
+    ctx.request_repaint();
+    let mut workers = Vec::with_capacity(worker_count);
+    for slot in 0..worker_count {
+        let worker_ctx = ctx.clone();
+        let reader = reader.clone();
+        let commands = commands.clone();
+        let worker_events = events.clone();
+        let worker = thread::Builder::new()
+            .name(format!("vector-quarry-{slot}"))
+            .spawn(move || quarry(&worker_ctx, &reader, &commands, &worker_events));
+        match worker {
+            Ok(worker) => workers.push(worker),
+            Err(err) => {
+                send_fault(
+                    ctx,
+                    &events,
+                    None,
+                    &anyhow::Error::new(err).context("spawn vector quarry"),
+                );
+                break;
+            }
+        }
+    }
+    drop(commands);
+    drop(events);
+    for worker in workers {
+        let _joined = worker.join();
+    }
+}
+
+fn runtime() -> Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("build basemap runtime")
+}
+
+#[derive(Deserialize)]
+struct Build {
+    key: String,
+}
+
+struct RemoteSource {
+    archive: RemoteArchive,
+    metadata: String,
+    tile_type: TileType,
+    compression: Compression,
+    max_zoom: u8,
+}
+
+fn forge_archive(
+    runtime: &tokio::runtime::Runtime,
+    ctx: &Context,
+    events: &Sender<Event>,
+    target: &FsPath,
+    bounds: GeoBounds,
+) -> Result<()> {
+    let parent = target.parent().context("basemap archive has no parent")?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("create basemap cache {}", parent.display()))?;
+    let remote = runtime.block_on(open_remote())?;
+    let max_zoom = remote.max_zoom.min(MAX_SOURCE_ZOOM);
+    let tiles = extraction_keys(bounds, max_zoom)?;
+    ensure!(
+        tiles.len() <= MAX_FORGE_TILES,
+        "project basemap requires {} tiles; narrow the graph or install a prepared archive through TRAILGEN_BASEMAP_ARCHIVE",
+        tiles.len()
+    );
+    let mut staging = Staging::raise(target)?;
+    let center = [
+        (bounds.west + bounds.east) * 0.5,
+        (bounds.south + bounds.north) * 0.5,
+    ];
+    let mut writer = PmTilesWriter::new(remote.tile_type)
+        .tile_compression(remote.compression)
+        .min_zoom(0)
+        .max_zoom(max_zoom)
+        .bounds(bounds.west, bounds.south, bounds.east, bounds.north)
+        .center(center[0], center[1])
+        .center_zoom(max_zoom.saturating_sub(2))
+        .metadata(&remote.metadata)
+        .create(staging.take_file()?)
+        .context("raise project basemap writer")?;
+    let total = tiles.len();
+    let mut complete = 0;
+    let _progress = events.try_send(Event::Forging { complete, total });
+    ctx.request_repaint();
+    for keys in tiles.chunks(FORGE_BATCH) {
+        for (coordinate, bytes) in runtime.block_on(fetch_tiles(&remote.archive, keys))? {
+            if let Some(bytes) = bytes {
+                writer
+                    .add_raw_tile(coordinate, &bytes)
+                    .context("write project basemap tile")?;
+            }
+            complete += 1;
+        }
+        let _progress = events.try_send(Event::Forging { complete, total });
+        ctx.request_repaint();
+    }
+    writer.finalize().context("seal project basemap")?;
+    staging.commit(target)
+}
+
+async fn open_remote() -> Result<RemoteSource> {
+    let client = pmtiles::reqwest::Client::builder()
+        .use_rustls_tls()
+        .user_agent(concat!("trailgen/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .context("build Protomaps client")?;
+    let response = client
+        .get(BUILDS_INDEX)
+        .send()
+        .await
+        .context("fetch Protomaps build index")?
+        .error_for_status()
+        .context("Protomaps build index rejected request")?;
+    let builds: Vec<Build> = serde_json::from_slice(
+        &response
+            .bytes()
+            .await
+            .context("read Protomaps build index")?,
+    )
+    .context("parse Protomaps build index")?;
+    let key = builds
+        .into_iter()
+        .map(|build| build.key)
+        .filter(|key| valid_build_key(key))
+        .max()
+        .context("Protomaps build index contains no daily PMTiles archive")?;
+    let origin = format!("{BUILDS_ORIGIN}/{key}");
+    let remote = RemoteArchive::new_with_cached_url(HashMapCache::default(), client, &origin)
+        .await
+        .with_context(|| format!("open Protomaps build {key}"))?;
+    let header = remote.get_header();
+    ensure!(
+        header.tile_type == TileType::Mvt,
+        "Protomaps build is not an MVT archive"
+    );
+    let tile_type = header.tile_type;
+    let compression = header.tile_compression;
+    let max_zoom = header.max_zoom;
+    let metadata = remote
+        .get_metadata()
+        .await
+        .context("read Protomaps metadata")?;
+    Ok(RemoteSource {
+        archive: remote,
+        metadata,
+        tile_type,
+        compression,
+        max_zoom,
+    })
+}
+
+async fn fetch_tiles(
+    remote: &RemoteArchive,
+    keys: &[TileKey],
+) -> Result<Vec<(TileCoord, Option<Vec<u8>>)>> {
+    let requests = stream::iter(keys.iter().copied().map(|key| async move {
+        let coordinate = key.coordinate()?;
+        let bytes = remote
+            .get_tile(coordinate)
+            .await
+            .map_err(anyhow::Error::new)
+            .with_context(|| format!("fetch Protomaps tile {key:?}"))?;
+        Ok::<_, anyhow::Error>((coordinate, bytes.map(|bytes| bytes.to_vec())))
+    }))
+    .buffered(FORGE_CONCURRENCY);
+    futures_util::pin_mut!(requests);
+    let mut tiles = Vec::with_capacity(keys.len());
+    while let Some(result) = requests.next().await {
+        tiles.push(result?);
+    }
+    Ok(tiles)
+}
+
+fn valid_build_key(key: &str) -> bool {
+    key.len() == 16
+        && key.ends_with(".pmtiles")
+        && key[..8].bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn quarry(
+    ctx: &Context,
+    archive: &Arc<Archive>,
+    commands: &Receiver<TileKey>,
+    events: &Sender<Event>,
+) {
+    let runtime = match runtime() {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            send_fault(ctx, events, None, &err);
+            return;
+        }
+    };
+    while let Ok(key) = commands.recv() {
+        let begun = Instant::now();
+        let bytes = match key.coordinate().and_then(|coordinate| {
+            runtime
+                .block_on(archive.get_tile_decompressed(coordinate))
+                .map_err(anyhow::Error::new)
+        }) {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => {
+                if events.send(Event::Missing(key)).is_err() {
+                    break;
+                }
+                ctx.request_repaint();
+                continue;
+            }
+            Err(err) => {
+                send_fault(ctx, events, Some(key), &err);
+                continue;
+            }
+        };
+        let archive_us = micros(begun.elapsed());
+        let decode_begun = Instant::now();
+        let event = match decode_tile(key, &bytes) {
+            Ok(mut tile) => {
+                tile.timing = CutTiming {
+                    archive_us,
+                    decode_us: micros(decode_begun.elapsed()),
+                    bytes: bytes.len(),
+                };
+                Event::Loaded(Arc::new(tile))
+            }
+            Err(err) => Event::Fault {
+                key: Some(key),
+                message: format!("decode vector tile {key:?}: {err:#}"),
+            },
+        };
+        if events.send(event).is_err() {
+            break;
+        }
+        ctx.request_repaint();
+    }
+}
+
+fn send_fault(ctx: &Context, events: &Sender<Event>, key: Option<TileKey>, err: &anyhow::Error) {
+    let _sent = events.try_send(Event::Fault {
+        key,
+        message: format!("{err:#}"),
+    });
+    ctx.request_repaint();
+}
+
+fn micros(duration: Duration) -> u64 {
+    u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
+}
+
+fn decode_tile(key: TileKey, bytes: &[u8]) -> Result<VectorTile> {
+    let reader = MvtReaderRef::new(bytes).context("parse MVT")?;
+    let mut forge = Forge::new(key);
+    for layer in reader.layers() {
+        match layer.name() {
+            "earth" => forge.fill_layer(layer, FillKind::Earth)?,
+            "landcover" => forge.fill_layer(layer, FillKind::Landcover)?,
+            "landuse" => forge.fill_layer(layer, FillKind::Landuse)?,
+            "water" => forge.water_layer(layer)?,
+            "boundaries" => forge.stroke_layer(layer, StrokeKind::Boundary)?,
+            "roads" => forge.stroke_layer(layer, StrokeKind::Road)?,
+            "places" => forge.label_layer(layer)?,
+            _ => {}
+        }
+    }
+    Ok(forge.finish())
+}
+
+#[derive(Clone, Copy)]
+enum FillKind {
+    Earth,
+    Landcover,
+    Landuse,
+}
+
+impl FillKind {
+    fn color(self, kind: Option<&str>) -> Option<[u8; 4]> {
+        match self {
+            Self::Earth => Some([
+                map::MAP_GROUND_SRGB[0],
+                map::MAP_GROUND_SRGB[1],
+                map::MAP_GROUND_SRGB[2],
+                255,
+            ]),
+            Self::Landcover => match kind {
+                Some("forest" | "wood") => Some([145, 170, 137, 210]),
+                Some("grass" | "grassland" | "scrub") => Some([173, 187, 148, 175]),
+                _ => None,
+            },
+            Self::Landuse => match kind {
+                Some("forest" | "wood" | "nature_reserve") => Some([145, 170, 137, 205]),
+                Some("park" | "garden" | "grass" | "grassland" | "meadow") => {
+                    Some([170, 190, 151, 185])
+                }
+                Some("wetland") => Some([145, 177, 165, 190]),
+                Some("farmland") => Some([198, 192, 155, 145]),
+                Some("beach" | "sand") => Some([222, 207, 164, 220]),
+                Some("industrial" | "commercial" | "retail" | "railway") => {
+                    Some([186, 169, 164, 155])
+                }
+                Some("school" | "college" | "university" | "hospital") => {
+                    Some([211, 184, 178, 135])
+                }
+                Some("residential") => Some([205, 199, 186, 105]),
+                _ => None,
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum StrokeKind {
+    Boundary,
+    Road,
+}
+
+#[derive(Clone, Copy)]
+struct StrokeStyle {
+    color: [u8; 4],
+    radius_points: f32,
+    onset_zoom: f32,
+}
+
+const WATER_FILL: [u8; 4] = [125, 169, 188, 255];
+const WATER_STROKE: StrokeStyle = StrokeStyle {
+    color: [71, 130, 154, 180],
+    radius_points: 0.48,
+    onset_zoom: 0.0,
+};
+
+struct Forge {
+    key: TileKey,
+    fills: VertexBuffers<FillPoint, u32>,
+    strokes: VertexBuffers<StrokePoint, u32>,
+    labels: Vec<Label>,
+    tessellator: FillTessellator,
+}
+
+impl Forge {
+    fn new(key: TileKey) -> Self {
+        Self {
+            key,
+            fills: VertexBuffers::new(),
+            strokes: VertexBuffers::new(),
+            labels: Vec::new(),
+            tessellator: FillTessellator::new(),
+        }
+    }
+
+    fn fill_layer(&mut self, layer: fast_mvt::MvtLayerRef<'_>, fill: FillKind) -> Result<()> {
+        let extent = layer.extent();
+        for feature in layer.features() {
+            let tags = FeatureTags::read(feature)?;
+            let Some(color) = fill.color(tags.kind) else {
+                continue;
+            };
+            self.fill_geometry(
+                &feature.geometry()?,
+                extent,
+                color,
+                tags.min_zoom.unwrap_or(0.0) as f32,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn water_layer(&mut self, layer: fast_mvt::MvtLayerRef<'_>) -> Result<()> {
+        let extent = layer.extent();
+        for feature in layer.features() {
+            let tags = FeatureTags::read(feature)?;
+            let onset_zoom = tags.min_zoom.unwrap_or(0.0) as f32;
+            let geometry = feature.geometry()?;
+            match geometry {
+                MvtGeometry::Polygon(_) | MvtGeometry::MultiPolygon(_) => {
+                    self.fill_geometry(&geometry, extent, WATER_FILL, onset_zoom)?;
+                }
+                MvtGeometry::LineString(_) | MvtGeometry::MultiLineString(_) => {
+                    self.stroke_geometry(
+                        &geometry,
+                        extent,
+                        StrokeStyle {
+                            onset_zoom,
+                            ..WATER_STROKE
+                        },
+                    );
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn stroke_layer(&mut self, layer: fast_mvt::MvtLayerRef<'_>, stroke: StrokeKind) -> Result<()> {
+        let extent = layer.extent();
+        for feature in layer.features() {
+            let style = match stroke {
+                StrokeKind::Boundary => Some(boundary_style(
+                    integer_property(feature, "kind_detail")?,
+                    numeric_property(feature, "min_zoom")?,
+                )),
+                StrokeKind::Road => {
+                    let tags = FeatureTags::read(feature)?;
+                    road_style(tags.kind, tags.detail, tags.min_zoom, self.key.zoom)
+                }
+            };
+            let Some(style) = style else {
+                continue;
+            };
+            self.stroke_geometry(&feature.geometry()?, extent, style);
+        }
+        Ok(())
+    }
+
+    fn label_layer(&mut self, layer: fast_mvt::MvtLayerRef<'_>) -> Result<()> {
+        let extent = layer.extent();
+        for feature in layer.features() {
+            let tags = FeatureTags::read(feature)?;
+            let Some(name) = tags.name else { continue };
+            let Some(style) =
+                label_style(tags.kind, tags.detail, tags.population_rank, tags.min_zoom)
+            else {
+                continue;
+            };
+            let geometry = feature.geometry()?;
+            match geometry {
+                MvtGeometry::Point(point) => self.push_label(point, extent, name, style),
+                MvtGeometry::MultiPoint(points) => {
+                    for point in points {
+                        self.push_label(point, extent, name, style);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn push_label(&mut self, point: Point<i32>, extent: u32, text: &str, style: LabelStyle) {
+        self.labels.push(Label {
+            world: world64(self.key, extent, point.0),
+            text: Arc::from(text),
+            rank: style.rank,
+            size: style.size,
+            onset_zoom: style.onset_zoom,
+        });
+    }
+
+    fn fill_geometry(
+        &mut self,
+        geometry: &MvtGeometry,
+        extent: u32,
+        color: [u8; 4],
+        onset_zoom: f32,
+    ) -> Result<()> {
+        match geometry {
+            MvtGeometry::Polygon(polygon) => {
+                self.fill_polygon(polygon, extent, color, onset_zoom)?;
+            }
+            MvtGeometry::MultiPolygon(polygons) => {
+                for polygon in polygons {
+                    self.fill_polygon(polygon, extent, color, onset_zoom)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn fill_polygon(
+        &mut self,
+        polygon: &Polygon<i32>,
+        extent: u32,
+        color: [u8; 4],
+        onset_zoom: f32,
+    ) -> Result<()> {
+        let mut path = Path::builder();
+        push_ring(&mut path, extent, polygon.exterior());
+        for ring in polygon.interiors() {
+            push_ring(&mut path, extent, ring);
+        }
+        let path = path.build();
+        self.tessellator
+            .tessellate_path(
+                &path,
+                &FillOptions::default().with_fill_rule(FillRule::EvenOdd),
+                &mut BuffersBuilder::new(&mut self.fills, |vertex: FillVertex<'_>| FillPoint {
+                    local: vertex.position().to_array(),
+                    srgb: color,
+                    onset_zoom,
+                }),
+            )
+            .context("tessellate vector polygon")?;
+        Ok(())
+    }
+
+    fn stroke_geometry(&mut self, geometry: &MvtGeometry, extent: u32, style: StrokeStyle) {
+        match geometry {
+            MvtGeometry::LineString(line) => self.stroke_line(line, extent, style),
+            MvtGeometry::MultiLineString(lines) => {
+                for line in lines {
+                    self.stroke_line(line, extent, style);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn stroke_line(&mut self, line: &LineString<i32>, extent: u32, style: StrokeStyle) {
+        let mut points = Vec::with_capacity(line.0.len());
+        for &coordinate in &line.0 {
+            let point = local32(extent, coordinate);
+            if points.last().is_none_or(|prior| !same_point(*prior, point)) {
+                points.push(point);
+            }
+        }
+        if points.len() < 2 {
+            return;
+        }
+        let Ok(base) = u32::try_from(self.strokes.vertices.len()) else {
+            return;
+        };
+        for slot in 0..points.len() {
+            let extrusion = join_normal(&points, slot);
+            self.strokes.vertices.extend([
+                StrokePoint {
+                    local: points[slot],
+                    extrusion: [-extrusion[0], -extrusion[1]],
+                    srgb: style.color,
+                    radius_points: style.radius_points,
+                    onset_side: -(style.onset_zoom.max(0.0) + 1.0),
+                },
+                StrokePoint {
+                    local: points[slot],
+                    extrusion,
+                    srgb: style.color,
+                    radius_points: style.radius_points,
+                    onset_side: style.onset_zoom.max(0.0) + 1.0,
+                },
+            ]);
+        }
+        for slot in 0..points.len() - 1 {
+            let Some(offset) = u32::try_from(slot)
+                .ok()
+                .and_then(|slot| slot.checked_mul(2))
+            else {
+                return;
+            };
+            let a = base + offset;
+            self.strokes
+                .indices
+                .extend([a, a + 1, a + 2, a + 1, a + 3, a + 2]);
+        }
+    }
+
+    fn finish(mut self) -> VectorTile {
+        self.labels.sort_unstable_by_key(|label| label.rank);
+        VectorTile {
+            key: self.key,
+            fills: Mesh {
+                vertices: self.fills.vertices.into(),
+                indices: self.fills.indices.into(),
+            },
+            strokes: Mesh {
+                vertices: self.strokes.vertices.into(),
+                indices: self.strokes.indices.into(),
+            },
+            labels: self.labels.into(),
+            timing: CutTiming::default(),
+        }
+    }
+}
+
+fn boundary_style(detail: Option<i64>, min_zoom: Option<f64>) -> StrokeStyle {
+    let (color, radius, fallback_onset) = match detail {
+        Some(2 | 3) => ([82, 76, 66, 195], 0.72, 0.0),
+        Some(4 | 5) => ([103, 94, 80, 150], 0.48, 3.0),
+        Some(6 | 7) => ([122, 113, 97, 105], 0.30, 6.0),
+        _ => ([130, 121, 105, 72], 0.22, 8.0),
+    };
+    StrokeStyle {
+        color,
+        radius_points: radius,
+        onset_zoom: min_zoom.unwrap_or(fallback_onset) as f32,
+    }
+}
+
+fn road_style(
+    kind: Option<&str>,
+    detail: Option<&str>,
+    min_zoom: Option<f64>,
+    source_zoom: u8,
+) -> Option<StrokeStyle> {
+    let (color, radius, fallback_onset) = match (kind, detail) {
+        (Some("highway"), Some("motorway")) => ([112, 101, 80, 180], 0.64, 4.0),
+        (Some("highway"), Some("motorway_link")) => ([116, 106, 87, 150], 0.42, 7.0),
+        (Some("major_road"), Some("trunk" | "trunk_link")) => ([115, 105, 87, 160], 0.54, 5.0),
+        (Some("major_road"), Some("primary" | "primary_link")) => ([119, 109, 91, 145], 0.46, 7.0),
+        (Some("major_road"), Some("secondary" | "secondary_link")) => {
+            ([124, 115, 98, 120], 0.36, 8.0)
+        }
+        (Some("major_road"), Some("tertiary" | "tertiary_link")) => {
+            ([128, 120, 104, 100], 0.27, 9.0)
+        }
+        (Some("minor_road"), Some("residential" | "unclassified" | "road")) => {
+            ([137, 129, 114, 72], 0.18, 10.5)
+        }
+        (Some("minor_road"), Some("service" | "alley" | "parking_aisle" | "driveway")) => {
+            ([143, 136, 122, 52], 0.14, 11.5)
+        }
+        (Some("path"), Some("pedestrian" | "cycleway" | "track" | "path" | "footway")) => {
+            ([130, 126, 110, 42], 0.10, 11.5)
+        }
+        (Some("rail"), _) | (_, Some("rail" | "light_rail" | "tram" | "subway")) => {
+            ([104, 101, 94, 62], 0.15, 9.0)
+        }
+        (Some("ferry" | "ferryway"), _) => ([74, 129, 150, 60], 0.14, 8.0),
+        (Some("highway"), _) => ([112, 101, 80, 165], 0.56, 5.0),
+        (Some("major_road"), _) => ([123, 113, 96, 120], 0.38, 8.0),
+        (Some("minor_road"), _) => ([138, 130, 115, 68], 0.17, 10.5),
+        (Some("path"), _) => ([130, 126, 110, 38], 0.10, 11.5),
+        _ => return None,
+    };
+    let onset_zoom = min_zoom.unwrap_or(fallback_onset) as f32;
+    (f32::from(source_zoom) + 1.0 >= onset_zoom).then_some(StrokeStyle {
+        color,
+        radius_points: radius,
+        onset_zoom,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct LabelStyle {
+    rank: u16,
+    size: f32,
+    onset_zoom: f32,
+}
+
+fn label_style(
+    kind: Option<&str>,
+    detail: Option<&str>,
+    population_rank: Option<f64>,
+    min_zoom: Option<f64>,
+) -> Option<LabelStyle> {
+    let population = population_rank.unwrap_or(0.0).clamp(0.0, 18.0);
+    let scarcity = (18.0 - population).round() as u16;
+    let (base, size, fallback_onset) = match (kind, detail) {
+        (Some("country"), _) => (0, 15.0, 1.0),
+        (Some("region"), Some("state" | "province")) => (40, 13.0, 3.0),
+        (Some("region"), _) => (50, 12.5, 4.0),
+        (Some("locality"), Some("city")) => (
+            100,
+            10.4 + population * 0.22,
+            (11.5 - population * 0.48).clamp(3.0, 10.0),
+        ),
+        (Some("locality"), Some("town")) => (
+            220,
+            9.6 + population * 0.16,
+            (13.0 - population * 0.34).clamp(7.0, 11.5),
+        ),
+        (Some("locality"), Some("village")) => (
+            340,
+            9.2 + population * 0.11,
+            (13.5 - population * 0.25).clamp(9.0, 12.0),
+        ),
+        (Some("locality"), Some("hamlet" | "locality")) => (
+            460,
+            8.7 + population * 0.07,
+            (14.0 - population * 0.20).clamp(10.5, 12.0),
+        ),
+        (Some("macrohood"), _) => (560, 9.5, 10.0),
+        (Some("neighbourhood"), Some("suburb")) => (620, 9.2, 10.5),
+        (Some("neighbourhood"), _) => (700, 8.8, 11.5),
+        _ => return None,
+    };
+    Some(LabelStyle {
+        rank: base + scarcity.saturating_mul(4),
+        size: size as f32,
+        onset_zoom: min_zoom.unwrap_or(fallback_onset) as f32,
+    })
+}
+
+#[derive(Default)]
+struct FeatureTags<'a> {
+    kind: Option<&'a str>,
+    detail: Option<&'a str>,
+    name: Option<&'a str>,
+    population_rank: Option<f64>,
+    min_zoom: Option<f64>,
+}
+
+impl<'a> FeatureTags<'a> {
+    fn read(feature: MvtFeatureRef<'a>) -> Result<Self> {
+        let mut tags = Self::default();
+        for property in feature.properties() {
+            let (key, value) = property?;
+            match (key, value) {
+                ("kind", MvtValueRef::String(value)) => tags.kind = Some(value),
+                ("kind_detail", MvtValueRef::String(value)) => tags.detail = Some(value),
+                ("name:en", MvtValueRef::String(value)) => tags.name = Some(value),
+                ("name", MvtValueRef::String(value)) if tags.name.is_none() => {
+                    tags.name = Some(value);
+                }
+                ("population_rank", value) => tags.population_rank = numeric(value),
+                ("min_zoom", value) => tags.min_zoom = numeric(value),
+                _ => {}
+            }
+        }
+        Ok(tags)
+    }
+}
+
+fn integer_property(feature: MvtFeatureRef<'_>, needle: &str) -> Result<Option<i64>> {
+    for property in feature.properties() {
+        let (key, value) = property?;
+        if key == needle {
+            return Ok(integer(value));
+        }
+    }
+    Ok(None)
+}
+
+fn numeric_property(feature: MvtFeatureRef<'_>, needle: &str) -> Result<Option<f64>> {
+    for property in feature.properties() {
+        let (key, value) = property?;
+        if key == needle {
+            return Ok(numeric(value));
+        }
+    }
+    Ok(None)
+}
+
+fn numeric(value: MvtValueRef<'_>) -> Option<f64> {
+    match value {
+        MvtValueRef::Float(value) => Some(f64::from(value)),
+        MvtValueRef::Double(value) => Some(value),
+        MvtValueRef::Int(value) | MvtValueRef::SInt(value) => Some(value as f64),
+        MvtValueRef::UInt(value) => Some(value as f64),
+        _ => None,
+    }
+}
+
+fn integer(value: MvtValueRef<'_>) -> Option<i64> {
+    match value {
+        MvtValueRef::Int(value) | MvtValueRef::SInt(value) => Some(value),
+        MvtValueRef::UInt(value) => i64::try_from(value).ok(),
+        _ => None,
+    }
+}
+
+fn push_ring(
+    path: &mut lyon_tessellation::path::path::Builder,
+    extent: u32,
+    ring: &LineString<i32>,
+) {
+    let Some((first, rest)) = ring.0.split_first() else {
+        return;
+    };
+    let first = local32(extent, *first);
+    let _first = path.begin(point(first[0], first[1]));
+    for coord in rest {
+        let next = local32(extent, *coord);
+        let _next = path.line_to(point(next[0], next[1]));
+    }
+    path.end(true);
+}
+
+fn local32(extent: u32, coordinate: Coord<i32>) -> [f32; 2] {
+    let extent = extent as f32;
+    [coordinate.x as f32 / extent, coordinate.y as f32 / extent]
+}
+
+fn world64(key: TileKey, extent: u32, coordinate: Coord<i32>) -> [f64; 2] {
+    let scale = f64::from(1_u32 << key.zoom);
+    let extent = f64::from(extent);
+    [
+        (f64::from(key.x) + f64::from(coordinate.x) / extent) / scale,
+        (f64::from(key.y) + f64::from(coordinate.y) / extent) / scale,
+    ]
+}
+
+fn join_normal(points: &[[f32; 2]], slot: usize) -> [f32; 2] {
+    let prior = slot.saturating_sub(1);
+    let next = (slot + 1).min(points.len() - 1);
+    let incoming = direction(points[prior], points[slot]);
+    let outgoing = direction(points[slot], points[next]);
+    let first = if slot == 0 { outgoing } else { incoming };
+    let second = if slot + 1 == points.len() {
+        incoming
+    } else {
+        outgoing
+    };
+    let normal_a = [-first[1], first[0]];
+    let normal_b = [-second[1], second[0]];
+    let sum = [normal_a[0] + normal_b[0], normal_a[1] + normal_b[1]];
+    let length = sum[0].hypot(sum[1]);
+    if length <= f32::EPSILON {
+        return normal_b;
+    }
+    let miter = [sum[0] / length, sum[1] / length];
+    let divisor = miter[0].mul_add(normal_b[0], miter[1] * normal_b[1]);
+    let reach = if divisor.abs() <= 0.25 {
+        1.0
+    } else {
+        (1.0 / divisor).clamp(-3.0, 3.0)
+    };
+    [miter[0] * reach, miter[1] * reach]
+}
+
+fn direction(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
+    let delta = [b[0] - a[0], b[1] - a[1]];
+    let length = delta[0].hypot(delta[1]);
+    if length <= f32::EPSILON {
+        [1.0, 0.0]
+    } else {
+        [delta[0] / length, delta[1] / length]
+    }
+}
+
+fn same_point(left: [f32; 2], right: [f32; 2]) -> bool {
+    left.map(f32::to_bits) == right.map(f32::to_bits)
+}
+
+fn forge_bounds(graph: &TrailGraph) -> Result<GeoBounds> {
+    let first = graph
+        .vertices
+        .first()
+        .context("cannot forge a basemap for an empty graph")?
+        .coord;
+    let raw = graph.vertices.iter().skip(1).fold(
+        GeoBounds::new(first.lon, first.lat, first.lon, first.lat),
+        |mut bounds, vertex| {
+            bounds.west = bounds.west.min(vertex.coord.lon);
+            bounds.south = bounds.south.min(vertex.coord.lat);
+            bounds.east = bounds.east.max(vertex.coord.lon);
+            bounds.north = bounds.north.max(vertex.coord.lat);
+            bounds
+        },
+    );
+    ensure!(
+        [raw.west, raw.south, raw.east, raw.north]
+            .into_iter()
+            .all(f64::is_finite),
+        "graph contains non-finite coordinates"
+    );
+    let longitude_margin = ((raw.east - raw.west) * 0.18).max(0.01);
+    let latitude_margin = ((raw.north - raw.south) * 0.18).max(0.01);
+    let bounds = GeoBounds::new(
+        (raw.west - longitude_margin).max(-180.0),
+        (raw.south - latitude_margin).max(-85.051_128_78),
+        (raw.east + longitude_margin).min(180.0),
+        (raw.north + latitude_margin).min(85.051_128_78),
+    );
+    ensure!(bounds.is_valid(), "graph does not enclose a valid map area");
+    Ok(bounds)
+}
+
+fn extraction_keys(bounds: GeoBounds, max_zoom: u8) -> Result<Vec<TileKey>> {
+    ensure!(bounds.is_valid(), "invalid basemap extraction bounds");
+    let west = (bounds.west + 180.0) / 360.0;
+    let east = (bounds.east + 180.0) / 360.0;
+    let north = mercator_y(bounds.north);
+    let south = mercator_y(bounds.south);
+    let mut keys = Vec::new();
+    for zoom in 0..=max_zoom {
+        let divisions = 1_u32 << zoom;
+        let scale = f64::from(divisions);
+        let crown = divisions.saturating_sub(1);
+        let left = (west * scale).floor().clamp(0.0, f64::from(crown)) as u32;
+        let right = (east * scale).floor().clamp(0.0, f64::from(crown)) as u32;
+        let top = (north * scale).floor().clamp(0.0, f64::from(crown)) as u32;
+        let bottom = (south * scale).floor().clamp(0.0, f64::from(crown)) as u32;
+        for y in top..=bottom {
+            for x in left..=right {
+                keys.push(TileKey { zoom, x, y });
+            }
+        }
+    }
+    keys.sort_unstable_by_key(|key| {
+        TileId::from(
+            key.coordinate()
+                .expect("extraction bounds must yield valid coordinates"),
+        )
+    });
+    Ok(keys)
+}
+
+fn mercator_y(latitude: f64) -> f64 {
+    (1.0 - latitude.to_radians().tan().asinh() / std::f64::consts::PI) * 0.5
+}
+
+struct Staging {
+    path: PathBuf,
+    file: Option<File>,
+}
+
+impl Staging {
+    fn raise(target: &FsPath) -> Result<Self> {
+        for nonce in 0..64 {
+            let path =
+                target.with_extension(format!("pmtiles.{}.{nonce}.partial", std::process::id()));
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => {
+                    return Ok(Self {
+                        path,
+                        file: Some(file),
+                    });
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(err) => {
+                    return Err(err)
+                        .with_context(|| format!("raise basemap staging file {}", path.display()));
+                }
+            }
+        }
+        anyhow::bail!(
+            "basemap staging namespace exhausted beside {}",
+            target.display()
+        )
+    }
+
+    fn take_file(&mut self) -> Result<File> {
+        self.file
+            .take()
+            .context("basemap staging file already taken")
+    }
+
+    fn commit(mut self, target: &FsPath) -> Result<()> {
+        fs::rename(&self.path, target)
+            .with_context(|| format!("install project basemap {}", target.display()))?;
+        self.path.clear();
+        Ok(())
+    }
+}
+
+impl Drop for Staging {
+    fn drop(&mut self) {
+        if !self.path.as_os_str().is_empty() {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn purge_partials(target: &FsPath) -> Result<()> {
+    let Some(directory) = target.parent() else {
+        return Ok(());
+    };
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return Ok(());
+    };
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        let stale = path
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+            .is_some_and(|age| age >= Duration::from_hours(24));
+        if staging_path(target, &path) && stale {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("remove stale basemap {}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn staging_path(target: &FsPath, candidate: &FsPath) -> bool {
+    let Some(target) = target.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let Some(candidate) = candidate.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let Some(identity) = candidate
+        .strip_prefix(target)
+        .and_then(|suffix| suffix.strip_prefix('.'))
+        .and_then(|suffix| suffix.strip_suffix(".partial"))
+    else {
+        return false;
+    };
+    let mut fields = identity.split('.');
+    fields
+        .next()
+        .is_some_and(|pid| !pid.is_empty() && pid.bytes().all(|byte| byte.is_ascii_digit()))
+        && fields.next().is_some_and(|nonce| {
+            !nonce.is_empty() && nonce.bytes().all(|byte| byte.is_ascii_digit())
+        })
+        && fields.next().is_none()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const VIEW: Viewport = Viewport {
+        center: [0.5, 0.5],
+        zoom: 10.0,
+    };
+
+    #[test]
+    fn vector_cover_prefetches_without_presenting() {
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
+        let cover = cover(VIEW, rect);
+        assert_eq!(cover.strata.len(), 6);
+        assert_eq!(cover.strata[4].intent, Intent::Required);
+        assert_eq!(cover.strata[5].intent, Intent::Prefetch);
+        assert_eq!(
+            cover.finest_ready(|_| true).map(|stratum| stratum.intent),
+            Some(Intent::Required)
+        );
+    }
+
+    #[test]
+    fn world_wrap_never_duplicates_archive_demand() {
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 920.0));
+        let cover = cover(
+            Viewport {
+                zoom: Viewport::MIN_ZOOM,
+                ..VIEW
+            },
+            rect,
+        );
+        for stratum in cover.strata {
+            let distinct = stratum
+                .keys
+                .iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>();
+            assert_eq!(distinct.len(), stratum.keys.len());
+        }
+    }
+
+    #[test]
+    fn source_zoom_stops_while_view_zoom_continues() -> Result<()> {
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
+        let view = Viewport {
+            zoom: Viewport::MAX_ZOOM,
+            ..VIEW
+        };
+        let cover = cover(view, rect);
+        let crown = cover.strata.last().context("top stratum")?;
+        assert_eq!(crown.intent, Intent::Required);
+        assert!(crown.keys.iter().all(|tile| tile.zoom == MAX_SOURCE_ZOOM));
+        Ok(())
+    }
+
+    #[test]
+    fn line_join_stays_finite_at_reversals() {
+        let points = [[0.0, 0.0], [1.0, 0.0], [0.0, 0.0]];
+        assert!(
+            join_normal(&points, 1)
+                .iter()
+                .all(|value| value.is_finite())
+        );
+    }
+
+    #[test]
+    fn population_controls_locality_prominence_continuously() -> Result<()> {
+        let metropolis = label_style(Some("locality"), Some("city"), Some(18.0), None)
+            .context("metropolis style")?;
+        let small_city = label_style(Some("locality"), Some("city"), Some(3.0), None)
+            .context("small-city style")?;
+        assert!(metropolis.rank < small_city.rank);
+        assert!(metropolis.size > small_city.size);
+        assert!(metropolis.onset_zoom < small_city.onset_zoom);
+        Ok(())
+    }
+
+    #[test]
+    fn source_min_zoom_overrides_cartographic_fallback() -> Result<()> {
+        let style = road_style(Some("minor_road"), Some("residential"), Some(11.25), 11)
+            .context("residential road style")?;
+        assert!((style.onset_zoom - 11.25).abs() < f32::EPSILON);
+        Ok(())
+    }
+
+    #[test]
+    fn apparition_is_quiet_monotone_and_bounded() {
+        let onset = 11.0;
+        let samples = [
+            apparition(10.9, onset),
+            apparition(11.0, onset),
+            apparition(11.3, onset),
+            apparition(11.8, onset),
+            apparition(12.35, onset),
+            apparition(13.0, onset),
+        ];
+        assert!(samples[0].abs() < f32::EPSILON);
+        assert!(samples[1].abs() < f32::EPSILON);
+        assert!((samples[4] - 1.0).abs() < f32::EPSILON);
+        assert!((samples[5] - 1.0).abs() < f32::EPSILON);
+        assert!(samples.windows(2).all(|pair| pair[0] <= pair[1]));
+    }
+
+    #[test]
+    fn project_extract_reaches_native_street_zoom_in_hilbert_order() -> Result<()> {
+        let keys = extraction_keys(GeoBounds::new(-74.2, 41.1, -74.0, 41.3), 15)?;
+        assert!(keys.iter().any(|key| key.zoom == 15));
+        assert!(keys.len() < MAX_FORGE_TILES);
+        assert!(keys.windows(2).all(|pair| {
+            let left = TileId::from(pair[0].coordinate().expect("valid coordinate"));
+            let right = TileId::from(pair[1].coordinate().expect("valid coordinate"));
+            left < right
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn build_keys_are_strict_daily_archives() {
+        assert!(valid_build_key("20260720.pmtiles"));
+        assert!(!valid_build_key("latest.pmtiles"));
+        assert!(!valid_build_key("20260720.pmtiles/../x"));
+    }
+
+    #[test]
+    fn partial_reaper_is_bound_to_its_archive() {
+        let target = FsPath::new("basemap.pmtiles");
+        assert!(staging_path(
+            target,
+            FsPath::new("basemap.pmtiles.421.7.partial")
+        ));
+        assert!(!staging_path(target, FsPath::new("dem.421.7.partial")));
+        assert!(!staging_path(
+            target,
+            FsPath::new("basemap.pmtiles.backup.partial")
+        ));
+    }
+}

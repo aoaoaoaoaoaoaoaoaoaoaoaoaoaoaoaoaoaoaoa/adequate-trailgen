@@ -6,7 +6,9 @@ const TILE_EDGE: f64 = 256.0;
 const EARTH_CIRCUMFERENCE_M: f64 = 40_075_016.686;
 const FIT_PADDING: f32 = 44.0;
 
-pub const MAP_GROUND: Color32 = Color32::from_rgb(8, 9, 8);
+pub const MAP_GROUND_SRGB: [u8; 3] = [196, 194, 176];
+pub const MAP_GROUND: Color32 =
+    Color32::from_rgb(MAP_GROUND_SRGB[0], MAP_GROUND_SRGB[1], MAP_GROUND_SRGB[2]);
 pub const ALLTRAILS_GREEN: Color32 = Color32::from_rgb(104, 171, 64);
 pub const CANDIDATE_COLORS: [Color32; 8] = [
     Color32::from_rgb(104, 171, 64),

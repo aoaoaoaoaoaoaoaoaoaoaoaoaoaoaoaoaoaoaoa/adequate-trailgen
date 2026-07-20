@@ -6,7 +6,7 @@ use crate::{
 use anyhow::{Result, ensure};
 use dwemer_poolrooms::{
     chrome,
-    water::{Frame as WaterFrame, WaterTable},
+    water::{Frame as WaterFrame, Surface},
 };
 use egui::{Color32, RichText, Stroke, vec2};
 use std::path::{Path, PathBuf};
@@ -74,7 +74,7 @@ pub struct Genesis {
     offline: bool,
     root: String,
     fault: String,
-    water: WaterTable,
+    water: Surface,
 }
 
 impl Genesis {

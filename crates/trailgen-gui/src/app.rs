@@ -1,18 +1,19 @@
 use crate::{
+    basemap::{self, Basemap, Source as BasemapSource, TileKey, VectorTile},
     gallery::{self, CandidateSort},
     map::{self, ALLTRAILS_GREEN, Atlas, CANDIDATE_COLORS, Viewport},
     profile::ElevationProfile,
     project::{Project, SearchEvent, SearchForge, SearchRequest},
-    tile::{self, Basemap, TileKey},
+    vector_map::VectorPaint,
 };
 use anyhow::Result;
 use dwemer_poolrooms::{
     chrome,
-    water::{Frame as WaterFrame, WaterTable, Wetness},
+    water::{Domain, Frame as WaterFrame, Surface, Wetness},
 };
-use egui::{Color32, RichText, Stroke, TextureHandle, TextureOptions, pos2, vec2};
+use egui::{Color32, RichText, Stroke, pos2, vec2};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     path::Path,
     sync::Arc,
     time::Duration,
@@ -21,7 +22,7 @@ use trailgen_core::{
     Coord, Edge, Route, RouteShape, SearchParams, SolverKind, Terrain, TrailGraph, VertexId,
 };
 
-const TILE_CAPACITY: usize = 512;
+const VECTOR_CEILING: usize = 512 * 1_048_576;
 const PROFILE_HEIGHT: f32 = 178.0;
 const GALLERY_HEIGHT: f32 = 190.0;
 const TOOLBAR_HEIGHT: f32 = 38.0;
@@ -65,11 +66,12 @@ pub struct TrailApp {
     serial: u64,
     forge_phase: ForgePhase,
     basemap: Option<Basemap>,
-    tiles: TileBank,
+    tiles: VectorBank,
+    presented_basemap: Arc<[Arc<VectorTile>]>,
     tile_inflight: HashSet<TileKey>,
     tile_faults: HashSet<TileKey>,
     layers: Layers,
-    water: WaterTable,
+    water: Surface,
     status: String,
     basemap_status: String,
     map_rect: egui::Rect,
@@ -99,7 +101,7 @@ enum ForgePhase {
 
 #[derive(Clone, Copy, Debug)]
 struct Layers {
-    topo: bool,
+    basemap: bool,
     network: bool,
     terrain: bool,
 }
@@ -115,7 +117,12 @@ impl TrailApp {
             requested_start,
         } = Project::open(root)?;
         let forge = SearchForge::spawn(ctx.clone(), Arc::clone(&graph))?;
-        let basemap = (!offline).then(|| Basemap::spawn(ctx)).transpose()?;
+        let basemap = if offline {
+            None
+        } else {
+            let source = BasemapSource::project(&root, &graph)?;
+            Some(Basemap::spawn(ctx.clone(), source)?)
+        };
         let selected = (!routes.is_empty()).then_some(0);
         let count = routes.len().clamp(6, 12);
         let profiles = profiles(&graph, &routes);
@@ -151,20 +158,21 @@ impl TrailApp {
             serial: 0,
             forge_phase: ForgePhase::Idle,
             basemap,
-            tiles: TileBank::new(TILE_CAPACITY),
+            tiles: VectorBank::new(VECTOR_CEILING),
+            presented_basemap: Arc::from([]),
             tile_inflight: HashSet::new(),
             tile_faults: HashSet::new(),
             layers: Layers {
-                topo: !offline,
+                basemap: !offline,
                 network: true,
                 terrain: true,
             },
             water,
             status,
             basemap_status: if offline {
-                "TOPOGRAPHY OFFLINE".to_owned()
+                "VECTOR MAP OFFLINE".to_owned()
             } else {
-                "USGS NATIONAL MAP".to_owned()
+                "PROTOMAPS · PREPARING PROJECT CUT".to_owned()
             },
             map_rect: egui::Rect::ZERO,
         })
@@ -450,7 +458,7 @@ impl TrailApp {
     }
 
     fn layers_panel(&mut self, ui: &mut egui::Ui) {
-        layer_toggle(ui, &mut self.layers.topo, "TOPOGRAPHIC BASE");
+        layer_toggle(ui, &mut self.layers.basemap, "VECTOR BASEMAP");
         layer_toggle(ui, &mut self.layers.network, "TRAIL NETWORK");
         layer_toggle(ui, &mut self.layers.terrain, "TERRAIN CENTERLINE");
         ui.add_space(4.0);
@@ -737,7 +745,7 @@ impl TrailApp {
         let (rect, response) =
             ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
         self.map_rect = rect;
-        self.water.begin_surface(rect);
+        self.water.begin(Domain::shelf(rect));
         self.apply_fit(rect);
         let before = self.viewport;
         let moved = map::navigate(&mut self.viewport, ui, &response, rect);
@@ -785,31 +793,93 @@ impl TrailApp {
     }
 
     fn paint_basemap(&mut self, painter: &egui::Painter, rect: egui::Rect) {
-        if !self.layers.topo || self.basemap.is_none() {
+        if !self.layers.basemap || self.basemap.is_none() {
             return;
         }
-        let cover = tile::cover(self.viewport, rect);
-        for stratum in &cover.strata {
-            if stratum.intent.demands() {
-                for placement in &stratum.placements {
-                    self.demand_tile(placement.key);
-                }
-            }
+        let cover = basemap::cover(self.viewport, rect);
+        self.demand_cover(&cover);
+        let coherent = cover
+            .finest_ready(|key| self.tiles.contains(key))
+            .map(|stratum| stratum.keys.clone());
+        if let Some(keys) = coherent
+            && (keys.len() != self.presented_basemap.len()
+                || keys
+                    .iter()
+                    .zip(self.presented_basemap.iter())
+                    .any(|(key, tile)| *key != tile.key))
+        {
+            self.presented_basemap = keys
+                .into_iter()
+                .filter_map(|key| self.tiles.get(key).cloned())
+                .collect();
         }
-        if let Some(coherent) = cover.finest_ready(|key| self.tiles.contains(key)) {
-            for placement in &coherent.placements {
-                self.paint_tile(painter, *placement);
+        if !self.presented_basemap.is_empty() {
+            let _basemap = painter.add(egui_wgpu::Callback::new_paint_callback(
+                rect,
+                VectorPaint {
+                    tiles: Arc::clone(&self.presented_basemap),
+                    center_world: self.viewport.center,
+                    world_points: map::world_pixels(self.viewport) as f32,
+                    viewport_points: [rect.width(), rect.height()],
+                    view_zoom: self.viewport.zoom as f32,
+                    apparition_span: basemap::APPARITION_SPAN,
+                },
+            ));
+        }
+        self.paint_labels(painter, rect);
+    }
+
+    fn paint_labels(&self, painter: &egui::Painter, rect: egui::Rect) {
+        let mut candidates = self
+            .presented_basemap
+            .iter()
+            .flat_map(|tile| tile.labels.iter())
+            .collect::<Vec<_>>();
+        candidates.sort_unstable_by_key(|label| label.rank);
+        let mut occupied = Vec::<egui::Rect>::new();
+        for label in candidates {
+            let maturity = basemap::apparition(self.viewport.zoom as f32, label.onset_zoom);
+            if maturity <= 0.01 {
+                continue;
             }
-        } else {
-            for stratum in cover
-                .strata
-                .iter()
-                .filter(|stratum| stratum.intent.presents())
+            let anchor = map::screen_at(self.viewport, rect, label.world);
+            let size = label.size * 0.12_f32.mul_add(maturity, 0.88);
+            let width = label.text.chars().count() as f32 * size * 0.58;
+            let footprint =
+                egui::Rect::from_center_size(anchor, vec2(width.max(size), size * 1.25))
+                    .expand(2.0);
+            if !rect.contains_rect(footprint)
+                || occupied.iter().any(|prior| prior.intersects(footprint))
             {
-                for placement in &stratum.placements {
-                    self.paint_tile(painter, *placement);
-                }
+                continue;
             }
+            occupied.push(footprint);
+            if occupied.len() >= 180 {
+                break;
+            }
+            let font = egui::FontId::proportional(size);
+            let halo = Color32::from_white_alpha((75.0 * maturity) as u8);
+            for offset in [
+                vec2(-1.0, 0.0),
+                vec2(1.0, 0.0),
+                vec2(0.0, -1.0),
+                vec2(0.0, 1.0),
+            ] {
+                let _halo = painter.text(
+                    anchor + offset,
+                    egui::Align2::CENTER_CENTER,
+                    label.text.as_ref(),
+                    font.clone(),
+                    halo,
+                );
+            }
+            let _label = painter.text(
+                anchor,
+                egui::Align2::CENTER_CENTER,
+                label.text.as_ref(),
+                font,
+                Color32::from_black_alpha((225.0 * maturity) as u8),
+            );
         }
     }
 
@@ -894,6 +964,23 @@ impl TrailApp {
             egui::StrokeKind::Inside,
         );
         painter.galley(plate.min + vec2(7.0, 4.0), galley, chrome::TEXT);
+        if self.layers.basemap && !self.presented_basemap.is_empty() {
+            let attribution = painter.layout_no_wrap(
+                "PROTOMAPS · © OPENSTREETMAP".to_owned(),
+                egui::FontId::monospace(9.5),
+                Color32::from_black_alpha(190),
+            );
+            let plate = egui::Rect::from_min_size(
+                rect.right_bottom() - attribution.size() - vec2(16.0, 13.0),
+                attribution.size() + vec2(10.0, 6.0),
+            );
+            let _ground = painter.rect_filled(plate, 1.0, Color32::from_white_alpha(150));
+            painter.galley(
+                plate.min + vec2(5.0, 3.0),
+                attribution,
+                Color32::from_black_alpha(190),
+            );
+        }
     }
 
     fn strike(&mut self) {
@@ -957,20 +1044,37 @@ impl TrailApp {
         };
         while let Ok(event) = basemap.events.try_recv() {
             match event {
-                tile::Event::Loaded { key, size, rgba } => {
-                    let _inflight = self.tile_inflight.remove(&key);
-                    let image = egui::ColorImage::from_rgba_unmultiplied(size, &rgba);
-                    let texture = ctx.load_texture(
-                        format!("usgs-{}-{}-{}", key.zoom, key.x, key.y),
-                        image,
-                        TextureOptions::LINEAR,
+                basemap::Event::Forging { complete, total } => {
+                    self.basemap_status = format!(
+                        "FORGING Z{} PROJECT CUT · {complete}/{total} · {:.0}%",
+                        basemap::MAX_SOURCE_ZOOM,
+                        complete as f64 * 100.0 / total.max(1) as f64
                     );
-                    self.tiles.insert(key, texture);
                 }
-                tile::Event::Fault { key, message } => {
+                basemap::Event::Ready { source_zoom } => {
+                    self.basemap_status = format!("PROTOMAPS Z{source_zoom} · © OPENSTREETMAP");
+                }
+                basemap::Event::Loaded(tile) => {
+                    let key = tile.key;
+                    let _inflight = self.tile_inflight.remove(&key);
+                    self.basemap_status = format!(
+                        "PROTOMAPS · OSM · {} KB · {} µs MAP + {} µs CUT",
+                        tile.timing.bytes / 1024,
+                        tile.timing.archive_us,
+                        tile.timing.decode_us
+                    );
+                    self.tiles.insert(tile);
+                }
+                basemap::Event::Missing(key) => {
                     let _inflight = self.tile_inflight.remove(&key);
                     let _fault = self.tile_faults.insert(key);
-                    self.basemap_status = format!("USGS FAULT · {message}");
+                }
+                basemap::Event::Fault { key, message } => {
+                    if let Some(key) = key {
+                        let _inflight = self.tile_inflight.remove(&key);
+                        let _fault = self.tile_faults.insert(key);
+                    }
+                    self.basemap_status = format!("BASEMAP UNAVAILABLE · {message}");
                 }
             }
         }
@@ -1054,6 +1158,28 @@ impl TrailApp {
         self.selected.and_then(|slot| self.routes.get(slot))
     }
 
+    fn demand_cover(&mut self, cover: &basemap::Cover) {
+        if let Some(fallback) = cover.strata.first() {
+            for &key in &fallback.keys {
+                self.demand_tile(key);
+            }
+        }
+        for stratum in &cover.strata {
+            if stratum.intent.demands() {
+                for &key in &stratum.keys {
+                    self.demand_tile(key);
+                }
+            }
+        }
+        for stratum in cover.strata.iter().rev() {
+            if stratum.intent == basemap::Intent::Retained {
+                for &key in &stratum.keys {
+                    self.demand_tile(key);
+                }
+            }
+        }
+    }
+
     fn demand_tile(&mut self, key: TileKey) {
         let Some(basemap) = &self.basemap else {
             return;
@@ -1066,21 +1192,10 @@ impl TrailApp {
             let _fresh = self.tile_inflight.insert(key);
         }
     }
-
-    fn paint_tile(&mut self, painter: &egui::Painter, placement: tile::Placement) {
-        if let Some(texture) = self.tiles.get(placement.key) {
-            let _tile = painter.image(
-                texture.id(),
-                placement.rect.expand(0.35),
-                egui::Rect::from_min_max(egui::Pos2::ZERO, pos2(1.0, 1.0)),
-                Color32::from_gray(172),
-            );
-        }
-    }
 }
 
-pub fn forge_water() -> WaterTable {
-    let mut water = WaterTable::new(Wetness::Wet);
+pub fn forge_water() -> Surface {
+    let mut water = Surface::new(Wetness::Wet);
     let (chemistry, agitation) = water.laboratory_mut();
     chemistry.refract_px = 0.22;
     chemistry.meniscus_px = 0.42;
@@ -1100,46 +1215,72 @@ enum FocusAction {
     Step(isize, egui::Rect),
 }
 
-struct TileBank {
-    capacity: usize,
-    clock: u64,
-    entries: HashMap<TileKey, (TextureHandle, u64)>,
+struct VectorBank {
+    ceiling: usize,
+    bytes: usize,
+    epoch: u64,
+    tiles: HashMap<TileKey, VectorEntry>,
+    order: VecDeque<(TileKey, u64)>,
 }
 
-impl TileBank {
-    fn new(capacity: usize) -> Self {
+struct VectorEntry {
+    tile: Arc<VectorTile>,
+    bytes: usize,
+    touched: u64,
+}
+
+impl VectorBank {
+    fn new(ceiling: usize) -> Self {
         Self {
-            capacity,
-            clock: 0,
-            entries: HashMap::new(),
+            ceiling,
+            bytes: 0,
+            epoch: 0,
+            tiles: HashMap::new(),
+            order: VecDeque::new(),
         }
     }
 
     fn contains(&self, key: TileKey) -> bool {
-        self.entries.contains_key(&key)
+        self.tiles.contains_key(&key)
     }
 
-    fn get(&mut self, key: TileKey) -> Option<&TextureHandle> {
-        self.clock = self.clock.saturating_add(1);
-        self.entries.get_mut(&key).map(|(texture, age)| {
-            *age = self.clock;
-            &*texture
-        })
+    fn get(&mut self, key: TileKey) -> Option<&Arc<VectorTile>> {
+        self.epoch = self.epoch.saturating_add(1);
+        let entry = self.tiles.get_mut(&key)?;
+        entry.touched = self.epoch;
+        self.order.push_back((key, self.epoch));
+        Some(&entry.tile)
     }
 
-    fn insert(&mut self, key: TileKey, texture: TextureHandle) {
-        self.clock = self.clock.saturating_add(1);
-        let _prior = self.entries.insert(key, (texture, self.clock));
-        while self.entries.len() > self.capacity {
-            let Some(victim) = self
-                .entries
-                .iter()
-                .min_by_key(|(_, (_, age))| *age)
-                .map(|(key, _)| *key)
-            else {
+    fn insert(&mut self, tile: Arc<VectorTile>) {
+        let key = tile.key;
+        let bytes = tile.resident_bytes();
+        self.epoch = self.epoch.saturating_add(1);
+        let fresh = VectorEntry {
+            tile,
+            bytes,
+            touched: self.epoch,
+        };
+        self.order.push_back((key, self.epoch));
+        if let Some(prior) = self.tiles.insert(key, fresh) {
+            self.bytes = self.bytes.saturating_sub(prior.bytes);
+        }
+        self.bytes = self.bytes.saturating_add(bytes);
+        while self.bytes > self.ceiling && self.tiles.len() > 1 {
+            let Some((victim, epoch)) = self.order.pop_front() else {
                 break;
             };
-            let _evicted = self.entries.remove(&victim);
+            if self
+                .tiles
+                .get(&victim)
+                .is_none_or(|entry| entry.touched != epoch)
+            {
+                continue;
+            }
+            let Some(victim) = self.tiles.remove(&victim) else {
+                break;
+            };
+            self.bytes = self.bytes.saturating_sub(victim.bytes);
         }
     }
 }

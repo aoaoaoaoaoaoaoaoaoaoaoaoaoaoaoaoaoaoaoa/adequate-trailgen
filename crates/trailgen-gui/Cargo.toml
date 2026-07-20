@@ -12,17 +12,22 @@ categories = ["gui", "science::geo"]
 
 [dependencies]
 anyhow.workspace = true
+bytemuck.workspace = true
 crossbeam-channel.workspace = true
 directories.workspace = true
 dwemer_poolrooms.workspace = true
 egui.workspace = true
 egui-wgpu.workspace = true
 egui-winit.workspace = true
-image.workspace = true
+fast-mvt.workspace = true
+futures-util.workspace = true
+geo-types.workspace = true
+lyon_tessellation.workspace = true
+pmtiles.workspace = true
 pollster.workspace = true
-reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tokio.workspace = true
 toml.workspace = true
 trailgen-core.workspace = true
 

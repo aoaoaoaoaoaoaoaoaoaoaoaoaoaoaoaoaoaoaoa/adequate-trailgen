@@ -1,4 +1,6 @@
 /target
+**/cache/basemap.pmtiles
+**/cache/basemap.pmtiles.*.partial
 **/*.rs.bk
 /.idea
 /.vscode

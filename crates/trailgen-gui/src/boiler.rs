@@ -1,6 +1,6 @@
-use crate::genesis::Workbench;
+use crate::{genesis::Workbench, vector_map::VectorMapGpu};
 use anyhow::{Context as _, Result};
-use dwemer_poolrooms::water::Frost;
+use dwemer_poolrooms::water::Engine;
 use egui_wgpu::{RenderState, RendererOptions, ScreenDescriptor, WgpuConfiguration, wgpu};
 use egui_winit::winit::{
     application::ApplicationHandler,
@@ -195,7 +195,7 @@ struct Rig {
     surface: wgpu::Surface<'static>,
     gpu: RenderState,
     config: wgpu::SurfaceConfiguration,
-    frost: Frost,
+    water: Engine,
 }
 
 impl Rig {
@@ -229,6 +229,12 @@ impl Rig {
             RendererOptions::default(),
         ))
         .context("create wgpu render state")?;
+        {
+            let mut renderer = gpu.renderer.write();
+            let _prior = renderer
+                .callback_resources
+                .insert(VectorMapGpu::new(&gpu.device, gpu.target_format));
+        }
         let size = window.inner_size();
         let mut config = surface
             .get_default_config(&gpu.adapter, size.width.max(1), size.height.max(1))
@@ -237,15 +243,15 @@ impl Rig {
         config.present_mode = wgpu::PresentMode::AutoVsync;
         config.view_formats = vec![gpu.target_format];
         surface.configure(&gpu.device, &config);
-        let mut frost = Frost::new(&gpu.device, gpu.target_format);
-        frost.resize(&gpu.device, &gpu.queue, config.width, config.height);
+        let mut water = Engine::new(&gpu.device, gpu.target_format);
+        water.resize(&gpu.device, config.width, config.height);
         Ok(Self {
             window,
             input,
             surface,
             gpu,
             config,
-            frost,
+            water,
         })
     }
 
@@ -256,8 +262,7 @@ impl Rig {
         self.config.width = size.width;
         self.config.height = size.height;
         self.surface.configure(&self.gpu.device, &self.config);
-        self.frost
-            .resize(&self.gpu.device, &self.gpu.queue, size.width, size.height);
+        self.water.resize(&self.gpu.device, size.width, size.height);
     }
 
     #[allow(
@@ -316,12 +321,12 @@ impl Rig {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         if water.dry() {
-            self.frost.clear_water(&self.gpu.queue);
+            self.water.becalm(&self.gpu.queue);
         }
-        let frosted = water.live() && self.frost.scene_view().is_some();
+        let frosted = water.live() && self.water.scene_view().is_some();
         {
             let target = if frosted {
-                self.frost.scene_view().unwrap_or(&surface_view)
+                self.water.scene_view().unwrap_or(&surface_view)
             } else {
                 &surface_view
             };
@@ -349,7 +354,7 @@ impl Rig {
                 .render(&mut pass, primitives, &screen);
         }
         if frosted {
-            self.frost.compose(
+            self.water.compose(
                 &self.gpu.device,
                 &self.gpu.queue,
                 &mut encoder,
@@ -362,7 +367,7 @@ impl Rig {
             .queue
             .submit(user_commands.into_iter().chain([encoder.finish()]));
         if self
-            .frost
+            .water
             .after_submit(&self.gpu.device, &self.gpu.queue, water)
         {
             self.window.request_redraw();

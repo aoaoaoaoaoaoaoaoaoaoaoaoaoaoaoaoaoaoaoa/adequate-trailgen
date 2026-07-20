@@ -47,7 +47,7 @@ enum Cmd {
     Gui {
         /// Project directory containing trailgen.toml and cache/graph.json; omit to resume.
         project: Option<PathBuf>,
-        /// Suppress network-backed USGS topographic tiles.
+        /// Suppress the project-local Protomaps vector basemap.
         #[arg(long)]
         offline: bool,
     },
