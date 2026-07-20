@@ -1,12 +1,15 @@
 # Installation
 
-`adequate-trailgen` is a Rust workspace with no mandatory external GIS binary for the CLI, GUI, fixtures, or demo. The core and CLI retain the workspace baseline in `Cargo.toml`; the GUI declares its newer Poolrooms toolchain floor in `crates/trailgen-gui/Cargo.toml`. Install a toolchain satisfying the package you intend to build, then run with Cargo:
+`adequate-trailgen` is a Rust workspace with no mandatory external GIS binary for the CLI, GUI, fixtures, or demo. The core retains the workspace baseline in `Cargo.toml`; the native application declares its newer Poolrooms toolchain floor in the application manifests. Install a compatible toolchain, then install the unified release binary locally:
 
 ```sh
 cargo build --workspace
-cargo run -p trailgen -- --help
-cargo run -p trailgen-gui -- demo/mini-loop
+./scripts/install-local.sh
+trailgen --help
+trailgen gui demo/mini-loop
 ```
+
+The installer uses `cargo install --locked --force` and writes `trailgen` beneath `${TRAILGEN_INSTALL_ROOT:-$HOME/.local}/bin`. Pass another root as its first argument for an isolated installation, such as `./scripts/install-local.sh /tmp/trailgen-install`. Running `trailgen` without a subcommand opens the project in the current directory; all provenance-sensitive command surfaces remain subcommands of the same binary.
 
 The native workbench needs a functioning Vulkan or OpenGL graphics stack and an X11 or Wayland session. It streams USGS topographic tiles into an XDG cache by default; `--offline` disables that network surface without disabling vector maps, search, candidate inspection, or elevation profiles.
 

@@ -8,35 +8,36 @@ The current implementation is intentionally local-first: use GeoJSON/GPX fixture
 
 ## Quickstart
 
-Open the bundled project in the native workbench:
+Install the unified release binary under `~/.local/bin`, then open the bundled project in the native workbench:
 
 ```sh
-cargo run -p trailgen-gui -- demo/mini-loop
+./scripts/install-local.sh
+trailgen gui demo/mini-loop
 ```
 
-The left inspector controls trailhead, distance, ascent/descent, difficulty, route shape, terrain fractions, solver, and search budget. Click the map to snap the trailhead to a real graph vertex, then strike **FIND TRAILS**. The atlas keeps candidate geometry at metric scale; sort the gallery by Pareto rank, distance, ascent, difficulty, or trail fraction, and click a plate for the full vector map and measured elevation/terrain/grade profile. Pass `--offline` to suppress the network-backed USGS topographic basemap while retaining every vector layer.
+Running `trailgen` without a subcommand opens the project in the current directory. The explicit `trailgen gui [PROJECT]` form works from anywhere; pass `--offline` to suppress the network-backed USGS topographic basemap while retaining every vector layer. The left inspector controls trailhead, distance, ascent/descent, difficulty, route shape, terrain fractions, solver, and search budget. Click the map to snap the trailhead to a real graph vertex, then strike **FIND TRAILS**. The atlas keeps candidate geometry at metric scale; sort the gallery by Pareto rank, distance, ascent, difficulty, or trail fraction, and click a plate for the full vector map and measured elevation/terrain/grade profile.
 
 The corresponding CLI pipeline is:
 
 ```sh
-cargo run -p trailgen -- init demo/mini-loop --name "Mini Loop" --bbox -105.02,39.99,-104.98,40.02
-cargo run -p trailgen -- discover demo/mini-loop
-cargo run -p trailgen -- source-plan demo/mini-loop --kind trail-network
-cargo run -p trailgen -- build demo/mini-loop --source crates/trailgen-core/tests/fixtures/mini_network.geojson --snap-tolerance-m 8
-cargo run -p trailgen -- apply-elevation demo/mini-loop --source crates/trailgen-core/tests/fixtures/mini_dem.asc --confidence 0.81
-cargo run -p trailgen -- apply-terrain demo/mini-loop --source crates/trailgen-core/tests/fixtures/terrain_overlay.geojson
-cargo run -p trailgen -- apply-context demo/mini-loop --source crates/trailgen-core/tests/fixtures/context_overlay.geojson
-cargo run -p trailgen -- import-seed demo/mini-loop --route demo/mini-loop/routes/candidate-1.gpx --name "Known Good Loop"
-cargo run -p trailgen -- apply-access demo/mini-loop --source crates/trailgen-core/tests/fixtures/access_overlay.geojson --source crates/trailgen-core/tests/fixtures/closure_overlay.geojson --date 2026-05-15
-cargo run -p trailgen -- verify-sources demo/mini-loop
-cargo run -p trailgen -- vet-sources demo/mini-loop --level recommended
-cargo run -p trailgen -- stats demo/mini-loop
-cargo run -p trailgen -- generate demo/mini-loop --start=-105.0000,40.0000 --min-km 4 --max-km 9 --count 4 --seed 0 --source-gate recommended
-cargo run -p trailgen -- verify-generation demo/mini-loop
-cargo run -p trailgen -- export demo/mini-loop --route candidate-1 --format gpx --output /tmp/candidate-1.gpx --report-output /tmp/candidate-1.md
-cargo run -p trailgen -- export demo/mini-loop --route candidate-1 --format csv --output /tmp/candidate-1.csv
-cargo run -p trailgen -- report demo/mini-loop --output /tmp/generated.md
-cargo run -p trailgen -- map demo/mini-loop --output /tmp/mini-loop-map.html
+trailgen init demo/mini-loop --name "Mini Loop" --bbox -105.02,39.99,-104.98,40.02
+trailgen discover demo/mini-loop
+trailgen source-plan demo/mini-loop --kind trail-network
+trailgen build demo/mini-loop --source crates/trailgen-core/tests/fixtures/mini_network.geojson --snap-tolerance-m 8
+trailgen apply-elevation demo/mini-loop --source crates/trailgen-core/tests/fixtures/mini_dem.asc --confidence 0.81
+trailgen apply-terrain demo/mini-loop --source crates/trailgen-core/tests/fixtures/terrain_overlay.geojson
+trailgen apply-context demo/mini-loop --source crates/trailgen-core/tests/fixtures/context_overlay.geojson
+trailgen import-seed demo/mini-loop --route demo/mini-loop/routes/candidate-1.gpx --name "Known Good Loop"
+trailgen apply-access demo/mini-loop --source crates/trailgen-core/tests/fixtures/access_overlay.geojson --source crates/trailgen-core/tests/fixtures/closure_overlay.geojson --date 2026-05-15
+trailgen verify-sources demo/mini-loop
+trailgen vet-sources demo/mini-loop --level recommended
+trailgen stats demo/mini-loop
+trailgen generate demo/mini-loop --start=-105.0000,40.0000 --min-km 4 --max-km 9 --count 4 --seed 0 --source-gate recommended
+trailgen verify-generation demo/mini-loop
+trailgen export demo/mini-loop --route candidate-1 --format gpx --output /tmp/candidate-1.gpx --report-output /tmp/candidate-1.md
+trailgen export demo/mini-loop --route candidate-1 --format csv --output /tmp/candidate-1.csv
+trailgen report demo/mini-loop --output /tmp/generated.md
+trailgen map demo/mini-loop --output /tmp/mini-loop-map.html
 ```
 
 The GUI searches the graph already materialized under `cache/` or the effective generation snapshot under `routes/`. The CLI remains the authority for source acquisition, graph assembly, fingerprinted generation ledgers, and route export.

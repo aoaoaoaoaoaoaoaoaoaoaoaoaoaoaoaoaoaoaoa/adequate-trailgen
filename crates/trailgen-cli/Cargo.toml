@@ -5,7 +5,7 @@ description = "CLI for designing constrained long-day-hike loops over normalized
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-rust-version.workspace = true
+rust-version = "1.96"
 readme = "../../README.md"
 keywords = ["gis", "hiking", "routing", "geojson", "gpx"]
 categories = ["command-line-utilities", "science::geo"]
@@ -19,6 +19,7 @@ serde_json.workspace = true
 sha2.workspace = true
 toml.workspace = true
 trailgen-core.workspace = true
+trailgen-gui.workspace = true
 zip.workspace = true
 
 [dev-dependencies]

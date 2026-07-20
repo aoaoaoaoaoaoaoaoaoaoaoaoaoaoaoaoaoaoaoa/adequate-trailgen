@@ -3560,6 +3560,7 @@ dependencies = [
  "tiff",
  "toml",
  "trailgen-core",
+ "trailgen-gui",
  "zip",
 ]
 
@@ -3585,7 +3586,6 @@ name = "trailgen-gui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "clap",
  "crossbeam-channel",
  "directories",
  "dwemer_poolrooms",

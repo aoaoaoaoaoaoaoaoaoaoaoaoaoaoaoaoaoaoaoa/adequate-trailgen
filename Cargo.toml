@@ -33,6 +33,7 @@ thiserror = "2.0.12"
 tiff = "0.11.3"
 toml = "0.8.23"
 trailgen-core = { path = "crates/trailgen-core" }
+trailgen-gui = { path = "crates/trailgen-gui" }
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 
 [workspace.lints.rust]

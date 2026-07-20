@@ -29,11 +29,12 @@ use trailgen_core::{
 };
 
 #[derive(Parser)]
-#[command(name = "trailgen")]
-#[command(about = "Design constrained long-hike loops over normalized trail graphs.")]
+#[command(name = "trailgen", version)]
+#[command(about = "Native workbench and deterministic forge for constrained hiking trails.")]
+#[command(after_help = "Run without a command to open the project in the current directory.")]
 struct Cli {
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
@@ -42,6 +43,15 @@ struct Cli {
     reason = "CLI command values are parsed once; boxing clap fields would only launder cold-start bytes into ceremony."
 )]
 enum Cmd {
+    /// Open a materialized project in the native trail workbench.
+    Gui {
+        /// Project directory containing trailgen.toml and cache/graph.json.
+        #[arg(default_value = ".")]
+        project: PathBuf,
+        /// Suppress network-backed USGS topographic tiles.
+        #[arg(long)]
+        offline: bool,
+    },
     /// Create a project directory and initial trailgen.toml.
     Init {
         /// Project directory to create or update.
@@ -744,12 +754,20 @@ const OSM_ROAD_SELECTORS: &[&str] = &[
 const OSM_HYDROLOGY_SELECTORS: &[&str] =
     &[r#"way["waterway"~"^(stream|river|canal|drain|ditch|brook)$"]"#];
 
+fn main() -> Result<()> {
+    let Some(cmd) = Cli::parse().cmd else {
+        return trailgen_gui::run(Path::new("."), false);
+    };
+    dispatch(cmd)
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "Clap command dispatch is a single declarative cold path; splitting it would scatter the command algebra."
 )]
-fn main() -> Result<()> {
-    match Cli::parse().cmd {
+fn dispatch(cmd: Cmd) -> Result<()> {
+    match cmd {
+        Cmd::Gui { project, offline } => trailgen_gui::run(&project, offline),
         Cmd::Init {
             project,
             name,
@@ -7215,6 +7233,14 @@ mod tests {
     #[test]
     fn cli_schema_is_sound() {
         Cli::command().debug_assert();
+        assert!(Cli::try_parse_from(["trailgen"]).unwrap().cmd.is_none());
+        assert!(matches!(
+            Cli::try_parse_from(["trailgen", "gui", "demo/mini-loop", "--offline"])
+                .unwrap()
+                .cmd,
+            Some(Cmd::Gui { project, offline: true })
+                if project == Path::new("demo/mini-loop")
+        ));
     }
 
     #[test]
