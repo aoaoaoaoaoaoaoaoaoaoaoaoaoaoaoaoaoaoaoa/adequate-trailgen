@@ -10,6 +10,7 @@ use std::{
 const LIBRARY: &str = "trailgen";
 const STARTER: &str = "starter-loop";
 const SESSION: &str = "session.json";
+const SLATE: &str = "slate.toml";
 const PROJECT_MARK: &str = "trailgen.toml";
 const STARTER_DIRS: [&str; 5] = ["cache", "reports", "routes", "seeds", "sources"];
 const STARTER_FILES: [(&str, &[u8]); 3] = [
@@ -68,6 +69,10 @@ impl Habitat {
 
     pub fn starter_root(&self) -> Option<PathBuf> {
         self.library.as_ref().map(|root| root.join(STARTER))
+    }
+
+    pub fn slate_path(&self) -> PathBuf {
+        self.state.join(SLATE)
     }
 
     fn resume_from(&self, current: &Path) -> Result<PathBuf> {

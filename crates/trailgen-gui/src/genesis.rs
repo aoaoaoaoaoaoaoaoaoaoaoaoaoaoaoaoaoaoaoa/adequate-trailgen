@@ -190,7 +190,7 @@ enum GenesisAction {
 }
 
 fn open(ctx: &egui::Context, habitat: &Habitat, root: &Path, offline: bool) -> Result<TrailApp> {
-    let app = TrailApp::open(ctx, root, offline)?;
+    let app = TrailApp::open(ctx, root, offline, habitat.slate_path())?;
     if let Err(err) = habitat.remember(root) {
         eprintln!("could not remember project: {err:#}");
     }

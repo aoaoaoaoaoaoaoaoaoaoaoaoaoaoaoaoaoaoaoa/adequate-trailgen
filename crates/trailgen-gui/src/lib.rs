@@ -14,6 +14,7 @@ mod habitat;
 mod map;
 mod profile;
 mod project;
+mod slate;
 mod vector_map;
 
 use anyhow::Result;

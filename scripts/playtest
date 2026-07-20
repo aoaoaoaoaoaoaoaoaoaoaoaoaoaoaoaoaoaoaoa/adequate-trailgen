@@ -47,6 +47,44 @@ fi
 sleep 1
 import -window "$window" "$out/atlas.png"
 
+if [ "${TRAILGEN_GUI_ROAM:-0}" = 1 ]; then
+    # Cross the project-local PMTiles cut from Colorado to Harriman at world zoom,
+    # then demand native z15 vectors there. The private XDG root survives into a
+    # second run so this also proves slate restoration and warm-cache reuse.
+    xdotool mousemove --window "$window" 864 350
+    xdotool click --repeat 30 --delay 70 5
+    sleep 0.5
+    import -window "$window" "$out/world.png"
+    xdotool mousemove --window "$window" 864 350
+    xdotool mousedown 1
+    sleep 0.2
+    xdotool mousemove --sync --window "$window" 820 352
+    sleep 0.2
+    xdotool mouseup 1
+    xdotool mousemove --window "$window" 864 350
+    xdotool click --repeat 24 --delay 70 4
+    cache=${TRAILGEN_GUI_ROAM_CACHE:?TRAILGEN_GUI_ROAM_CACHE must name the private cache}
+    attempts=0
+    while [ "$(find "$cache/15" -type f -name '*.mvt' 2>/dev/null | wc -l)" -lt 4 ]; do
+        attempts=$((attempts + 1))
+        if [ "$attempts" -ge 240 ]; then
+            import -window "$window" "$out/harriman-timeout.png"
+            printf 'timed out filling Harriman vectors under %s\n' "$cache" >&2
+            exit 1
+        fi
+        sleep 0.25
+    done
+    sleep 1
+    import -window "$window" "$out/harriman.png"
+    exit 0
+fi
+
+if [ "${TRAILGEN_GUI_ROAM_RESUME:-0}" = 1 ]; then
+    sleep 1
+    import -window "$window" "$out/harriman-resumed.png"
+    exit 0
+fi
+
 if [ -n "${TRAILGEN_GUI_GENESIS_ROOT:-}" ]; then
     xdotool mousemove --window "$window" 700 408 click 1
     xdotool key --window "$window" ctrl+a

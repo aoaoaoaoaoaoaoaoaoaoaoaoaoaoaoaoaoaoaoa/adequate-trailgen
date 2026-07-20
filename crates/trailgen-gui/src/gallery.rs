@@ -1,13 +1,14 @@
 use crate::map::{ALLTRAILS_GREEN, CANDIDATE_COLORS, terrain_color};
 use dwemer_poolrooms::chrome;
 use egui::{Color32, Rect, Response, Sense, Shape, Stroke, Ui, pos2, vec2};
+use serde::{Deserialize, Serialize};
 use trailgen_core::{Route, Terrain, TrailGraph};
 
 pub const TILE_SIZE: egui::Vec2 = egui::Vec2::new(224.0, 146.0);
 const PLATE_PAD: f32 = 4.0;
 const TILE_RADIUS: u8 = 2;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub enum CandidateSort {
     #[default]
     Rank,

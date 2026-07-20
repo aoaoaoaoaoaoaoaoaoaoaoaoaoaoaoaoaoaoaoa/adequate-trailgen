@@ -1,4 +1,7 @@
-use crate::map::{self, Viewport};
+use crate::{
+    habitat::platform_dirs,
+    map::{self, Viewport},
+};
 use anyhow::{Context as _, Result, ensure};
 use bytemuck::{Pod, Zeroable};
 use crossbeam_channel::{Receiver, Sender, bounded};
@@ -16,7 +19,10 @@ use pmtiles::{
 };
 use serde::Deserialize;
 use std::{
+    cmp::Reverse,
+    collections::HashSet,
     fs::{self, File, OpenOptions},
+    io::Write as _,
     path::{Path as FsPath, PathBuf},
     sync::Arc,
     thread,
@@ -32,6 +38,9 @@ const BUILDS_ORIGIN: &str = "https://build.protomaps.com";
 const FORGE_BATCH: usize = 64;
 const FORGE_CONCURRENCY: usize = 8;
 const MAX_FORGE_TILES: usize = 8_192;
+const NOMAD_BATCH: usize = 64;
+const ROAMING_CACHE: &str = "protomaps-v4";
+const ROAMING_CACHE_CEILING: u64 = 512 * 1_048_576;
 const RETAINED_DEPTH: u8 = 4;
 const WORKERS: usize = 8;
 
@@ -39,19 +48,23 @@ const WORKERS: usize = 8;
 pub struct Source {
     archive: PathBuf,
     forge_bounds: Option<GeoBounds>,
+    roaming_cache: PathBuf,
 }
 
 impl Source {
     pub fn project(root: &FsPath, graph: &TrailGraph) -> Result<Self> {
+        let roaming_cache = platform_dirs()?.cache_dir().join(ROAMING_CACHE);
         if let Some(override_path) = std::env::var_os("TRAILGEN_BASEMAP_ARCHIVE") {
             return Ok(Self {
                 archive: override_path.into(),
                 forge_bounds: None,
+                roaming_cache,
             });
         }
         Ok(Self {
             archive: root.join("cache").join(ARCHIVE_NAME),
             forge_bounds: Some(forge_bounds(graph)?),
+            roaming_cache,
         })
     }
 }
@@ -145,10 +158,29 @@ pub struct Mesh<V> {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
+pub enum CutSource {
+    #[default]
+    Project,
+    Cache,
+    Network,
+}
+
+impl CutSource {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Project => "PROJECT",
+            Self::Cache => "ROAM CACHE",
+            Self::Network => "NETWORK",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
 pub struct CutTiming {
     pub archive_us: u64,
     pub decode_us: u64,
     pub bytes: usize,
+    pub source: CutSource,
 }
 
 #[derive(Clone, Debug)]
@@ -193,6 +225,10 @@ pub enum Event {
     Ready {
         source_zoom: u8,
     },
+    Ranging {
+        total: usize,
+    },
+    Relinquished(Vec<TileKey>),
     Loaded(Arc<VectorTile>),
     Missing(TileKey),
     Fault {
@@ -338,15 +374,26 @@ fn armory(
         return;
     }
     ctx.request_repaint();
+    let (roaming_tx, roaming_rx) = bounded(256);
+    let nomad = spawn_nomad(ctx, &source.roaming_cache, roaming_rx, &events);
     let mut workers = Vec::with_capacity(worker_count);
     for slot in 0..worker_count {
         let worker_ctx = ctx.clone();
         let reader = reader.clone();
         let commands = commands.clone();
         let worker_events = events.clone();
+        let worker_roaming = roaming_tx.clone();
         let worker = thread::Builder::new()
             .name(format!("vector-quarry-{slot}"))
-            .spawn(move || quarry(&worker_ctx, &reader, &commands, &worker_events));
+            .spawn(move || {
+                quarry(
+                    &worker_ctx,
+                    &reader,
+                    &commands,
+                    &worker_roaming,
+                    &worker_events,
+                );
+            });
         match worker {
             Ok(worker) => workers.push(worker),
             Err(err) => {
@@ -361,10 +408,37 @@ fn armory(
         }
     }
     drop(commands);
-    drop(events);
+    drop(roaming_tx);
     for worker in workers {
         let _joined = worker.join();
     }
+    if let Some(nomad) = nomad {
+        let _joined = nomad.join();
+    }
+    drop(events);
+}
+
+fn spawn_nomad(
+    ctx: &Context,
+    cache: &FsPath,
+    commands: Receiver<TileKey>,
+    events: &Sender<Event>,
+) -> Option<thread::JoinHandle<()>> {
+    let nomad_ctx = ctx.clone();
+    let nomad_events = events.clone();
+    let roaming_cache = cache.to_owned();
+    thread::Builder::new()
+        .name("vector-nomad".to_owned())
+        .spawn(move || nomad(&nomad_ctx, &roaming_cache, &commands, &nomad_events))
+        .map_err(|err| {
+            send_fault(
+                ctx,
+                events,
+                None,
+                &anyhow::Error::new(err).context("spawn roaming vector quarry"),
+            );
+        })
+        .ok()
 }
 
 fn runtime() -> Result<tokio::runtime::Runtime> {
@@ -513,6 +587,255 @@ async fn fetch_tiles(
     Ok(tiles)
 }
 
+fn nomad(ctx: &Context, cache: &FsPath, commands: &Receiver<TileKey>, events: &Sender<Event>) {
+    let mut resident = reap_roaming_cache(cache, ROAMING_CACHE_CEILING).unwrap_or_else(|err| {
+        eprintln!("could not reap roaming basemap cache: {err:#}");
+        0
+    });
+    let runtime = match runtime() {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            send_fault(ctx, events, None, &err);
+            return;
+        }
+    };
+    let mut remote = None;
+    while let Ok(first) = commands.recv() {
+        let (batch, relinquished) =
+            latest_nomad_batch(std::iter::once(first).chain(commands.try_iter()));
+        if !relinquished.is_empty() && events.send(Event::Relinquished(relinquished)).is_err() {
+            return;
+        }
+        let mut absent = Vec::new();
+        for key in batch {
+            let path = roaming_tile_path(cache, key);
+            let begun = Instant::now();
+            match fs::read(&path) {
+                Ok(bytes) => {
+                    let event = cut_event(key, &bytes, micros(begun.elapsed()), CutSource::Cache);
+                    if matches!(event, Event::Loaded(_)) {
+                        if events.send(event).is_err() {
+                            return;
+                        }
+                        ctx.request_repaint();
+                    } else {
+                        let _discarded = fs::remove_file(path);
+                        absent.push(key);
+                    }
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => absent.push(key),
+                Err(_) => absent.push(key),
+            }
+        }
+        if absent.is_empty() {
+            continue;
+        }
+        let _ranging = events.try_send(Event::Ranging {
+            total: absent.len(),
+        });
+        ctx.request_repaint();
+        if remote.is_none() {
+            match runtime.block_on(open_remote()) {
+                Ok(source) => remote = Some(source),
+                Err(err) => {
+                    for key in absent {
+                        send_fault(ctx, events, Some(key), &err);
+                    }
+                    continue;
+                }
+            }
+        }
+        let Some(source) = remote.as_ref() else {
+            continue;
+        };
+        for cut in runtime.block_on(fetch_roaming_tiles(&source.archive, &absent)) {
+            let event = match cut.result {
+                Ok(Some(bytes)) => {
+                    if let Err(err) = cache_roaming_tile(cache, cut.key, &bytes) {
+                        eprintln!("could not cache roaming vector tile {:?}: {err:#}", cut.key);
+                    } else {
+                        resident = resident.saturating_add(bytes.len() as u64);
+                        if resident > ROAMING_CACHE_CEILING {
+                            resident = reap_roaming_cache(cache, ROAMING_CACHE_CEILING)
+                                .unwrap_or_else(|err| {
+                                    eprintln!("could not reap roaming basemap cache: {err:#}");
+                                    resident
+                                });
+                        }
+                    }
+                    cut_event(cut.key, &bytes, cut.archive_us, CutSource::Network)
+                }
+                Ok(None) => Event::Missing(cut.key),
+                Err(err) => Event::Fault {
+                    key: Some(cut.key),
+                    message: format!("fetch roaming vector tile {:?}: {err:#}", cut.key),
+                },
+            };
+            if events.send(event).is_err() {
+                return;
+            }
+            ctx.request_repaint();
+        }
+    }
+}
+
+fn latest_nomad_batch(keys: impl IntoIterator<Item = TileKey>) -> (Vec<TileKey>, Vec<TileKey>) {
+    let queued = keys.into_iter().collect::<Vec<_>>();
+    let mut distinct = HashSet::with_capacity(queued.len());
+    let mut batch = queued
+        .iter()
+        .rev()
+        .copied()
+        .filter(|key| distinct.insert(*key))
+        .take(NOMAD_BATCH)
+        .collect::<Vec<_>>();
+    batch.sort_unstable_by_key(|key| Reverse(key.zoom));
+    let retained = batch.iter().copied().collect::<HashSet<_>>();
+    distinct.clear();
+    let relinquished = queued
+        .into_iter()
+        .filter(|key| !retained.contains(key) && distinct.insert(*key))
+        .collect();
+    (batch, relinquished)
+}
+
+struct RoamingCut {
+    key: TileKey,
+    result: Result<Option<Vec<u8>>>,
+    archive_us: u64,
+}
+
+async fn fetch_roaming_tiles(remote: &RemoteArchive, keys: &[TileKey]) -> Vec<RoamingCut> {
+    let requests = stream::iter(keys.iter().copied().map(|key| async move {
+        let begun = Instant::now();
+        let result = match key.coordinate() {
+            Ok(coordinate) => remote
+                .get_tile_decompressed(coordinate)
+                .await
+                .map_err(anyhow::Error::new)
+                .with_context(|| format!("fetch Protomaps tile {key:?}"))
+                .map(|bytes| bytes.map(|bytes| bytes.to_vec())),
+            Err(err) => Err(err),
+        };
+        RoamingCut {
+            key,
+            result,
+            archive_us: micros(begun.elapsed()),
+        }
+    }))
+    .buffered(FORGE_CONCURRENCY);
+    futures_util::pin_mut!(requests);
+    let mut cuts = Vec::with_capacity(keys.len());
+    while let Some(cut) = requests.next().await {
+        cuts.push(cut);
+    }
+    cuts
+}
+
+fn cut_event(key: TileKey, bytes: &[u8], archive_us: u64, source: CutSource) -> Event {
+    let decode_begun = Instant::now();
+    match decode_tile(key, bytes) {
+        Ok(mut tile) => {
+            tile.timing = CutTiming {
+                archive_us,
+                decode_us: micros(decode_begun.elapsed()),
+                bytes: bytes.len(),
+                source,
+            };
+            Event::Loaded(Arc::new(tile))
+        }
+        Err(err) => Event::Fault {
+            key: Some(key),
+            message: format!("decode vector tile {key:?}: {err:#}"),
+        },
+    }
+}
+
+fn roaming_tile_path(root: &FsPath, key: TileKey) -> PathBuf {
+    root.join(key.zoom.to_string())
+        .join(key.x.to_string())
+        .join(format!("{}.mvt", key.y))
+}
+
+fn cache_roaming_tile(root: &FsPath, key: TileKey, bytes: &[u8]) -> Result<()> {
+    let target = roaming_tile_path(root, key);
+    let parent = target.parent().context("roaming tile has no parent")?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("create roaming tile cache {}", parent.display()))?;
+    let mut staging = Staging::raise(&target)?;
+    let mut file = staging.take_file()?;
+    file.write_all(bytes)
+        .with_context(|| format!("write roaming tile {}", target.display()))?;
+    drop(file);
+    staging.commit(&target)
+}
+
+struct CacheFile {
+    path: PathBuf,
+    bytes: u64,
+    modified: SystemTime,
+}
+
+fn reap_roaming_cache(root: &FsPath, ceiling: u64) -> Result<u64> {
+    let mut files = Vec::new();
+    collect_roaming_cache(root, &mut files)?;
+    let mut resident = files.iter().map(|file| file.bytes).sum::<u64>();
+    if resident <= ceiling {
+        return Ok(resident);
+    }
+    files.sort_unstable_by_key(|file| file.modified);
+    let target = ceiling.saturating_mul(9) / 10;
+    for file in files {
+        fs::remove_file(&file.path)
+            .with_context(|| format!("reap roaming tile {}", file.path.display()))?;
+        resident = resident.saturating_sub(file.bytes);
+        if resident <= target {
+            break;
+        }
+    }
+    Ok(resident)
+}
+
+fn collect_roaming_cache(root: &FsPath, files: &mut Vec<CacheFile>) -> Result<()> {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err).with_context(|| format!("read cache {}", root.display())),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            collect_roaming_cache(&entry.path(), files)?;
+            continue;
+        }
+        if !kind.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let metadata = entry.metadata()?;
+        if path.extension().is_some_and(|extension| extension == "mvt") {
+            files.push(CacheFile {
+                path,
+                bytes: metadata.len(),
+                modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+            });
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension == "partial")
+            && metadata
+                .modified()
+                .ok()
+                .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+                .is_some_and(|age| age >= Duration::from_hours(24))
+        {
+            fs::remove_file(&path)
+                .with_context(|| format!("remove stale roaming tile {}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
 fn valid_build_key(key: &str) -> bool {
     key.len() == 16
         && key.ends_with(".pmtiles")
@@ -523,6 +846,7 @@ fn quarry(
     ctx: &Context,
     archive: &Arc<Archive>,
     commands: &Receiver<TileKey>,
+    roaming: &Sender<TileKey>,
     events: &Sender<Event>,
 ) {
     let runtime = match runtime() {
@@ -541,7 +865,7 @@ fn quarry(
         }) {
             Ok(Some(bytes)) => bytes,
             Ok(None) => {
-                if events.send(Event::Missing(key)).is_err() {
+                if roaming.send(key).is_err() && events.send(Event::Missing(key)).is_err() {
                     break;
                 }
                 ctx.request_repaint();
@@ -552,22 +876,7 @@ fn quarry(
                 continue;
             }
         };
-        let archive_us = micros(begun.elapsed());
-        let decode_begun = Instant::now();
-        let event = match decode_tile(key, &bytes) {
-            Ok(mut tile) => {
-                tile.timing = CutTiming {
-                    archive_us,
-                    decode_us: micros(decode_begun.elapsed()),
-                    bytes: bytes.len(),
-                };
-                Event::Loaded(Arc::new(tile))
-            }
-            Err(err) => Event::Fault {
-                key: Some(key),
-                message: format!("decode vector tile {key:?}: {err:#}"),
-            },
-        };
+        let event = cut_event(key, &bytes, micros(begun.elapsed()), CutSource::Project);
         if events.send(event).is_err() {
             break;
         }
@@ -1449,6 +1758,54 @@ mod tests {
         assert!(valid_build_key("20260720.pmtiles"));
         assert!(!valid_build_key("latest.pmtiles"));
         assert!(!valid_build_key("20260720.pmtiles/../x"));
+    }
+
+    #[test]
+    fn roaming_cache_is_atomic_and_tile_addressed() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let key = TileKey {
+            zoom: 15,
+            x: 9_642,
+            y: 12_271,
+        };
+        cache_roaming_tile(temp.path(), key, b"vector")?;
+        let path = temp.path().join("15/9642/12271.mvt");
+        assert_eq!(roaming_tile_path(temp.path(), key), path);
+        assert_eq!(fs::read(&path)?, b"vector");
+        assert!(
+            std::fs::read_dir(path.parent().context("tile parent")?)?
+                .flatten()
+                .all(|entry| entry.path().extension().is_none_or(|ext| ext != "partial"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn roaming_cache_reaps_below_its_hysteresis_line() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        for y in 0..3 {
+            cache_roaming_tile(temp.path(), TileKey { zoom: 1, x: 0, y }, b"vector")?;
+        }
+        assert_eq!(reap_roaming_cache(temp.path(), 10)?, 6);
+        let mut files = Vec::new();
+        collect_roaming_cache(temp.path(), &mut files)?;
+        assert_eq!(files.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn nomad_preempts_stale_tiles_for_the_latest_deep_view() {
+        let stale = (0..NOMAD_BATCH as u32 + 8).map(|x| TileKey { zoom: 8, x, y: 0 });
+        let current = TileKey {
+            zoom: 15,
+            x: 9_642,
+            y: 12_276,
+        };
+        let (batch, relinquished) = latest_nomad_batch(stale.chain(std::iter::once(current)));
+        assert_eq!(batch.first(), Some(&current));
+        assert_eq!(batch.len(), NOMAD_BATCH);
+        assert_eq!(relinquished.len(), 9);
+        assert!(!relinquished.contains(&current));
     }
 
     #[test]

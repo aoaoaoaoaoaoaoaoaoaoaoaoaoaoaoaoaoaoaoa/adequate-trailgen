@@ -1,4 +1,5 @@
 use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, Vec2, pos2, vec2};
+use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 use trailgen_core::{Access, Coord, EdgeId, Route, Terrain, TrailGraph, VertexId};
 
@@ -21,7 +22,7 @@ pub const CANDIDATE_COLORS: [Color32; 8] = [
     Color32::from_rgb(105, 169, 192),
 ];
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Viewport {
     pub center: [f64; 2],
     pub zoom: f64,

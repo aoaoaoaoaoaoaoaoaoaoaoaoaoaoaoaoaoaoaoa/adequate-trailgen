@@ -4,6 +4,7 @@ use crate::{
     map::{self, ALLTRAILS_GREEN, Atlas, CANDIDATE_COLORS, Viewport},
     profile::ElevationProfile,
     project::{Project, SearchEvent, SearchForge, SearchRequest},
+    slate::{LayerSlate, Slate},
     vector_map::VectorPaint,
 };
 use anyhow::Result;
@@ -13,10 +14,10 @@ use dwemer_poolrooms::{
 };
 use egui::{Color32, RichText, Stroke, pos2, vec2};
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
-    path::Path,
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use trailgen_core::{
     Coord, Edge, Route, RouteShape, SearchParams, SolverKind, Terrain, TrailGraph, VertexId,
@@ -26,6 +27,7 @@ const VECTOR_CEILING: usize = 512 * 1_048_576;
 const PROFILE_HEIGHT: f32 = 178.0;
 const GALLERY_HEIGHT: f32 = 190.0;
 const TOOLBAR_HEIGHT: f32 = 38.0;
+const STATE_SETTLE: Duration = Duration::from_millis(400);
 const TERRAIN_ALL: [Terrain; 9] = [
     Terrain::Unknown,
     Terrain::Trail,
@@ -71,6 +73,13 @@ pub struct TrailApp {
     tile_inflight: HashSet<TileKey>,
     tile_faults: HashSet<TileKey>,
     layers: Layers,
+    basemap_preference: bool,
+    shutters: BTreeMap<String, bool>,
+    inspector_scroll: f32,
+    slate_path: PathBuf,
+    committed_slate: Slate,
+    observed_slate: Slate,
+    slate_dirty: Option<Instant>,
     water: Surface,
     status: String,
     basemap_status: String,
@@ -99,7 +108,7 @@ enum ForgePhase {
     Striking,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Layers {
     basemap: bool,
     network: bool,
@@ -107,7 +116,12 @@ struct Layers {
 }
 
 impl TrailApp {
-    pub fn open(ctx: &egui::Context, root: &Path, offline: bool) -> Result<Self> {
+    pub fn open(
+        ctx: &egui::Context,
+        root: &Path,
+        offline: bool,
+        slate_path: PathBuf,
+    ) -> Result<Self> {
         let Project {
             root,
             graph,
@@ -116,6 +130,7 @@ impl TrailApp {
             start,
             requested_start,
         } = Project::open(root)?;
+        let slate = Slate::load(&slate_path, &root);
         let forge = SearchForge::spawn(ctx.clone(), Arc::clone(&graph))?;
         let basemap = if offline {
             None
@@ -123,7 +138,10 @@ impl TrailApp {
             let source = BasemapSource::project(&root, &graph)?;
             Some(Basemap::spawn(ctx.clone(), source)?)
         };
-        let selected = (!routes.is_empty()).then_some(0);
+        let selected = slate
+            .selected
+            .filter(|slot| *slot < routes.len())
+            .or_else(|| (!routes.is_empty()).then_some(0));
         let count = routes.len().clamp(6, 12);
         let profiles = profiles(&graph, &routes);
         let atlas = Atlas::forge(&graph);
@@ -133,7 +151,17 @@ impl TrailApp {
         } else {
             format!("loaded {} measured candidate(s)", routes.len())
         };
-        Ok(Self {
+        let restored_viewport = slate.viewport;
+        let viewport = restored_viewport.unwrap_or_else(|| Viewport {
+            center: map::world_from_coord(requested_start),
+            zoom: 13.0,
+        });
+        let layers = Layers {
+            basemap: !offline && slate.layers.basemap,
+            network: slate.layers.network,
+            terrain: slate.layers.terrain,
+        };
+        let mut app = Self {
             root,
             name: config.name,
             graph,
@@ -148,13 +176,18 @@ impl TrailApp {
             routes,
             profiles,
             selected,
-            sort: CandidateSort::default(),
-            view: ViewMode::Atlas,
-            viewport: Viewport {
-                center: map::world_from_coord(requested_start),
-                zoom: 13.0,
+            sort: slate.sort,
+            view: if slate.focus && selected.is_some() {
+                ViewMode::Focus
+            } else {
+                ViewMode::Atlas
             },
-            fit: Fit::Graph,
+            viewport,
+            fit: if restored_viewport.is_some() {
+                Fit::None
+            } else {
+                Fit::Graph
+            },
             serial: 0,
             forge_phase: ForgePhase::Idle,
             basemap,
@@ -162,11 +195,14 @@ impl TrailApp {
             presented_basemap: Arc::from([]),
             tile_inflight: HashSet::new(),
             tile_faults: HashSet::new(),
-            layers: Layers {
-                basemap: !offline,
-                network: true,
-                terrain: true,
-            },
+            layers,
+            basemap_preference: slate.layers.basemap,
+            shutters: slate.shutters.clone(),
+            inspector_scroll: slate.inspector_scroll,
+            slate_path,
+            committed_slate: slate.clone(),
+            observed_slate: slate,
+            slate_dirty: None,
             water,
             status,
             basemap_status: if offline {
@@ -175,7 +211,9 @@ impl TrailApp {
                 "PROTOMAPS · PREPARING PROJECT CUT".to_owned()
             },
             map_rect: egui::Rect::ZERO,
-        })
+        };
+        app.observed_slate = app.snapshot();
+        Ok(app)
     }
 
     pub fn pulse(&mut self, ui: &mut egui::Ui) {
@@ -187,15 +225,18 @@ impl TrailApp {
             .show_inside(ui, |ui| {
                 let scroll = egui::ScrollArea::vertical()
                     .id_salt("trail-inspector-scroll")
+                    .vertical_scroll_offset(self.inspector_scroll)
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.add_space(ui.spacing().item_spacing.x);
                         self.inspector(ui);
                     });
+                self.inspector_scroll = scroll.state.offset.y.max(0.0);
                 self.water.heave(ui.ctx(), scroll.state.offset.y);
             });
         let _center = egui::CentralPanel::default().show_inside(ui, |ui| self.arena(ui));
+        self.tend_slate(ui.ctx());
     }
 
     pub fn water_frame(
@@ -208,7 +249,6 @@ impl TrailApp {
     }
 
     fn inspector(&mut self, ui: &mut egui::Ui) {
-        let _project = ui.label(chrome::eyebrow("TRAIL FORGE"));
         let _name = ui.label(chrome::title(self.name.to_ascii_uppercase()));
         ui.add_space(3.0);
 
@@ -232,7 +272,13 @@ impl TrailApp {
         open: bool,
         body: fn(&mut Self, &mut egui::Ui),
     ) {
+        let open = self.shutters.get(id).copied().unwrap_or(open);
         let wake = chrome::section(ui, id, title, open, |ui| body(self, ui));
+        if let Some(wake) = wake.as_ref() {
+            let _prior = self
+                .shutters
+                .insert(id.to_owned(), matches!(wake.flux, chrome::FoldFlux::Open));
+        }
         self.water.fold(wake);
     }
 
@@ -459,6 +505,9 @@ impl TrailApp {
 
     fn layers_panel(&mut self, ui: &mut egui::Ui) {
         layer_toggle(ui, &mut self.layers.basemap, "VECTOR BASEMAP");
+        if self.basemap.is_some() {
+            self.basemap_preference = self.layers.basemap;
+        }
         layer_toggle(ui, &mut self.layers.network, "TRAIL NETWORK");
         layer_toggle(ui, &mut self.layers.terrain, "TERRAIN CENTERLINE");
         ui.add_space(4.0);
@@ -1054,11 +1103,20 @@ impl TrailApp {
                 basemap::Event::Ready { source_zoom } => {
                     self.basemap_status = format!("PROTOMAPS Z{source_zoom} · © OPENSTREETMAP");
                 }
+                basemap::Event::Ranging { total } => {
+                    self.basemap_status = format!("PROTOMAPS · RANGING {total} VECTOR TILE(S)");
+                }
+                basemap::Event::Relinquished(keys) => {
+                    for key in keys {
+                        let _inflight = self.tile_inflight.remove(&key);
+                    }
+                }
                 basemap::Event::Loaded(tile) => {
                     let key = tile.key;
                     let _inflight = self.tile_inflight.remove(&key);
                     self.basemap_status = format!(
-                        "PROTOMAPS · OSM · {} KB · {} µs MAP + {} µs CUT",
+                        "PROTOMAPS · {} · {} KB · {} µs MAP + {} µs CUT",
+                        tile.timing.source.label(),
                         tile.timing.bytes / 1024,
                         tile.timing.archive_us,
                         tile.timing.decode_us
@@ -1190,6 +1248,63 @@ impl TrailApp {
             && basemap.request(key)
         {
             let _fresh = self.tile_inflight.insert(key);
+        }
+    }
+
+    fn snapshot(&self) -> Slate {
+        Slate {
+            project: self.root.clone(),
+            viewport: Some(self.viewport),
+            shutters: self.shutters.clone(),
+            inspector_scroll: self.inspector_scroll,
+            sort: self.sort,
+            selected: self.selected,
+            focus: self.view == ViewMode::Focus,
+            layers: LayerSlate {
+                basemap: self.basemap_preference,
+                network: self.layers.network,
+                terrain: self.layers.terrain,
+            },
+        }
+    }
+
+    fn tend_slate(&mut self, ctx: &egui::Context) {
+        let current = self.snapshot();
+        if current != self.observed_slate {
+            self.observed_slate = current;
+            self.slate_dirty = Some(Instant::now());
+        }
+        if self.observed_slate == self.committed_slate {
+            self.slate_dirty = None;
+            return;
+        }
+        let dirty = self.slate_dirty.get_or_insert_with(Instant::now);
+        let settled = dirty.elapsed();
+        if settled < STATE_SETTLE {
+            ctx.request_repaint_after(STATE_SETTLE.saturating_sub(settled));
+            return;
+        }
+        match self.observed_slate.save(&self.slate_path) {
+            Ok(()) => {
+                self.committed_slate.clone_from(&self.observed_slate);
+                self.slate_dirty = None;
+            }
+            Err(err) => {
+                self.status = format!("state save failed: {err:#}");
+                self.slate_dirty = Some(Instant::now());
+                ctx.request_repaint_after(STATE_SETTLE);
+            }
+        }
+    }
+}
+
+impl Drop for TrailApp {
+    fn drop(&mut self) {
+        let current = self.snapshot();
+        if current != self.committed_slate
+            && let Err(err) = current.save(&self.slate_path)
+        {
+            eprintln!("could not save trailgen workbench state: {err:#}");
         }
     }
 }
