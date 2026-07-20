@@ -86,6 +86,7 @@ pub struct TrailApp {
     slate_dirty: Option<Instant>,
     water: Surface,
     status: String,
+    trail_data_status: Option<String>,
     basemap_status: String,
     map_rect: egui::Rect,
     project_deck_requested: bool,
@@ -217,12 +218,7 @@ impl TrailApp {
         } = Project::open(root)?;
         let slate = Slate::load(&slate_path, &root);
         let forge = SearchForge::spawn(ctx.clone(), Arc::clone(&graph))?;
-        let basemap = if offline {
-            None
-        } else {
-            let source = BasemapSource::project(&root, &graph)?;
-            Some(Basemap::spawn(ctx.clone(), source)?)
-        };
+        let basemap = spawn_basemap(ctx, &root, &graph, offline)?;
         let candidates = LoadedCandidates::raise(&graph, routes, &slate);
         let search = LoadedSearch::raise(
             &graph,
@@ -237,6 +233,7 @@ impl TrailApp {
             slate.search.as_ref(),
         );
         let atlas = Atlas::forge(&graph);
+        let trail_data_status = trail_data_status(&root)?;
         let water = forge_water();
         let restored_viewport = slate.viewport;
         let viewport = restored_viewport.unwrap_or_else(|| Viewport {
@@ -296,6 +293,7 @@ impl TrailApp {
             slate_dirty: None,
             water,
             status: candidates.status,
+            trail_data_status,
             basemap_status: if offline {
                 "VECTOR MAP OFFLINE".to_owned()
             } else {
@@ -761,7 +759,7 @@ impl TrailApp {
     fn status_panel(&mut self, ui: &mut egui::Ui) {
         let _status = ui.label(chrome::muted(&self.status));
         ui.add_space(3.0);
-        for line in [
+        for line in self.trail_data_status.iter().cloned().chain([
             format!(
                 "GRAPH · {} V / {} E",
                 self.graph.vertices.len(),
@@ -769,7 +767,7 @@ impl TrailApp {
             ),
             format!("BASE · {}", self.basemap_status),
             format!("PROJECT · {}", self.root.display()),
-        ] {
+        ]) {
             let _line = chrome::note(ui, line);
         }
     }
@@ -1207,7 +1205,7 @@ impl TrailApp {
             Ok(()) => {
                 self.forge_phase = ForgePhase::Striking;
                 self.status = format!(
-                    "forging {} candidate(s) from vertex {}…",
+                    "searching for up to {} matching route(s) from vertex {}…",
                     self.count, self.start.0
                 );
             }
@@ -1225,17 +1223,34 @@ impl TrailApp {
                     solver,
                 } if serial == self.serial => {
                     self.forge_phase = ForgePhase::Idle;
+                    let fits = routes
+                        .iter()
+                        .filter(|route| route.verdict.satisfied)
+                        .count();
                     self.status = if routes.is_empty() {
                         format!(
-                            "{} found no candidates in {}",
+                            "{} found no routes in {}",
+                            solver.label(),
+                            duration(elapsed)
+                        )
+                    } else if fits == 0 {
+                        format!(
+                            "{} found no exact match in {}; showing {} nearest alternatives",
+                            solver.label(),
+                            duration(elapsed),
+                            routes.len()
+                        )
+                    } else if fits == routes.len() {
+                        format!(
+                            "{} found {fits} matching route(s) in {}",
                             solver.label(),
                             duration(elapsed)
                         )
                     } else {
                         format!(
-                            "{} forged {} candidate(s) in {}",
+                            "{} found {fits} matches + {} near misses in {}",
                             solver.label(),
-                            routes.len(),
+                            routes.len() - fits,
                             duration(elapsed)
                         )
                     };
@@ -1527,6 +1542,28 @@ impl TrailApp {
             }
         }
     }
+}
+
+fn trail_data_status(root: &Path) -> Result<Option<String>> {
+    Ok(trailgen_data::indexed_summary(root)?.map(|summary| {
+        format!(
+            "TRAIL DATA · OSM / OVERPASS · {:.1} KM · {} SEGMENTS",
+            summary.demand.radius_km, summary.inventory.trail_segments
+        )
+    }))
+}
+
+fn spawn_basemap(
+    ctx: &egui::Context,
+    root: &Path,
+    graph: &TrailGraph,
+    offline: bool,
+) -> Result<Option<Basemap>> {
+    if offline {
+        return Ok(None);
+    }
+    let source = BasemapSource::project(root, graph)?;
+    Ok(Some(Basemap::spawn(ctx.clone(), source)?))
 }
 
 impl Drop for TrailApp {

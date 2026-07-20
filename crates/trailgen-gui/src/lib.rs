@@ -15,6 +15,7 @@ mod profile;
 mod project;
 mod projects;
 mod slate;
+mod trail_data;
 mod vector_map;
 
 use anyhow::Result;

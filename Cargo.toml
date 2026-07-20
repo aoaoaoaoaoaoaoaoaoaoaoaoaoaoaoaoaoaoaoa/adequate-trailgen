@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/trailgen-core", "crates/trailgen-cli", "crates/trailgen-gui"]
+members = ["crates/trailgen-core", "crates/trailgen-data", "crates/trailgen-cli", "crates/trailgen-gui"]
 resolver = "2"
 
 [workspace.package]
@@ -28,10 +28,10 @@ osmpbfreader = "0.19.1"
 pollster = "0.4"
 rfd = "0.17.2"
 protobuf = "3.7.2"
-reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "form", "rustls"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "form", "json", "query", "rustls"] }
 rstar = "0.12.2"
 serde = { version = "1.0.219", features = ["derive"] }
-serde_json = "1.0.140"
+serde_json = { version = "1.0.140", features = ["float_roundtrip"] }
 sha2 = "0.10.9"
 shapefile = "0.8.0"
 tempfile = "3.20.0"
@@ -40,6 +40,7 @@ tiff = "0.11.3"
 tokio = { version = "1.48.0", features = ["rt"] }
 toml = "0.8.23"
 trailgen-core = { path = "crates/trailgen-core" }
+trailgen-data = { path = "crates/trailgen-data" }
 trailgen-gui = { path = "crates/trailgen-gui" }
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 

@@ -2,9 +2,9 @@
 
 `adequate-trailgen` is a Rust trail-forging workbench for designing long-day-hike loops over normalized trail graphs. Its native Dwemer Poolrooms GUI and deterministic CLI share one provider-neutral core: they split and snap route networks into a routable graph, preserve terrain and access evidence, score difficulty, search for constrained candidates, and render or export auditable routes.
 
-The current implementation is intentionally local-first: use GeoJSON/GPX fixtures, official GIS exports, park layers, OSM-derived extracts, or user-supplied AllTrails exports. The internal model is provider-agnostic; AllTrails is treated as an import/export workflow, not as a privileged dependency.
+Trail data is a first-class application resource. Creating a US trail area in the GUI resolves the place through Nominatim, ranges its walkable OpenStreetMap network, hiking-route evidence, and connected road/hydrology context through Overpass, sequesters the exact response and query under `sources/`, and indexes the graph under `cache/`. Reopening the project verifies and reuses those artifacts; damaged derived receipts are rebuilt or reacquired rather than marooning the project. The internal model remains provider-neutral: official GIS exports, park layers, local GPS files, and user-owned route exports can enrich or replace the default source without contaminating the core graph model.
 
-`trailgen build` prefers provider-neutral GeoJSON, OSM XML/PBF, or shapefile trail/network layers and accepts repeated `--source` flags to merge multiple network files into one graph. `--snap-tolerance-m N` overrides and persists the cautious near-miss endpoint snapping tolerance used while constructing graph topology. It can also bootstrap a practical graph from supplied GPX, KML, KMZ, CSV, route GeoJSON, or route JSON files. Route-derived graphs preserve `route-file` provenance and lower confidence; use them as seed scaffolds when a real network layer is not yet available.
+The CLI is a debug and forensic frontend over the same engine. `trailgen survey PROJECT --place "Harriman State Park, NY"` invokes the canonical acquisition/indexing path. Lower-level commands such as `build`, `assemble`, `acquire-osm`, and `apply-*` remain available for adapter development, explicit source substitution, and provenance audits; they do not constitute a parallel application pipeline.
 
 ## Quickstart
 
@@ -15,34 +15,19 @@ Install the unified release binary under `~/.local/bin`, then open the native wo
 trailgen
 ```
 
-Bare `trailgen` opens an initialized project in the current directory, resumes the last project explicitly chosen by the user, or presents the project deck. The deck creates blank projects, browses ordinary project folders, and lists projects beneath the operating system's Documents directory under `trailgen/`. On Linux the conventional library honors `XDG_DOCUMENTS_DIR` exactly, including its spelling and case; Trailgen never assumes an uppercase `~/Documents`. A blank project is a valid workbench state until its trail network is built. The explicit `trailgen gui [PROJECT]` form remains strict and works from anywhere. Press `Ctrl+O` or use **PROJECTS** to switch projects without discarding the current workbench.
+Bare `trailgen` opens an initialized project in the current directory, resumes the last project explicitly chosen by the user, or presents the project deck. Enter a US place or trailhead and choose **CREATE + FETCH TRAILS**; the workbench creates the project, acquires its default trail network, and opens it as soon as indexing commits. The deck also browses ordinary project folders and lists projects beneath the operating system's Documents directory under `trailgen/`. On Linux the conventional library honors `XDG_DOCUMENTS_DIR` exactly, including its spelling and case; Trailgen never assumes an uppercase `~/Documents`. The explicit `trailgen gui [PROJECT]` form remains strict and works from anywhere. Press `Ctrl+O` or use **PROJECTS** to switch projects without discarding the current workbench.
 
 Trail projects remain ordinary portable directories rooted by `trailgen.toml`. The chosen-project pointer and disposable, per-project workbench slates live under `$XDG_STATE_HOME/trailgen`; each slate restores the viewport, inspector folds and scroll, search draft, saved-candidate visibility, candidate focus and sorting, and map layers. Preferences belong under `$XDG_CONFIG_HOME/trailgen`. Search edits remain a state-backed draft and never silently rewrite `trailgen.toml`; **RESET PROJECT DEFAULTS** discards them. On the first online opening, Trailgen makes a bounded z15 Protomaps PMTiles cut for the graph under `cache/basemap.pmtiles`; later launches mmap that local archive. Navigation beyond the project cut ranges missing vectors from the daily archive and keeps a bounded warm cache under `$XDG_CACHE_HOME/trailgen/protomaps-v4`. The left inspector controls trailhead, distance, ascent/descent, difficulty, route shape, terrain fractions, solver, and search budget. Click the map to snap the trailhead to a real graph vertex, then strike **FIND TRAILS**. The atlas keeps candidate geometry at metric scale; sort the gallery by Pareto rank, distance, ascent, difficulty, or trail fraction, and click a plate for the full vector map and measured elevation/terrain/grade profile. **CLEAR** hides the current candidates without deleting project artifacts, and **RESTORE SAVED** returns the generated routes on disk. Pass `--offline` to suppress basemap acquisition and display while retaining the measured trail vectors, search, candidates, and profiles. Set `TRAILGEN_BASEMAP_ARCHIVE` to use a prepared PMTiles archive instead of the conventional project cut.
 
-The corresponding CLI pipeline is:
+The corresponding debug entrypoint is:
 
 ```sh
-trailgen init demo/mini-loop --name "Mini Loop" --bbox -105.02,39.99,-104.98,40.02
-trailgen discover demo/mini-loop
-trailgen source-plan demo/mini-loop --kind trail-network
-trailgen build demo/mini-loop --source crates/trailgen-core/tests/fixtures/mini_network.geojson --snap-tolerance-m 8
-trailgen apply-elevation demo/mini-loop --source crates/trailgen-core/tests/fixtures/mini_dem.asc --confidence 0.81
-trailgen apply-terrain demo/mini-loop --source crates/trailgen-core/tests/fixtures/terrain_overlay.geojson
-trailgen apply-context demo/mini-loop --source crates/trailgen-core/tests/fixtures/context_overlay.geojson
-trailgen import-seed demo/mini-loop --route demo/mini-loop/routes/candidate-1.gpx --name "Known Good Loop"
-trailgen apply-access demo/mini-loop --source crates/trailgen-core/tests/fixtures/access_overlay.geojson --source crates/trailgen-core/tests/fixtures/closure_overlay.geojson --date 2026-05-15
-trailgen verify-sources demo/mini-loop
-trailgen vet-sources demo/mini-loop --level recommended
-trailgen stats demo/mini-loop
-trailgen generate demo/mini-loop --start=-105.0000,40.0000 --min-km 4 --max-km 9 --count 4 --seed 0 --source-gate recommended
-trailgen verify-generation demo/mini-loop
-trailgen export demo/mini-loop --route candidate-1 --format gpx --output /tmp/candidate-1.gpx --report-output /tmp/candidate-1.md
-trailgen export demo/mini-loop --route candidate-1 --format csv --output /tmp/candidate-1.csv
-trailgen report demo/mini-loop --output /tmp/generated.md
-trailgen map demo/mini-loop --output /tmp/mini-loop-map.html
+trailgen init /tmp/harriman --name "Harriman"
+trailgen survey /tmp/harriman --place "Harriman State Park, NY"
+trailgen stats /tmp/harriman
 ```
 
-The GUI searches the graph already materialized under `cache/` or the effective generation snapshot under `routes/`. The CLI remains the authority for source acquisition, graph assembly, fingerprinted generation ledgers, and route export.
+Both frontends call the same acquisition, indexing, graph-persistence, search, and export machinery. Product behavior is specified by the GUI; the CLI exposes that machinery for diagnosis and reproducibility.
 
 ## Verification
 
@@ -59,6 +44,10 @@ For an exact small-graph search, add `--solver exact`; `--solver auto` uses the 
 
 Generated artifacts land in the project directory:
 
+- `sources/location.json`: cached US place resolution, provider, license, and center
+- `sources/osm/<demand>.osm`: demand-addressed raw OpenStreetMap response
+- `sources/osm/<demand>.overpassql` and `.json`: exact query plus provider, demand, schema, and raw fingerprint
+- `cache/trails.json`: validated trail-index receipt binding the demand, raw source, and graph fingerprint
 - `cache/graph.json`: normalized attributed graph
 - `cache/graph.geojson`: edge geometry and attribution as GeoJSON
 - `cache/edges.csv` and `cache/vertices.csv`: deterministic graph tables with WKT geometry plus terrain/access confidence and compact source, terrain, access, elevation, and seed provenance summaries for spreadsheet/GIS inspection

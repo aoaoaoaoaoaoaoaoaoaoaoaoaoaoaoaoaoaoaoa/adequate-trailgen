@@ -11,7 +11,6 @@ use std::time::Duration;
 use trailgen_core::alltrails::alltrails_plans;
 use trailgen_core::io::route_file::RouteFile;
 use trailgen_core::io::{csv, geojson, gpx, json_route, kml, kmz, osm, report, shapefile as shp};
-use trailgen_core::model::TerrainEvidence;
 use trailgen_core::source::{
     GeoBounds, SourceCandidate, SourceCoverage, SourceCoverageStatus, SourceCoverageSummary,
     SourceFingerprint, SourceKind, SourceManifest, SourcePriority, adapter_registry, classify_path,
@@ -19,14 +18,21 @@ use trailgen_core::source::{
 };
 use trailgen_core::{
     Access, AccessOverlay, AccessWindow, ArcAsciiGrid, ConstraintAudit, Coord, CrossingKind,
-    DifficultyBreakdown, DifficultyWeights, EdgeAttr, EdgeId, EdgeTravel, ElevationMosaic,
-    EnrichmentConfig, GeoTiffDem, GradeDistribution, GraphBuilder, JunctionPolicy,
-    LOW_CONFIDENCE_THRESHOLD, LineString, LoopConstraints, LoopMilpFormulation, PlanningDate,
-    PlanningMoment, PlanningTime, Provenance, RasterDem, Route, RouteMetrics, RouteShape,
-    RouteSnapStats, SearchParams, SeedRoute, SegmentDraft, SolverKind, Terrain, TrailGraph,
-    VertexId, VrtDem, apply_access_overlays, apply_access_overlays_at, apply_context_overlays,
-    apply_terrain_overlays, artifact_key, enrich_graph, rank_routes, route_edges_from_solution,
+    DEFAULT_MAX_DISTANCE_M, DEFAULT_MIN_DISTANCE_M, DifficultyBreakdown, DifficultyWeights,
+    EdgeAttr, EdgeId, EdgeTravel, ElevationMosaic, EnrichmentConfig, GeoTiffDem, GradeDistribution,
+    GraphBuilder, JunctionPolicy, LOW_CONFIDENCE_THRESHOLD, LineString, LoopConstraints,
+    LoopMilpFormulation, PlanningDate, PlanningMoment, PlanningTime, Provenance, RasterDem, Route,
+    RouteMetrics, RouteShape, RouteSnapStats, SearchParams, SeedRoute, SegmentDraft, SolverKind,
+    Terrain, TrailGraph, VertexId, VrtDem, apply_access_overlays, apply_access_overlays_at,
+    apply_context_overlays, apply_terrain_overlays, artifact_key, enrich_graph, rank_routes,
+    route_edges_from_solution,
 };
+use trailgen_data::{
+    DEFAULT_OVERPASS_ENDPOINT, OsmProfile, Overpass, Surveyor, TrailDataConfig, TrailProvider,
+    inspect_osm,
+};
+#[cfg(test)]
+use trailgen_data::{overpass_query, overpass_selector_count};
 
 #[derive(Parser)]
 #[command(name = "trailgen", version)]
@@ -114,13 +120,13 @@ enum Cmd {
         #[arg(long)]
         adapter: Option<String>,
     },
-    /// Fetch bbox-scoped OSM XML from Overpass and register it under sources/.
+    /// Debug-fetch bbox-scoped OSM XML and register it under sources/.
     AcquireOsm {
         /// Project directory containing trailgen.toml.
         project: PathBuf,
         /// OSM way family to acquire and register.
-        #[arg(long, value_enum)]
-        profile: OsmAcquireProfile,
+        #[arg(long, value_parser = parse_osm_profile)]
+        profile: OsmProfile,
         /// Override the project AOI as west,south,east,north lon/lat bounds.
         #[arg(long, allow_hyphen_values = true, value_parser = parse_bounds)]
         bbox: Option<GeoBounds>,
@@ -136,6 +142,17 @@ enum Cmd {
         /// Print the Overpass QL query and do not contact the endpoint.
         #[arg(long)]
         print_query: bool,
+    },
+    /// Resolve a US place, acquire default trail data, and index its routable graph.
+    Survey {
+        /// Project directory containing trailgen.toml.
+        project: PathBuf,
+        /// US place, park, town, or trailhead.
+        #[arg(long)]
+        place: String,
+        /// Half-width of the acquired trail area in kilometers.
+        #[arg(long, default_value_t = trailgen_data::DEFAULT_RADIUS_KM)]
+        radius_km: f64,
     },
     /// Recompute source fingerprints and fail on missing or drifted inputs.
     VerifySources {
@@ -180,10 +197,10 @@ enum Cmd {
         #[arg(long, allow_hyphen_values = true)]
         start: String,
         /// Minimum route distance in kilometers for this run.
-        #[arg(long, default_value_t = 35.0)]
+        #[arg(long, default_value_t = DEFAULT_MIN_DISTANCE_M / 1_000.0)]
         min_km: f64,
         /// Maximum route distance in kilometers for this run.
-        #[arg(long, default_value_t = 50.0)]
+        #[arg(long, default_value_t = DEFAULT_MAX_DISTANCE_M / 1_000.0)]
         max_km: f64,
         /// Maximum number of candidates to emit.
         #[arg(long, default_value_t = 6)]
@@ -456,6 +473,8 @@ enum Cmd {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct ProjectConfig {
     name: String,
+    #[serde(default)]
+    trail_data: TrailDataConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     area: Option<GeoBounds>,
     #[serde(default = "default_snap_tolerance_m")]
@@ -486,6 +505,7 @@ impl ProjectConfig {
     fn new(name: String, area: Option<GeoBounds>) -> Self {
         Self {
             name,
+            trail_data: TrailDataConfig::default(),
             area,
             snap_tolerance_m: 8.0,
             enrichment: EnrichmentConfig::default(),
@@ -641,14 +661,6 @@ enum ExportFormat {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum OsmAcquireProfile {
-    All,
-    Trails,
-    Roads,
-    Hydrology,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum CalibrationFamily {
     All,
     Distance,
@@ -736,23 +748,8 @@ const fn default_max_route_snap_m() -> f64 {
     100.0
 }
 
-const DEFAULT_OVERPASS_ENDPOINT: &str = "https://overpass-api.de/api/interpreter";
-const MAX_OVERPASS_BBOX_DEG2: f64 = 4.0;
 const MAX_SOURCE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_ARCHIVE_MEMBER_BYTES: u64 = 256 * 1024 * 1024;
-const OSM_TRAIL_SELECTORS: &[&str] = &[
-    r#"way["highway"~"^(path|footway|track|service|pedestrian|steps|bridleway|unclassified|residential|tertiary|road)$"]"#,
-    r#"way["route"~"^(hiking|foot|walking)$"]"#,
-    r#"relation["type"="route"]["route"~"^(hiking|foot|walking)$"]"#,
-    r#"relation["type"="restriction"]["restriction"]"#,
-    r#"relation["type"="restriction"]["restriction:foot"]"#,
-];
-const OSM_ROAD_SELECTORS: &[&str] = &[
-    r#"way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|track|road)$"]"#,
-];
-const OSM_HYDROLOGY_SELECTORS: &[&str] =
-    &[r#"way["waterway"~"^(stream|river|canal|drain|ditch|brook)$"]"#];
-
 fn main() -> Result<()> {
     let Some(cmd) = Cli::parse().cmd else {
         return trailgen_gui::run(trailgen_gui::ProjectIntent::Resume, false);
@@ -822,6 +819,15 @@ fn dispatch(cmd: Cmd) -> Result<()> {
                 print_query,
             },
         ),
+        Cmd::Survey {
+            project,
+            place,
+            radius_km,
+        } => Surveyor::default()
+            .survey(&project, &place, radius_km, |event| {
+                println!("{}", event.status());
+            })
+            .map(|_| ()),
         Cmd::VerifySources { project } => verify_sources(&project),
         Cmd::VerifyGeneration { project } => verify_generation(&project),
         Cmd::VetSources {
@@ -1571,32 +1577,12 @@ fn cache_source(
 }
 
 struct OsmAcquisition {
-    profile: OsmAcquireProfile,
+    profile: OsmProfile,
     bbox: Option<GeoBounds>,
     output: Option<PathBuf>,
     endpoint: String,
     timeout_s: u64,
     print_query: bool,
-}
-
-impl OsmAcquireProfile {
-    const fn default_output(self) -> &'static str {
-        match self {
-            Self::All => "osm-extract.osm",
-            Self::Trails => "osm-trails.osm",
-            Self::Roads => "roads.osm",
-            Self::Hydrology => "hydrology.osm",
-        }
-    }
-
-    const fn label(self) -> &'static str {
-        match self {
-            Self::All => "all",
-            Self::Trails => "trails",
-            Self::Roads => "roads",
-            Self::Hydrology => "hydrology",
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -1615,19 +1601,17 @@ fn acquire_osm(project: &Path, acquisition: &OsmAcquisition) -> Result<()> {
     let area = acquisition.bbox.or(config.area).with_context(
         || "acquire-osm requires --bbox or a project area from `trailgen init --bbox`",
     )?;
-    let area_deg2 = (area.east - area.west) * (area.north - area.south);
-    if area_deg2 > MAX_OVERPASS_BBOX_DEG2 {
-        bail!(
-            "Overpass bbox spans {area_deg2:.2} square degrees; limit is {MAX_OVERPASS_BBOX_DEG2:.2}; acquire a regional extract instead"
-        );
-    }
-    let query = overpass_query(acquisition.profile, area, acquisition.timeout_s);
+    let provider = Overpass::new(
+        acquisition.endpoint.clone(),
+        Duration::from_secs(acquisition.timeout_s),
+    );
+    let query = provider.query(acquisition.profile, area);
     if acquisition.print_query {
         print!("{query}");
         return Ok(());
     }
-    let bytes = read_overpass_xml(&acquisition.endpoint, &query, acquisition.timeout_s)?;
-    cache_acquired_osm(project, acquisition, area, &query, &bytes)
+    let payload = provider.fetch(acquisition.profile, area)?;
+    cache_acquired_osm(project, acquisition, area, &payload.query, &payload.bytes)
 }
 
 fn cache_acquired_osm(
@@ -1684,124 +1668,40 @@ fn cache_acquired_osm(
     Ok(())
 }
 
-fn validate_osm_acquisition(
-    profile: OsmAcquireProfile,
-    raw: &str,
-) -> Result<Vec<OsmAcquiredClass>> {
-    let drafts = if matches!(profile, OsmAcquireProfile::All | OsmAcquireProfile::Trails) {
-        osm::network_from_str(raw)?.len()
-    } else {
-        0
-    };
-    let (roads, hydrology) = if matches!(
-        profile,
-        OsmAcquireProfile::All | OsmAcquireProfile::Roads | OsmAcquireProfile::Hydrology
-    ) {
-        osm_context_counts(raw)?
-    } else {
-        (0, 0)
-    };
+fn validate_osm_acquisition(profile: OsmProfile, raw: &str) -> Result<Vec<OsmAcquiredClass>> {
+    let inventory = inspect_osm(profile, raw)?;
     let mut acquired = Vec::new();
-    if drafts > 0 {
+    if inventory.trail_segments > 0 {
         acquired.push(OsmAcquiredClass {
             kind: SourceKind::TrailNetwork,
             adapter_id: "osm-xml-network",
             label: "trail",
-            count: drafts,
+            count: inventory.trail_segments,
         });
     }
-    if roads > 0 {
+    if inventory.road_features > 0 {
         acquired.push(OsmAcquiredClass {
             kind: SourceKind::Road,
             adapter_id: "osm-road-context",
             label: "road",
-            count: roads,
+            count: inventory.road_features,
         });
     }
-    if hydrology > 0 {
+    if inventory.waterway_features > 0 {
         acquired.push(OsmAcquiredClass {
             kind: SourceKind::Hydrology,
             adapter_id: "osm-hydrology-context",
             label: "hydrology",
-            count: hydrology,
+            count: inventory.waterway_features,
         });
     }
     acquired.retain(|class| match profile {
-        OsmAcquireProfile::All => true,
-        OsmAcquireProfile::Trails => class.kind == SourceKind::TrailNetwork,
-        OsmAcquireProfile::Roads => class.kind == SourceKind::Road,
-        OsmAcquireProfile::Hydrology => class.kind == SourceKind::Hydrology,
+        OsmProfile::All => true,
+        OsmProfile::Trails => class.kind == SourceKind::TrailNetwork,
+        OsmProfile::Roads => class.kind == SourceKind::Road,
+        OsmProfile::Hydrology => class.kind == SourceKind::Hydrology,
     });
-    if acquired.is_empty() {
-        bail!(
-            "Overpass response contained no normalizable {} ways for the current adapter",
-            profile.label()
-        );
-    }
     Ok(acquired)
-}
-
-fn osm_context_counts(raw: &str) -> Result<(usize, usize)> {
-    let mut roads = 0;
-    let mut hydrology = 0;
-    for overlay in osm::context_overlays_from_str(raw)? {
-        match overlay.kind {
-            CrossingKind::Road => roads += 1,
-            CrossingKind::Water => hydrology += 1,
-        }
-    }
-    Ok((roads, hydrology))
-}
-
-fn read_overpass_xml(endpoint: &str, query: &str, timeout_s: u64) -> Result<Vec<u8>> {
-    let response = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(timeout_s))
-        .user_agent(concat!(
-            "adequate-trailgen/",
-            env!("CARGO_PKG_VERSION"),
-            " source-acquisition"
-        ))
-        .build()
-        .with_context(|| "build Overpass HTTP client")?
-        .post(endpoint)
-        .form(&[("data", query)])
-        .send()
-        .with_context(|| format!("POST Overpass query to {endpoint}"))?
-        .error_for_status()
-        .with_context(|| format!("Overpass endpoint {endpoint} returned an error status"))?;
-    read_bounded(response, MAX_SOURCE_BYTES, "Overpass response")
-}
-
-fn overpass_query(profile: OsmAcquireProfile, area: GeoBounds, timeout_s: u64) -> String {
-    let bbox = overpass_bbox(area);
-    let selectors = overpass_selectors(profile);
-    let mut query = format!("[out:xml][timeout:{timeout_s}];\n(\n");
-    for selector in &selectors {
-        let _ = writeln!(query, "  {selector}{bbox};");
-    }
-    query.push_str(");\n(._;>;);\nout body;\n");
-    query
-}
-
-fn overpass_selectors(profile: OsmAcquireProfile) -> Vec<&'static str> {
-    match profile {
-        OsmAcquireProfile::All => [
-            OSM_TRAIL_SELECTORS,
-            OSM_ROAD_SELECTORS,
-            OSM_HYDROLOGY_SELECTORS,
-        ]
-        .concat(),
-        OsmAcquireProfile::Trails => OSM_TRAIL_SELECTORS.to_vec(),
-        OsmAcquireProfile::Roads => OSM_ROAD_SELECTORS.to_vec(),
-        OsmAcquireProfile::Hydrology => OSM_HYDROLOGY_SELECTORS.to_vec(),
-    }
-}
-
-fn overpass_bbox(area: GeoBounds) -> String {
-    format!(
-        "({},{},{},{})",
-        area.south, area.west, area.north, area.east
-    )
 }
 
 fn verify_sources(project: &Path) -> Result<()> {
@@ -4870,7 +4770,7 @@ fn render_cache_command_sketches(text: &mut String, manifest: &SourceManifest) {
         let _ = writeln!(
             text,
             "Combined OSM/Overpass fallback:\n\n```sh\ntrailgen acquire-osm <project> --profile all{bbox} --output {}\n```\n",
-            OsmAcquireProfile::All.default_output()
+            OsmProfile::All.default_output()
         );
     }
     for recommendation in &manifest.recommendations {
@@ -4926,11 +4826,11 @@ fn render_cache_command_sketches(text: &mut String, manifest: &SourceManifest) {
     }
 }
 
-const fn osm_profile_for_kind(kind: SourceKind) -> Option<OsmAcquireProfile> {
+const fn osm_profile_for_kind(kind: SourceKind) -> Option<OsmProfile> {
     match kind {
-        SourceKind::TrailNetwork => Some(OsmAcquireProfile::Trails),
-        SourceKind::Road => Some(OsmAcquireProfile::Roads),
-        SourceKind::Hydrology => Some(OsmAcquireProfile::Hydrology),
+        SourceKind::TrailNetwork => Some(OsmProfile::Trails),
+        SourceKind::Road => Some(OsmProfile::Roads),
+        SourceKind::Hydrology => Some(OsmProfile::Hydrology),
         SourceKind::SeedRoute
         | SourceKind::Elevation
         | SourceKind::Terrain
@@ -5675,199 +5575,7 @@ fn load_graph_json(raw: &str) -> Result<TrailGraph> {
 }
 
 fn save_graph(project: &Path, graph: &TrailGraph) -> Result<()> {
-    write_json(project.join("cache/graph.json"), graph)?;
-    write_json(
-        project.join("cache/graph.geojson"),
-        &geojson::graph_to_geojson(graph),
-    )?;
-    write_bytes(project.join("cache/edges.csv"), graph_edges_csv(graph))?;
-    write_bytes(
-        project.join("cache/vertices.csv"),
-        graph_vertices_csv(graph),
-    )
-}
-
-fn graph_vertices_csv(graph: &TrailGraph) -> String {
-    let mut out = String::from("vertex_id,lon,lat,elevation_m,wkt\n");
-    for vertex in &graph.vertices {
-        let Coord { lon, lat, ele } = vertex.coord;
-        writeln!(
-            out,
-            "{},{lon:.7},{lat:.7},{},{}",
-            vertex.id.0,
-            csv_f64(ele),
-            csv_cell(&point_wkt(vertex.coord))
-        )
-        .expect("write to string");
-    }
-    out
-}
-
-fn graph_edges_csv(graph: &TrailGraph) -> String {
-    let mut out = String::from(
-        "edge_id,from_vertex,to_vertex,travel,length_m,ascent_m,descent_m,grade_abs_mean,grade_abs_max,sustained_steep_m,terrain,surface,terrain_confidence,terrain_evidence,access,access_confidence,access_provenance,road_exposure,confidence,difficulty,seed_count,seed_provenance,elevation_provenance,road_crossings,water_crossings,provenance,wkt\n",
-    );
-    for edge in &graph.edges {
-        let crossings = edge_crossing_counts(edge);
-        writeln!(
-            out,
-            "{},{},{},{},{:.3},{:.3},{:.3},{:.6},{:.6},{:.3},{},{},{:.6},{},{},{:.6},{},{:.6},{:.6},{:.6},{},{},{},{},{},{},{}",
-            edge.id.0,
-            edge.a.0,
-            edge.b.0,
-            edge_travel_tag(edge.attr.travel),
-            edge.attr.length_m,
-            edge.attr.ascent_m,
-            edge.attr.descent_m,
-            edge.attr.grade_abs_mean,
-            edge.attr.grade_abs_max,
-            edge.attr.sustained_steep_m,
-            terrain_tag(edge.attr.terrain),
-            csv_cell(edge.attr.surface.as_deref().unwrap_or("")),
-            edge.attr.terrain_confidence,
-            csv_cell(&terrain_evidence_summary(&edge.attr.terrain_evidence)),
-            access_tag(edge.attr.access),
-            edge.attr.access_confidence,
-            csv_cell(&provenance_summary(&edge.attr.access_provenance)),
-            edge.attr.road_exposure,
-            edge.attr.confidence,
-            edge.attr.difficulty,
-            edge.attr.seed_count,
-            csv_cell(&provenance_summary(&edge.attr.seed_provenance)),
-            csv_cell(&provenance_summary(&edge.attr.elevation_provenance)),
-            crossings.road,
-            crossings.water,
-            csv_cell(&provenance_summary(&edge.attr.provenance)),
-            csv_cell(&line_wkt(&edge.geometry))
-        )
-        .expect("write to string");
-    }
-    out
-}
-
-fn terrain_evidence_summary(evidence: &[TerrainEvidence]) -> String {
-    evidence
-        .iter()
-        .map(|e| {
-            let mut s = format!(
-                "{}:{:.0}%:{}",
-                terrain_tag(e.terrain),
-                e.confidence * 100.0,
-                e.rationale
-            );
-            if let Some(provenance) = &e.provenance {
-                write!(s, ":{}", provenance_csv_label(provenance)).expect("write to string");
-            }
-            s
-        })
-        .collect::<Vec<_>>()
-        .join("|")
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct CrossingCounts {
-    road: u32,
-    water: u32,
-}
-
-fn edge_crossing_counts(edge: &trailgen_core::Edge) -> CrossingCounts {
-    edge.attr
-        .crossings
-        .iter()
-        .fold(CrossingCounts::default(), |mut counts, crossing| {
-            match crossing.kind {
-                CrossingKind::Road => counts.road += crossing.count,
-                CrossingKind::Water => counts.water += crossing.count,
-            }
-            counts
-        })
-}
-
-fn provenance_summary(provenance: &[Provenance]) -> String {
-    provenance
-        .iter()
-        .map(provenance_csv_label)
-        .collect::<Vec<_>>()
-        .join("|")
-}
-
-fn provenance_csv_label(p: &Provenance) -> String {
-    let mut s = p.source.clone();
-    if let Some(layer) = &p.layer {
-        write!(s, ":{layer}").expect("write to string");
-    }
-    if let Some(source_id) = &p.source_id {
-        write!(s, ":{source_id}").expect("write to string");
-    }
-    s
-}
-
-fn line_wkt(line: &LineString) -> String {
-    format!(
-        "LINESTRING Z ({})",
-        line.points
-            .iter()
-            .map(coord_wkt_tuple)
-            .collect::<Vec<_>>()
-            .join(", ")
-    )
-}
-
-fn point_wkt(coord: Coord) -> String {
-    format!("POINT Z ({})", coord_wkt_tuple(&coord))
-}
-
-fn coord_wkt_tuple(coord: &Coord) -> String {
-    format!(
-        "{:.7} {:.7} {:.3}",
-        coord.lon,
-        coord.lat,
-        coord.ele.unwrap_or(0.0)
-    )
-}
-
-fn csv_cell(value: &str) -> String {
-    if value.contains([',', '"', '\n', '\r']) {
-        format!("\"{}\"", value.replace('"', "\"\""))
-    } else {
-        value.to_owned()
-    }
-}
-
-fn csv_f64(value: Option<f64>) -> String {
-    value.map_or_else(String::new, |x| format!("{x:.3}"))
-}
-
-const fn terrain_tag(terrain: Terrain) -> &'static str {
-    match terrain {
-        Terrain::Unknown => "unknown",
-        Terrain::Trail => "trail",
-        Terrain::Forest => "forest",
-        Terrain::Alpine => "alpine",
-        Terrain::Talus => "talus",
-        Terrain::Scramble => "scramble",
-        Terrain::Pavement => "pavement",
-        Terrain::Road => "road",
-        Terrain::Water => "water",
-    }
-}
-
-const fn access_tag(access: Access) -> &'static str {
-    match access {
-        Access::Unknown => "unknown",
-        Access::Open => "open",
-        Access::Restricted => "restricted",
-        Access::Closed => "closed",
-        Access::Private => "private",
-    }
-}
-
-const fn edge_travel_tag(travel: EdgeTravel) -> &'static str {
-    match travel {
-        EdgeTravel::Both => "both",
-        EdgeTravel::Forward => "forward",
-        EdgeTravel::Backward => "backward",
-    }
+    trailgen_data::store_graph(project, graph)
 }
 
 fn access_baseline_path(project: &Path) -> PathBuf {
@@ -7010,6 +6718,10 @@ fn parse_bounds(raw: &str) -> Result<GeoBounds, String> {
     }
 }
 
+fn parse_osm_profile(raw: &str) -> Result<OsmProfile, String> {
+    raw.parse()
+}
+
 fn parse_source_kind(raw: &str) -> Result<SourceKind, String> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "trail-network" | "network" | "trails" => Ok(SourceKind::TrailNetwork),
@@ -7240,11 +6952,11 @@ mod tests {
         Cli::command().debug_assert();
         assert!(Cli::try_parse_from(["trailgen"]).unwrap().cmd.is_none());
         assert!(matches!(
-            Cli::try_parse_from(["trailgen", "gui", "demo/mini-loop", "--offline"])
+            Cli::try_parse_from(["trailgen", "gui", "/tmp/trails", "--offline"])
                 .unwrap()
                 .cmd,
             Some(Cmd::Gui { project: Some(project), offline: true })
-                if project == Path::new("demo/mini-loop")
+                if project == Path::new("/tmp/trails")
         ));
         assert!(matches!(
             Cli::try_parse_from(["trailgen", "gui"]).unwrap().cmd,
@@ -7657,63 +7369,62 @@ mod tests {
         let area = GeoBounds::new(-105.02, 39.99, -104.98, 40.02);
         let bbox = "(39.99,-105.02,40.02,-104.98)";
 
-        let trails = overpass_query(OsmAcquireProfile::Trails, area, 45);
+        let trails = overpass_query(OsmProfile::Trails, area, 45);
         assert!(trails.starts_with("[out:xml][timeout:45];"));
         assert!(trails.contains(&format!(
-            r#"way["highway"~"^(path|footway|track|service|pedestrian|steps|bridleway|unclassified|residential|tertiary|road)$"]{bbox};"#
+            r#"way["highway"~"^(path|footway|track|pedestrian|steps|bridleway)$"]{bbox};"#
+        )));
+        assert!(trails.contains(&format!(
+            r#"way["highway"~"^(service|unclassified|residential|tertiary|road)$"]["foot"~"^(yes|designated|permissive|official)$"]{bbox};"#
         )));
         assert!(trails.contains(&format!(r#"way["route"~"^(hiking|foot|walking)$"]{bbox};"#)));
-        assert!(trails.contains(&format!(
-            r#"relation["type"="route"]["route"~"^(hiking|foot|walking)$"]{bbox};"#
-        )));
-        assert!(trails.contains(&format!(
-            r#"relation["type"="restriction"]["restriction"]{bbox};"#
-        )));
-        assert!(trails.contains(&format!(
-            r#"relation["type"="restriction"]["restriction:foot"]{bbox};"#
-        )));
-        assert!(trails.ends_with("(._;>;);\nout body;\n"));
+        assert!(
+            trails.contains(
+                r#"rel(bw.trailways)["type"="route"]["route"~"^(hiking|foot|walking)$"]"#
+            )
+        );
+        assert!(trails.contains(r#"rel(bw.trailways)["type"="restriction"]["restriction:foot"]"#));
+        assert!(trails.ends_with("out body;\n"));
 
-        let roads = overpass_query(OsmAcquireProfile::Roads, area, 45);
+        let roads = overpass_query(OsmProfile::Roads, area, 45);
         assert!(roads.contains("living_street"));
         assert!(roads.contains(bbox));
 
-        let hydrology = overpass_query(OsmAcquireProfile::Hydrology, area, 45);
+        let hydrology = overpass_query(OsmProfile::Hydrology, area, 45);
         assert!(hydrology.contains("waterway"));
         assert!(hydrology.contains("brook"));
         assert!(hydrology.contains(bbox));
 
-        let all = overpass_query(OsmAcquireProfile::All, area, 45);
+        let all = overpass_query(OsmProfile::All, area, 45);
         assert!(all.contains("living_street"));
         assert!(all.contains("waterway"));
+        assert!(all.contains("way(bn.trailnodes)"));
         assert_eq!(
             all.matches(bbox).count(),
-            OSM_TRAIL_SELECTORS.len() + OSM_ROAD_SELECTORS.len() + OSM_HYDROLOGY_SELECTORS.len()
+            overpass_selector_count(OsmProfile::Trails) - 2
         );
 
         assert_acquired_classes(
-            validate_osm_acquisition(OsmAcquireProfile::Trails, tiny_overpass_osm()).unwrap(),
-            &[(SourceKind::TrailNetwork, "osm-xml-network", 2)],
+            validate_osm_acquisition(OsmProfile::Trails, tiny_overpass_osm()).unwrap(),
+            &[(SourceKind::TrailNetwork, "osm-xml-network", 1)],
         );
         assert_acquired_classes(
-            validate_osm_acquisition(OsmAcquireProfile::Roads, tiny_overpass_osm()).unwrap(),
+            validate_osm_acquisition(OsmProfile::Roads, tiny_overpass_osm()).unwrap(),
             &[(SourceKind::Road, "osm-road-context", 1)],
         );
         assert_acquired_classes(
-            validate_osm_acquisition(OsmAcquireProfile::Hydrology, tiny_overpass_osm()).unwrap(),
+            validate_osm_acquisition(OsmProfile::Hydrology, tiny_overpass_osm()).unwrap(),
             &[(SourceKind::Hydrology, "osm-hydrology-context", 1)],
         );
         assert_acquired_classes(
-            validate_osm_acquisition(OsmAcquireProfile::All, tiny_overpass_osm()).unwrap(),
+            validate_osm_acquisition(OsmProfile::All, tiny_overpass_osm()).unwrap(),
             &[
-                (SourceKind::TrailNetwork, "osm-xml-network", 2),
+                (SourceKind::TrailNetwork, "osm-xml-network", 1),
                 (SourceKind::Road, "osm-road-context", 1),
                 (SourceKind::Hydrology, "osm-hydrology-context", 1),
             ],
         );
-        assert!(
-            validate_osm_acquisition(OsmAcquireProfile::Hydrology, empty_overpass_osm()).is_err()
-        );
+        assert!(validate_osm_acquisition(OsmProfile::Hydrology, empty_overpass_osm()).is_err());
     }
 
     #[test]
@@ -7723,11 +7434,7 @@ mod tests {
         let area = GeoBounds::new(-105.02, 39.99, -104.98, 40.02);
         init(project, "OSM Acquisition Test".to_owned(), Some(area))?;
 
-        for profile in [
-            OsmAcquireProfile::Trails,
-            OsmAcquireProfile::Roads,
-            OsmAcquireProfile::Hydrology,
-        ] {
+        for profile in [OsmProfile::Trails, OsmProfile::Roads, OsmProfile::Hydrology] {
             let acquisition = OsmAcquisition {
                 profile,
                 bbox: None,
@@ -7746,7 +7453,7 @@ mod tests {
             )?;
         }
         let all = OsmAcquisition {
-            profile: OsmAcquireProfile::All,
+            profile: OsmProfile::All,
             bbox: None,
             output: Some(PathBuf::from("osm-complete.osm")),
             endpoint: "https://overpass.example.test/api/interpreter".to_owned(),
@@ -8780,16 +8487,18 @@ mod tests {
         build(project, &osm)?;
 
         let graph = load_graph(project)?;
-        assert_eq!(graph.edges.len(), 2);
+        assert_eq!(graph.edges.len(), 1);
         assert!(graph.edges.iter().any(|edge| {
             edge.attr
                 .provenance
                 .iter()
                 .any(|p| p.source == "osm-xml" && p.source_id.as_deref() == Some("trail-10"))
         }));
-        assert!(graph.edges.iter().any(|edge| {
-            edge.attr.access == Access::Private
-                && (edge.attr.road_exposure - 1.0).abs() <= f64::EPSILON
+        assert!(graph.edges.iter().all(|edge| {
+            edge.attr
+                .provenance
+                .iter()
+                .all(|p| p.source_id.as_deref() != Some("service-11"))
         }));
 
         let manifest: Value =
@@ -9202,11 +8911,7 @@ mod tests {
             fixtures.join("closure_overlay.geojson"),
             sources.join("closure.geojson"),
         )?;
-        fs::copy(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../demo/mini-loop/routes/candidate-1.gpx"),
-            seed_sources.join("completed.gpx"),
-        )?;
+        write_seed_route(&seed_sources.join("completed.gpx"))?;
 
         discover(&project, None)?;
         assemble_sources(&project, None, None, 0.82)?;
@@ -9247,10 +8952,10 @@ mod tests {
         let project = tmp.path().join("project");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../trailgen-core/tests/fixtures/mini_network.geojson");
-        let route = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../demo/mini-loop/routes/candidate-1.gpx");
+        let route = tmp.path().join("known-loop.gpx");
 
         init(&project, "Seed Idempotence Test".to_owned(), None)?;
+        write_seed_route(&route)?;
         build(&project, &fixture)?;
         import_seed(&project, &route, Some("Known Good Loop".to_owned()), None)?;
 
@@ -9285,6 +8990,24 @@ mod tests {
         assert!(!project.join("seeds/candidate-1.json").exists());
 
         Ok(())
+    }
+
+    fn write_seed_route(path: &Path) -> Result<()> {
+        fs::write(
+            path,
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="trailgen-test" xmlns="http://www.topografix.com/GPX/1/1">
+  <trk><name>Fixture Loop</name><trkseg>
+    <trkpt lat="40.0000" lon="-105.0000"><ele>1660</ele></trkpt>
+    <trkpt lat="40.0120" lon="-105.0000"><ele>1710</ele></trkpt>
+    <trkpt lat="40.0120" lon="-104.9880"><ele>1760</ele></trkpt>
+    <trkpt lat="40.0000" lon="-104.9880"><ele>1680</ele></trkpt>
+    <trkpt lat="40.0000" lon="-105.0000"><ele>1660</ele></trkpt>
+  </trkseg></trk>
+</gpx>
+"#,
+        )
+        .with_context(|| format!("write seed fixture {}", path.display()))
     }
 
     #[test]
@@ -9777,38 +9500,7 @@ mod tests {
     }
 
     fn tiny_overpass_osm() -> &'static str {
-        r#"<osm version="0.6" generator="adequate-trailgen-test">
-  <node id="1" lat="40.0000" lon="-105.0000"/>
-  <node id="2" lat="40.0010" lon="-105.0000"/>
-  <node id="3" lat="40.0005" lon="-105.0010"/>
-  <node id="4" lat="40.0005" lon="-104.9990"/>
-  <node id="5" lat="40.0020" lon="-105.0010"/>
-  <node id="6" lat="40.0020" lon="-104.9990"/>
-  <way id="10">
-    <nd ref="1"/>
-    <nd ref="2"/>
-    <tag k="highway" v="path"/>
-    <tag k="name" v="Trail One"/>
-  </way>
-  <way id="11">
-    <nd ref="3"/>
-    <nd ref="4"/>
-    <tag k="highway" v="service"/>
-    <tag k="name" v="Road One"/>
-  </way>
-  <way id="12">
-    <nd ref="5"/>
-    <nd ref="6"/>
-    <tag k="waterway" v="stream"/>
-    <tag k="name" v="Stream One"/>
-  </way>
-  <relation id="20">
-    <member type="way" ref="10" role=""/>
-    <tag k="type" v="route"/>
-    <tag k="route" v="hiking"/>
-    <tag k="name" v="Trail One Route"/>
-  </relation>
-</osm>"#
+        include_str!("../../trailgen-data/tests/fixtures/tiny-overpass.osm")
     }
 
     fn empty_overpass_osm() -> &'static str {

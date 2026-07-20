@@ -37,6 +37,7 @@ pub enum JunctionPolicy {
     #[default]
     Planar,
     ExplicitNodes,
+    ExplicitEndpoints,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -136,17 +137,7 @@ impl GraphBuilder {
             ));
         }
 
-        let primitives = drafts
-            .iter()
-            .enumerate()
-            .flat_map(|(src, draft)| {
-                draft.geometry.points.windows(2).map(move |w| Primitive {
-                    a: w[0],
-                    b: w[1],
-                    src,
-                })
-            })
-            .collect::<Vec<_>>();
+        let primitives = draft_primitives(drafts);
 
         let mut cuts = primitives
             .iter()
@@ -204,8 +195,7 @@ impl GraphBuilder {
                     continue;
                 }
                 let draft = &drafts[primitive.src];
-                let geometry =
-                    LineString::unchecked(vec![vertices[va.0].coord, vertices[vb.0].coord]);
+                let geometry = edge_geometry(draft, vertices[va.0].coord, vertices[vb.0].coord);
                 let id = EdgeId(edges.len());
                 let snapped = pair[0].snapped || pair[1].snapped;
                 let attr = edge_attr(draft, &geometry, snapped.then_some(snap_provenance.clone()));
@@ -232,6 +222,45 @@ impl GraphBuilder {
         )?;
         Ok(graph)
     }
+}
+
+fn draft_primitives(drafts: &[SegmentDraft]) -> Vec<Primitive> {
+    drafts
+        .iter()
+        .enumerate()
+        .flat_map(|(src, draft)| {
+            if draft.junctions == JunctionPolicy::ExplicitEndpoints {
+                let points = &draft.geometry.points;
+                vec![Primitive {
+                    a: points[0],
+                    b: points[points.len() - 1],
+                    src,
+                }]
+            } else {
+                draft
+                    .geometry
+                    .points
+                    .windows(2)
+                    .map(|points| Primitive {
+                        a: points[0],
+                        b: points[1],
+                        src,
+                    })
+                    .collect()
+            }
+        })
+        .collect()
+}
+
+fn edge_geometry(draft: &SegmentDraft, a: Coord, b: Coord) -> LineString {
+    if draft.junctions != JunctionPolicy::ExplicitEndpoints {
+        return LineString::unchecked(vec![a, b]);
+    }
+    let mut geometry = draft.geometry.clone();
+    let last = geometry.points.len() - 1;
+    geometry.points[0] = a;
+    geometry.points[last] = b;
+    geometry
 }
 
 fn junctions_may_be_inferred(drafts: &[SegmentDraft], a: Primitive, b: Primitive) -> bool {

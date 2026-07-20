@@ -20,7 +20,10 @@ pub mod source;
 pub use builder::{
     GraphBuilder, JunctionPolicy, SegmentDraft, TurnRestrictionDraft, TurnRestrictionRule,
 };
-pub use constraints::{ConstraintAudit, ConstraintVerdict, LoopConstraints};
+pub use constraints::{
+    ConstraintAudit, ConstraintVerdict, DEFAULT_MAX_DISTANCE_M, DEFAULT_MIN_DISTANCE_M,
+    LoopConstraints,
+};
 pub use difficulty::{
     DifficultyBreakdown, DifficultyFactor, DifficultyWeights, TerrainMultipliers,
 };

@@ -2,6 +2,7 @@ use crate::{
     ProjectIntent,
     app::{TrailApp, forge_water},
     habitat::{Habitat, ProjectPlace, create_project},
+    trail_data::{Event as TrailDataEvent, TrailData},
 };
 use anyhow::{Context as _, Result, ensure};
 use dwemer_poolrooms::{
@@ -10,6 +11,7 @@ use dwemer_poolrooms::{
 };
 use egui::{Color32, RichText, Stroke, vec2};
 use std::path::{Path, PathBuf};
+use trailgen_data::TrailDataConfig;
 
 pub struct Workbench {
     mode: WorkbenchMode,
@@ -235,18 +237,48 @@ impl ProjectWorkspace {
 struct EmptyProject {
     root: PathBuf,
     name: String,
+    location: String,
+    survey: Option<TrailData>,
+    survey_status: String,
+    radius_km: f64,
+    offline: bool,
     fault: Option<String>,
     water: Surface,
 }
 
 impl EmptyProject {
-    fn new(place: ProjectPlace) -> Self {
-        Self {
+    fn new(ctx: &egui::Context, place: ProjectPlace, offline: bool) -> Self {
+        let (config, fault) = match trailgen_data::project_config(&place.root) {
+            Ok(config) => (config, None),
+            Err(err) => (
+                TrailDataConfig::default(),
+                Some(format!("could not read trail-data demand: {err:#}")),
+            ),
+        };
+        let location = config.place.unwrap_or_default();
+        let survey_status = if offline && !location.is_empty() {
+            "OFFLINE · TRAIL DEMAND WILL RESUME ONLINE"
+        } else {
+            "WAITING FOR A US PLACE OR TRAILHEAD"
+        };
+        let mut project = Self {
             root: place.root,
+            location,
             name: place.name,
-            fault: None,
+            survey: None,
+            survey_status: survey_status.to_owned(),
+            radius_km: config.radius_km,
+            offline,
+            fault,
             water: forge_water(),
+        };
+        if !offline
+            && !project.location.is_empty()
+            && let Err(err) = project.strike_survey(ctx)
+        {
+            project.fault = Some(format!("{err:#}"));
         }
+        project
     }
 
     fn pulse(&mut self, ui: &mut egui::Ui) -> Option<WorkspaceAction> {
@@ -254,6 +286,7 @@ impl EmptyProject {
             .ctx()
             .input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::O));
         let mut action = shortcut.then_some(WorkspaceAction::Projects);
+        self.absorb_survey(&mut action);
         let _center = egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.add_space(((ui.available_height() - 390.0) * 0.45).max(18.0));
             let _row = ui.horizontal(|ui| {
@@ -272,32 +305,71 @@ impl EmptyProject {
     fn plate(&mut self, ui: &mut egui::Ui, action: &mut Option<WorkspaceAction>) {
         let _column = ui.vertical(|ui| {
             ui.set_width(660.0);
-            let _eyebrow = ui.label(chrome::eyebrow("EMPTY PROJECT"));
+            let _eyebrow = ui.label(chrome::eyebrow("TRAIL DATA NEEDED"));
             let _title = ui.label(chrome::title(self.name.to_ascii_uppercase()));
             ui.add_space(8.0);
             let _copy = ui.add(
                 egui::Label::new(
-                    RichText::new("ADD TRAIL DATA BEFORE SEARCHING FOR ROUTES.")
-                        .color(chrome::MUTED),
+                    RichText::new(
+                        "CHOOSE A US PLACE OR TRAILHEAD. TRAILGEN WILL RANGE, SEQUESTER, AND INDEX ITS TRAILS.",
+                    )
+                    .color(chrome::MUTED),
                 )
                 .wrap(),
             );
             ui.add_space(16.0);
-            let _command_label = ui.label(chrome::eyebrow("DEVELOPMENT COMMAND"));
-            let command = format!(
-                "trailgen build \"{}\" --source /path/to/trails.geojson",
-                self.root.display()
+            let _location_label = ui.label(chrome::eyebrow("US PLACE OR TRAILHEAD"));
+            ui.add_space(3.0);
+            let location = ui
+                .add_enabled_ui(self.survey.is_none(), |ui| {
+                    ui.add_sized(
+                        [ui.available_width(), 30.0],
+                        egui::TextEdit::singleline(&mut self.location)
+                            .hint_text("Harriman State Park, NY")
+                            .text_color(chrome::TEXT),
+                    )
+                })
+                .inner;
+            chrome::tension(ui, &location);
+            let enter =
+                location.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+            ui.add_space(8.0);
+            self.radius_control(ui);
+            ui.add_space(8.0);
+            let can_survey =
+                !self.offline && self.survey.is_none() && !self.location.trim().is_empty();
+            let survey = ui.add_enabled(
+                can_survey,
+                chrome::glyph_button("⌖  FETCH + INDEX TRAILS", true).min_size(vec2(240.0, 36.0)),
             );
-            let _command = ui.add(
-                egui::Label::new(
-                    RichText::new(command)
-                        .monospace()
-                        .size(11.0)
-                        .color(chrome::TEXT),
-                )
-                .wrap(),
-            );
-            ui.add_space(16.0);
+            let survey = survey.on_disabled_hover_text(if self.offline {
+                "Trail-data acquisition is unavailable in offline mode."
+            } else if self.survey.is_some() {
+                "Trail-data acquisition is already running."
+            } else {
+                "Enter a US place or trailhead."
+            });
+            chrome::tension(ui, &survey);
+            if (survey.clicked() || (enter && can_survey))
+                && let Err(err) = self.strike_survey(ui.ctx())
+            {
+                self.fault = Some(format!("{err:#}"));
+            }
+            ui.add_space(12.0);
+            let _status_label = ui.label(chrome::eyebrow("TRAIL DATA"));
+            let _status = ui.horizontal(|ui| {
+                if self.survey.is_some() {
+                    let _spinner = ui.add(egui::Spinner::new().size(12.0));
+                }
+                let _text = ui.add(
+                    egui::Label::new(
+                        RichText::new(&self.survey_status)
+                            .size(11.0)
+                            .color(chrome::MUTED),
+                    )
+                    .wrap(),
+                );
+            });
             let _actions = ui.horizontal(|ui| {
                 let refresh = ui.add(
                     chrome::glyph_button("↻  REFRESH PROJECT", true).min_size(vec2(205.0, 34.0)),
@@ -319,8 +391,81 @@ impl EmptyProject {
                 fault_label(ui, fault);
             }
             ui.add_space(14.0);
+            let _provider = chrome::note(
+                ui,
+                "DEFAULT SOURCE · OPENSTREETMAP / OVERPASS · US SEARCH ONLY",
+            );
+            let _attribution = chrome::note(ui, "© OPENSTREETMAP CONTRIBUTORS · ODBL");
             let _path = chrome::note(ui, format!("PROJECT FOLDER · {}", self.root.display()));
         });
+    }
+
+    fn radius_control(&mut self, ui: &mut egui::Ui) {
+        let _radius = ui.horizontal(|ui| {
+            let _label = ui.label(chrome::eyebrow("AREA RADIUS"));
+            let radius = ui.add_enabled(
+                self.survey.is_none(),
+                egui::DragValue::new(&mut self.radius_km)
+                    .range(trailgen_data::MIN_RADIUS_KM..=trailgen_data::MAX_RADIUS_KM)
+                    .speed(0.25)
+                    .fixed_decimals(1)
+                    .suffix(" km"),
+            );
+            chrome::tension(ui, &radius);
+            let _hint = ui.label(
+                RichText::new("8 KM FITS MOST PARKS · WIDEN FOR LARGE NETWORKS")
+                    .size(10.0)
+                    .color(chrome::MUTED),
+            );
+        });
+    }
+
+    fn strike_survey(&mut self, ctx: &egui::Context) -> Result<()> {
+        self.fault = None;
+        "LOCATING US TRAIL AREA".clone_into(&mut self.survey_status);
+        trailgen_data::configure_project(
+            &self.root,
+            &TrailDataConfig {
+                place: Some(self.location.trim().to_owned()),
+                radius_km: self.radius_km,
+            },
+        )?;
+        self.survey = Some(TrailData::spawn(
+            ctx.clone(),
+            self.root.clone(),
+            self.location.trim().to_owned(),
+            self.radius_km,
+        )?);
+        Ok(())
+    }
+
+    fn absorb_survey(&mut self, action: &mut Option<WorkspaceAction>) {
+        let Some(survey) = &self.survey else {
+            return;
+        };
+        let mut finished = false;
+        while let Ok(event) = survey.events.try_recv() {
+            match event {
+                TrailDataEvent::Progress(event) => self.survey_status = event.status(),
+                TrailDataEvent::Ready(summary) => {
+                    self.survey_status = format!(
+                        "READY · {} VERTICES · {} EDGES",
+                        summary.vertices, summary.edges
+                    );
+                    self.fault = None;
+                    *action = Some(WorkspaceAction::Reload);
+                    finished = true;
+                }
+                TrailDataEvent::Fault(fault) => {
+                    "TRAIL-DATA ACQUISITION FAILED".clone_into(&mut self.survey_status);
+                    self.fault = Some(fault);
+                    finished = true;
+                }
+            }
+        }
+        if finished {
+            self.survey = None;
+        }
     }
 }
 
@@ -408,7 +553,7 @@ impl ProjectDeck {
         ui.add_space(7.0);
         let _copy = ui.add(
             egui::Label::new(
-                RichText::new("CREATE A BLANK PROJECT OR OPEN ONE ALREADY ON DISK.")
+                RichText::new("CREATE A US TRAIL AREA OR OPEN ONE ALREADY ON DISK.")
                     .color(chrome::MUTED),
             )
             .wrap(),
@@ -417,12 +562,12 @@ impl ProjectDeck {
     }
 
     fn new_project(&mut self, ui: &mut egui::Ui, action: &mut Option<ProjectAction>) {
-        let _label = ui.label(chrome::eyebrow("NEW PROJECT"));
+        let _label = ui.label(chrome::eyebrow("NEW TRAIL AREA"));
         ui.add_space(3.0);
         let name = ui.add_sized(
             [ui.available_width(), 28.0],
             egui::TextEdit::singleline(&mut self.new_name)
-                .hint_text("project name")
+                .hint_text("US place or trailhead · Harriman State Park, NY")
                 .text_color(chrome::TEXT),
         );
         chrome::tension(ui, &name);
@@ -447,9 +592,14 @@ impl ProjectDeck {
         ui.add_space(6.0);
         let target = self.new_project_root();
         let ready = target.is_some();
+        let create_label = if self.offline {
+            "＋  CREATE TRAIL AREA"
+        } else {
+            "＋  CREATE + FETCH TRAILS"
+        };
         let create = ui.add_enabled(
             ready,
-            chrome::glyph_button("＋  CREATE BLANK PROJECT", true).min_size(vec2(245.0, 34.0)),
+            chrome::glyph_button(create_label, true).min_size(vec2(245.0, 34.0)),
         );
         let create =
             create.on_disabled_hover_text("Enter a project name and choose a parent folder.");
@@ -583,7 +733,17 @@ impl ProjectDeck {
         }
         let result = (|| {
             let root = match action {
-                ProjectAction::Create { root, name } => create_project(&root, &name)?,
+                ProjectAction::Create { root, name } => {
+                    let root = create_project(&root, &name)?;
+                    trailgen_data::configure_project(
+                        &root,
+                        &TrailDataConfig {
+                            place: Some(name),
+                            radius_km: trailgen_data::DEFAULT_RADIUS_KM,
+                        },
+                    )?;
+                    root
+                }
                 ProjectAction::Open(root) => {
                     ensure!(!root.as_os_str().is_empty(), "choose a project folder");
                     root
@@ -620,7 +780,9 @@ fn open_project(
     let place = ProjectPlace::read(root.clone())?;
     let has_graph = root.join("routes/generated.graph.json").is_file()
         || root.join("cache/graph.json").is_file();
-    let workspace = if has_graph {
+    let managed = trailgen_data::project_config(&root)?.place.is_some();
+    let trail_index_ready = !managed || trailgen_data::indexed_summary(&root)?.is_some();
+    let workspace = if has_graph && trail_index_ready {
         ProjectWorkspace::Trail(Box::new(TrailApp::open(
             ctx,
             &root,
@@ -628,7 +790,7 @@ fn open_project(
             habitat.slate_path(&root),
         )?))
     } else {
-        ProjectWorkspace::Empty(Box::new(EmptyProject::new(place)))
+        ProjectWorkspace::Empty(Box::new(EmptyProject::new(ctx, place, offline)))
     };
     if let Err(err) = habitat.remember(&root) {
         eprintln!("could not remember project: {err:#}");

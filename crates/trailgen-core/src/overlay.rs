@@ -5,6 +5,7 @@ use crate::model::{
     TrailGraph,
 };
 use crate::{Result, TrailgenError};
+use rstar::{AABB, RTree, RTreeObject};
 use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
@@ -871,9 +872,23 @@ pub fn apply_context_overlays(
     weights: DifficultyWeights,
 ) -> usize {
     let mut crossings = 0usize;
+    let index = RTree::bulk_load(
+        overlays
+            .iter()
+            .enumerate()
+            .map(|(index, overlay)| ContextEnvelope {
+                index,
+                envelope: line_envelope(&overlay.geometry),
+            })
+            .collect(),
+    );
     for edge in &mut graph.edges {
         let mut touched = false;
-        for overlay in overlays {
+        for candidate in index.locate_in_envelope_intersecting(&line_envelope(&edge.geometry)) {
+            let overlay = &overlays[candidate.index];
+            if same_osm_way(edge, overlay) {
+                continue;
+            }
             let count = crossing_count(&edge.geometry, &overlay.geometry);
             if count == 0 {
                 continue;
@@ -892,6 +907,57 @@ pub fn apply_context_overlays(
         }
     }
     crossings
+}
+
+#[derive(Clone, Copy)]
+struct ContextEnvelope {
+    index: usize,
+    envelope: AABB<[f64; 2]>,
+}
+
+impl RTreeObject for ContextEnvelope {
+    type Envelope = AABB<[f64; 2]>;
+
+    fn envelope(&self) -> Self::Envelope {
+        self.envelope
+    }
+}
+
+fn line_envelope(line: &LineString) -> AABB<[f64; 2]> {
+    let first = line.points[0];
+    let (west, south, east, north) = line.points[1..].iter().fold(
+        (first.lon, first.lat, first.lon, first.lat),
+        |(west, south, east, north), point| {
+            (
+                west.min(point.lon),
+                south.min(point.lat),
+                east.max(point.lon),
+                north.max(point.lat),
+            )
+        },
+    );
+    AABB::from_corners([west, south], [east, north])
+}
+
+fn same_osm_way(edge: &Edge, overlay: &ContextOverlay) -> bool {
+    let Some(overlay_id) = overlay.provenance.source_id.as_deref() else {
+        return false;
+    };
+    if !overlay.provenance.source.starts_with("osm-") {
+        return false;
+    }
+    edge.attr.provenance.iter().any(|provenance| {
+        if !provenance.source.starts_with("osm-") {
+            return false;
+        }
+        provenance.source_id.as_deref().is_some_and(|source_id| {
+            source_id == overlay_id
+                || source_id
+                    .strip_prefix("way ")
+                    .and_then(|rest| rest.strip_prefix(overlay_id))
+                    .is_some_and(|tail| tail.is_empty() || tail.starts_with(';'))
+        })
+    })
 }
 
 fn push_terrain_evidence(edge: &mut Edge, overlay: &TerrainOverlay) {

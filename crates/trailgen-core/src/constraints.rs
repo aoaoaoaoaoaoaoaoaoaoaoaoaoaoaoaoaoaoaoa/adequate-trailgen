@@ -3,6 +3,9 @@ use crate::route::{RouteMetrics, RouteShape};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub const DEFAULT_MIN_DISTANCE_M: f64 = 5_000.0;
+pub const DEFAULT_MAX_DISTANCE_M: f64 = 12_000.0;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LoopConstraints {
     #[serde(default = "default_min_distance_m")]
@@ -42,8 +45,8 @@ pub struct LoopConstraints {
 impl Default for LoopConstraints {
     fn default() -> Self {
         Self {
-            min_distance_m: 35_000.0,
-            max_distance_m: 50_000.0,
+            min_distance_m: DEFAULT_MIN_DISTANCE_M,
+            max_distance_m: DEFAULT_MAX_DISTANCE_M,
             min_difficulty: 0.0,
             max_difficulty: 90.0,
             min_ascent_m: 0.0,
@@ -523,11 +526,11 @@ fn default_allowed_shapes() -> Vec<RouteShape> {
 }
 
 const fn default_min_distance_m() -> f64 {
-    35_000.0
+    DEFAULT_MIN_DISTANCE_M
 }
 
 const fn default_max_distance_m() -> f64 {
-    50_000.0
+    DEFAULT_MAX_DISTANCE_M
 }
 
 const fn default_max_difficulty() -> f64 {

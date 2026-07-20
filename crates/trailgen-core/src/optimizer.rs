@@ -24,7 +24,7 @@ const fn default_closure_paths() -> usize {
 impl Default for SearchParams {
     fn default() -> Self {
         Self {
-            max_hops: 36,
+            max_hops: 256,
             max_frontier: 200_000,
             keep: 12,
             closure_paths: default_closure_paths(),

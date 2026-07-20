@@ -101,28 +101,36 @@ pub fn rank_routes(routes: &mut [Route], constraints: &LoopConstraints) {
         .iter()
         .map(|route| ParetoPoint::from_route(route, constraints))
         .collect::<Vec<_>>();
-    let mut unranked = (0..routes.len()).collect::<Vec<_>>();
     let mut rank = 1u32;
-    while !unranked.is_empty() {
-        let front = unranked
+    for satisfied in [true, false] {
+        let mut unranked = routes
             .iter()
-            .copied()
-            .filter(|&i| {
-                !unranked
-                    .iter()
-                    .any(|&j| i != j && points[j].dominates(points[i]))
-            })
+            .enumerate()
+            .filter_map(|(i, route)| (route.verdict.satisfied == satisfied).then_some(i))
             .collect::<Vec<_>>();
-        for i in &front {
-            routes[*i].pareto_rank = rank;
+        while !unranked.is_empty() {
+            let front = unranked
+                .iter()
+                .copied()
+                .filter(|&i| {
+                    !unranked
+                        .iter()
+                        .any(|&j| i != j && points[j].dominates(points[i]))
+                })
+                .collect::<Vec<_>>();
+            for i in &front {
+                routes[*i].pareto_rank = rank;
+            }
+            unranked.retain(|i| !front.contains(i));
+            rank += 1;
         }
-        unranked.retain(|i| !front.contains(i));
-        rank += 1;
     }
     routes.sort_by(|a, b| {
-        a.pareto_rank
-            .cmp(&b.pareto_rank)
-            .then_with(|| a.computed_score().total_cmp(&b.computed_score()))
+        b.verdict.satisfied.cmp(&a.verdict.satisfied).then_with(|| {
+            a.pareto_rank
+                .cmp(&b.pareto_rank)
+                .then_with(|| a.computed_score().total_cmp(&b.computed_score()))
+        })
     });
 }
 

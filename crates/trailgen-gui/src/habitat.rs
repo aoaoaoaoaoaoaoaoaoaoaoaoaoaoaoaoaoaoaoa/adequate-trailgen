@@ -5,7 +5,8 @@ use sha2::{Digest as _, Sha256};
 use std::{
     env,
     fmt::Write as _,
-    fs, io,
+    fs,
+    io::{self, Write as _},
     path::{Path, PathBuf},
 };
 
@@ -80,9 +81,9 @@ impl Habitat {
             .canonicalize()
             .with_context(|| format!("remember project {}", root.display()))?;
         create_private_dir(&self.state)?;
-        fs::write(
-            self.state.join(SESSION),
-            serde_json::to_vec_pretty(&Session {
+        write_state(
+            &self.state.join(SESSION),
+            &serde_json::to_vec_pretty(&Session {
                 last_project: root,
                 chosen: true,
             })?,
@@ -179,15 +180,26 @@ impl Habitat {
     fn recall(&self) -> Result<Option<Session>> {
         let path = self.state.join(SESSION);
         match fs::read(&path) {
-            Ok(raw) => serde_json::from_slice::<Session>(&raw)
-                .with_context(|| format!("parse project session {}", path.display()))
-                .map(Some),
+            Ok(raw) => Ok(serde_json::from_slice::<Session>(&raw).ok()),
             Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(err) => {
                 Err(err).with_context(|| format!("read project session {}", path.display()))
             }
         }
     }
+}
+
+fn write_state(path: &Path, bytes: &[u8]) -> Result<()> {
+    let staging = path.with_extension(format!("json.{}.partial", std::process::id()));
+    {
+        let mut file = fs::File::create(&staging)
+            .with_context(|| format!("create state staging file {}", staging.display()))?;
+        file.write_all(bytes)
+            .with_context(|| format!("write state staging file {}", staging.display()))?;
+        file.sync_all()
+            .with_context(|| format!("sync state staging file {}", staging.display()))?;
+    }
+    fs::rename(&staging, path).with_context(|| format!("commit state file {}", path.display()))
 }
 
 pub fn platform_dirs() -> Result<ProjectDirs> {
@@ -343,6 +355,17 @@ mod tests {
             habitat.state.join(SESSION),
             serde_json::json!({ "last_project": root }).to_string(),
         )?;
+        assert_eq!(habitat.resume_from(temp.path())?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn damaged_session_state_does_not_block_the_project_deck() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let habitat = habitat(temp.path());
+        create_private_dir(&habitat.state)?;
+        fs::write(habitat.state.join(SESSION), "{")?;
+
         assert_eq!(habitat.resume_from(temp.path())?, None);
         Ok(())
     }

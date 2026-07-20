@@ -283,17 +283,27 @@ const fn grade_color(grade: f64) -> Color32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use trailgen_core::{GraphBuilder, LoopConstraints, SearchParams, SolverKind, io::geojson};
 
     #[test]
-    fn demo_route_profile_ends_at_measured_distance() -> anyhow::Result<()> {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../demo/mini-loop");
-        let graph: TrailGraph = serde_json::from_str(&fs::read_to_string(
-            root.join("routes/generated.graph.json"),
-        )?)?;
-        let routes: Vec<Route> = serde_json::from_str(&fs::read_to_string(
-            root.join("routes/generated.routes.json"),
-        )?)?;
+    fn route_profile_ends_at_measured_distance() -> anyhow::Result<()> {
+        let drafts = geojson::network_from_str(include_str!(
+            "../../trailgen-core/tests/fixtures/mini_network.geojson"
+        ))?;
+        let graph = GraphBuilder::default().build(&drafts)?;
+        let constraints = LoopConstraints {
+            min_distance_m: 0.0,
+            max_distance_m: 20_000.0,
+            ..LoopConstraints::default()
+        };
+        let routes = SolverKind::Exact.solve(
+            SearchParams::default(),
+            &graph,
+            trailgen_core::VertexId(0),
+            &constraints,
+            1,
+        );
+        assert!(!routes.is_empty(), "fixture must contain a loop");
         let profile = ElevationProfile::forge(&graph, &routes[0]).expect("fixture has elevation");
         assert!(
             (profile.samples.last().expect("sample").distance_m - routes[0].metrics.distance_m)

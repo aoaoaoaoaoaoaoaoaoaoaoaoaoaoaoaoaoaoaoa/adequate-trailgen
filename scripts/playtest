@@ -1,9 +1,13 @@
 #!/bin/sh
 set -eu
 
-out=${1:?usage: scripts/playtest OUTPUT_DIR [PROJECT]}
+out=${1:?usage: scripts/playtest OUTPUT_DIR PROJECT}
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-project=${2:-$root/demo/mini-loop}
+project=${2:-}
+if [ "${TRAILGEN_GUI_RESUME:-0}" != 1 ] && [ -z "$project" ]; then
+    printf 'usage: scripts/playtest OUTPUT_DIR PROJECT\n' >&2
+    exit 2
+fi
 mkdir -p "$out"
 target=$(cargo metadata --format-version 1 --no-deps --manifest-path "$root/Cargo.toml" \
     | jq -r .target_directory)
@@ -185,9 +189,9 @@ sleep 0.4
 import -window "$window" "$out/terrain-law.png"
 xdotool mousemove --window "$window" 130 849 click 1
 
-# Exercise the real exact-enumerator path on the fixture graph.
+# Exercise the production search path on the project graph.
 xdotool mousemove --window "$window" 130 118 click 1
-sleep 1
+sleep "${TRAILGEN_GUI_SEARCH_WAIT_S:-1}"
 import -window "$window" "$out/forged.png"
 
 # The first gallery plate opens the vector focus surface and elevation profile.
@@ -197,7 +201,9 @@ sleep 1
 import -window "$window" "$out/focus.png"
 
 # Cross the old z12 source ceiling and exercise fractional GPU overzoom.
-xdotool mousemove --window "$window" 900 350
+# Keep the route's trailhead under the cursor so overzoom cannot pan the
+# subject out of frame while it crosses the source archive's native ceiling.
+xdotool mousemove --window "$window" 1020 235
 xdotool click --repeat 8 --delay 70 4
 sleep 1
 import -window "$window" "$out/deep-zoom.png"

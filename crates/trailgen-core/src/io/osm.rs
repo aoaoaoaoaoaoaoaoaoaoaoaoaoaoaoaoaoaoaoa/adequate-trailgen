@@ -25,10 +25,14 @@ pub fn network_from_str(s: &str) -> Result<Vec<SegmentDraft>> {
         .map(parse_node)
         .collect::<Result<BTreeMap<_, _>>>()?;
     let relations = xml_relation_evidence(root, &nodes)?;
-    root.children()
+    let drafts = root
+        .children()
         .filter(|node| node.has_tag_name("way"))
         .filter_map(|way| draft_from_xml_way(way, &nodes, &relations).transpose())
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    let mut drafts = contract_osm_drafts(drafts);
+    seat_turn_restrictions(&mut drafts, relations.turn_restrictions);
+    Ok(drafts)
 }
 
 pub fn network_from_pbf_reader<R: Read + Seek>(reader: R) -> Result<Vec<SegmentDraft>> {
@@ -37,13 +41,16 @@ pub fn network_from_pbf_reader<R: Read + Seek>(reader: R) -> Result<Vec<SegmentD
         .get_objs_and_deps(pbf_network_object)
         .map_err(|error| TrailgenError::InvalidData(format!("parse OSM PBF: {error}")))?;
     let relations = pbf_relation_evidence(&objects);
-    objects
+    let drafts = objects
         .values()
         .filter_map(|object| match object {
             OsmObj::Way(way) => draft_from_pbf_way(way, &objects, &relations).transpose(),
             OsmObj::Node(_) | OsmObj::Relation(_) => None,
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    let mut drafts = contract_osm_drafts(drafts);
+    seat_turn_restrictions(&mut drafts, relations.turn_restrictions);
+    Ok(drafts)
 }
 
 pub fn context_overlays_from_str(s: &str) -> Result<Vec<ContextOverlay>> {
@@ -106,10 +113,10 @@ fn draft_from_xml_way(
     relations: &OsmRelationEvidence,
 ) -> Result<Option<SegmentDraft>> {
     let tags = xml_tags(way);
-    let Some(walkway) = Walkway::from_tags(&tags) else {
+    let id = way_id(way);
+    let Some(walkway) = Walkway::from_tags(&tags, relations.route_by_way.contains_key(&id)) else {
         return Ok(None);
     };
-    let id = way_id(way);
     let mut points = Vec::new();
     for nd in way.children().filter(|node| node.has_tag_name("nd")) {
         let reference = required_attr(nd, "ref")?;
@@ -126,7 +133,7 @@ fn draft_from_xml_way(
     Ok(Some(SegmentDraft {
         junctions: JunctionPolicy::ExplicitNodes,
         turn_ref: Some(id.clone()),
-        turn_restrictions: relations.turn_restrictions.clone(),
+        turn_restrictions: Vec::new(),
         geometry: LineString::new(points)?,
         terrain: walkway.terrain,
         terrain_confidence: Some(walkway.terrain_confidence),
@@ -167,7 +174,7 @@ fn context_from_xml_way(
 fn pbf_walkable_way(object: &OsmObj) -> bool {
     object
         .way()
-        .is_some_and(|way| Walkway::from_tags(&pbf_tags(&way.tags)).is_some())
+        .is_some_and(|way| Walkway::from_tags(&pbf_tags(&way.tags), false).is_some())
 }
 
 fn pbf_network_object(object: &OsmObj) -> bool {
@@ -200,7 +207,8 @@ fn draft_from_pbf_way(
     relations: &OsmRelationEvidence,
 ) -> Result<Option<SegmentDraft>> {
     let tags = pbf_tags(&way.tags);
-    let Some(walkway) = Walkway::from_tags(&tags) else {
+    let id = way.id.0.to_string();
+    let Some(walkway) = Walkway::from_tags(&tags, relations.route_by_way.contains_key(&id)) else {
         return Ok(None);
     };
     let mut points = Vec::new();
@@ -218,8 +226,8 @@ fn draft_from_pbf_way(
     }
     Ok(Some(SegmentDraft {
         junctions: JunctionPolicy::ExplicitNodes,
-        turn_ref: Some(way.id.0.to_string()),
-        turn_restrictions: relations.turn_restrictions.clone(),
+        turn_ref: Some(id),
+        turn_restrictions: Vec::new(),
         geometry: LineString::new(points)?,
         terrain: walkway.terrain,
         terrain_confidence: Some(walkway.terrain_confidence),
@@ -289,6 +297,53 @@ struct OsmRelationEvidence {
     route_by_way: BTreeMap<String, Vec<RouteRelationEvidence>>,
     turn_restriction_by_way: BTreeMap<String, Vec<TurnRestrictionEvidence>>,
     turn_restrictions: Vec<TurnRestrictionDraft>,
+}
+
+fn seat_turn_restrictions(drafts: &mut [SegmentDraft], restrictions: Vec<TurnRestrictionDraft>) {
+    if let Some(carrier) = drafts.first_mut() {
+        carrier.turn_restrictions = restrictions;
+    }
+}
+
+fn contract_osm_drafts(drafts: Vec<SegmentDraft>) -> Vec<SegmentDraft> {
+    let mut occurrences = BTreeMap::<(u64, u64), usize>::new();
+    for point in drafts.iter().flat_map(|draft| &draft.geometry.points) {
+        *occurrences
+            .entry((point.lon.to_bits(), point.lat.to_bits()))
+            .or_default() += 1;
+    }
+    drafts
+        .into_iter()
+        .flat_map(|draft| {
+            let last = draft.geometry.points.len() - 1;
+            let mut cuts = vec![0];
+            cuts.extend((1..last).filter(|index| {
+                let point = draft.geometry.points[*index];
+                occurrences
+                    .get(&(point.lon.to_bits(), point.lat.to_bits()))
+                    .is_some_and(|count| *count > 1)
+            }));
+            cuts.push(last);
+            cuts.windows(2)
+                .map(|cut| SegmentDraft {
+                    junctions: JunctionPolicy::ExplicitEndpoints,
+                    turn_ref: draft.turn_ref.clone(),
+                    turn_restrictions: Vec::new(),
+                    geometry: LineString::unchecked(
+                        draft.geometry.points[cut[0]..=cut[1]].to_vec(),
+                    ),
+                    terrain: draft.terrain,
+                    terrain_confidence: draft.terrain_confidence,
+                    surface: draft.surface.clone(),
+                    access: draft.access,
+                    travel: draft.travel,
+                    road_exposure: draft.road_exposure,
+                    confidence: draft.confidence,
+                    provenance: draft.provenance.clone(),
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 fn xml_relation_evidence(
@@ -647,12 +702,17 @@ struct Walkway {
 }
 
 impl Walkway {
-    fn from_tags(tags: &BTreeMap<String, String>) -> Option<Self> {
+    fn from_tags(tags: &BTreeMap<String, String>, hiking_relation: bool) -> Option<Self> {
         let highway = tags.get("highway").map(String::as_str);
         let route = tags.get("route").map(String::as_str);
         let foot = tags.get("foot").map(String::as_str);
-        let hiking = route.is_some_and(|route| matches!(route, "hiking" | "foot"));
-        let walkable_highway = highway.and_then(WalkwayKind::from_highway);
+        let hiking = hiking_relation
+            || route.is_some_and(|route| matches!(route, "hiking" | "foot" | "walking"));
+        let explicit_foot = foot
+            .is_some_and(|foot| matches!(foot, "yes" | "designated" | "permissive" | "official"));
+        let walkable_highway = highway
+            .and_then(WalkwayKind::from_highway)
+            .filter(|kind| !kind.requires_foot_evidence() || hiking || explicit_foot);
         if walkable_highway.is_none() && !hiking {
             return None;
         }
@@ -705,6 +765,10 @@ impl WalkwayKind {
 
     const fn road_like(self) -> bool {
         matches!(self, Self::Track | Self::Service | Self::Road)
+    }
+
+    const fn requires_foot_evidence(self) -> bool {
+        matches!(self, Self::Service | Self::Road)
     }
 }
 

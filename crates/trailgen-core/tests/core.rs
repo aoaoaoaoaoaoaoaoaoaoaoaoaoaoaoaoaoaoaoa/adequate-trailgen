@@ -619,6 +619,60 @@ fn osm_xml_network_rejects_missing_way_nodes() {
 }
 
 #[test]
+fn osm_xml_network_requires_walking_evidence_for_ordinary_roads() {
+    let drafts = osm::network_from_str(
+        r#"<osm version="0.6">
+  <node id="1" lat="40.0" lon="-105.0"/>
+  <node id="2" lat="40.0" lon="-104.99"/>
+  <node id="3" lat="40.01" lon="-104.99"/>
+  <node id="4" lat="40.01" lon="-105.0"/>
+  <way id="10"><nd ref="1"/><nd ref="2"/><tag k="highway" v="service"/></way>
+  <way id="11"><nd ref="2"/><nd ref="3"/><tag k="highway" v="service"/><tag k="foot" v="yes"/></way>
+  <way id="12"><nd ref="3"/><nd ref="4"/><tag k="highway" v="residential"/></way>
+  <relation id="20">
+    <member type="way" ref="12" role=""/>
+    <tag k="type" v="route"/><tag k="route" v="hiking"/>
+  </relation>
+</osm>"#,
+    )
+    .unwrap();
+
+    assert_eq!(drafts.len(), 2);
+    assert_eq!(drafts[0].turn_ref.as_deref(), Some("11"));
+    assert_eq!(drafts[1].turn_ref.as_deref(), Some("12"));
+}
+
+#[test]
+fn osm_xml_network_keeps_shape_points_out_of_the_routing_topology() {
+    let drafts = osm::network_from_str(
+        r#"<osm version="0.6">
+  <node id="1" lat="40.00" lon="-105.00"/>
+  <node id="2" lat="40.01" lon="-105.00"/>
+  <node id="3" lat="40.02" lon="-105.00"/>
+  <node id="4" lat="40.03" lon="-105.00"/>
+  <node id="5" lat="40.02" lon="-104.99"/>
+  <way id="10"><nd ref="1"/><nd ref="2"/><nd ref="3"/><nd ref="4"/><tag k="highway" v="path"/></way>
+  <way id="11"><nd ref="3"/><nd ref="5"/><tag k="highway" v="path"/></way>
+</osm>"#,
+    )
+    .unwrap();
+
+    assert_eq!(drafts.len(), 3);
+    assert_eq!(drafts[0].geometry.points.len(), 3);
+    assert_eq!(drafts[0].junctions, JunctionPolicy::ExplicitEndpoints);
+    let graph = GraphBuilder::default().build(&drafts).unwrap();
+    assert_eq!(graph.vertices.len(), 4);
+    assert_eq!(graph.edges.len(), 3);
+    assert!(graph.edges[0].geometry.points.len() > 3);
+    assert!(
+        graph.edges[0]
+            .geometry
+            .points
+            .contains(&drafts[0].geometry.points[1])
+    );
+}
+
+#[test]
 fn osm_xml_network_preserves_hiking_route_relation_evidence() {
     let drafts = osm::network_from_str(
         r#"<osm version="0.6">
@@ -659,6 +713,13 @@ fn osm_xml_network_preserves_hiking_route_relation_evidence() {
     assert!(source_id.contains("way 10; route relations 20:ridge route"));
     assert!(source_id.contains("turn restrictions 30:from:no_right_turn"));
     assert!(drafts[0].confidence >= 0.82);
+    assert_eq!(
+        drafts
+            .iter()
+            .map(|draft| draft.turn_restrictions.len())
+            .sum::<usize>(),
+        1
+    );
 
     let graph = GraphBuilder::default().build(&drafts).unwrap();
     assert_eq!(graph.turn_bans.len(), 1);
@@ -709,6 +770,13 @@ fn osm_pbf_network_normalizes_walkable_ways() {
     assert!(source_id.contains("way 10; route relations 20:ridge route"));
     assert!(source_id.contains("turn restrictions 30:from:no_right_turn"));
     assert!(drafts[0].confidence >= 0.82);
+    assert_eq!(
+        drafts
+            .iter()
+            .map(|draft| draft.turn_restrictions.len())
+            .sum::<usize>(),
+        1
+    );
     assert_eq!(drafts[1].terrain, Terrain::Road);
     assert_eq!(drafts[1].terrain_confidence, Some(0.62));
     assert_eq!(drafts[1].access, Access::Private);
@@ -816,6 +884,28 @@ fn pareto_ranking_preserves_tradeoffs_and_demotes_dominated_routes() {
     assert_eq!(routes[1].pareto_rank, 1);
     assert_eq!(routes[2].name, "hard-roadish");
     assert_eq!(routes[2].pareto_rank, 2);
+}
+
+#[test]
+fn pareto_ranking_never_trades_constraint_satisfaction_for_quality() {
+    let constraints = LoopConstraints {
+        min_distance_m: 3_000.0,
+        max_distance_m: 8_000.0,
+        max_difficulty: 1_000.0,
+        ..LoopConstraints::default()
+    };
+    let mut routes = vec![
+        synthetic_rank_route("invalid-but-easy", &constraints, 4_000.0, 1.0, 0.50),
+        synthetic_rank_route("valid-but-hard", &constraints, 4_000.0, 100.0, 0.0),
+    ];
+
+    rank_routes(&mut routes, &constraints);
+
+    assert_eq!(routes[0].name, "valid-but-hard");
+    assert!(routes[0].verdict.satisfied);
+    assert_eq!(routes[0].pareto_rank, 1);
+    assert!(!routes[1].verdict.satisfied);
+    assert_eq!(routes[1].pareto_rank, 2);
 }
 
 fn synthetic_rank_route(
@@ -1616,6 +1706,24 @@ fn osm_context_overlays_infer_road_and_water_crossings() {
         crossing.kind == CrossingKind::Water
             && crossing.provenance.source == "osm-hydrology-context"
     }));
+}
+
+#[test]
+fn osm_context_does_not_count_a_way_crossing_itself() {
+    let raw = r#"<osm version="0.6">
+  <node id="1" lat="40.0" lon="-105.01"/>
+  <node id="2" lat="40.0" lon="-105.0"/>
+  <way id="20"><nd ref="1"/><nd ref="2"/><tag k="highway" v="track"/></way>
+</osm>"#;
+    let drafts = osm::network_from_str(raw).unwrap();
+    let mut graph = GraphBuilder::default().build(&drafts).unwrap();
+    let overlays = osm::context_overlays_from_str(raw).unwrap();
+
+    assert_eq!(
+        apply_context_overlays(&mut graph, &overlays, DifficultyWeights::default()),
+        0
+    );
+    assert!(graph.edges[0].attr.crossings.is_empty());
 }
 
 #[test]

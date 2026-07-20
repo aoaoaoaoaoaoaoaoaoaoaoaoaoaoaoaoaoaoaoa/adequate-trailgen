@@ -3021,6 +3021,7 @@ dependencies = [
  "rustls-pki-types",
  "rustls-platform-verifier",
  "serde",
+ "serde_json",
  "serde_urlencoded",
  "sync_wrapper",
  "tokio",
@@ -3965,6 +3966,7 @@ dependencies = [
  "tiff",
  "toml",
  "trailgen-core",
+ "trailgen-data",
  "trailgen-gui",
  "zip",
 ]
@@ -3984,6 +3986,20 @@ dependencies = [
  "thiserror 2.0.18",
  "tiff",
  "zip",
+]
+
+[[package]]
+name = "trailgen-data"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "toml",
+ "trailgen-core",
 ]
 
 [[package]]
@@ -4012,6 +4028,7 @@ dependencies = [
  "tokio",
  "toml",
  "trailgen-core",
+ "trailgen-data",
 ]
 
 [[package]]
