@@ -618,9 +618,9 @@ fn open_project(
         .canonicalize()
         .with_context(|| format!("open project {}", root.display()))?;
     let place = ProjectPlace::read(root.clone())?;
-    let materialized = root.join("routes/generated.graph.json").is_file()
+    let has_graph = root.join("routes/generated.graph.json").is_file()
         || root.join("cache/graph.json").is_file();
-    let workspace = if materialized {
+    let workspace = if has_graph {
         ProjectWorkspace::Trail(Box::new(TrailApp::open(
             ctx,
             &root,

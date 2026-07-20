@@ -43,9 +43,9 @@ struct Cli {
     reason = "CLI command values are parsed once; boxing clap fields would only launder cold-start bytes into ceremony."
 )]
 enum Cmd {
-    /// Open a materialized project in the native trail workbench.
+    /// Open or resume a project in the native trail workbench.
     Gui {
-        /// Project directory containing trailgen.toml and cache/graph.json; omit to resume.
+        /// Project directory containing trailgen.toml; omit to resume.
         project: Option<PathBuf>,
         /// Suppress the project-local Protomaps vector basemap.
         #[arg(long)]
