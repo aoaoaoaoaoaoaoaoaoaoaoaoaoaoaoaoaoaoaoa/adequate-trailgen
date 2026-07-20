@@ -8,18 +8,27 @@
 mod app;
 mod boiler;
 mod gallery;
+mod genesis;
+mod habitat;
 mod map;
 mod profile;
 mod project;
 mod tile;
 
 use anyhow::Result;
-use std::path::Path;
+use std::path::PathBuf;
 
-/// Open a materialized trailgen project in the native workbench.
-pub fn run(project: &Path, offline: bool) -> Result<()> {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProjectIntent {
+    Resume,
+    Open(PathBuf),
+}
+
+/// Resume or explicitly open a trailgen project in the native workbench.
+pub fn run(intent: ProjectIntent, offline: bool) -> Result<()> {
+    let habitat = habitat::Habitat::discover()?;
     let ctx = egui::Context::default();
     dwemer_poolrooms::chrome::install(&ctx);
-    let app = app::TrailApp::open(&ctx, project, offline)?;
+    let app = genesis::Workbench::launch(&ctx, habitat, intent, offline)?;
     boiler::run(ctx, app)
 }

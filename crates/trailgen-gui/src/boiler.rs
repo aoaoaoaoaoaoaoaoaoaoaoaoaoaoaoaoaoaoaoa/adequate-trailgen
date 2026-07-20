@@ -1,4 +1,4 @@
-use crate::app::TrailApp;
+use crate::genesis::Workbench;
 use anyhow::{Context as _, Result};
 use dwemer_poolrooms::water::Frost;
 use egui_wgpu::{RenderState, RendererOptions, ScreenDescriptor, WgpuConfiguration, wgpu};
@@ -21,7 +21,7 @@ struct Spark;
 
 type Alarm = Arc<Mutex<Option<Instant>>>;
 
-pub fn run(ctx: egui::Context, app: TrailApp) -> Result<()> {
+pub fn run(ctx: egui::Context, app: Workbench) -> Result<()> {
     let event_loop = EventLoop::<Spark>::with_user_event()
         .build()
         .context("build event loop")?;
@@ -61,7 +61,7 @@ fn lock_alarm(alarm: &Alarm) -> MutexGuard<'_, Option<Instant>> {
 
 struct Boiler {
     ctx: egui::Context,
-    app: TrailApp,
+    app: Workbench,
     alarm: Alarm,
     rig: Option<Rig>,
 }

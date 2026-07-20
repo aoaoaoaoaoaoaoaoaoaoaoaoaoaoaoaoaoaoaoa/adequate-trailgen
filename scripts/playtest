@@ -9,7 +9,13 @@ target=$(cargo metadata --format-version 1 --no-deps --manifest-path "$root/Carg
     | jq -r .target_directory)
 app=${TRAILGEN_GUI_BIN:-$target/debug/trailgen}
 
-if [ "${TRAILGEN_GUI_ONLINE:-0}" = 1 ]; then
+if [ "${TRAILGEN_GUI_RESUME:-0}" = 1 ]; then
+    if [ "${TRAILGEN_GUI_ONLINE:-0}" = 1 ]; then
+        setsid "$app" gui >"$out/app.log" 2>&1 &
+    else
+        setsid "$app" gui --offline >"$out/app.log" 2>&1 &
+    fi
+elif [ "${TRAILGEN_GUI_ONLINE:-0}" = 1 ]; then
     setsid "$app" gui "$project" >"$out/app.log" 2>&1 &
 else
     setsid "$app" gui "$project" --offline >"$out/app.log" 2>&1 &
@@ -27,6 +33,15 @@ xwininfo -id "$window" >"$out/window.txt"
 
 sleep 1
 import -window "$window" "$out/atlas.png"
+
+if [ -n "${TRAILGEN_GUI_GENESIS_ROOT:-}" ]; then
+    xdotool mousemove --window "$window" 700 408 click 1
+    xdotool key --window "$window" ctrl+a
+    xdotool type --window "$window" --delay 1 "$TRAILGEN_GUI_GENESIS_ROOT"
+    xdotool mousemove --window "$window" 515 478 click 1
+    sleep 1
+    import -window "$window" "$out/genesis-forged.png"
+fi
 
 # The terrain-law recess carries the per-surface admissibility and mix envelope.
 xdotool mousemove --window "$window" 130 849 click 1

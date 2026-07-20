@@ -120,20 +120,7 @@ impl TrailApp {
         let count = routes.len().clamp(6, 12);
         let profiles = profiles(&graph, &routes);
         let atlas = Atlas::forge(&graph);
-        let mut water = WaterTable::new(Wetness::Wet);
-        {
-            let (chemistry, agitation) = water.laboratory_mut();
-            chemistry.refract_px = 0.22;
-            chemistry.meniscus_px = 0.42;
-            chemistry.ior_spread = 0.09;
-            chemistry.bulge_px = 1.8;
-            chemistry.source_gain = 12.0;
-            agitation.enter_impulse = 0.14;
-            agitation.exit_impulse = 0.08;
-            agitation.click_impulse = 0.34;
-            agitation.scroll_coupling = 0.0035;
-            agitation.pond_impulse = 0.24;
-        }
+        let water = forge_water();
         let status = if routes.is_empty() {
             "choose a trailhead, tune the bounds, and strike FIND TRAILS".to_owned()
         } else {
@@ -1090,6 +1077,22 @@ impl TrailApp {
             );
         }
     }
+}
+
+pub fn forge_water() -> WaterTable {
+    let mut water = WaterTable::new(Wetness::Wet);
+    let (chemistry, agitation) = water.laboratory_mut();
+    chemistry.refract_px = 0.22;
+    chemistry.meniscus_px = 0.42;
+    chemistry.ior_spread = 0.09;
+    chemistry.bulge_px = 1.8;
+    chemistry.source_gain = 12.0;
+    agitation.enter_impulse = 0.14;
+    agitation.exit_impulse = 0.08;
+    agitation.click_impulse = 0.34;
+    agitation.scroll_coupling = 0.0035;
+    agitation.pond_impulse = 0.24;
+    water
 }
 
 enum FocusAction {

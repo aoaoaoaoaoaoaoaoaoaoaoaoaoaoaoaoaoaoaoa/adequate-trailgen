@@ -31,7 +31,7 @@ use trailgen_core::{
 #[derive(Parser)]
 #[command(name = "trailgen", version)]
 #[command(about = "Native workbench and deterministic forge for constrained hiking trails.")]
-#[command(after_help = "Run without a command to open the project in the current directory.")]
+#[command(after_help = "Run without a command to resume the current or managed project.")]
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
@@ -45,9 +45,8 @@ struct Cli {
 enum Cmd {
     /// Open a materialized project in the native trail workbench.
     Gui {
-        /// Project directory containing trailgen.toml and cache/graph.json.
-        #[arg(default_value = ".")]
-        project: PathBuf,
+        /// Project directory containing trailgen.toml and cache/graph.json; omit to resume.
+        project: Option<PathBuf>,
         /// Suppress network-backed USGS topographic tiles.
         #[arg(long)]
         offline: bool,
@@ -756,7 +755,7 @@ const OSM_HYDROLOGY_SELECTORS: &[&str] =
 
 fn main() -> Result<()> {
     let Some(cmd) = Cli::parse().cmd else {
-        return trailgen_gui::run(Path::new("."), false);
+        return trailgen_gui::run(trailgen_gui::ProjectIntent::Resume, false);
     };
     dispatch(cmd)
 }
@@ -767,7 +766,13 @@ fn main() -> Result<()> {
 )]
 fn dispatch(cmd: Cmd) -> Result<()> {
     match cmd {
-        Cmd::Gui { project, offline } => trailgen_gui::run(&project, offline),
+        Cmd::Gui { project, offline } => trailgen_gui::run(
+            project.map_or(
+                trailgen_gui::ProjectIntent::Resume,
+                trailgen_gui::ProjectIntent::Open,
+            ),
+            offline,
+        ),
         Cmd::Init {
             project,
             name,
@@ -7238,8 +7243,15 @@ mod tests {
             Cli::try_parse_from(["trailgen", "gui", "demo/mini-loop", "--offline"])
                 .unwrap()
                 .cmd,
-            Some(Cmd::Gui { project, offline: true })
+            Some(Cmd::Gui { project: Some(project), offline: true })
                 if project == Path::new("demo/mini-loop")
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["trailgen", "gui"]).unwrap().cmd,
+            Some(Cmd::Gui {
+                project: None,
+                offline: false
+            })
         ));
     }
 

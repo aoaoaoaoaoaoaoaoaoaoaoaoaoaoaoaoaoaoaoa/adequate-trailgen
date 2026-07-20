@@ -1,7 +1,9 @@
-use crate::map::{self, Viewport};
+use crate::{
+    habitat::platform_dirs,
+    map::{self, Viewport},
+};
 use anyhow::{Context as _, Result, bail};
 use crossbeam_channel::{Receiver, Sender, bounded};
-use directories::ProjectDirs;
 use egui::Context;
 use image::GenericImageView as _;
 use std::{fs, io::Read as _, path::Path, sync::Arc, thread, time::Duration};
@@ -83,10 +85,7 @@ pub struct Basemap {
 
 impl Basemap {
     pub fn spawn(ctx: &Context) -> Result<Self> {
-        let cache = ProjectDirs::from("dev", "adequate", "trailgen")
-            .context("platform has no trailgen cache directory")?
-            .cache_dir()
-            .join("usgs-topo");
+        let cache = platform_dirs()?.cache_dir().join("usgs-topo");
         fs::create_dir_all(&cache)
             .with_context(|| format!("create tile cache {}", cache.display()))?;
         let (commands, command_rx) = bounded(128);

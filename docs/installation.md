@@ -6,10 +6,12 @@
 cargo build --workspace
 ./scripts/install-local.sh
 trailgen --help
-trailgen gui demo/mini-loop
+trailgen
 ```
 
-The installer uses `cargo install --locked --force` and writes `trailgen` beneath `${TRAILGEN_INSTALL_ROOT:-$HOME/.local}/bin`. Pass another root as its first argument for an isolated installation, such as `./scripts/install-local.sh /tmp/trailgen-install`. Running `trailgen` without a subcommand opens the project in the current directory; all provenance-sensitive command surfaces remain subcommands of the same binary.
+The installer uses `cargo install --locked --force` and writes `trailgen` beneath `${TRAILGEN_INSTALL_ROOT:-$HOME/.local}/bin`. Pass another root as its first argument for an isolated installation, such as `./scripts/install-local.sh /tmp/trailgen-install`. All provenance-sensitive command surfaces remain subcommands of the same binary.
+
+Bare startup first honors a `trailgen.toml` in the current directory, then the last valid project recorded under the platform state directory. With neither, Trailgen resolves the operating system's Documents directory through `directories::UserDirs` and creates `trailgen/starter-loop` there. Linux therefore honors `XDG_DOCUMENTS_DIR` from `user-dirs.dirs` exactly, including its spelling and case. An unavailable or unwritable managed location opens a Poolrooms project-root prompt; it never causes a loose `trailgen.toml` to appear in the home or working directory. Explicit `trailgen gui PATH` remains strict and portable.
 
 The native workbench needs a functioning Vulkan or OpenGL graphics stack and an X11 or Wayland session. It streams USGS topographic tiles into an XDG cache by default; `--offline` disables that network surface without disabling vector maps, search, candidate inspection, or elevation profiles.
 
