@@ -1,9 +1,9 @@
 use crate::{
     ProjectIntent,
     app::{TrailApp, forge_water},
-    habitat::{Habitat, ProjectPlace, forge_sample},
+    habitat::{Habitat, ProjectPlace, create_project},
 };
-use anyhow::{Result, ensure};
+use anyhow::{Context as _, Result, ensure};
 use dwemer_poolrooms::{
     chrome,
     water::{Frame as WaterFrame, Surface},
@@ -17,8 +17,8 @@ pub struct Workbench {
 }
 
 enum WorkbenchMode {
-    Trail {
-        app: Box<TrailApp>,
+    Project {
+        workspace: ProjectWorkspace,
         habitat: Habitat,
         offline: bool,
     },
@@ -28,11 +28,22 @@ enum WorkbenchMode {
 
 enum WorkbenchTransition {
     Projects,
-    Trail {
-        app: Box<TrailApp>,
+    Project {
+        workspace: ProjectWorkspace,
         habitat: Habitat,
         offline: bool,
     },
+}
+
+enum ProjectWorkspace {
+    Trail(Box<TrailApp>),
+    Empty(Box<EmptyProject>),
+}
+
+#[derive(Clone, Copy)]
+enum WorkspaceAction {
+    Projects,
+    Reload,
 }
 
 impl Workbench {
@@ -62,9 +73,9 @@ impl Workbench {
                 habitat, offline, None, None, None,
             ))));
         };
-        match open(ctx, &habitat, &root, offline) {
-            Ok(app) => Self::still(WorkbenchMode::Trail {
-                app: Box::new(app),
+        match open_project(ctx, &habitat, &root, offline) {
+            Ok(workspace) => Self::still(WorkbenchMode::Project {
+                workspace,
                 habitat,
                 offline,
             }),
@@ -80,16 +91,36 @@ impl Workbench {
 
     pub fn pulse(&mut self, ui: &mut egui::Ui) {
         self.transition = match &mut self.mode {
-            WorkbenchMode::Trail {
-                app,
-                habitat: _,
-                offline: _,
-            } => app.pulse(ui).then_some(WorkbenchTransition::Projects),
-            WorkbenchMode::Projects(deck) => deck.pulse(ui).map(|app| WorkbenchTransition::Trail {
-                app,
-                habitat: deck.habitat.clone(),
-                offline: deck.offline,
-            }),
+            WorkbenchMode::Project {
+                workspace,
+                habitat,
+                offline,
+            } => match workspace.pulse(ui) {
+                None => None,
+                Some(WorkspaceAction::Projects) => Some(WorkbenchTransition::Projects),
+                Some(WorkspaceAction::Reload) => {
+                    let root = workspace.root().to_owned();
+                    match open_project(ui.ctx(), habitat, &root, *offline) {
+                        Ok(workspace) => Some(WorkbenchTransition::Project {
+                            workspace,
+                            habitat: habitat.clone(),
+                            offline: *offline,
+                        }),
+                        Err(err) => {
+                            workspace.set_fault(format!("could not open this project: {err:#}"));
+                            None
+                        }
+                    }
+                }
+            },
+            WorkbenchMode::Projects(deck) => {
+                deck.pulse(ui)
+                    .map(|workspace| WorkbenchTransition::Project {
+                        workspace,
+                        habitat: deck.habitat.clone(),
+                        offline: deck.offline,
+                    })
+            }
             WorkbenchMode::Limbo => unreachable!("workbench transition escaped its pulse"),
         };
     }
@@ -112,13 +143,13 @@ impl Workbench {
     fn commit_transition(&mut self) {
         match self.transition.take() {
             Some(WorkbenchTransition::Projects) => self.open_project_deck(),
-            Some(WorkbenchTransition::Trail {
-                app,
+            Some(WorkbenchTransition::Project {
+                workspace,
                 habitat,
                 offline,
             }) => {
-                self.mode = WorkbenchMode::Trail {
-                    app,
+                self.mode = WorkbenchMode::Project {
+                    workspace,
                     habitat,
                     offline,
                 };
@@ -129,21 +160,21 @@ impl Workbench {
 
     fn open_project_deck(&mut self) {
         let displaced = std::mem::replace(&mut self.mode, WorkbenchMode::Limbo);
-        let WorkbenchMode::Trail {
-            app,
+        let WorkbenchMode::Project {
+            workspace,
             habitat,
             offline,
         } = displaced
         else {
-            unreachable!("only a trail workbench can request the project deck");
+            unreachable!("only an open project can request the project deck");
         };
-        let root = app.root().to_owned();
+        let root = workspace.root().to_owned();
         self.mode = WorkbenchMode::Projects(Box::new(ProjectDeck::new(
             habitat,
             offline,
             Some(&root),
             None,
-            Some(app),
+            Some(workspace),
         )));
     }
 
@@ -154,8 +185,8 @@ impl Workbench {
         tooltip_rects: &[egui::Rect],
     ) -> WaterFrame {
         match &mut self.mode {
-            WorkbenchMode::Trail { app, .. } => {
-                app.water_frame(ctx, pixels_per_point, tooltip_rects)
+            WorkbenchMode::Project { workspace, .. } => {
+                workspace.water_frame(ctx, pixels_per_point, tooltip_rects)
             }
             WorkbenchMode::Projects(deck) => {
                 deck.water.frame(ctx, pixels_per_point, tooltip_rects, None)
@@ -165,12 +196,142 @@ impl Workbench {
     }
 }
 
+impl ProjectWorkspace {
+    fn pulse(&mut self, ui: &mut egui::Ui) -> Option<WorkspaceAction> {
+        match self {
+            Self::Trail(app) => app.pulse(ui).then_some(WorkspaceAction::Projects),
+            Self::Empty(project) => project.pulse(ui),
+        }
+    }
+
+    fn root(&self) -> &Path {
+        match self {
+            Self::Trail(app) => app.root(),
+            Self::Empty(project) => &project.root,
+        }
+    }
+
+    fn set_fault(&mut self, fault: String) {
+        if let Self::Empty(project) = self {
+            project.fault = Some(fault);
+        }
+    }
+
+    fn water_frame(
+        &mut self,
+        ctx: &egui::Context,
+        pixels_per_point: f32,
+        tooltip_rects: &[egui::Rect],
+    ) -> WaterFrame {
+        match self {
+            Self::Trail(app) => app.water_frame(ctx, pixels_per_point, tooltip_rects),
+            Self::Empty(project) => project
+                .water
+                .frame(ctx, pixels_per_point, tooltip_rects, None),
+        }
+    }
+}
+
+struct EmptyProject {
+    root: PathBuf,
+    name: String,
+    fault: Option<String>,
+    water: Surface,
+}
+
+impl EmptyProject {
+    fn new(place: ProjectPlace) -> Self {
+        Self {
+            root: place.root,
+            name: place.name,
+            fault: None,
+            water: forge_water(),
+        }
+    }
+
+    fn pulse(&mut self, ui: &mut egui::Ui) -> Option<WorkspaceAction> {
+        let shortcut = ui
+            .ctx()
+            .input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::O));
+        let mut action = shortcut.then_some(WorkspaceAction::Projects);
+        let _center = egui::CentralPanel::default().show_inside(ui, |ui| {
+            ui.add_space(((ui.available_height() - 390.0) * 0.45).max(18.0));
+            let _row = ui.horizontal(|ui| {
+                ui.add_space(((ui.available_width() - 710.0) * 0.5).max(12.0));
+                let _plate = egui::Frame::new()
+                    .fill(chrome::SURFACE)
+                    .stroke(Stroke::new(1.0_f32, chrome::EDGE_STRONG))
+                    .corner_radius(2)
+                    .inner_margin(egui::Margin::same(24))
+                    .show(ui, |ui| self.plate(ui, &mut action));
+            });
+        });
+        action
+    }
+
+    fn plate(&mut self, ui: &mut egui::Ui, action: &mut Option<WorkspaceAction>) {
+        let _column = ui.vertical(|ui| {
+            ui.set_width(660.0);
+            let _eyebrow = ui.label(chrome::eyebrow("EMPTY PROJECT"));
+            let _title = ui.label(chrome::title(self.name.to_ascii_uppercase()));
+            ui.add_space(8.0);
+            let _copy = ui.add(
+                egui::Label::new(
+                    RichText::new("ADD TRAIL DATA BEFORE SEARCHING FOR ROUTES.")
+                        .color(chrome::MUTED),
+                )
+                .wrap(),
+            );
+            ui.add_space(16.0);
+            let _command_label = ui.label(chrome::eyebrow("DEVELOPMENT COMMAND"));
+            let command = format!(
+                "trailgen build \"{}\" --source /path/to/trails.geojson",
+                self.root.display()
+            );
+            let _command = ui.add(
+                egui::Label::new(
+                    RichText::new(command)
+                        .monospace()
+                        .size(11.0)
+                        .color(chrome::TEXT),
+                )
+                .wrap(),
+            );
+            ui.add_space(16.0);
+            let _actions = ui.horizontal(|ui| {
+                let refresh = ui.add(
+                    chrome::glyph_button("↻  REFRESH PROJECT", true).min_size(vec2(205.0, 34.0)),
+                );
+                chrome::tension(ui, &refresh);
+                if refresh.clicked() {
+                    self.fault = None;
+                    *action = Some(WorkspaceAction::Reload);
+                }
+                let projects = ui.add(
+                    chrome::glyph_button("▦  PROJECTS · CTRL+O", false).min_size(vec2(230.0, 34.0)),
+                );
+                chrome::tension(ui, &projects);
+                if projects.clicked() {
+                    *action = Some(WorkspaceAction::Projects);
+                }
+            });
+            if let Some(fault) = &self.fault {
+                fault_label(ui, fault);
+            }
+            ui.add_space(14.0);
+            let _path = chrome::note(ui, format!("PROJECT FOLDER · {}", self.root.display()));
+        });
+    }
+}
+
 pub struct ProjectDeck {
     habitat: Habitat,
     offline: bool,
-    root: String,
+    new_name: String,
+    new_parent: String,
+    open_root: String,
     fault: Option<String>,
-    return_app: Option<Box<TrailApp>>,
+    return_workspace: Option<ProjectWorkspace>,
     known: Vec<ProjectPlace>,
     water: Surface,
 }
@@ -181,10 +342,10 @@ impl ProjectDeck {
         offline: bool,
         proposed: Option<&Path>,
         mut fault: Option<String>,
-        return_app: Option<Box<TrailApp>>,
+        return_workspace: Option<ProjectWorkspace>,
     ) -> Self {
-        let root = proposed
-            .or_else(|| habitat.library_root())
+        let new_parent = habitat
+            .library_root()
             .map_or_else(String::new, |root| root.to_string_lossy().into_owned());
         let known = habitat.known_projects().unwrap_or_else(|err| {
             fault = Some(format!("could not inspect the project library: {err:#}"));
@@ -193,22 +354,25 @@ impl ProjectDeck {
         Self {
             habitat,
             offline,
-            root,
+            new_name: String::new(),
+            new_parent,
+            open_root: proposed
+                .map_or_else(String::new, |root| root.to_string_lossy().into_owned()),
             fault,
-            return_app,
+            return_workspace,
             known,
             water: forge_water(),
         }
     }
 
-    fn pulse(&mut self, ui: &mut egui::Ui) -> Option<Box<TrailApp>> {
-        let mut action = self.return_app.as_ref().and_then(|_| {
+    fn pulse(&mut self, ui: &mut egui::Ui) -> Option<ProjectWorkspace> {
+        let mut action = self.return_workspace.as_ref().and_then(|_| {
             ui.ctx()
                 .input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
                 .then_some(ProjectAction::Back)
         });
         let _center = egui::CentralPanel::default().show_inside(ui, |ui| {
-            ui.add_space(((ui.available_height() - 610.0) * 0.42).max(18.0));
+            ui.add_space(((ui.available_height() - 650.0) * 0.42).max(14.0));
             let _row = ui.horizontal(|ui| {
                 ui.add_space(((ui.available_width() - 760.0) * 0.5).max(12.0));
                 let _plate = egui::Frame::new()
@@ -226,68 +390,119 @@ impl ProjectDeck {
         let _column = ui.vertical(|ui| {
             ui.set_width(710.0);
             self.heading(ui);
-            self.project_chooser(ui, action);
+            self.new_project(ui, action);
+            self.open_project(ui, action);
             self.known_projects(ui, action);
-            self.sample_chooser(ui, action);
             self.footnotes(ui);
         });
     }
 
     fn heading(&self, ui: &mut egui::Ui) {
         let _eyebrow = ui.label(chrome::eyebrow("PROJECT DECK"));
-        let title = if self.return_app.is_some() {
+        let title = if self.return_workspace.is_some() {
             "SWITCH TRAIL PROJECT"
         } else {
-            "CHOOSE A TRAIL PROJECT"
+            "TRAIL PROJECTS"
         };
         let _title = ui.label(chrome::title(title));
         ui.add_space(7.0);
         let _copy = ui.add(
             egui::Label::new(
-                RichText::new(
-                    "OPEN A READY PROJECT FOLDER CONTAINING TRAILGEN.TOML AND A BUILT GRAPH. TRAILGEN REMEMBERS ONLY A PROJECT YOU CHOOSE; THE COLORADO SAMPLE IS NEVER CREATED OR OPENED AUTOMATICALLY.",
-                )
-                .color(chrome::MUTED),
+                RichText::new("CREATE A BLANK PROJECT OR OPEN ONE ALREADY ON DISK.")
+                    .color(chrome::MUTED),
             )
             .wrap(),
         );
         ui.add_space(14.0);
     }
 
-    fn project_chooser(&mut self, ui: &mut egui::Ui, action: &mut Option<ProjectAction>) {
-        let _label = ui.label(chrome::eyebrow("PROJECT FOLDER"));
+    fn new_project(&mut self, ui: &mut egui::Ui, action: &mut Option<ProjectAction>) {
+        let _label = ui.label(chrome::eyebrow("NEW PROJECT"));
+        ui.add_space(3.0);
+        let name = ui.add_sized(
+            [ui.available_width(), 28.0],
+            egui::TextEdit::singleline(&mut self.new_name)
+                .hint_text("project name")
+                .text_color(chrome::TEXT),
+        );
+        chrome::tension(ui, &name);
+        ui.add_space(5.0);
+        let _parent = ui.horizontal(|ui| {
+            let edit = ui.add_sized(
+                [552.0, 28.0],
+                egui::TextEdit::singleline(&mut self.new_parent)
+                    .hint_text("parent folder")
+                    .text_color(chrome::TEXT),
+            );
+            chrome::tension(ui, &edit);
+            let browse = ui.add_sized([142.0, 28.0], chrome::glyph_button("□  BROWSE…", false));
+            chrome::tension(ui, &browse);
+            if browse.clicked()
+                && let Some(parent) = self.pick_parent()
+            {
+                self.new_parent = parent.to_string_lossy().into_owned();
+                self.fault = None;
+            }
+        });
+        ui.add_space(6.0);
+        let target = self.new_project_root();
+        let ready = target.is_some();
+        let create = ui.add_enabled(
+            ready,
+            chrome::glyph_button("＋  CREATE BLANK PROJECT", true).min_size(vec2(245.0, 34.0)),
+        );
+        let create =
+            create.on_disabled_hover_text("Enter a project name and choose a parent folder.");
+        chrome::tension(ui, &create);
+        if create.clicked()
+            || (ready && name.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)))
+        {
+            *action = Some(ProjectAction::Create {
+                root: target.expect("enabled project creation has a target"),
+                name: self.new_name.trim().to_owned(),
+            });
+        }
+        if let Some(target) = self.new_project_root() {
+            let _target = chrome::note(ui, format!("NEW FOLDER · {}", target.display()));
+        }
+    }
+
+    fn open_project(&mut self, ui: &mut egui::Ui, action: &mut Option<ProjectAction>) {
+        ui.add_space(16.0);
+        let _label = ui.label(chrome::eyebrow("OPEN EXISTING PROJECT"));
+        ui.add_space(3.0);
         let _path = ui.horizontal(|ui| {
             let edit = ui.add_sized(
                 [552.0, 28.0],
-                egui::TextEdit::singleline(&mut self.root)
+                egui::TextEdit::singleline(&mut self.open_root)
                     .hint_text("folder containing trailgen.toml")
                     .text_color(chrome::TEXT),
             );
             chrome::tension(ui, &edit);
             if edit.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
-                *action = Some(ProjectAction::Open(PathBuf::from(self.root.trim())));
+                *action = Some(ProjectAction::Open(PathBuf::from(self.open_root.trim())));
             }
             let browse = ui.add_sized([142.0, 28.0], chrome::glyph_button("□  BROWSE…", false));
             chrome::tension(ui, &browse);
             if browse.clicked()
-                && let Some(root) = self.pick_folder()
+                && let Some(root) = self.pick_project()
             {
-                self.root = root.to_string_lossy().into_owned();
+                self.open_root = root.to_string_lossy().into_owned();
                 self.fault = None;
             }
         });
         ui.add_space(6.0);
         let _actions = ui.horizontal(|ui| {
             let open = ui.add_enabled(
-                !self.root.trim().is_empty(),
+                !self.open_root.trim().is_empty(),
                 chrome::glyph_button("↗  OPEN PROJECT", true).min_size(vec2(210.0, 34.0)),
             );
             let open = open.on_disabled_hover_text("Choose a project folder first.");
             chrome::tension(ui, &open);
             if open.clicked() {
-                *action = Some(ProjectAction::Open(PathBuf::from(self.root.trim())));
+                *action = Some(ProjectAction::Open(PathBuf::from(self.open_root.trim())));
             }
-            if self.return_app.is_some() {
+            if self.return_workspace.is_some() {
                 let back =
                     ui.add(chrome::glyph_button("←  BACK", false).min_size(vec2(150.0, 34.0)));
                 chrome::tension(ui, &back);
@@ -297,15 +512,7 @@ impl ProjectDeck {
             }
         });
         if let Some(fault) = &self.fault {
-            ui.add_space(8.0);
-            let _fault = ui.add(
-                egui::Label::new(
-                    RichText::new(fault.to_ascii_uppercase())
-                        .size(11.0)
-                        .color(Color32::from_rgb(203, 113, 91)),
-                )
-                .wrap(),
-            );
+            fault_label(ui, fault);
         }
     }
 
@@ -333,75 +540,60 @@ impl ProjectDeck {
         }
     }
 
-    fn sample_chooser(&self, ui: &mut egui::Ui, action: &mut Option<ProjectAction>) {
-        ui.add_space(16.0);
-        let _sample = ui.label(chrome::eyebrow("OPTIONAL SAMPLE · COLORADO"));
-        let _sample_row = ui.horizontal(|ui| {
-            let _note = ui.add_sized(
-                [470.0, 32.0],
-                egui::Label::new(chrome::muted(
-                    "A tiny synthetic loop for learning the controls. It is not your project.",
-                ))
-                .wrap(),
-            );
-            let sample = ui.add_enabled_ui(self.habitat.sample_root().is_some(), |ui| {
-                ui.add_sized(
-                    [224.0, 30.0],
-                    chrome::glyph_button("△  OPEN COLORADO SAMPLE", false),
-                )
-            });
-            let sample = sample
-                .inner
-                .on_disabled_hover_text("The operating system exposes no Documents directory.");
-            chrome::tension(ui, &sample);
-            if sample.clicked() {
-                *action = Some(ProjectAction::Sample);
-            }
-        });
-    }
-
     fn footnotes(&self, ui: &mut egui::Ui) {
         ui.add_space(10.0);
         let library = self.habitat.library_root().map_or_else(
-            || "OS DOCUMENTS DIRECTORY UNAVAILABLE · BROWSE TO A PROJECT".to_owned(),
+            || "OS DOCUMENTS DIRECTORY UNAVAILABLE · CHOOSE A PARENT FOLDER".to_owned(),
             |root| format!("CONVENTIONAL LIBRARY · {}", root.display()),
         );
         let _library = chrome::note(ui, library);
-        let _shortcut = chrome::note(ui, "CTRL+O OPENS THIS DECK FROM THE WORKBENCH");
+        let _shortcut = chrome::note(ui, "CTRL+O OPENS THIS DECK FROM A PROJECT");
     }
 
-    fn pick_folder(&self) -> Option<PathBuf> {
-        let mut dialog = rfd::FileDialog::new().set_title("Open Trailgen Project");
-        let proposed = Path::new(self.root.trim());
-        if proposed.is_dir() {
-            dialog = dialog.set_directory(proposed);
-        } else if let Some(library) = self.habitat.library_root() {
-            dialog = dialog.set_directory(library);
+    fn new_project_root(&self) -> Option<PathBuf> {
+        let parent = self.new_parent.trim();
+        let slug = project_slug(self.new_name.trim())?;
+        (!parent.is_empty()).then(|| Path::new(parent).join(slug))
+    }
+
+    fn pick_parent(&self) -> Option<PathBuf> {
+        let mut dialog = rfd::FileDialog::new().set_title("Choose New Project Parent");
+        if let Some(parent) = nearest_existing(Path::new(self.new_parent.trim())) {
+            dialog = dialog.set_directory(parent);
         }
         dialog.pick_folder()
     }
 
-    fn attempt(&mut self, ctx: &egui::Context, action: ProjectAction) -> Option<Box<TrailApp>> {
+    fn pick_project(&self) -> Option<PathBuf> {
+        let mut dialog = rfd::FileDialog::new().set_title("Open Trailgen Project");
+        let proposed = Path::new(self.open_root.trim());
+        if let Some(parent) = nearest_existing(proposed) {
+            dialog = dialog.set_directory(parent);
+        } else if let Some(library) = self.habitat.library_root()
+            && let Some(parent) = nearest_existing(library)
+        {
+            dialog = dialog.set_directory(parent);
+        }
+        dialog.pick_folder()
+    }
+
+    fn attempt(&mut self, ctx: &egui::Context, action: ProjectAction) -> Option<ProjectWorkspace> {
         if matches!(action, ProjectAction::Back) {
-            return self.return_app.take();
+            return self.return_workspace.take();
         }
         let result = (|| {
             let root = match action {
+                ProjectAction::Create { root, name } => create_project(&root, &name)?,
                 ProjectAction::Open(root) => {
                     ensure!(!root.as_os_str().is_empty(), "choose a project folder");
                     root
                 }
-                ProjectAction::Sample => {
-                    forge_sample(&self.habitat.sample_root().ok_or_else(|| {
-                        anyhow::anyhow!("the operating system exposes no Documents directory")
-                    })?)?
-                }
                 ProjectAction::Back => unreachable!("back handled before opening a project"),
             };
-            open(ctx, &self.habitat, &root, self.offline)
+            open_project(ctx, &self.habitat, &root, self.offline)
         })();
         match result {
-            Ok(app) => Some(Box::new(app)),
+            Ok(workspace) => Some(workspace),
             Err(err) => {
                 self.fault = Some(format!("{err:#}"));
                 None
@@ -411,15 +603,84 @@ impl ProjectDeck {
 }
 
 enum ProjectAction {
+    Create { root: PathBuf, name: String },
     Open(PathBuf),
-    Sample,
     Back,
 }
 
-fn open(ctx: &egui::Context, habitat: &Habitat, root: &Path, offline: bool) -> Result<TrailApp> {
-    let app = TrailApp::open(ctx, root, offline, habitat.slate_path(root))?;
-    if let Err(err) = habitat.remember(root) {
+fn open_project(
+    ctx: &egui::Context,
+    habitat: &Habitat,
+    root: &Path,
+    offline: bool,
+) -> Result<ProjectWorkspace> {
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("open project {}", root.display()))?;
+    let place = ProjectPlace::read(root.clone())?;
+    let materialized = root.join("routes/generated.graph.json").is_file()
+        || root.join("cache/graph.json").is_file();
+    let workspace = if materialized {
+        ProjectWorkspace::Trail(Box::new(TrailApp::open(
+            ctx,
+            &root,
+            offline,
+            habitat.slate_path(&root),
+        )?))
+    } else {
+        ProjectWorkspace::Empty(Box::new(EmptyProject::new(place)))
+    };
+    if let Err(err) = habitat.remember(&root) {
         eprintln!("could not remember project: {err:#}");
     }
-    Ok(app)
+    Ok(workspace)
+}
+
+fn project_slug(name: &str) -> Option<String> {
+    let mut slug = String::with_capacity(name.len());
+    let mut separated = true;
+    for character in name.chars() {
+        if character.is_alphanumeric() {
+            slug.extend(character.to_lowercase());
+            separated = false;
+        } else if !separated && matches!(character, ' ' | '-' | '_') {
+            slug.push('-');
+            separated = true;
+        }
+    }
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    (!slug.is_empty()).then_some(slug)
+}
+
+fn nearest_existing(path: &Path) -> Option<&Path> {
+    path.ancestors().find(|ancestor| ancestor.is_dir())
+}
+
+fn fault_label(ui: &mut egui::Ui, fault: &str) {
+    ui.add_space(8.0);
+    let _fault = ui.add(
+        egui::Label::new(
+            RichText::new(fault.to_ascii_uppercase())
+                .size(11.0)
+                .color(Color32::from_rgb(203, 113, 91)),
+        )
+        .wrap(),
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_names_collapse_to_safe_stable_folders() {
+        assert_eq!(
+            project_slug("Harriman West Loop"),
+            Some("harriman-west-loop".into())
+        );
+        assert_eq!(project_slug("  雪 山  "), Some("雪-山".into()));
+        assert_eq!(project_slug("../"), None);
+    }
 }

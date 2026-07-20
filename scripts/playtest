@@ -61,12 +61,41 @@ while :; do
 done
 
 if [ -n "${TRAILGEN_GUI_DECK_OPEN_ROOT:-}" ]; then
-    xdotool mousemove --sync --window "$window" 600 296 click 1
+    xdotool mousemove --sync --window "$window" 600 425 click 1
     xdotool key --window "$window" ctrl+a
     xdotool type --window "$window" --delay 1 "$TRAILGEN_GUI_DECK_OPEN_ROOT"
     xdotool key --window "$window" Return
     sleep 1
     import -window "$window" "$out/project-opened.png"
+    exit 0
+fi
+
+if [ -n "${TRAILGEN_GUI_CREATE_NAME:-}" ]; then
+    parent=${TRAILGEN_GUI_CREATE_PARENT:?set TRAILGEN_GUI_CREATE_PARENT}
+    created=${TRAILGEN_GUI_CREATE_ROOT:?set TRAILGEN_GUI_CREATE_ROOT}
+    xdotool mousemove --sync --window "$window" 600 305
+    xdotool click 1
+    sleep 0.2
+    xdotool type --delay 30 "$parent"
+    sleep 1
+    xdotool key shift+Tab
+    sleep 0.5
+    xdotool type --delay 30 "$TRAILGEN_GUI_CREATE_NAME"
+    sleep 1
+    xdotool mousemove --sync --window "$window" 480 349
+    xdotool click 1
+    attempts=0
+    while ! test -f "$created/trailgen.toml"; do
+        attempts=$((attempts + 1))
+        if [ "$attempts" -ge 100 ]; then
+            import -window "$window" "$out/project-create-timeout.png"
+            printf 'timed out creating %s\n' "$created" >&2
+            exit 1
+        fi
+        sleep 0.1
+    done
+    sleep 0.5
+    import -window "$window" "$out/project-created.png"
     exit 0
 fi
 
@@ -113,7 +142,7 @@ if [ "${TRAILGEN_GUI_DRAFT:-0}" = 1 ]; then
 fi
 
 if [ "${TRAILGEN_GUI_ROAM:-0}" = 1 ]; then
-    # Cross the project-local PMTiles cut from Colorado to Harriman at world zoom,
+    # Cross the project-local PMTiles cut to Harriman at world zoom,
     # then demand native z15 vectors there. The private XDG root survives into a
     # second run so this also proves slate restoration and warm-cache reuse.
     xdotool mousemove --window "$window" 864 350

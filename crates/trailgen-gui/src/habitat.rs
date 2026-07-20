@@ -1,4 +1,4 @@
-use anyhow::{Context as _, Result, bail, ensure};
+use anyhow::{Context as _, Result, ensure};
 use directories::{ProjectDirs, UserDirs};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -7,30 +7,19 @@ use std::{
     fmt::Write as _,
     fs, io,
     path::{Path, PathBuf},
-    process,
 };
 
 const LIBRARY: &str = "trailgen";
-const SAMPLE: &str = "starter-loop";
 const SESSION: &str = "session.json";
 const SLATE: &str = "slate.toml";
 const SLATES: &str = "projects";
 const PROJECT_MARK: &str = "trailgen.toml";
-const SAMPLE_DIRS: [&str; 5] = ["cache", "reports", "routes", "seeds", "sources"];
-const SAMPLE_FILES: [(&str, &[u8]); 3] = [
-    (
-        "trailgen.toml",
-        include_bytes!("../assets/starter/trailgen.toml"),
-    ),
-    (
-        "cache/graph.json",
-        include_bytes!("../assets/starter/cache/graph.json"),
-    ),
-    (
-        "routes/generated.routes.json",
-        include_bytes!("../assets/starter/routes/generated.routes.json"),
-    ),
-];
+const PROJECT_DIRS: [&str; 5] = ["cache", "reports", "routes", "seeds", "sources"];
+
+#[derive(Serialize)]
+struct ProjectMark<'a> {
+    name: &'a str,
+}
 
 #[derive(Clone, Debug)]
 pub struct Habitat {
@@ -52,7 +41,7 @@ pub struct ProjectPlace {
 }
 
 impl ProjectPlace {
-    fn read(root: PathBuf) -> Result<Self> {
+    pub(crate) fn read(root: PathBuf) -> Result<Self> {
         #[derive(Deserialize)]
         struct Mark {
             name: String,
@@ -105,10 +94,6 @@ impl Habitat {
         self.library.as_deref()
     }
 
-    pub fn sample_root(&self) -> Option<PathBuf> {
-        self.library.as_ref().map(|root| root.join(SAMPLE))
-    }
-
     pub fn slate_path(&self, root: &Path) -> PathBuf {
         let root = root.canonicalize().unwrap_or_else(|_| root.to_owned());
         let digest = Sha256::digest(root.to_string_lossy().as_bytes());
@@ -151,11 +136,9 @@ impl Habitat {
 
     pub fn known_projects(&self) -> Result<Vec<ProjectPlace>> {
         let mut projects = Vec::new();
-        let sample = self.sample_root();
         if let Some(session) = self.recall()?
             && session.chosen
-            && sample.as_ref() != Some(&session.last_project)
-            && is_living_project(&session.last_project)
+            && is_project(&session.last_project)
         {
             projects.push(ProjectPlace::read(session.last_project)?);
         }
@@ -172,10 +155,7 @@ impl Habitat {
         };
         for entry in entries {
             let path = entry?.path();
-            if sample.as_ref() != Some(&path)
-                && is_living_project(&path)
-                && !projects.iter().any(|project| project.root == path)
-            {
+            if is_project(&path) && !projects.iter().any(|project| project.root == path) {
                 projects.push(ProjectPlace::read(path)?);
             }
         }
@@ -184,12 +164,12 @@ impl Habitat {
     }
 
     fn resume_from(&self, current: &Path) -> Result<Option<PathBuf>> {
-        if is_living_project(current) {
+        if is_project(current) {
             return Ok(Some(current.to_owned()));
         }
         if let Some(session) = self.recall()?
             && session.chosen
-            && is_living_project(&session.last_project)
+            && is_project(&session.last_project)
         {
             return Ok(Some(session.last_project));
         }
@@ -219,78 +199,78 @@ fn is_project(root: &Path) -> bool {
     root.join(PROJECT_MARK).is_file()
 }
 
-fn is_living_project(root: &Path) -> bool {
-    is_project(root) && root.join("cache/graph.json").is_file()
-}
-
-pub fn forge_sample(root: &Path) -> Result<PathBuf> {
-    if is_living_project(root) {
-        return Ok(root.to_owned());
-    }
+pub fn create_project(root: &Path, name: &str) -> Result<PathBuf> {
+    let name = name.trim();
+    ensure!(!name.is_empty(), "project name must not be empty");
     ensure!(
-        !root.exists(),
-        "managed sample path {} exists but is not a materialized trailgen project",
+        !is_project(root),
+        "{} is already a trailgen project",
         root.display()
     );
-    let parent = root
-        .parent()
-        .context("managed sample project has no parent directory")?;
-    fs::create_dir_all(parent)
-        .with_context(|| format!("create managed project library {}", parent.display()))?;
-    let mut scaffold = Scaffold::raise(parent)?;
-    for dir in SAMPLE_DIRS {
-        fs::create_dir_all(scaffold.path().join(dir))
-            .with_context(|| format!("forge sample directory {dir}"))?;
+    let existed = root.exists();
+    if existed {
+        ensure!(root.is_dir(), "{} is not a directory", root.display());
+        ensure!(
+            fs::read_dir(root)
+                .with_context(|| format!("inspect {}", root.display()))?
+                .next()
+                .is_none(),
+            "{} is neither a trailgen project nor an empty folder",
+            root.display()
+        );
     }
-    for (relative, body) in SAMPLE_FILES {
-        fs::write(scaffold.path().join(relative), body)
-            .with_context(|| format!("forge sample artifact {relative}"))?;
+    fs::create_dir_all(root).with_context(|| format!("create project {}", root.display()))?;
+    let mut cradle = ProjectCradle::new(root, !existed);
+    for dir in PROJECT_DIRS {
+        let path = root.join(dir);
+        fs::create_dir(&path).with_context(|| format!("create project directory {dir}"))?;
+        cradle.created.push(path);
     }
-    match fs::rename(scaffold.path(), root) {
-        Ok(()) => scaffold.disarm(),
-        Err(_) if is_living_project(root) => {}
-        Err(err) => {
-            return Err(err)
-                .with_context(|| format!("install managed sample project {}", root.display()));
-        }
-    }
-    Ok(root.to_owned())
+    fs::write(
+        root.join(PROJECT_MARK),
+        toml::to_string_pretty(&ProjectMark { name })?,
+    )
+    .with_context(|| format!("write project mark under {}", root.display()))?;
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("resolve created project {}", root.display()))?;
+    cradle.disarm();
+    Ok(root)
 }
 
-struct Scaffold(PathBuf);
+struct ProjectCradle {
+    root: PathBuf,
+    created: Vec<PathBuf>,
+    remove_root: bool,
+    armed: bool,
+}
 
-impl Scaffold {
-    fn raise(parent: &Path) -> Result<Self> {
-        for nonce in 0..64 {
-            let path = parent.join(format!(".trailgen-sample-{}-{nonce}", process::id()));
-            match fs::create_dir(&path) {
-                Ok(()) => return Ok(Self(path)),
-                Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(err) => {
-                    return Err(err)
-                        .with_context(|| format!("raise sample scaffold in {}", parent.display()));
-                }
-            }
+impl ProjectCradle {
+    fn new(root: &Path, remove_root: bool) -> Self {
+        Self {
+            root: root.to_owned(),
+            created: Vec::with_capacity(PROJECT_DIRS.len()),
+            remove_root,
+            armed: true,
         }
-        bail!(
-            "sample scaffold namespace exhausted in {}",
-            parent.display()
-        )
     }
 
-    fn path(&self) -> &Path {
-        &self.0
-    }
-
-    fn disarm(&mut self) {
-        self.0.clear();
+    const fn disarm(&mut self) {
+        self.armed = false;
     }
 }
 
-impl Drop for Scaffold {
+impl Drop for ProjectCradle {
     fn drop(&mut self) {
-        if !self.0.as_os_str().is_empty() {
-            let _ = fs::remove_dir_all(&self.0);
+        if !self.armed {
+            return;
+        }
+        let _mark = fs::remove_file(self.root.join(PROJECT_MARK));
+        for path in self.created.iter().rev() {
+            let _dir = fs::remove_dir(path);
+        }
+        if self.remove_root {
+            let _root = fs::remove_dir(&self.root);
         }
     }
 }
@@ -315,7 +295,6 @@ fn create_private_dir(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::Project;
 
     fn habitat(root: &Path) -> Habitat {
         Habitat {
@@ -324,10 +303,9 @@ mod tests {
         }
     }
 
-    fn living_project(root: &Path, name: &str) -> Result<()> {
+    fn marked_project(root: &Path, name: &str) -> Result<()> {
         fs::create_dir_all(root.join("cache"))?;
         fs::write(root.join(PROJECT_MARK), format!("name = '{name}'"))?;
-        fs::write(root.join("cache/graph.json"), b"{}")?;
         Ok(())
     }
 
@@ -335,7 +313,7 @@ mod tests {
     fn current_project_dominates_session() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let current = temp.path().join("current");
-        living_project(&current, "current")?;
+        marked_project(&current, "current")?;
         assert_eq!(habitat(temp.path()).resume_from(&current)?, Some(current));
         Ok(())
     }
@@ -344,7 +322,7 @@ mod tests {
     fn chosen_session_round_trips_the_canonical_project() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let root = temp.path().join("remembered");
-        living_project(&root, "remembered")?;
+        marked_project(&root, "remembered")?;
         let habitat = habitat(temp.path());
         habitat.remember(&root)?;
         assert_eq!(
@@ -355,10 +333,10 @@ mod tests {
     }
 
     #[test]
-    fn legacy_implicit_sample_is_not_resumed() -> Result<()> {
+    fn legacy_unchosen_session_is_not_resumed() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let root = temp.path().join("remembered");
-        living_project(&root, "legacy")?;
+        marked_project(&root, "legacy")?;
         let habitat = habitat(temp.path());
         create_private_dir(&habitat.state)?;
         fs::write(
@@ -370,17 +348,18 @@ mod tests {
     }
 
     #[test]
-    fn sample_is_explicit_and_atomic() -> Result<()> {
+    fn blank_project_is_created_at_its_conventional_home() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let habitat = habitat(temp.path());
         assert_eq!(habitat.resume_from(temp.path())?, None);
-        let root = forge_sample(&habitat.sample_root().context("sample root")?)?;
-        assert_eq!(root, temp.path().join("documents/trailgen/starter-loop"));
-        let project = Project::open(&root)?;
-        assert_eq!(project.config.name, "Sample · Colorado");
-        assert_eq!(project.graph.vertices.len(), 5);
-        assert_eq!(project.routes.len(), 3);
-        assert!((project.config.constraints.min_distance_m - 3_000.0).abs() < f64::EPSILON);
+        let root = create_project(
+            &habitat.library_root().context("library")?.join("harriman"),
+            "Harriman",
+        )?;
+        assert_eq!(root, temp.path().join("documents/trailgen/harriman"));
+        assert_eq!(ProjectPlace::read(root.clone())?.name, "Harriman");
+        assert!(PROJECT_DIRS.iter().all(|dir| root.join(dir).is_dir()));
+        assert_eq!(habitat.resume_from(&root)?, Some(root));
         Ok(())
     }
 
@@ -388,7 +367,7 @@ mod tests {
     fn known_projects_deduplicate_the_recent_library_entry() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let root = temp.path().join("documents/trailgen/alpha");
-        living_project(&root, "Alpha")?;
+        marked_project(&root, "Alpha")?;
         let habitat = habitat(temp.path());
         habitat.remember(&root)?;
         assert_eq!(
@@ -402,12 +381,14 @@ mod tests {
     }
 
     #[test]
-    fn sample_has_one_explicit_home_outside_known_projects() -> Result<()> {
+    fn creation_rejects_a_foreign_nonempty_folder() -> Result<()> {
         let temp = tempfile::tempdir()?;
-        let habitat = habitat(temp.path());
-        let root = forge_sample(&habitat.sample_root().context("sample root")?)?;
-        habitat.remember(&root)?;
-        assert!(habitat.known_projects()?.is_empty());
+        let root = temp.path().join("occupied");
+        fs::create_dir(&root)?;
+        fs::write(root.join("precious"), "data")?;
+        let error = create_project(&root, "Collision").unwrap_err();
+        assert!(error.to_string().contains("nor an empty folder"));
+        assert_eq!(fs::read_to_string(root.join("precious"))?, "data");
         Ok(())
     }
 
@@ -416,8 +397,8 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let alpha = temp.path().join("alpha");
         let beta = temp.path().join("beta");
-        living_project(&alpha, "Alpha")?;
-        living_project(&beta, "Beta")?;
+        marked_project(&alpha, "Alpha")?;
+        marked_project(&beta, "Beta")?;
         let habitat = habitat(temp.path());
         create_private_dir(&habitat.state)?;
         fs::write(
