@@ -1,18 +1,26 @@
 [workspace]
-members = ["crates/trailgen-core", "crates/trailgen-cli"]
+members = ["crates/trailgen-core", "crates/trailgen-cli", "crates/trailgen-gui"]
 resolver = "2"
 
 [workspace.package]
 edition = "2024"
 license = "MIT OR Apache-2.0"
-repository = "ssh://git@git.swarm.moe/repos/adequate-trailgen.git"
+repository = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/adequate-trailgen"
 rust-version = "1.88"
 
 [workspace.dependencies]
 anyhow = "1.0.98"
 clap = { version = "4.5.40", features = ["derive"] }
+crossbeam-channel = "0.5.15"
+directories = "6.0.0"
+dwemer_poolrooms = "0.1.0"
+egui = "=0.34.3"
+egui-wgpu = "=0.34.3"
+egui-winit = "=0.34.3"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 roxmltree = "0.20.0"
 osmpbfreader = "0.19.1"
+pollster = "0.4"
 protobuf = "3.7.2"
 reqwest = { version = "0.12.22", default-features = false, features = ["blocking", "rustls-tls"] }
 rstar = "0.12.2"

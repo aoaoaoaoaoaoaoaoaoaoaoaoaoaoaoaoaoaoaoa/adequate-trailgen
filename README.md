@@ -1,12 +1,22 @@
 # adequate-trailgen
 
-`adequate-trailgen` is a CLI-first Rust workspace for designing long-day-hike loops over normalized trail graphs. It ingests provider-neutral route/network files, splits and snaps them into a routable graph, enriches each edge with transparent attributes, scores route difficulty, searches for constrained loop candidates, and exports route files plus reports.
+`adequate-trailgen` is a Rust trail-forging workbench for designing long-day-hike loops over normalized trail graphs. Its native Dwemer Poolrooms GUI and deterministic CLI share one provider-neutral core: they split and snap route networks into a routable graph, preserve terrain and access evidence, score difficulty, search for constrained candidates, and render or export auditable routes.
 
 The current implementation is intentionally local-first: use GeoJSON/GPX fixtures, official GIS exports, park layers, OSM-derived extracts, or user-supplied AllTrails exports. The internal model is provider-agnostic; AllTrails is treated as an import/export workflow, not as a privileged dependency.
 
 `trailgen build` prefers provider-neutral GeoJSON, OSM XML/PBF, or shapefile trail/network layers and accepts repeated `--source` flags to merge multiple network files into one graph. `--snap-tolerance-m N` overrides and persists the cautious near-miss endpoint snapping tolerance used while constructing graph topology. It can also bootstrap a practical graph from supplied GPX, KML, KMZ, CSV, route GeoJSON, or route JSON files. Route-derived graphs preserve `route-file` provenance and lower confidence; use them as seed scaffolds when a real network layer is not yet available.
 
 ## Quickstart
+
+Open the bundled project in the native workbench:
+
+```sh
+cargo run -p trailgen-gui -- demo/mini-loop
+```
+
+The left inspector controls trailhead, distance, ascent/descent, difficulty, route shape, terrain fractions, solver, and search budget. Click the map to snap the trailhead to a real graph vertex, then strike **FIND TRAILS**. The atlas keeps candidate geometry at metric scale; sort the gallery by Pareto rank, distance, ascent, difficulty, or trail fraction, and click a plate for the full vector map and measured elevation/terrain/grade profile. Pass `--offline` to suppress the network-backed USGS topographic basemap while retaining every vector layer.
+
+The corresponding CLI pipeline is:
 
 ```sh
 cargo run -p trailgen -- init demo/mini-loop --name "Mini Loop" --bbox -105.02,39.99,-104.98,40.02
@@ -28,6 +38,8 @@ cargo run -p trailgen -- export demo/mini-loop --route candidate-1 --format csv 
 cargo run -p trailgen -- report demo/mini-loop --output /tmp/generated.md
 cargo run -p trailgen -- map demo/mini-loop --output /tmp/mini-loop-map.html
 ```
+
+The GUI searches the graph already materialized under `cache/` or the effective generation snapshot under `routes/`. The CLI remains the authority for source acquisition, graph assembly, fingerprinted generation ledgers, and route export.
 
 ## Verification
 

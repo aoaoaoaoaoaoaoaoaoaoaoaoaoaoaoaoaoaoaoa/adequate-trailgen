@@ -1,0 +1,377 @@
+use crate::app::TrailApp;
+use anyhow::{Context as _, Result};
+use dwemer_poolrooms::water::Frost;
+use egui_wgpu::{RenderState, RendererOptions, ScreenDescriptor, WgpuConfiguration, wgpu};
+use egui_winit::winit::{
+    application::ApplicationHandler,
+    dpi::{LogicalSize, PhysicalSize},
+    event::{StartCause, WindowEvent},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
+    window::{Window, WindowAttributes},
+};
+use std::{
+    sync::{Arc, Mutex, MutexGuard},
+    time::Instant,
+};
+
+const WINDOW_SIZE: LogicalSize<f64> = LogicalSize::new(1_440.0, 920.0);
+
+#[derive(Clone, Copy, Debug)]
+struct Spark;
+
+type Alarm = Arc<Mutex<Option<Instant>>>;
+
+pub fn run(ctx: egui::Context, app: TrailApp) -> Result<()> {
+    let event_loop = EventLoop::<Spark>::with_user_event()
+        .build()
+        .context("build event loop")?;
+    event_loop.set_control_flow(ControlFlow::Wait);
+    let alarm = Alarm::default();
+    arm_repaints(&ctx, Arc::clone(&alarm), event_loop.create_proxy());
+    event_loop
+        .run_app(&mut Boiler {
+            ctx,
+            app,
+            alarm,
+            rig: None,
+        })
+        .context("run event loop")
+}
+
+fn arm_repaints(ctx: &egui::Context, alarm: Alarm, proxy: EventLoopProxy<Spark>) {
+    ctx.set_request_repaint_callback(move |info| {
+        advance_alarm(&alarm, Instant::now() + info.delay);
+        let _woken = proxy.send_event(Spark);
+    });
+}
+
+fn advance_alarm(alarm: &Alarm, when: Instant) {
+    let mut alarm = lock_alarm(alarm);
+    if alarm.is_none_or(|set| when < set) {
+        *alarm = Some(when);
+    }
+}
+
+fn lock_alarm(alarm: &Alarm) -> MutexGuard<'_, Option<Instant>> {
+    match alarm.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+struct Boiler {
+    ctx: egui::Context,
+    app: TrailApp,
+    alarm: Alarm,
+    rig: Option<Rig>,
+}
+
+impl Boiler {
+    fn paint(&mut self) {
+        let Some(rig) = self.rig.as_mut() else {
+            return;
+        };
+        let raw_input = rig.input.take_egui_input(&rig.window);
+        let output = self.ctx.run_ui(raw_input, |ui| self.app.pulse(ui));
+        rig.input
+            .handle_platform_output(&rig.window, output.platform_output);
+        let primitives = self.ctx.tessellate(output.shapes, output.pixels_per_point);
+        let tooltip_rects = tooltip_rects(&self.ctx);
+        let water = self
+            .app
+            .water_frame(&self.ctx, output.pixels_per_point, &tooltip_rects);
+        if water.wants_repaint() {
+            rig.window.request_redraw();
+        }
+        rig.render(
+            &primitives,
+            &output.textures_delta,
+            output.pixels_per_point,
+            &water,
+        );
+        if let Some(viewport) = output.viewport_output.get(&egui::ViewportId::ROOT) {
+            if viewport.repaint_delay.is_zero() {
+                rig.window.request_redraw();
+            } else if let Some(when) = Instant::now().checked_add(viewport.repaint_delay) {
+                advance_alarm(&self.alarm, when);
+            }
+        }
+    }
+
+    fn tend_alarm(&self) {
+        let Some(rig) = &self.rig else {
+            return;
+        };
+        let fire = {
+            let mut alarm = lock_alarm(&self.alarm);
+            let fire = alarm.is_some_and(|when| when <= Instant::now());
+            if fire {
+                *alarm = None;
+            }
+            fire
+        };
+        if fire {
+            rig.window.request_redraw();
+        }
+    }
+}
+
+fn tooltip_rects(ctx: &egui::Context) -> Vec<egui::Rect> {
+    ctx.memory(|memory| {
+        memory
+            .layer_ids()
+            .filter(|layer| layer.order == egui::Order::Tooltip && memory.areas().is_visible(layer))
+            .filter_map(|layer| memory.area_rect(layer.id))
+            .filter(egui::Rect::is_positive)
+            .collect()
+    })
+}
+
+impl ApplicationHandler<Spark> for Boiler {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.rig.is_some() {
+            return;
+        }
+        match Rig::raise(event_loop, &self.ctx) {
+            Ok(rig) => self.rig = Some(rig),
+            Err(err) => {
+                eprintln!("could not raise trail forge window: {err:#}");
+                event_loop.exit();
+            }
+        }
+    }
+
+    fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
+        if matches!(cause, StartCause::ResumeTimeReached { .. }) {
+            self.tend_alarm();
+        }
+    }
+
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: Spark) {
+        self.tend_alarm();
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: egui_winit::winit::window::WindowId,
+        event: WindowEvent,
+    ) {
+        match &event {
+            WindowEvent::CloseRequested => {
+                event_loop.exit();
+                return;
+            }
+            WindowEvent::RedrawRequested => {
+                self.paint();
+                return;
+            }
+            WindowEvent::Resized(size) => {
+                if let Some(rig) = &mut self.rig {
+                    rig.resize(*size);
+                }
+            }
+            _ => {}
+        }
+        let Some(rig) = &mut self.rig else {
+            return;
+        };
+        let response = rig.input.on_window_event(&rig.window, &event);
+        if response.repaint {
+            rig.window.request_redraw();
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.tend_alarm();
+        let deadline = *lock_alarm(&self.alarm);
+        event_loop.set_control_flow(deadline.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
+    }
+}
+
+struct Rig {
+    window: Arc<Window>,
+    input: egui_winit::State,
+    surface: wgpu::Surface<'static>,
+    gpu: RenderState,
+    config: wgpu::SurfaceConfiguration,
+    frost: Frost,
+}
+
+impl Rig {
+    fn raise(event_loop: &ActiveEventLoop, ctx: &egui::Context) -> Result<Self> {
+        let window = Arc::new(
+            event_loop
+                .create_window(
+                    WindowAttributes::default()
+                        .with_title("adequate trailgen · trail forge")
+                        .with_inner_size(WINDOW_SIZE),
+                )
+                .context("create window")?,
+        );
+        let input = egui_winit::State::new(
+            ctx.clone(),
+            egui::ViewportId::ROOT,
+            window.as_ref(),
+            Some(window.scale_factor() as f32),
+            window.theme(),
+            None,
+        );
+        let configuration = WgpuConfiguration::default();
+        let instance = pollster::block_on(configuration.wgpu_setup.new_instance());
+        let surface = instance
+            .create_surface(Arc::clone(&window))
+            .context("create surface")?;
+        let gpu = pollster::block_on(RenderState::create(
+            &configuration,
+            &instance,
+            Some(&surface),
+            RendererOptions::default(),
+        ))
+        .context("create wgpu render state")?;
+        let size = window.inner_size();
+        let mut config = surface
+            .get_default_config(&gpu.adapter, size.width.max(1), size.height.max(1))
+            .context("surface is unsupported by the adapter")?;
+        config.format = gpu.target_format;
+        config.present_mode = wgpu::PresentMode::AutoVsync;
+        config.view_formats = vec![gpu.target_format];
+        surface.configure(&gpu.device, &config);
+        let mut frost = Frost::new(&gpu.device, gpu.target_format);
+        frost.resize(&gpu.device, &gpu.queue, config.width, config.height);
+        Ok(Self {
+            window,
+            input,
+            surface,
+            gpu,
+            config,
+            frost,
+        })
+    }
+
+    fn resize(&mut self, size: PhysicalSize<u32>) {
+        if size.width == 0 || size.height == 0 {
+            return;
+        }
+        self.config.width = size.width;
+        self.config.height = size.height;
+        self.surface.configure(&self.gpu.device, &self.config);
+        self.frost
+            .resize(&self.gpu.device, &self.gpu.queue, size.width, size.height);
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the canonical Poolrooms render graph is one ordered GPU transaction"
+    )]
+    fn render(
+        &mut self,
+        primitives: &[egui::ClippedPrimitive],
+        delta: &egui::TexturesDelta,
+        pixels_per_point: f32,
+        water: &dwemer_poolrooms::water::Frame,
+    ) {
+        let screen = ScreenDescriptor {
+            size_in_pixels: [self.config.width, self.config.height],
+            pixels_per_point,
+        };
+        let mut encoder = self
+            .gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("trailgen-boiler"),
+            });
+        let user_commands = {
+            let mut renderer = self.gpu.renderer.write();
+            for (id, image_delta) in &delta.set {
+                renderer.update_texture(&self.gpu.device, &self.gpu.queue, *id, image_delta);
+            }
+            renderer.update_buffers(
+                &self.gpu.device,
+                &self.gpu.queue,
+                &mut encoder,
+                primitives,
+                &screen,
+            )
+        };
+        let frame = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(frame)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+            wgpu::CurrentSurfaceTexture::Timeout => {
+                self.window.request_redraw();
+                return;
+            }
+            wgpu::CurrentSurfaceTexture::Occluded => return,
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                self.surface.configure(&self.gpu.device, &self.config);
+                self.window.request_redraw();
+                return;
+            }
+            wgpu::CurrentSurfaceTexture::Validation => {
+                eprintln!("surface texture validation failure");
+                return;
+            }
+        };
+        let surface_view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        if water.dry() {
+            self.frost.clear_water(&self.gpu.queue);
+        }
+        let frosted = water.live() && self.frost.scene_view().is_some();
+        {
+            let target = if frosted {
+                self.frost.scene_view().unwrap_or(&surface_view)
+            } else {
+                &surface_view
+            };
+            let mut pass = encoder
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("trailgen-egui"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: target,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                })
+                .forget_lifetime();
+            self.gpu
+                .renderer
+                .read()
+                .render(&mut pass, primitives, &screen);
+        }
+        if frosted {
+            self.frost.compose(
+                &self.gpu.device,
+                &self.gpu.queue,
+                &mut encoder,
+                &surface_view,
+                water,
+            );
+        }
+        let _submission = self
+            .gpu
+            .queue
+            .submit(user_commands.into_iter().chain([encoder.finish()]));
+        if self
+            .frost
+            .after_submit(&self.gpu.device, &self.gpu.queue, water)
+        {
+            self.window.request_redraw();
+        }
+        self.window.pre_present_notify();
+        frame.present();
+        let mut renderer = self.gpu.renderer.write();
+        for id in &delta.free {
+            renderer.free_texture(id);
+        }
+    }
+}

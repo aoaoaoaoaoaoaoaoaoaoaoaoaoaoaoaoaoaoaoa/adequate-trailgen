@@ -1,0 +1,34 @@
+[package]
+name = "trailgen-gui"
+version = "0.1.0"
+description = "Native Dwemer Poolrooms workbench for constrained trail-loop generation."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version = "1.96"
+readme = "../../README.md"
+keywords = ["gis", "hiking", "routing", "egui", "wgpu"]
+categories = ["gui", "science::geo"]
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+crossbeam-channel.workspace = true
+directories.workspace = true
+dwemer_poolrooms.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+egui-winit.workspace = true
+image.workspace = true
+pollster.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+trailgen-core.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

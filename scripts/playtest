@@ -1,0 +1,54 @@
+#!/bin/sh
+set -eu
+
+out=${1:?usage: scripts/playtest OUTPUT_DIR [PROJECT]}
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+project=${2:-$root/demo/mini-loop}
+mkdir -p "$out"
+target=$(cargo metadata --format-version 1 --no-deps --manifest-path "$root/Cargo.toml" \
+    | jq -r .target_directory)
+app=${TRAILGEN_GUI_BIN:-$target/debug/trailgen-gui}
+
+if [ "${TRAILGEN_GUI_ONLINE:-0}" = 1 ]; then
+    setsid "$app" "$project" >"$out/app.log" 2>&1 &
+else
+    setsid "$app" "$project" --offline >"$out/app.log" 2>&1 &
+fi
+leader=$!
+cleanup() {
+    kill -- "-$leader" 2>/dev/null || true
+}
+trap cleanup EXIT HUP INT TERM
+
+window=$(timeout 20 xdotool search --sync --class '^trailgen-gui$')
+xdotool windowmap --sync "$window"
+xdotool windowfocus --sync "$window"
+xwininfo -id "$window" >"$out/window.txt"
+
+sleep 1
+import -window "$window" "$out/atlas.png"
+
+# The terrain-law recess carries the per-surface admissibility and mix envelope.
+xdotool mousemove --window "$window" 130 849 click 1
+sleep 0.4
+import -window "$window" "$out/terrain-law.png"
+xdotool mousemove --window "$window" 130 849 click 1
+
+# Exercise the real exact-enumerator path on the fixture graph.
+xdotool mousemove --window "$window" 130 118 click 1
+sleep 1
+import -window "$window" "$out/forged.png"
+
+# The first gallery plate opens the vector focus surface and elevation profile.
+xdotool mousemove --window "$window" 410 790 click 1
+xdotool windowfocus --sync "$window"
+sleep 1
+import -window "$window" "$out/focus.png"
+
+# Candidate navigation and dismissal are keyboard contracts.
+xdotool key --window "$window" Right
+sleep 0.4
+import -window "$window" "$out/next.png"
+xdotool key --window "$window" Escape
+sleep 0.4
+import -window "$window" "$out/returned.png"
