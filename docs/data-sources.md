@@ -1,23 +1,128 @@
 # Data Sources
 
-## Application Path
+## Automatic Corpus
 
-The GUI's default US trail source is OpenStreetMap through Overpass. The user draws bounded fetch rectangles; each request acquires walkable ways, explicit foot-permitted connectors, hiking/foot/walking route relations, applicable foot turn restrictions, and road/hydrology context. The shared `trailgen-data` engine persists the rectangle set in `trailgen.toml`, each raw response and exact query under `sources/osm/`, provenance in `sources/manifest.json`, and a fingerprinted union receipt in `cache/trails.json`. `cache/graph.json` is published last and is the GUI readiness marker. Matching intact rectangles are reused without network access; damaged derived receipts rebuild from sequestered raw data, while corrupt raw metadata triggers a fresh bounded acquisition. Nominatim place lookup belongs only to the CLI `survey --place` debug frontend.
+The GUI owns trail acquisition. A project stores bronze-framed fetch rectangles in
+`[trail_data].regions`; the routable corpus is the geometric union of those rectangles. The
+default US provider batch is:
 
-`trailgen survey PROJECT --place PLACE [--radius-km N]` is the CLI debug frontend to this exact path. It is not a second acquisition vertical. The lower-level commands described below exist for adapter development, source substitution, and forensic control.
+| Provider ID | Source | Role | License |
+| --- | --- | --- | --- |
+| `osm` | OpenStreetMap through bounded Overpass queries | Primary geometry, trail standing, access, route relations, road connectors, and nearby road/water context | ODbL 1.0 |
+| `usgs-national-trails` | USGS National Digital Trails | Official-agency trail geometry and source-originator evidence | USGS public domain |
 
-The app must not swear fealty to one provider. Current ingestion accepts GeoJSON, OSM XML/PBF, or shapefile trail/network layers plus GPX, GeoJSON, route JSON, KML, KMZ, and CSV route files, including user exports from apps such as AllTrails when the user supplies them. GeoJSON and shapefile network adapters normalize `travel`, `travel_direction`, `direction`, `oneway`, and `one_way` attributes into provider-neutral edge travel and preserve explicit `terrain_confidence` when supplied; otherwise explicit terrain tags, explicit surface-derived terrain, and generic fallbacks receive descending confidence. OSM adapters normalize walkable `highway`/`route` ways, `surface`, `access`/`foot`, `oneway:foot`, OSM way provenance, hiking/foot/walking route-relation membership as provenance/confidence evidence, and simple via-node turn-restriction relations into graph-level directed turn bans with provenance. Edges remain bidirectional when direction evidence is absent or ambiguous, but route replay and solvers reject banned `from` edge → `to` edge transitions at the relation's `via` node. Route JSON accepts provider-neutral `coordinates`, `points`, `track`, or `route` arrays containing `[lon,lat,ele?]` tuples or point objects with lon/lat/elevation-like keys. Vector inputs may be geographic lon/lat WGS84/NAD83/CRS84, EPSG:3857 Web Mercator, or WGS84/NAD83 UTM (EPSG:326xx/327xx/269xx) when declared through a GeoJSON named CRS or shapefile `.prj`; projected coordinates are normalized to WGS84-compatible lon/lat at the adapter boundary. Other projected CRS inputs are rejected with a reproject-before-ingestion diagnostic.
+Each region-provider pair has its own immutable raw shard, exact request sidecar, and fingerprinted
+receipt beneath `sources/<provider>/`. A damaged derived index rebuilds from those shards. A missing,
+drifted, or obsolete provider receipt refetches only that provider and rectangle. `cache/graph.json`
+is written last and is the GUI readiness marker.
 
-`trailgen init <project> --name "..." --bbox west,south,east,north` persists a project area of interest. `trailgen discover <project>` then scans `sources/` for local files and writes both `sources/manifest.json` and `sources/discovery.md`. The JSON manifest includes implemented adapters, local source candidates, provider-neutral acquisition recommendations, and a coverage ledger for trail network, DEM, terrain/surface, access, closure, road, hydrology, and seed-route inputs. The Markdown discovery report renders the same ledger as a human acquisition plan with AOI, coverage, acceptance criteria, suggested cache paths, adapter IDs, search terms, official/practical source hints, copyable `cache-source` command sketches, local candidates, and the adapter registry. `trailgen source-plan <project> [--kind KIND] [--all]` renders the same manifest as an interactive next-action view: by default it prints missing classes, `--kind` narrows the class, and `--all` includes already satisfied classes for audit. Rerunning discovery refreshes recommendations and rescans local files without deleting already registered build/apply/import inputs; source verification, not discovery, is responsible for exposing later drift or missing files. Each recommendation records priority, compatible adapter IDs, suggested local paths, acquisition hints, search terms, acceptance criteria, rationale, and the AOI bounds; `discover --bbox ...` can override the config AOI for one pass. Acquisition hints are typed pointers to official or practical source surfaces such as NPS/USFS open GIS, USGS TNM/TNMAccess and 3DEP, MRLC/NLCD, PAD-US, NHD, Geofabrik OSM extracts, AllTrails user-export support, and local GPS archives. They do not crown a single provider. They are an inspectable shopping list for official GIS portals, OSM-derived extracts, DEM catalogs, land-cover layers, dated closure feeds, and personal route archives.
+Both providers normalize through `NetworkProvider` into `SegmentDraft` and `ContextOverlay`; no
+provider owns a second graph-building path. Normalized lines are clipped to the rectangle union,
+then conflated explicitly. Lower numeric precedence wins duplicate geometry, while corroborating
+provenance and useful missing attributes survive. Residual nonparallel geometry from a lower-priority
+provider remains routable. `cache/conflation.json` records every bounded suppression decision;
+`cache/trails.json` keeps only compact counts.
 
-The coverage ledger evaluates each recommendation as `satisfied` when a matching candidate names a registered adapter, otherwise `missing`. `trailgen vet-sources <project>` first performs the same fingerprint verification as `verify-sources`, then fails unless required coverage is satisfied. `--level recommended` also requires terrain, access, closure, road, and hydrology candidates; repeated `--require trail-network|seed-route|elevation|terrain|access|closure|road|hydrology` can harden any source class regardless of its default priority. `trailgen generate --source-gate required|recommended` applies the same coverage gate inside the artifact-producing command, while `generation_source_gate` can make that policy persistent in project config. Generated route manifests snapshot the source manifest and carry a compact `source_coverage_summary` with required, recommended, and optional tallies plus explicit missing required and recommended kinds. Markdown reports render the same snapshot summary, so selected reports cannot silently reinterpret an old generated route after live `sources/manifest.json` changes.
+The USGS adapter queries the Transportation service's National Digital Trails layer for terrestrial,
+hiker/pedestrian trails. It preserves permanent or source feature identity, source originator,
+dataset identity, surface, and public-domain provenance. USGS inclusion does not prove public access,
+so its edges deliberately carry `access = unknown`.
 
-`trailgen cache-source <project> --input URL_OR_PATH --output relative/name.geojson` is the explicit acquisition/cache seam. It copies local files or downloads `http://`/`https://` URLs into `project/sources/`, classifies the cached artifact by filename when possible, records the original input string as `origin`, fingerprints the cached bytes, and updates `sources/manifest.json`. Local loose shapefile caching copies `.shp`, mandatory `.dbf`, optional `.shx`, `.prj`, and `.cpg` sidecars beside the cached `.shp`; the source fingerprint covers the bundle so DBF, index, CRS, or encoding drift is detected. Local or remote ZIP archives are accepted when `--output` names the extracted artifact. For shapefile bundles ending in `.shp`, the extractor uses the requested basename when present, otherwise the archive’s sole `.shp` member, and writes sidecars beside the cached `.shp`; for non-shapefile archives, the requested output filename selects the matching member or a sole member with the same extension, and ambiguous archives fail with the available member names. Use `--kind trail-network|seed-route|elevation|terrain|access|closure|road|hydrology` and `--adapter ADAPTER_ID` when an agency filename is ambiguous. Cache outputs are forced to remain relative paths under `sources/`; reproducible projects should build/apply/import from those cached files, not from mutable download locations. The discovery report’s cache command sketches deliberately use `<artifact-url-or-path>` rather than portal URLs because most official surfaces require choosing a concrete layer/tile/export before caching bytes.
+The OSM adapter accepts path, footway, track, steps, bridleway, and ordinary walkable road/service
+connectors. Motorway and trunk geometry is not admitted merely because it is a road. Hiking, foot,
+and walking route relations raise evidence; simple node-via foot turn restrictions become graph turn
+bans. `foot`/`access`, direction, surface, trail visibility, maintenance, `informal`, `disused`, and
+`abandoned` tags remain semantic input rather than display trivia.
 
-`trailgen acquire-osm <project> --profile all|trails|roads|hydrology` is the implemented OSM acquisition seam. It uses the project AOI from `trailgen.toml` or an explicit `--bbox west,south,east,north`, builds an Overpass QL query aligned to the current OSM XML adapters, posts it to an Overpass interpreter endpoint, validates that returned XML contains normalizable ways, caches the XML under `sources/`, writes a `.overpassql` query sidecar, fingerprints the cached source, and registers the exact adapter candidates: `osm-xml-network`, `osm-road-context`, or `osm-hydrology-context`. Trail acquisition asks for walkable ways plus hiking/foot/walking route relations and turn-restriction relations; the network adapter raises hiking-route member-way confidence and records route relation IDs/names plus turn-restriction IDs/roles in provenance, and enforces simple node-via `no_*`/`only_*` turn restrictions as provider-neutral graph turn bans. `--profile all` writes one coherent XML extract and registers every source class the returned ways can satisfy, allowing `assemble` to build the graph and apply context from the same fingerprinted file. `--print-query` prints the query without network access; `--endpoint` selects another Overpass instance. This is a practical fallback, not an authority claim: official agency layers should still be preferred when they exist and carry better semantics.
+## Standing And Access
 
-Every source candidate discovered, cached, or consumed by `build`, `apply-*`, or `import-seed` carries byte count plus SHA-256 fingerprint, so later generation manifests can detect source drift instead of trusting filenames. `trailgen verify-sources <project>` recomputes those fingerprints and fails on missing, unfingerprinted, or drifted inputs. `trailgen vet-sources <project> --level recommended` is the stricter standalone pre-generation gate for mature projects; `generate --source-gate recommended` makes the same proof mandatory before route artifacts are written. `trailgen verify-generation <project>` is the post-generation audit: it reads `routes/generated.manifest.json`, recomputes every generated artifact fingerprint except the self-mutating manifest, verifies run metadata, verifies the snapshotted source manifest, verifies the `seeds/seeds.json` presence/count/fingerprint snapshot, verifies one-run forbidden-area fingerprints and touched-edge counts, replays source coverage summary, replays the graph summary, checks each manifest route edge walk against `routes/generated.routes.json` and `routes/generated.graph.json`, replays route metrics, constraint audit rows, verdicts, scores, and Pareto ranks from the generated graph plus effective constraints, then reruns native solver output from the recorded effective config, seed, snapped start, generated graph, and seed-route ledger. `trailgen assemble <project> [--date YYYY-MM-DD] [--time HH:MM]` is the deterministic manifest realization path: it verifies `sources/manifest.json`, builds the graph from trail-network candidates or seed-route scaffolds, applies elevation, terrain, and road/hydrology context candidates in stable source order, imports seed routes, then applies access/closure candidates against a baseline that already contains the pre-access attribution. Use the lower-level phase commands when you need to inspect or rerun one source class by hand.
+`TrailStanding` and `Access` answer different questions. Standing describes what sort of path the
+source claims exists:
 
-Current implemented adapters cover GeoJSON, OSM XML/PBF, and shapefile trail/network files, route-derived graph builds from GPX/GeoJSON/JSON/KML/KMZ/CSV, GeoJSON or shapefile terrain/land-cover/surface overlays, GeoJSON or shapefile access/closure overlays, GeoJSON/shapefile/OSM road and hydrology context overlays, Arc/Info ASCII Grid (`.asc`), affine WGS84/NAD83/EPSG:3857/WGS84/NAD83 UTM GeoTIFF (`.tif`, `.tiff`), affine WGS84/NAD83/EPSG:3857/WGS84/NAD83 UTM GDAL VRT (`.vrt`) DEM enrichment, plus GPX/GeoJSON/JSON/KML/KMZ/CSV seed routes. `trailgen build <project> --source trails-a.geojson --source trails-b.shp --source osm-trails.osm --source osm-trails.osm.pbf` merges all normalized network/route drafts before graph construction, records every consumed source in `sources/manifest.json`, and keeps per-edge provenance from the originating adapter. VRT source fingerprints include the VRT XML and its referenced local raster. Route-derived graph builds carry `route-file` / `route-derived-network` provenance and confidence `0.65`; they are useful scaffolds, not a claim that one completed track is an authoritative trail network, and their terrain remains weak inference after enrichment rather than authoritative source terrain. `trailgen apply-elevation <project> --source dem.asc|dem.tif|dem.vrt` samples a local DEM through `ArcAsciiGrid`, `GeoTiffDem`, or `VrtDem`, densifies cached graph geometry, records elevation provenance, recomputes ascent/descent/grade, replaces stale enrichment-derived terrain evidence, infers terrain where evidence is otherwise weak with measured grade/road rationales, and rerates edge difficulty. When `assemble` sees multiple elevation candidates, it loads them as one deterministic `ElevationMosaic`, samples the first covering DEM per coordinate, and records all tile provenance instead of sequentially overwriting edge geometry. `trailgen apply-terrain <project> --source terrain.geojson|terrain.shp` applies polygon, line, or multi-line terrain overlays using `terrain`, `surface`, `landcover`, `land_cover`, `nlcd`, `nlcd_code`, `gridcode`, `class`, or `class_name` properties; land-cover fields accept common NLCD numeric codes and class names before being reduced to the current terrain buckets. Terrain overlays record terrain evidence/provenance, preserve raw `surface` tags where present, lower confidence according to overlay confidence, and rerate touched edges. `trailgen apply-context <project> --source roads-or-streams.geojson|roads.shp|roads.osm.pbf` applies road and water line or multi-line context layers without inventing connector segments between disjoint lines, counts trail crossings, records crossing provenance, uses road crossings as road-exposure hints, lowers confidence according to context confidence, and rerates touched edges. `trailgen apply-access <project> --source ownership.geojson --source closures.geojson [--date YYYY-MM-DD] [--time HH:MM]` captures `sources/access-baseline.json` before the first access mutation, restores that baseline on later applications, applies the composed GeoJSON or shapefile polygon/line/multi-line closure/access feature set to the cached graph, filters absolute `active_from`/`active_to` dates, recurring `seasonal_from`/`seasonal_to` month-day windows, recurring `weekdays`/`day_of_week` schedules, daily `time_from`/`time_to` windows, permit/reservation-required flags, and temporal `travel`/`direction` rules by the planning moment, records access provenance, lowers confidence according to overlay confidence, and recomputes edge difficulty. `trailgen generate --forbid-area closures.geojson` uses the same access-overlay geometry parser but forces every supplied overlay closed only in the generated effective graph; because it is a one-run constraint, its path and fingerprint live in `routes/generated.manifest.json` rather than `sources/manifest.json`. `trailgen import-seed <project> --route file.gpx --name "Known Loop"` first proves a connected legal match inside `max_route_snap_m`; only then does it archive the file under `seeds/imports/`, write provider-neutral route metadata plus snap statistics and metrics into `seeds/seeds.json`, record the original source path, fingerprint the archive, and raise confidence/popularity hints on touched edges. If `--name` is omitted, an imported route title from GPX, GeoJSON, JSON, KML/KMZ, or leading CSV comments is used before falling back to the filename. Adapters should normalize into `SegmentDraft`, overlays, or route seeds plus provenance and confidence; provider-native quirks belong at the perimeter.
+- `established`: current ordinary trail or connector
+- `unmaintained`: current but faded, badly visible, or explicitly unmaintained
+- `informal`: an OSM `informal=yes` path, rendered in the GUI as an **Informal / YOLO** path
+- `historical`: abandoned trail geometry retained as uncertain evidence
+- `unknown`: the provider did not establish standing
 
-Processed graph artifacts live under a project `cache/` directory. Graph-mutating commands write `cache/graph.json`, `cache/graph.geojson`, `cache/edges.csv`, and `cache/vertices.csv` as one cache surface: JSON is the native reload format, GeoJSON carries edge linework, and the CSV tables expose stable IDs, attribution, WKT geometry, provenance, difficulty, access, crossing, aggregate confidence, terrain/access confidence, terrain evidence, access provenance, elevation provenance, seed provenance, and seed-count fields for spreadsheet or GIS audit. `trailgen generate` writes `routes/generated.graph.json` plus `routes/generated.manifest.json`, binding generated routes to the effective graph snapshot, CLI app version, random seed, requested and concrete solver, requested/snapped start, effective config, source-manifest snapshot and coverage summary, seed-route ledger fingerprint, one-run forbidden-area fingerprints, graph topology summary, graph elevation summary, directed-travel edge count, turn-ban count/provenance, exact edge-id sequences, route metrics/verdicts/audits, emitted artifacts, and SHA-256/byte-count fingerprints for every emitted artifact except the self-mutating manifest. `trailgen verify-generation` makes that ledger executable by failing on any missing or drifted generated artifact, mismatched app/run/start metadata, snapshotted source, seed-route ledger drift, one-run forbidden-area drift, source-coverage summary drift, graph-summary drift, invalid route edge sequence, semantic route replay mismatch, constraint audit drift, or native solver replay mismatch. The source manifest is content-addressed by SHA-256 where files are available, and generated Markdown reports prefer the manifest snapshot for their generation ledger and source section so provenance remains visible and stable without opening JSON. Built-in solvers are deterministic; the seed is recorded now and is already checked by native solver replay.
+Access separately records `open`, `restricted`, `closed`, `private`, or `unknown`. The GUI uses a
+dual stroke so terrain/class remains legible while standing and access remain visible. Search may
+surface informal or unmaintained geometry; it never silently promotes that standing to an access
+claim.
+
+## Provider Contract
+
+A new automatic source implements one boundary:
+
+```rust
+pub trait NetworkProvider {
+    fn descriptor(&self) -> ProviderDescriptor;
+    fn acquire(&self, bounds: GeoBounds) -> anyhow::Result<ProviderPayload>;
+    fn normalize(&self, shards: &[RawShard<'_>]) -> anyhow::Result<NormalizedNetwork>;
+}
+```
+
+The descriptor owns a path-safe ID, adapter revision, precedence, extensions, and label. Acquisition
+must be bounded and return raw bytes, the exact request, and an origin. Normalization must preserve
+provider identity and licensing in provenance. Provider-native types stop at this boundary;
+`TrailGraph`, routing, the library, and the GUI remain provider-neutral. Adapter revision changes
+invalidate only that provider's receipts.
+
+## Debug Frontend
+
+The CLI is a diagnostic frontend over the same engine:
+
+```sh
+trailgen survey PROJECT --place "Harriman State Park, NY" --radius-km 20
+trailgen coverage PROJECT --route owned-route.csv --max-snap-m 40 --output coverage.json
+trailgen stats PROJECT
+```
+
+`survey` uses US-restricted Nominatim only to turn a place into one rectangle. The GUI normally skips
+place lookup and lets the user draw exact live regions. `coverage` reports remote geometry and true
+topological discontinuities separately; it does not mutate the graph.
+
+Lower-level development commands remain available for explicit source work:
+
+- `acquire-osm` prints or caches a bounded trails, roads, hydrology, or combined Overpass query.
+- `cache-source`, `discover`, `source-plan`, `verify-sources`, and `vet-sources` manage inspectable
+  local candidates and content fingerprints.
+- `build` accepts GeoJSON, OSM XML/PBF, or shapefile networks and GPX, GeoJSON/JSON, KML/KMZ, or CSV
+  route scaffolds.
+- `apply-elevation`, `apply-terrain`, `apply-context`, and `apply-access` enrich one graph rather than
+  creating parallel products.
+- `assemble` deterministically realizes the registered source manifest.
+
+Vector adapters accept geographic WGS84/NAD83/CRS84, declared EPSG:3857, and WGS84/NAD83 UTM
+(EPSG:326xx/327xx/269xx). Other projected coordinate systems fail with a reproject-first diagnostic.
+Elevation accepts Arc/Info ASCII Grid, the supported affine GeoTIFF projections, and VRT wrappers.
+
+Every consumed source has byte count and SHA-256 identity in `sources/manifest.json`. Generation
+snapshots that manifest, its coverage summary, the effective graph, constraints, solver, start snap,
+seed ledger, and emitted artifact fingerprints. `verify-generation` replays those laws rather than
+trusting filenames.
+
+## Personal And Historical Data
+
+User-supplied route exports, including AllTrails exports, enter only through documented file formats.
+Trailgen neither reads nor writes private AllTrails APIs. Personal traces are useful seed routes and
+low-confidence graph scaffolds, not public-source authority.
+
+Historical OSM is intentionally opt-in forensic material. An Overpass attic probe of Harriman from
+2020 covered the owned South Lows trace materially worse than current OSM, so the application does
+not fetch history by default merely to increase line count.
+
+## Harriman Evidence
+
+The standing owned fixtures are `harriman-south-lows.csv` and `harriman-west.csv`. They remain full
+end-to-end generation tests. A 2026-07-21 public-source probe additionally matched every source
+segment of both traces to the current OSM graph within 40 m and found no disconnected transition;
+maximum geometric separation was 2.74 m for South Lows and 5.23 m for West. USGS enriched the wider
+Harriman corpus but did not improve either owned trace. The decisive South Lows repair was admitting
+ordinary walkable service/road connectors and cautiously joining provider-fragment endpoints, not
+inventing missing trail geometry.
+
+See the [USGS access guide](https://www.usgs.gov/national-digital-trails/how-access-or-view-usgs-trails-dataset),
+[USGS dataset Q&A](https://www.usgs.gov/national-digital-trails/qas-about-usgs-trail-data),
+[USGS Transportation service](https://cartowfs.nationalmap.gov/arcgis/rest/services/transportation/MapServer),
+and [OpenStreetMap copyright and attribution](https://www.openstreetmap.org/copyright/en-US).

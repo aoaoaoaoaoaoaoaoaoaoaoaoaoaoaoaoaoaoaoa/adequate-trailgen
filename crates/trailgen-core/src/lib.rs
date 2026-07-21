@@ -2,6 +2,7 @@
 
 pub mod alltrails;
 pub mod builder;
+pub mod conflate;
 pub mod constraints;
 pub mod crs;
 pub mod difficulty;
@@ -18,7 +19,12 @@ pub mod seed;
 pub mod source;
 
 pub use builder::{
-    GraphBuilder, JunctionPolicy, SegmentDraft, TurnRestrictionDraft, TurnRestrictionRule,
+    DEFAULT_SNAP_TOLERANCE_M, GraphBuilder, JunctionPolicy, SegmentDraft, TurnRestrictionDraft,
+    TurnRestrictionRule,
+};
+pub use conflate::{
+    ConflatedNetwork, ConflationDecision, ConflationPolicy, ConflationReport, ConflationStats,
+    NetworkStratum, conflate,
 };
 pub use constraints::{
     ConstraintAudit, ConstraintVerdict, DEFAULT_MAX_DISTANCE_M, DEFAULT_MIN_DISTANCE_M,
@@ -38,8 +44,9 @@ pub use milp::{
     selected_arcs_from_solution,
 };
 pub use model::{
-    Access, CrossingEvidence, CrossingKind, Edge, EdgeAttr, EdgeId, EdgeTravel, GradeDistribution,
-    Provenance, RouteSnapStats, Terrain, TrailClass, TrailGraph, TurnBan, Vertex, VertexId,
+    Access, CoverageGap, CoverageGapKind, CrossingEvidence, CrossingKind, Edge, EdgeAttr, EdgeId,
+    EdgeTravel, GradeDistribution, Provenance, RouteCoverage, RouteSnapStats, Terrain, TrailClass,
+    TrailGraph, TrailStanding, TurnBan, Vertex, VertexId,
 };
 pub use optimizer::{ExactLoopSolver, LoopHunter, RouteSolver, SearchParams, SolverKind};
 pub use overlay::{

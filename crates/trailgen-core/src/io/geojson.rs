@@ -4,6 +4,7 @@ use crate::geo::{Coord, LineString};
 use crate::io::route_file::{RouteFile, RouteFileMetadata};
 use crate::model::{
     Access, CrossingKind, Edge, EdgeTravel, Provenance, Terrain, TrailClass, TrailGraph,
+    TrailStanding,
 };
 use crate::overlay::{
     AccessOverlay, AccessWindow, ContextOverlay, DailyTimeWindow, MonthDay, OverlayGeometry,
@@ -48,6 +49,9 @@ pub fn network_from_str(s: &str) -> Result<Vec<SegmentDraft>> {
         let trail_class = prop_str(&properties, "trail_class")
             .or_else(|| prop_str(&properties, "highway"))
             .map_or(TrailClass::Unknown, TrailClass::from_tag);
+        let standing = prop_str(&properties, "trail_standing")
+            .or_else(|| prop_str(&properties, "standing"))
+            .map_or(TrailStanding::Unknown, TrailStanding::from_tag);
         let access = prop_str(&properties, "access").map_or(Access::Unknown, Access::from_tag);
         let travel = travel_from_properties(&properties);
         let confidence = prop_f64(&properties, "confidence").unwrap_or(0.75);
@@ -77,6 +81,7 @@ pub fn network_from_str(s: &str) -> Result<Vec<SegmentDraft>> {
                 turn_restrictions: Vec::new(),
                 geometry: line,
                 trail_class,
+                standing,
                 terrain,
                 terrain_confidence: Some(terrain_confidence),
                 surface: surface.clone(),
@@ -84,7 +89,7 @@ pub fn network_from_str(s: &str) -> Result<Vec<SegmentDraft>> {
                 travel,
                 road_exposure,
                 confidence,
-                provenance: provenance.clone(),
+                provenance: vec![provenance.clone()],
             });
         }
     }
@@ -229,6 +234,8 @@ pub fn graph_to_geojson(graph: &TrailGraph) -> Value {
                 ("grade_abs_max".to_owned(), json!(edge.attr.grade_abs_max)),
                 ("sustained_steep_m".to_owned(), json!(edge.attr.sustained_steep_m)),
                 ("grade_distribution".to_owned(), json!(edge.attr.grade_distribution)),
+                ("trail_class".to_owned(), json!(edge.attr.trail_class)),
+                ("trail_standing".to_owned(), json!(edge.attr.standing)),
                 ("difficulty".to_owned(), json!(edge.attr.difficulty)),
                 ("difficulty_breakdown".to_owned(), json!(edge.attr.difficulty_breakdown)),
                 ("terrain".to_owned(), json!(edge.attr.terrain)),

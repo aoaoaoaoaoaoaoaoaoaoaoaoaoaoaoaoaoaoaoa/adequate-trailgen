@@ -1,7 +1,9 @@
 use crate::builder::{JunctionPolicy, SegmentDraft};
 use crate::crs::{CoordProjector, CrsVerdict, projector, validate_prj_wkt};
 use crate::geo::{Coord, LineString};
-use crate::model::{Access, CrossingKind, EdgeTravel, Provenance, Terrain, TrailClass};
+use crate::model::{
+    Access, CrossingKind, EdgeTravel, Provenance, Terrain, TrailClass, TrailStanding,
+};
 use crate::overlay::{
     AccessOverlay, AccessWindow, ContextOverlay, DailyTimeWindow, MonthDay, OverlayGeometry,
     PlanningDate, PlanningTime, SeasonalWindow, TerrainOverlay, WeekdaySet,
@@ -37,6 +39,10 @@ pub fn network_from_path(path: &Path) -> Result<Vec<SegmentDraft>> {
             .str("trail_class")
             .or_else(|| props.str("highway"))
             .map_or(TrailClass::Unknown, TrailClass::from_tag);
+        let standing = props
+            .str("trail_standing")
+            .or_else(|| props.str("standing"))
+            .map_or(TrailStanding::Unknown, TrailStanding::from_tag);
         let access = props
             .str("access")
             .or_else(|| props.str("status"))
@@ -67,6 +73,7 @@ pub fn network_from_path(path: &Path) -> Result<Vec<SegmentDraft>> {
                 turn_restrictions: Vec::new(),
                 geometry: line,
                 trail_class,
+                standing,
                 terrain,
                 terrain_confidence: Some(terrain_confidence),
                 surface: surface.clone(),
@@ -74,7 +81,7 @@ pub fn network_from_path(path: &Path) -> Result<Vec<SegmentDraft>> {
                 travel,
                 road_exposure,
                 confidence,
-                provenance: provenance.clone(),
+                provenance: vec![provenance.clone()],
             });
         }
     }

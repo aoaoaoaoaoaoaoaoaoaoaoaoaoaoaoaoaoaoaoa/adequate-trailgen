@@ -3,7 +3,9 @@ use dwemer_poolrooms::chrome;
 use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, Vec2, pos2, vec2};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, f64::consts::PI};
-use trailgen_core::{Access, Coord, LineString, Route, Terrain, TrailClass, TrailGraph};
+use trailgen_core::{
+    Access, Coord, LineString, Route, Terrain, TrailClass, TrailGraph, TrailStanding,
+};
 
 const TILE_EDGE: f64 = 256.0;
 const EARTH_CIRCUMFERENCE_M: f64 = 40_075_016.686;
@@ -143,12 +145,14 @@ pub fn navigate_with(
 pub struct Atlas {
     edges: Vec<WorldEdge>,
     classes: Vec<TrailClass>,
+    standings: Vec<TrailStanding>,
 }
 
 struct WorldEdge {
     points: Vec<[f64; 2]>,
     bounds: [f64; 4],
     trail_class: TrailClass,
+    standing: TrailStanding,
     access: Access,
 }
 
@@ -169,6 +173,7 @@ impl Atlas {
                     bounds: enclosing_bounds(&points),
                     points,
                     trail_class: edge.attr.trail_class,
+                    standing: edge.attr.standing,
                     access: edge.attr.access,
                 }
             })
@@ -179,16 +184,29 @@ impl Atlas {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
-        Self { edges, classes }
+        let standings = edges
+            .iter()
+            .map(|edge| edge.standing)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        Self {
+            edges,
+            classes,
+            standings,
+        }
     }
 
     pub fn paint_legend(&self, painter: &Painter, rect: Rect) {
         if self.classes.is_empty() {
             return;
         }
-        let width = 126.0;
+        let width = 150.0;
         let row = 16.0;
-        let height = 22.0 + row * self.classes.len() as f32;
+        let status_rows = self.standings.len();
+        let height = 28.0
+            + row * (self.classes.len() + status_rows) as f32
+            + if status_rows == 0 { 0.0 } else { 18.0 };
         let plate = Rect::from_min_size(
             pos2(rect.right() - width - 12.0, rect.top() + 12.0),
             vec2(width, height),
@@ -225,6 +243,34 @@ impl Atlas {
                 chrome::TEXT,
             );
         }
+        if !self.standings.is_empty() {
+            let heading_y = (self.classes.len() as f32).mul_add(row, plate.top() + 27.0);
+            painter.text(
+                pos2(plate.left() + 8.0, heading_y),
+                egui::Align2::LEFT_TOP,
+                "PATH STATUS",
+                egui::FontId::monospace(9.5),
+                chrome::MUTED,
+            );
+            for (slot, standing) in self.standings.iter().copied().enumerate() {
+                let y = (slot as f32).mul_add(row, heading_y + 19.0);
+                painter.line_segment(
+                    [pos2(plate.left() + 9.0, y), pos2(plate.left() + 27.0, y)],
+                    Stroke::new(5.0_f32, trail_standing_color(standing)),
+                );
+                painter.line_segment(
+                    [pos2(plate.left() + 9.0, y), pos2(plate.left() + 27.0, y)],
+                    Stroke::new(2.0_f32, chrome::TEXT),
+                );
+                painter.text(
+                    pos2(plate.left() + 34.0, y),
+                    egui::Align2::LEFT_CENTER,
+                    trail_standing_label(standing),
+                    egui::FontId::monospace(9.5),
+                    chrome::TEXT,
+                );
+            }
+        }
     }
 
     pub fn paint_network(&self, painter: &Painter, view: Viewport, rect: Rect) {
@@ -239,16 +285,17 @@ impl Atlas {
                 .copied()
                 .map(|world| screen_at(view, rect, world))
                 .collect::<Vec<_>>();
-            let color = if matches!(edge.access, Access::Closed | Access::Private) {
+            let envelope = if matches!(edge.access, Access::Closed | Access::Private) {
                 Color32::from_rgb(145, 70, 57)
             } else {
-                trail_class_color(edge.trail_class)
+                trail_standing_color(edge.standing)
             };
-            let _envelope = painter.add(Shape::line(
-                points.clone(),
-                Stroke::new(4.8_f32, Color32::from_black_alpha(205)),
+            let _envelope =
+                painter.add(Shape::line(points.clone(), Stroke::new(5.2_f32, envelope)));
+            let _core = painter.add(Shape::line(
+                points,
+                Stroke::new(2.65_f32, trail_class_color(edge.trail_class)),
             ));
-            let _core = painter.add(Shape::line(points, Stroke::new(2.65_f32, color)));
         }
     }
 }
@@ -277,7 +324,7 @@ pub fn paint_route(
             points.clone(),
             Stroke::new(
                 if terrain_detail { 9.0_f32 } else { 7.2_f32 },
-                Color32::from_black_alpha(215),
+                path_envelope(edge.attr.standing, edge.attr.access),
             ),
         ));
         let _route = painter.add(Shape::line(
@@ -311,6 +358,7 @@ pub fn paint_saved_trail(
             view,
             rect,
             color,
+            path_envelope(leg.standing, leg.access),
             terrain_detail.then_some(terrain_color(leg.terrain)),
         );
     }
@@ -322,6 +370,7 @@ fn paint_line(
     view: Viewport,
     rect: Rect,
     color: Color32,
+    envelope: Color32,
     detail: Option<Color32>,
 ) {
     let points = line
@@ -336,10 +385,7 @@ fn paint_line(
     }
     let _envelope = painter.add(Shape::line(
         points.clone(),
-        Stroke::new(
-            if detail.is_some() { 9.0_f32 } else { 7.2_f32 },
-            Color32::from_black_alpha(215),
-        ),
+        Stroke::new(if detail.is_some() { 9.0_f32 } else { 7.2_f32 }, envelope),
     ));
     let _core = painter.add(Shape::line(
         points.clone(),
@@ -436,6 +482,56 @@ pub const fn trail_class_label(class: TrailClass) -> &'static str {
         TrailClass::Steps => "STEPS",
         TrailClass::Bridleway => "BRIDLEWAY",
         TrailClass::Road => "ROAD",
+    }
+}
+
+pub const fn trail_standing_color(standing: TrailStanding) -> Color32 {
+    match standing {
+        TrailStanding::Unknown => Color32::from_black_alpha(205),
+        TrailStanding::Established => Color32::from_rgb(32, 30, 27),
+        TrailStanding::Unmaintained => Color32::from_rgb(190, 114, 61),
+        TrailStanding::Informal => Color32::from_rgb(207, 91, 137),
+        TrailStanding::Historical => Color32::from_rgb(116, 101, 139),
+    }
+}
+
+pub const fn trail_standing_label(standing: TrailStanding) -> &'static str {
+    match standing {
+        TrailStanding::Unknown => "UNKNOWN",
+        TrailStanding::Established => "ESTABLISHED",
+        TrailStanding::Unmaintained => "UNMAINTAINED",
+        TrailStanding::Informal => "INFORMAL / YOLO",
+        TrailStanding::Historical => "HISTORICAL",
+    }
+}
+
+pub const fn trail_standing_badge(standing: TrailStanding) -> &'static str {
+    match standing {
+        TrailStanding::Unknown => "UNKNOWN",
+        TrailStanding::Established => "",
+        TrailStanding::Unmaintained => "UNMAINTAINED",
+        TrailStanding::Informal => "YOLO PATH",
+        TrailStanding::Historical => "HISTORICAL",
+    }
+}
+
+pub fn frailest_standing(
+    standings: impl IntoIterator<Item = TrailStanding>,
+) -> Option<TrailStanding> {
+    standings.into_iter().max_by_key(|standing| match standing {
+        TrailStanding::Established => 0,
+        TrailStanding::Unknown => 1,
+        TrailStanding::Unmaintained => 2,
+        TrailStanding::Informal => 3,
+        TrailStanding::Historical => 4,
+    })
+}
+
+const fn path_envelope(standing: TrailStanding, access: Access) -> Color32 {
+    if matches!(access, Access::Closed | Access::Private) {
+        Color32::from_rgb(145, 70, 57)
+    } else {
+        trail_standing_color(standing)
     }
 }
 
@@ -553,6 +649,7 @@ mod tests {
             points: vec![[0.1, 0.5], [0.9, 0.5]],
             bounds: [0.1, 0.5, 0.9, 0.5],
             trail_class: TrailClass::Path,
+            standing: TrailStanding::Established,
             access: Access::Open,
         };
         assert!(intersects(&edge, [0.4, 0.4, 0.6, 0.6]));

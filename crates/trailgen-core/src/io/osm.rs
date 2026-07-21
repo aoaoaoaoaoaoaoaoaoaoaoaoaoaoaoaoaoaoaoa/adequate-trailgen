@@ -1,6 +1,8 @@
 use crate::builder::{JunctionPolicy, SegmentDraft, TurnRestrictionDraft, TurnRestrictionRule};
 use crate::geo::{Coord, LineString};
-use crate::model::{Access, CrossingKind, EdgeTravel, Provenance, Terrain, TrailClass};
+use crate::model::{
+    Access, CrossingKind, EdgeTravel, Provenance, Terrain, TrailClass, TrailStanding,
+};
 use crate::overlay::ContextOverlay;
 use crate::{Result, TrailgenError};
 use osmpbfreader::{
@@ -131,11 +133,12 @@ fn draft_from_xml_way(
         return Ok(None);
     }
     Ok(Some(SegmentDraft {
-        junctions: JunctionPolicy::ExplicitNodes,
+        junctions: source_junction_policy(&tags),
         turn_ref: Some(id.clone()),
         turn_restrictions: Vec::new(),
         geometry: LineString::new(points)?,
         trail_class: walkway.class,
+        standing: walkway.standing,
         terrain: walkway.terrain,
         terrain_confidence: Some(walkway.terrain_confidence),
         surface: tags.get("surface").cloned(),
@@ -146,7 +149,7 @@ fn draft_from_xml_way(
             walkway.confidence,
             relations.route_by_way.get(&id).map_or(0, Vec::len),
         ),
-        provenance: osm_way_provenance("osm-xml", &id, relations),
+        provenance: vec![osm_way_provenance("osm-xml", &id, relations)],
     }))
 }
 
@@ -226,11 +229,12 @@ fn draft_from_pbf_way(
         return Ok(None);
     }
     Ok(Some(SegmentDraft {
-        junctions: JunctionPolicy::ExplicitNodes,
+        junctions: source_junction_policy(&tags),
         turn_ref: Some(id),
         turn_restrictions: Vec::new(),
         geometry: LineString::new(points)?,
         trail_class: walkway.class,
+        standing: walkway.standing,
         terrain: walkway.terrain,
         terrain_confidence: Some(walkway.terrain_confidence),
         surface: tags.get("surface").cloned(),
@@ -244,7 +248,11 @@ fn draft_from_pbf_way(
                 .get(&way.id.0.to_string())
                 .map_or(0, Vec::len),
         ),
-        provenance: osm_way_provenance("osm-pbf", &way.id.0.to_string(), relations),
+        provenance: vec![osm_way_provenance(
+            "osm-pbf",
+            &way.id.0.to_string(),
+            relations,
+        )],
     }))
 }
 
@@ -328,13 +336,18 @@ fn contract_osm_drafts(drafts: Vec<SegmentDraft>) -> Vec<SegmentDraft> {
             cuts.push(last);
             cuts.windows(2)
                 .map(|cut| SegmentDraft {
-                    junctions: JunctionPolicy::ExplicitEndpoints,
+                    junctions: if draft.junctions == JunctionPolicy::GradeSeparatedEndpoints {
+                        JunctionPolicy::GradeSeparatedEndpoints
+                    } else {
+                        JunctionPolicy::ExplicitEndpoints
+                    },
                     turn_ref: draft.turn_ref.clone(),
                     turn_restrictions: Vec::new(),
                     geometry: LineString::unchecked(
                         draft.geometry.points[cut[0]..=cut[1]].to_vec(),
                     ),
                     trail_class: draft.trail_class,
+                    standing: draft.standing,
                     terrain: draft.terrain,
                     terrain_confidence: draft.terrain_confidence,
                     surface: draft.surface.clone(),
@@ -694,9 +707,25 @@ fn osm_road_context(highway: &str) -> bool {
     )
 }
 
+fn source_junction_policy(tags: &BTreeMap<String, String>) -> JunctionPolicy {
+    let raised_or_buried = ["bridge", "tunnel"].into_iter().any(|key| {
+        tags.get(key)
+            .is_some_and(|value| !matches!(value.as_str(), "no" | "false" | "0"))
+    }) || tags
+        .get("layer")
+        .and_then(|layer| layer.parse::<i16>().ok())
+        .is_some_and(|layer| layer != 0);
+    if raised_or_buried {
+        JunctionPolicy::GradeSeparatedEndpoints
+    } else {
+        JunctionPolicy::ExplicitNodes
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Walkway {
     class: TrailClass,
+    standing: TrailStanding,
     terrain: Terrain,
     terrain_confidence: f64,
     access: Access,
@@ -707,17 +736,14 @@ struct Walkway {
 
 impl Walkway {
     fn from_tags(tags: &BTreeMap<String, String>, hiking_relation: bool) -> Option<Self> {
-        let highway = tags.get("highway").map(String::as_str);
+        let (highway, standing) = standing_from_tags(tags);
         let route = tags.get("route").map(String::as_str);
         let foot = tags.get("foot").map(String::as_str);
         let hiking = hiking_relation
             || route.is_some_and(|route| matches!(route, "hiking" | "foot" | "walking"));
-        let explicit_foot = foot
-            .is_some_and(|foot| matches!(foot, "yes" | "designated" | "permissive" | "official"));
         let walkable_highway = highway
             .map(TrailClass::from_tag)
-            .filter(|class| *class != TrailClass::Unknown)
-            .filter(|kind| !kind.requires_foot_evidence() || hiking || explicit_foot);
+            .filter(|class| *class != TrailClass::Unknown);
         if walkable_highway.is_none() && !hiking {
             return None;
         }
@@ -732,6 +758,7 @@ impl Walkway {
             f64::from(class.road_like() || matches!(terrain, Terrain::Road | Terrain::Pavement));
         Some(Self {
             class,
+            standing,
             terrain,
             terrain_confidence,
             access,
@@ -740,6 +767,32 @@ impl Walkway {
             confidence: 0.74,
         })
     }
+}
+
+fn standing_from_tags(tags: &BTreeMap<String, String>) -> (Option<&str>, TrailStanding) {
+    if let Some(highway) = tags.get("abandoned:highway") {
+        return (Some(highway), TrailStanding::Historical);
+    }
+    if let Some(highway) = tags.get("disused:highway") {
+        return (Some(highway), TrailStanding::Unmaintained);
+    }
+    let highway = tags.get("highway").map(String::as_str);
+    let standing = if tags.get("informal").is_some_and(|value| value == "yes") {
+        TrailStanding::Informal
+    } else if tags
+        .get("trail_visibility")
+        .is_some_and(|value| matches!(value.as_str(), "bad" | "horrible" | "no"))
+        || tags
+            .get("maintenance")
+            .is_some_and(|value| matches!(value.as_str(), "no" | "none"))
+    {
+        TrailStanding::Unmaintained
+    } else if highway.is_some() {
+        TrailStanding::Established
+    } else {
+        TrailStanding::Unknown
+    };
+    (highway, standing)
 }
 
 fn terrain_from_tags(

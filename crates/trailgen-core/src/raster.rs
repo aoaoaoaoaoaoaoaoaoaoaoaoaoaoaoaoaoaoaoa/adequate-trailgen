@@ -3,6 +3,7 @@ use crate::enrich::{ElevationSample, ElevationSampler};
 use crate::geo::Coord;
 use crate::model::Provenance;
 use crate::{Result, TrailgenError};
+use num_traits::ToPrimitive;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::iter::Peekable;
@@ -906,14 +907,14 @@ fn decoding_result_to_f64(image: DecodingResult) -> Vec<f64> {
         DecodingResult::U8(xs) => xs.into_iter().map(f64::from).collect(),
         DecodingResult::U16(xs) => xs.into_iter().map(f64::from).collect(),
         DecodingResult::U32(xs) => xs.into_iter().map(f64::from).collect(),
-        DecodingResult::U64(xs) => xs.into_iter().map(|x| parse_numeric(&x)).collect(),
+        DecodingResult::U64(xs) => xs.into_iter().map(|x| numeric_to_f64(&x)).collect(),
         DecodingResult::F16(xs) => xs.into_iter().map(|x| f64::from(x.to_f32())).collect(),
         DecodingResult::F32(xs) => xs.into_iter().map(f64::from).collect(),
         DecodingResult::F64(xs) => xs,
         DecodingResult::I8(xs) => xs.into_iter().map(f64::from).collect(),
         DecodingResult::I16(xs) => xs.into_iter().map(f64::from).collect(),
         DecodingResult::I32(xs) => xs.into_iter().map(f64::from).collect(),
-        DecodingResult::I64(xs) => xs.into_iter().map(|x| parse_numeric(&x)).collect(),
+        DecodingResult::I64(xs) => xs.into_iter().map(|x| numeric_to_f64(&x)).collect(),
     }
 }
 
@@ -1032,17 +1033,17 @@ fn split_header(line: &str) -> Result<(&str, &str)> {
 }
 
 fn f64_to_index(value: f64, upper: usize) -> Option<usize> {
-    if value.is_nan() || value < 0.0 {
+    if value.is_nan() || value < 0.0 || upper == 0 {
         return None;
     }
     let floored = value.floor().min(usize_to_f64(upper.saturating_sub(1)));
-    floored.to_string().parse::<usize>().ok()
+    floored.to_usize()
 }
 
 fn usize_to_f64(value: usize) -> f64 {
-    value.to_string().parse::<f64>().unwrap_or(f64::INFINITY)
+    value.to_f64().unwrap_or(f64::INFINITY)
 }
 
-fn parse_numeric<T: ToString + ?Sized>(value: &T) -> f64 {
-    value.to_string().parse::<f64>().unwrap_or(f64::NAN)
+fn numeric_to_f64<T: ToPrimitive + ?Sized>(value: &T) -> f64 {
+    value.to_f64().unwrap_or(f64::NAN)
 }

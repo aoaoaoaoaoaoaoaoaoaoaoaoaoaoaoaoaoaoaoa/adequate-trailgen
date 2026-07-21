@@ -1,6 +1,7 @@
 use crate::difficulty::DifficultyBreakdown;
 use crate::geo::{Coord, LineString};
 use crate::{Result, TrailgenError};
+use rstar::{AABB, RTree, RTreeObject};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BinaryHeap};
@@ -33,6 +34,35 @@ pub enum TrailClass {
     Road,
 }
 
+/// How much institutional and physical reality a trail line presently claims.
+/// Access is independent: an established trail may be closed, while an
+/// informal path may still cross public land.
+#[derive(
+    Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum TrailStanding {
+    #[default]
+    Unknown,
+    Established,
+    Unmaintained,
+    Informal,
+    Historical,
+}
+
+impl TrailStanding {
+    #[must_use]
+    pub fn from_tag(tag: &str) -> Self {
+        match tag.trim().to_ascii_lowercase().as_str() {
+            "established" | "maintained" | "official" | "current" => Self::Established,
+            "unmaintained" | "disused" | "overgrown" => Self::Unmaintained,
+            "informal" | "social" | "social-trail" | "desire-path" => Self::Informal,
+            "historical" | "abandoned" | "removed" => Self::Historical,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 impl TrailClass {
     #[must_use]
     pub fn from_tag(tag: &str) -> Self {
@@ -44,7 +74,8 @@ impl TrailClass {
             "pedestrian" | "pedestrian-way" => Self::Pedestrian,
             "steps" | "stairs" => Self::Steps,
             "bridleway" => Self::Bridleway,
-            "road" | "unclassified" | "residential" | "tertiary" => Self::Road,
+            "road" | "living_street" | "residential" | "unclassified" | "tertiary"
+            | "secondary" | "primary" => Self::Road,
             _ => Self::Unknown,
         }
     }
@@ -52,11 +83,6 @@ impl TrailClass {
     #[must_use]
     pub const fn road_like(self) -> bool {
         matches!(self, Self::Track | Self::Service | Self::Road)
-    }
-
-    #[must_use]
-    pub const fn requires_foot_evidence(self) -> bool {
-        matches!(self, Self::Service | Self::Road)
     }
 }
 
@@ -204,7 +230,7 @@ impl EdgeTravel {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct Provenance {
     pub source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -327,6 +353,8 @@ pub struct EdgeAttr {
     pub grade_distribution: GradeDistribution,
     #[serde(default)]
     pub trail_class: TrailClass,
+    #[serde(default)]
+    pub standing: TrailStanding,
     pub terrain: Terrain,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surface: Option<String>,
@@ -445,10 +473,34 @@ pub struct RouteSnapStats {
     pub mean_snap_m: f64,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct LineSnap {
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CoverageGapKind {
+    BeyondNetwork,
+    DisconnectedNetwork,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CoverageGap {
+    pub kind: CoverageGapKind,
+    pub first_route_segment: usize,
+    pub last_route_segment: usize,
+    pub geometry: LineString,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nearest_edge: Option<EdgeId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nearest_distance_m: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_edge: Option<EdgeId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_edge: Option<EdgeId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RouteCoverage {
     pub edges: Vec<EdgeId>,
     pub stats: RouteSnapStats,
+    pub gaps: Vec<CoverageGap>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -468,6 +520,29 @@ struct SnapAnchor {
     edge: EdgeId,
     entry: VertexId,
     budget_m: f64,
+    route_segment: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DisconnectedSpan {
+    from_segment: usize,
+    to_segment: usize,
+    before: EdgeId,
+    after: EdgeId,
+}
+
+#[derive(Clone, Copy)]
+struct EdgeEnvelope {
+    edge: EdgeId,
+    bounds: AABB<[f64; 2]>,
+}
+
+impl RTreeObject for EdgeEnvelope {
+    type Envelope = AABB<[f64; 2]>;
+
+    fn envelope(&self) -> Self::Envelope {
+        self.bounds
+    }
 }
 
 impl Eq for WalkFrontier {}
@@ -598,27 +673,36 @@ impl TrailGraph {
 
     #[must_use]
     pub fn snap_line_edges(&self, line: &crate::geo::LineString) -> Vec<EdgeId> {
-        self.snap_line_edges_within(line, f64::INFINITY).edges
+        self.trace_coverage(line, f64::INFINITY).edges
     }
 
     #[must_use]
-    pub fn snap_line_edges_within(
-        &self,
-        line: &crate::geo::LineString,
-        max_snap_m: f64,
-    ) -> LineSnap {
+    pub fn trace_coverage(&self, line: &crate::geo::LineString, max_snap_m: f64) -> RouteCoverage {
+        let edge_index = edge_spatial_index(&self.edges);
         let mut anchors = Vec::new();
+        let mut gaps = Vec::new();
         let mut segment_count = 0usize;
         let mut snapped_segment_count = 0usize;
         let mut rejected_segment_count = 0usize;
         let mut max_observed_m = 0.0f64;
         let mut sum_observed_m = 0.0f64;
         let mut observed_count = 0.0f64;
-        for w in line.points.windows(2) {
+        for (route_segment, w) in line.points.windows(2).enumerate() {
             segment_count += 1;
             let mid = w[0].lerp(w[1], 0.5);
-            let Some((edge_id, snap_m)) = self.nearest_edge_with_distance(mid) else {
+            let Some((edge_id, snap_m)) = indexed_nearest_edge(&self.edges, &edge_index, mid)
+            else {
                 rejected_segment_count += 1;
+                gaps.push(CoverageGap {
+                    kind: CoverageGapKind::BeyondNetwork,
+                    first_route_segment: route_segment,
+                    last_route_segment: route_segment,
+                    geometry: LineString::unchecked(w.to_vec()),
+                    nearest_edge: None,
+                    nearest_distance_m: None,
+                    before_edge: None,
+                    after_edge: None,
+                });
                 continue;
             };
             max_observed_m = max_observed_m.max(snap_m);
@@ -626,6 +710,16 @@ impl TrailGraph {
             observed_count += 1.0;
             if snap_m > max_snap_m {
                 rejected_segment_count += 1;
+                gaps.push(CoverageGap {
+                    kind: CoverageGapKind::BeyondNetwork,
+                    first_route_segment: route_segment,
+                    last_route_segment: route_segment,
+                    geometry: LineString::unchecked(w.to_vec()),
+                    nearest_edge: Some(edge_id),
+                    nearest_distance_m: Some(snap_m),
+                    before_edge: None,
+                    after_edge: None,
+                });
                 continue;
             }
             snapped_segment_count += 1;
@@ -640,57 +734,116 @@ impl TrailGraph {
                     500.0
                 };
                 let edge = &self.edges[edge_id.0];
-                let forward_m = self.vertices[edge.a.0].coord.haversine_m(w[0])
-                    + self.vertices[edge.b.0].coord.haversine_m(w[1]);
-                let backward_m = self.vertices[edge.b.0].coord.haversine_m(w[0])
-                    + self.vertices[edge.a.0].coord.haversine_m(w[1]);
+                let start_progress_m = line_progress_m(&edge.geometry, w[0]);
+                let end_progress_m = line_progress_m(&edge.geometry, w[1]);
                 anchors.push(SnapAnchor {
                     edge: edge_id,
-                    entry: if forward_m <= backward_m {
+                    entry: if end_progress_m >= start_progress_m {
                         edge.a
                     } else {
                         edge.b
                     },
                     budget_m: observation_m.mul_add(3.0, snap_allowance_m).max(50.0),
+                    route_segment,
                 });
             }
         }
-        let (edges, disconnected_transition_count) = self.connect_snap_anchors(&anchors);
-        LineSnap {
+        self.collapse_shadow_anchors(&mut anchors, line, max_snap_m);
+        let (edges, disconnected) = self.connect_snap_anchors(&anchors);
+        gaps.extend(disconnected.iter().map(|span| CoverageGap {
+            kind: CoverageGapKind::DisconnectedNetwork,
+            first_route_segment: span.from_segment.min(span.to_segment),
+            last_route_segment: span.from_segment.max(span.to_segment),
+            geometry: coverage_geometry(
+                line,
+                span.from_segment.min(span.to_segment),
+                span.from_segment.max(span.to_segment),
+            ),
+            nearest_edge: None,
+            nearest_distance_m: None,
+            before_edge: Some(span.before),
+            after_edge: Some(span.after),
+        }));
+        RouteCoverage {
             edges,
-            stats: RouteSnapStats {
+            stats: coverage_stats(
                 segment_count,
                 snapped_segment_count,
                 rejected_segment_count,
-                disconnected_transition_count,
-                max_snap_m: max_observed_m,
-                mean_snap_m: if observed_count <= f64::EPSILON {
-                    0.0
-                } else {
-                    sum_observed_m / observed_count
-                },
-            },
+                disconnected.len(),
+                max_observed_m,
+                sum_observed_m,
+                observed_count,
+            ),
+            gaps: coalesce_coverage_gaps(gaps, line),
         }
     }
 
-    fn connect_snap_anchors(&self, anchors: &[SnapAnchor]) -> (Vec<EdgeId>, usize) {
+    fn collapse_shadow_anchors(
+        &self,
+        anchors: &mut Vec<SnapAnchor>,
+        line: &crate::geo::LineString,
+        max_snap_m: f64,
+    ) {
+        if !max_snap_m.is_finite() {
+            return;
+        }
+        let mut first = 0;
+        while first + 2 < anchors.len() {
+            let shadowed = ((first + 2)..anchors.len()).rev().find(|&last| {
+                anchors[first].edge == anchors[last].edge
+                    && anchors[first].entry == anchors[last].entry
+                    && route_span_fits_edge(
+                        &self.edges[anchors[first].edge.0],
+                        line,
+                        anchors[first].route_segment,
+                        anchors[last].route_segment,
+                        max_snap_m,
+                    )
+            });
+            if let Some(last) = shadowed {
+                anchors.drain(first + 1..=last);
+            } else {
+                first += 1;
+            }
+        }
+    }
+
+    fn connect_snap_anchors(&self, anchors: &[SnapAnchor]) -> (Vec<EdgeId>, Vec<DisconnectedSpan>) {
         let Some(first_anchor) = anchors.first().copied() else {
-            return (Vec::new(), 0);
+            return (Vec::new(), Vec::new());
         };
         let first_id = first_anchor.edge;
         let Some(first) = self.edges.get(first_id.0) else {
-            return (Vec::new(), 1);
+            return (
+                Vec::new(),
+                vec![DisconnectedSpan {
+                    from_segment: first_anchor.route_segment,
+                    to_segment: first_anchor.route_segment,
+                    before: first_id,
+                    after: first_id,
+                }],
+            );
         };
         let start = first_anchor.entry;
         if first.traverse(start).is_none() {
-            return (Vec::new(), 1);
+            return (
+                Vec::new(),
+                vec![DisconnectedSpan {
+                    from_segment: first_anchor.route_segment,
+                    to_segment: first_anchor.route_segment,
+                    before: first_id,
+                    after: first_id,
+                }],
+            );
         }
         let mut edges = vec![first_id];
         let mut at = first
             .traverse(start)
             .expect("start was filtered as traversable");
         let mut previous = first_id;
-        let mut disconnected = 0;
+        let mut previous_anchor = first_anchor;
+        let mut disconnected = Vec::new();
         for anchor in &anchors[1..] {
             let target = anchor.edge;
             if at == anchor.entry
@@ -700,19 +853,22 @@ impl TrailGraph {
                 edges.push(target);
                 previous = target;
                 at = next;
+                previous_anchor = *anchor;
                 continue;
             }
             let Some(connector) =
                 self.shortest_connector(at, previous, target, anchor.entry, anchor.budget_m)
             else {
-                disconnected += 1;
+                self.record_disconnection(&mut disconnected, previous_anchor, *anchor);
                 if let Some(next) = self.edges[target.0].traverse(anchor.entry) {
                     edges.clear();
                     edges.push(target);
                     at = next;
                     previous = target;
+                    previous_anchor = *anchor;
                     continue;
                 }
+                previous_anchor = *anchor;
                 continue;
             };
             for edge_id in connector {
@@ -730,10 +886,47 @@ impl TrailGraph {
                 previous = target;
                 at = next;
             } else {
-                disconnected += 1;
+                self.record_disconnection(&mut disconnected, previous_anchor, *anchor);
             }
+            previous_anchor = *anchor;
         }
         (edges, disconnected)
+    }
+
+    fn record_disconnection(
+        &self,
+        disconnected: &mut Vec<DisconnectedSpan>,
+        before: SnapAnchor,
+        after: SnapAnchor,
+    ) {
+        if !self.edges_connect_locally(before.edge, after.edge, before.budget_m.max(after.budget_m))
+        {
+            disconnected.push(DisconnectedSpan {
+                from_segment: before.route_segment,
+                to_segment: after.route_segment,
+                before: before.edge,
+                after: after.edge,
+            });
+        }
+    }
+
+    fn edges_connect_locally(&self, before: EdgeId, after: EdgeId, budget_m: f64) -> bool {
+        let before_edge = &self.edges[before.0];
+        let after_edge = &self.edges[after.0];
+        [before_edge.a, before_edge.b]
+            .into_iter()
+            .filter_map(|entry| before_edge.traverse(entry))
+            .any(|at| {
+                [after_edge.a, after_edge.b]
+                    .into_iter()
+                    .filter(|entry| after_edge.traverse(*entry).is_some())
+                    .any(|entry| {
+                        (at == entry && self.turn_allowed(Some(before), at, after))
+                            || self
+                                .shortest_connector(at, before, after, entry, budget_m)
+                                .is_some()
+                    })
+            })
     }
 
     fn shortest_connector(
@@ -876,6 +1069,55 @@ impl TrailGraph {
     }
 }
 
+fn coverage_geometry(line: &LineString, first: usize, last: usize) -> LineString {
+    let start = first.min(line.points.len().saturating_sub(2));
+    let end = last
+        .saturating_add(1)
+        .min(line.points.len().saturating_sub(1));
+    LineString::unchecked(line.points[start..=end.max(start + 1)].to_vec())
+}
+
+fn coalesce_coverage_gaps(mut gaps: Vec<CoverageGap>, line: &LineString) -> Vec<CoverageGap> {
+    gaps.sort_by_key(|gap| (gap.first_route_segment, gap.last_route_segment));
+    let mut merged = Vec::<CoverageGap>::new();
+    for gap in gaps {
+        let Some(previous) = merged.last_mut() else {
+            merged.push(gap);
+            continue;
+        };
+        if previous.kind != gap.kind
+            || gap.first_route_segment > previous.last_route_segment.saturating_add(1)
+        {
+            merged.push(gap);
+            continue;
+        }
+        previous.last_route_segment = previous.last_route_segment.max(gap.last_route_segment);
+        previous.geometry = coverage_geometry(
+            line,
+            previous.first_route_segment,
+            previous.last_route_segment,
+        );
+        if previous.nearest_edge != gap.nearest_edge {
+            previous.nearest_edge = None;
+        }
+        if previous.kind == CoverageGapKind::DisconnectedNetwork {
+            previous.after_edge = gap.after_edge;
+        } else {
+            if previous.before_edge != gap.before_edge {
+                previous.before_edge = None;
+            }
+            if previous.after_edge != gap.after_edge {
+                previous.after_edge = None;
+            }
+        }
+        previous.nearest_distance_m = match (previous.nearest_distance_m, gap.nearest_distance_m) {
+            (Some(left), Some(right)) => Some(left.max(right)),
+            _ => None,
+        };
+    }
+    merged
+}
+
 fn valid_coord(coord: Coord) -> bool {
     coord.lon.is_finite()
         && coord.lat.is_finite()
@@ -893,7 +1135,123 @@ fn edge_distance_m(edge: &Edge, coord: Coord) -> f64 {
         .unwrap_or(f64::INFINITY)
 }
 
+fn edge_spatial_index(edges: &[Edge]) -> RTree<EdgeEnvelope> {
+    RTree::bulk_load(
+        edges
+            .iter()
+            .map(|edge| {
+                let (west, south, east, north) = edge.geometry.points.iter().fold(
+                    (
+                        f64::INFINITY,
+                        f64::INFINITY,
+                        f64::NEG_INFINITY,
+                        f64::NEG_INFINITY,
+                    ),
+                    |(west, south, east, north), point| {
+                        (
+                            west.min(point.lon),
+                            south.min(point.lat),
+                            east.max(point.lon),
+                            north.max(point.lat),
+                        )
+                    },
+                );
+                EdgeEnvelope {
+                    edge: edge.id,
+                    bounds: AABB::from_corners([west, south], [east, north]),
+                }
+            })
+            .collect(),
+    )
+}
+
+fn coverage_stats(
+    segment_count: usize,
+    snapped_segment_count: usize,
+    rejected_segment_count: usize,
+    disconnected_transition_count: usize,
+    max_snap_m: f64,
+    sum_snap_m: f64,
+    observed_count: f64,
+) -> RouteSnapStats {
+    RouteSnapStats {
+        segment_count,
+        snapped_segment_count,
+        rejected_segment_count,
+        disconnected_transition_count,
+        max_snap_m,
+        mean_snap_m: if observed_count <= f64::EPSILON {
+            0.0
+        } else {
+            sum_snap_m / observed_count
+        },
+    }
+}
+
+fn indexed_nearest_edge(
+    edges: &[Edge],
+    index: &RTree<EdgeEnvelope>,
+    coord: Coord,
+) -> Option<(EdgeId, f64)> {
+    for radius_m in std::iter::successors(Some(32.0), |radius| Some(radius * 4.0)).take(11) {
+        let latitude_radius = radius_m / 110_540.0;
+        let longitude_radius =
+            radius_m / (111_320.0 * coord.lat.to_radians().cos().abs().max(0.01));
+        let neighborhood = AABB::from_corners(
+            [coord.lon - longitude_radius, coord.lat - latitude_radius],
+            [coord.lon + longitude_radius, coord.lat + latitude_radius],
+        );
+        let nearest = index
+            .locate_in_envelope_intersecting(&neighborhood)
+            .map(|candidate| {
+                let distance_m = edge_distance_m(&edges[candidate.edge.0], coord);
+                (candidate.edge, distance_m)
+            })
+            .min_by(|left, right| left.1.total_cmp(&right.1));
+        if nearest.is_some_and(|(_, distance_m)| distance_m <= radius_m) {
+            return nearest;
+        }
+    }
+    edges
+        .iter()
+        .map(|edge| (edge.id, edge_distance_m(edge, coord)))
+        .min_by(|left, right| left.1.total_cmp(&right.1))
+}
+
+fn route_span_fits_edge(
+    edge: &Edge,
+    line: &LineString,
+    first_segment: usize,
+    last_segment: usize,
+    max_snap_m: f64,
+) -> bool {
+    line.points
+        .windows(2)
+        .enumerate()
+        .skip(first_segment)
+        .take(last_segment.saturating_sub(first_segment) + 1)
+        .all(|(_, segment)| edge_distance_m(edge, segment[0].lerp(segment[1], 0.5)) <= max_snap_m)
+}
+
 fn segment_distance_m(head: Coord, tail: Coord, point: Coord) -> f64 {
+    segment_projection(head, tail, point).0
+}
+
+fn line_progress_m(line: &LineString, point: Coord) -> f64 {
+    let mut traversed_m = 0.0;
+    let mut nearest = (f64::INFINITY, 0.0);
+    for segment in line.points.windows(2) {
+        let length_m = segment[0].haversine_m(segment[1]);
+        let (distance_m, interpolation) = segment_projection(segment[0], segment[1], point);
+        if distance_m < nearest.0 {
+            nearest = (distance_m, length_m.mul_add(interpolation, traversed_m));
+        }
+        traversed_m += length_m;
+    }
+    nearest.1
+}
+
+fn segment_projection(head: Coord, tail: Coord, point: Coord) -> (f64, f64) {
     let latitude_scale = point.lat.to_radians().cos();
     let meters_per_lon = 111_320.0 * latitude_scale;
     let meters_per_lat = 110_540.0;
@@ -905,8 +1263,11 @@ fn segment_distance_m(head: Coord, tail: Coord, point: Coord) -> f64 {
     let span_y = tail_y - head_y;
     let span_len2 = span_x.mul_add(span_x, span_y * span_y);
     if span_len2 <= f64::EPSILON {
-        return head_x.hypot(head_y);
+        return (head_x.hypot(head_y), 0.0);
     }
     let interpolation = (-(head_x * span_x + head_y * span_y) / span_len2).clamp(0.0, 1.0);
-    (head_x + span_x * interpolation).hypot(head_y + span_y * interpolation)
+    (
+        (head_x + span_x * interpolation).hypot(head_y + span_y * interpolation),
+        interpolation,
+    )
 }

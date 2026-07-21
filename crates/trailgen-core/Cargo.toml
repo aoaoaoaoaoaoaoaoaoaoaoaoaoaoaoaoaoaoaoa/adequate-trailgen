@@ -11,6 +11,7 @@ keywords = ["gis", "hiking", "routing", "geojson", "gpx"]
 categories = ["science::geo", "algorithms"]
 
 [dependencies]
+num-traits.workspace = true
 osmpbfreader.workspace = true
 roxmltree.workspace = true
 rstar.workspace = true

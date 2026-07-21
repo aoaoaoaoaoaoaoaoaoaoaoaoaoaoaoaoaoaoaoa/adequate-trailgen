@@ -5,6 +5,7 @@
 ```toml
 [trail_data]
 managed = true
+providers = ["osm", "usgs-national-trails"]
 
 [[trail_data.regions]]
 id = "8cd28c863327f323e563b851"
@@ -16,7 +17,7 @@ east = -74.00
 north = 41.35
 ```
 
-Region IDs are receipts, not labels; do not hand-edit them. Add and excise rectangles in the workbench so source sequestration, the union graph, and its index receipt change together. Each rectangle is currently limited to four square degrees to keep Overpass requests bounded. The initial automatic provider surface is US-oriented, while the normalized graph remains provider-neutral.
+Region IDs are content-derived spatial receipts, not provider IDs or labels; do not hand-edit them. Add and excise rectangles in the workbench so source sequestration, the union graph, and its index receipt change together. Each rectangle is currently limited to four square degrees to keep provider requests bounded. `providers` names the automatic acquisition batch; the default US batch is `osm` plus `usgs-national-trails`, while the normalized graph remains provider-neutral.
 
 `managed = true` records that the live-region corpus owns the project graph. It remains true after the last rectangle is excised, preventing an obsolete generated-route snapshot from masquerading as the current graph. Manual CLI-built projects leave it false.
 
@@ -34,7 +35,7 @@ north = 40.02
 
 For a GUI-managed corpus, `[area]` is the derived bounding hull of the live rectangles. It remains a compatibility surface for discovery and provider-neutral CLI tooling; `[trail_data].regions` is the exact acquisition and routing boundary. In a manual project with no live rectangles, the AOI is not a routing constraint. In both cases source recommendations in `sources/manifest.json` carry the hull so future elevation, terrain, access, road, hydrology, and seed-route acquisition stays tied to the territory that produced the graph.
 
-`snap_tolerance_m` controls cautious graph-construction snapping for generic vector inputs. Their exact planar intersections are split, and a dangling endpoint may be projected onto another generic segment when the projected point lies inside that segment and within `snap_tolerance_m`; snapped edges receive `graph-builder` / `near-miss-snap` provenance and capped confidence so reports expose the uncertainty instead of pretending the junction was source-authored. OSM ways instead connect only through shared source nodes and never receive inferred planar or near-miss junctions. `trailgen build --snap-tolerance-m N` updates this project setting before writing `cache/graph.json`, because topology policy must be reproducible across later rebuilds and `assemble` runs.
+`snap_tolerance_m` controls cautious graph-construction repair and defaults to `15`. Generic lines still split at exact planar intersections. Provider-aware polylines retain only authored junctions as topology, then nearby eligible endpoints form bounded clusters before any unmatched endpoint may project onto a line interior. Distances use local metres; `ExplicitNodes` inputs and grade-separated OSM bridges, tunnels, or nonzero layers are never repaired. Snapped edges receive `graph-builder` / `near-miss-snap` provenance and capped confidence. `trailgen build --snap-tolerance-m N` persists this law before writing `cache/graph.json` so later rebuilds reproduce the topology.
 
 `planning_date = "YYYY-MM-DD"` is the civil date used when applying dated or recurring seasonal access/closure overlays. `planning_time = "HH:MM"` is the local civil time used for hourly windows. `trailgen assemble --date YYYY-MM-DD --time HH:MM` and `trailgen apply-access --source ownership.geojson --source closures.geojson --date YYYY-MM-DD --time HH:MM` persist that planning moment while mutating the cached graph. `trailgen generate --date YYYY-MM-DD --time HH:MM` records a one-run override in the effective config and materializes a generation-time graph snapshot from stored overlays. Access application captures `sources/access-baseline.json` before the first access mutation, restores that baseline on later access applications, and then filters the composed overlay set. Apply access after graph-building, elevation, terrain, context, and seed imports; if graph topology or pre-access attribution changes, rebuild and reapply those phases before changing access dates or times. `assemble` performs those phases from `sources/manifest.json` in one deterministic sequence. Dated, seasonal, weekday, or hourly overlays without enough planning context are treated as active, a conservative default that avoids silently routing through unknown closures.
 

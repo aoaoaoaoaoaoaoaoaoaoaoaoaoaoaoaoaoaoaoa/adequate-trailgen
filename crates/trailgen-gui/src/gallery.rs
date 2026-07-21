@@ -1,11 +1,14 @@
 use crate::{
     library::SavedTrail,
-    map::{CANDIDATE_COLORS, terrain_color},
+    map::{
+        CANDIDATE_COLORS, frailest_standing, terrain_color, trail_standing_badge,
+        trail_standing_color,
+    },
 };
 use dwemer_poolrooms::chrome;
 use egui::{Color32, Rect, Response, Sense, Shape, Stroke, Ui, pos2, vec2};
 use serde::{Deserialize, Serialize};
-use trailgen_core::{LineString, Route, Terrain, TrailGraph};
+use trailgen_core::{LineString, Route, Terrain, TrailGraph, TrailStanding};
 
 pub const TILE_SIZE: egui::Vec2 = egui::Vec2::new(224.0, 146.0);
 const PLATE_PAD: f32 = 4.0;
@@ -75,6 +78,12 @@ pub fn candidate_tile(
         ui,
         route.name.as_str(),
         &route.metrics,
+        frailest_standing(
+            route
+                .edges
+                .iter()
+                .map(|edge| graph.edges[edge.0].attr.standing),
+        ),
         active,
         |ui, rect| {
             paint_miniature(
@@ -107,6 +116,7 @@ pub fn saved_tile(ui: &mut Ui, trail: &SavedTrail, active: bool) -> Response {
         ui,
         trail.name.as_str(),
         &trail.metrics,
+        frailest_standing(trail.legs.iter().map(|leg| leg.standing)),
         active,
         |ui, rect| {
             paint_miniature(ui, rect, &geometry, crate::map::ALLTRAILS_GREEN);
@@ -121,6 +131,7 @@ fn tile_shell(
     ui: &mut Ui,
     name: &str,
     metrics: &trailgen_core::RouteMetrics,
+    standing: Option<TrailStanding>,
     active: bool,
     paint: impl FnOnce(&Ui, Rect),
 ) -> Response {
@@ -134,6 +145,23 @@ fn tile_shell(
         .rect_filled(preview, 0.0, Color32::from_rgb(8, 9, 8));
     paint_grid(ui, preview);
     paint(ui, preview.shrink2(vec2(12.0, 9.0)));
+    if let Some(standing) = standing.filter(|standing| *standing != TrailStanding::Established) {
+        let label = trail_standing_badge(standing);
+        let galley = ui.painter().layout_no_wrap(
+            label.to_owned(),
+            egui::FontId::monospace(9.0),
+            chrome::TEXT,
+        );
+        let badge = Rect::from_min_size(
+            preview.right_top() - vec2(galley.size().x + 11.0, -5.0),
+            galley.size() + vec2(7.0, 4.0),
+        );
+        let _fill = ui
+            .painter()
+            .rect_filled(badge, 1.0, trail_standing_color(standing));
+        ui.painter()
+            .galley(badge.min + vec2(3.5, 2.0), galley, chrome::TEXT);
+    }
 
     let title = Rect::from_min_max(
         pos2(well.left() + 7.0, preview.bottom() + 6.0),

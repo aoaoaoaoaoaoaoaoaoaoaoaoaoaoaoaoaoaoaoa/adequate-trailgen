@@ -3,12 +3,14 @@ use crate::enrich::{EmbeddedElevation, EnrichmentConfig, enrich_graph};
 use crate::geo::{Coord, LineString};
 use crate::model::{
     Access, Edge, EdgeAttr, EdgeId, EdgeTravel, GradeDistribution, Provenance, Terrain, TrailClass,
-    TrailGraph, TurnBan, Vertex, VertexId,
+    TrailGraph, TrailStanding, TurnBan, Vertex, VertexId,
 };
 use crate::{Result, TrailgenError};
 use rstar::{AABB, RTree, RTreeObject};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, btree_map::Entry};
+
+pub const DEFAULT_SNAP_TOLERANCE_M: f64 = 15.0;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SegmentDraft {
@@ -21,6 +23,8 @@ pub struct SegmentDraft {
     pub turn_restrictions: Vec<TurnRestrictionDraft>,
     #[serde(default)]
     pub trail_class: TrailClass,
+    #[serde(default)]
+    pub standing: TrailStanding,
     pub terrain: Terrain,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terrain_confidence: Option<f64>,
@@ -30,7 +34,7 @@ pub struct SegmentDraft {
     pub travel: EdgeTravel,
     pub road_exposure: f64,
     pub confidence: f64,
-    pub provenance: Provenance,
+    pub provenance: Vec<Provenance>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -40,6 +44,7 @@ pub enum JunctionPolicy {
     Planar,
     ExplicitNodes,
     ExplicitEndpoints,
+    GradeSeparatedEndpoints,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -68,7 +73,7 @@ pub struct GraphBuilder {
 impl Default for GraphBuilder {
     fn default() -> Self {
         Self {
-            snap_tolerance_m: 8.0,
+            snap_tolerance_m: DEFAULT_SNAP_TOLERANCE_M,
             enrichment: EnrichmentConfig::default(),
             weights: DifficultyWeights::default(),
         }
@@ -80,6 +85,15 @@ struct Primitive {
     a: Coord,
     b: Coord,
     src: usize,
+}
+
+#[derive(Clone, Copy)]
+struct SnapPrimitive {
+    a: Coord,
+    b: Coord,
+    primitive: usize,
+    start_t: f64,
+    end_t: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -129,6 +143,8 @@ struct SnapCandidate {
     target_t: f64,
     coord: Coord,
     distance2: f64,
+    src_endpoint: usize,
+    target_endpoint: Option<usize>,
 }
 
 impl GraphBuilder {
@@ -140,6 +156,7 @@ impl GraphBuilder {
         }
 
         let primitives = draft_primitives(drafts);
+        let snap_primitives = snap_primitives(drafts, &primitives);
 
         let mut cuts = primitives
             .iter()
@@ -147,6 +164,7 @@ impl GraphBuilder {
             .collect::<Vec<_>>();
 
         let index = primitive_index(&primitives);
+        let snap_index = snap_primitive_index(&snap_primitives);
         for (i, primitive) in primitives.iter().copied().enumerate() {
             for candidate in index.locate_in_envelope_intersecting(&primitive_envelope(primitive)) {
                 let j = candidate.index;
@@ -166,14 +184,19 @@ impl GraphBuilder {
             }
         }
 
-        let deg_tol = (self.snap_tolerance_m / 111_320.0).max(1.0e-9);
-        for snap in near_miss_snaps(drafts, &primitives, &index, deg_tol) {
+        for snap in near_miss_snaps(
+            drafts,
+            &primitives,
+            &snap_primitives,
+            &snap_index,
+            self.snap_tolerance_m,
+        ) {
             cuts[snap.src_primitive].push(Cut::snapped(snap.src_t, snap.coord));
             cuts[snap.target_primitive].push(Cut::snapped(snap.target_t, snap.coord));
         }
 
         let mut vertices = Vec::<Vertex>::new();
-        let mut vertex_by_cell = BTreeMap::<(String, String), VertexId>::new();
+        let mut vertex_by_coord = BTreeMap::<(u64, u64), VertexId>::new();
         let mut edges = Vec::<Edge>::new();
         let snap_provenance = Provenance {
             source: "graph-builder".to_owned(),
@@ -191,13 +214,19 @@ impl GraphBuilder {
                 if a.planar_distance2(b) < 1.0e-18 {
                     continue;
                 }
-                let va = vertex_id(a, deg_tol, &mut vertices, &mut vertex_by_cell);
-                let vb = vertex_id(b, deg_tol, &mut vertices, &mut vertex_by_cell);
+                let va = vertex_id(a, &mut vertices, &mut vertex_by_coord);
+                let vb = vertex_id(b, &mut vertices, &mut vertex_by_coord);
                 if va == vb {
                     continue;
                 }
                 let draft = &drafts[primitive.src];
-                let geometry = edge_geometry(draft, vertices[va.0].coord, vertices[vb.0].coord);
+                let geometry = edge_geometry(
+                    draft,
+                    vertices[va.0].coord,
+                    vertices[vb.0].coord,
+                    pair[0].t,
+                    pair[1].t,
+                );
                 let id = EdgeId(edges.len());
                 let snapped = pair[0].snapped || pair[1].snapped;
                 let attr = edge_attr(draft, &geometry, snapped.then_some(snap_provenance.clone()));
@@ -231,7 +260,10 @@ fn draft_primitives(drafts: &[SegmentDraft]) -> Vec<Primitive> {
         .iter()
         .enumerate()
         .flat_map(|(src, draft)| {
-            if draft.junctions == JunctionPolicy::ExplicitEndpoints {
+            if matches!(
+                draft.junctions,
+                JunctionPolicy::ExplicitEndpoints | JunctionPolicy::GradeSeparatedEndpoints
+            ) {
                 let points = &draft.geometry.points;
                 vec![Primitive {
                     a: points[0],
@@ -254,20 +286,95 @@ fn draft_primitives(drafts: &[SegmentDraft]) -> Vec<Primitive> {
         .collect()
 }
 
-fn edge_geometry(draft: &SegmentDraft, a: Coord, b: Coord) -> LineString {
-    if draft.junctions != JunctionPolicy::ExplicitEndpoints {
+fn snap_primitives(drafts: &[SegmentDraft], primitives: &[Primitive]) -> Vec<SnapPrimitive> {
+    primitives
+        .iter()
+        .copied()
+        .enumerate()
+        .flat_map(|(primitive, topology)| {
+            let draft = &drafts[topology.src];
+            if !matches!(
+                draft.junctions,
+                JunctionPolicy::ExplicitEndpoints | JunctionPolicy::GradeSeparatedEndpoints
+            ) {
+                return vec![SnapPrimitive {
+                    a: topology.a,
+                    b: topology.b,
+                    primitive,
+                    start_t: 0.0,
+                    end_t: 1.0,
+                }];
+            }
+            let lengths = draft
+                .geometry
+                .points
+                .windows(2)
+                .map(|segment| segment[0].haversine_m(segment[1]))
+                .collect::<Vec<_>>();
+            let total_m = lengths.iter().sum::<f64>().max(f64::EPSILON);
+            let mut traversed_m = 0.0;
+            draft
+                .geometry
+                .points
+                .windows(2)
+                .zip(lengths)
+                .map(|(segment, length_m)| {
+                    let start_t = traversed_m / total_m;
+                    traversed_m += length_m;
+                    SnapPrimitive {
+                        a: segment[0],
+                        b: segment[1],
+                        primitive,
+                        start_t,
+                        end_t: traversed_m / total_m,
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+fn edge_geometry(draft: &SegmentDraft, a: Coord, b: Coord, start_t: f64, end_t: f64) -> LineString {
+    if !matches!(
+        draft.junctions,
+        JunctionPolicy::ExplicitEndpoints | JunctionPolicy::GradeSeparatedEndpoints
+    ) {
         return LineString::unchecked(vec![a, b]);
     }
-    let mut geometry = draft.geometry.clone();
-    let last = geometry.points.len() - 1;
-    geometry.points[0] = a;
-    geometry.points[last] = b;
-    geometry
+    let lengths = draft
+        .geometry
+        .points
+        .windows(2)
+        .map(|segment| segment[0].haversine_m(segment[1]))
+        .collect::<Vec<_>>();
+    let total_m = lengths.iter().sum::<f64>();
+    let start_m = total_m * start_t;
+    let end_m = total_m * end_t;
+    let mut traversed_m = 0.0;
+    let mut points = vec![a];
+    for (index, length_m) in lengths.into_iter().enumerate() {
+        traversed_m += length_m;
+        if traversed_m > start_m + 1.0e-7 && traversed_m < end_m - 1.0e-7 {
+            points.push(draft.geometry.points[index + 1]);
+        }
+    }
+    points.push(b);
+    LineString::unchecked(points)
 }
 
 fn junctions_may_be_inferred(drafts: &[SegmentDraft], a: Primitive, b: Primitive) -> bool {
     drafts[a.src].junctions == JunctionPolicy::Planar
         && drafts[b.src].junctions == JunctionPolicy::Planar
+}
+
+fn snaps_may_be_inferred(drafts: &[SegmentDraft], a: Primitive, b: Primitive) -> bool {
+    let inferable = |policy| {
+        matches!(
+            policy,
+            JunctionPolicy::Planar | JunctionPolicy::ExplicitEndpoints
+        )
+    };
+    inferable(drafts[a.src].junctions) && inferable(drafts[b.src].junctions)
 }
 
 fn primitive_index(primitives: &[Primitive]) -> RTree<PrimitiveEnvelope> {
@@ -279,6 +386,28 @@ fn primitive_index(primitives: &[Primitive]) -> RTree<PrimitiveEnvelope> {
             .map(|(index, primitive)| PrimitiveEnvelope {
                 index,
                 envelope: primitive_envelope(primitive),
+            })
+            .collect(),
+    )
+}
+
+fn snap_primitive_index(primitives: &[SnapPrimitive]) -> RTree<PrimitiveEnvelope> {
+    RTree::bulk_load(
+        primitives
+            .iter()
+            .enumerate()
+            .map(|(index, primitive)| PrimitiveEnvelope {
+                index,
+                envelope: AABB::from_corners(
+                    [
+                        primitive.a.lon.min(primitive.b.lon),
+                        primitive.a.lat.min(primitive.b.lat),
+                    ],
+                    [
+                        primitive.a.lon.max(primitive.b.lon),
+                        primitive.a.lat.max(primitive.b.lat),
+                    ],
+                ),
             })
             .collect(),
     )
@@ -378,7 +507,7 @@ fn edge_attr(
     } else {
         0.0
     };
-    let mut provenance = vec![draft.provenance.clone()];
+    let mut provenance = draft.provenance.clone();
     let mut confidence = draft.confidence.clamp(0.0, 1.0);
     if let Some(snap_provenance) = snap_provenance {
         provenance.push(snap_provenance);
@@ -393,6 +522,7 @@ fn edge_attr(
         sustained_steep_m: 0.0,
         grade_distribution: GradeDistribution::default().add_segment(length_m, grade_abs_mean),
         trail_class: draft.trail_class,
+        standing: draft.standing,
         terrain: draft.terrain,
         surface: draft.surface.clone(),
         terrain_confidence: draft
@@ -451,90 +581,248 @@ fn normalize_cuts(mut cuts: Vec<Cut>) -> Vec<Cut> {
 fn near_miss_snaps(
     drafts: &[SegmentDraft],
     primitives: &[Primitive],
+    snap_primitives: &[SnapPrimitive],
     index: &RTree<PrimitiveEnvelope>,
-    deg_tol: f64,
+    tolerance_m: f64,
 ) -> Vec<SnapCandidate> {
-    let mut best = BTreeMap::<(usize, u8), SnapCandidate>::new();
-    let tolerance2 = deg_tol * deg_tol;
+    let candidates = near_miss_candidates(drafts, primitives, snap_primitives, index, tolerance_m);
+    let (mut snaps, clustered) = cluster_endpoint_snaps(&candidates, primitives, tolerance_m);
+    let mut best_interior = BTreeMap::<usize, SnapCandidate>::new();
+    for candidate in candidates.into_iter().filter(|candidate| {
+        candidate.target_endpoint.is_none() && !clustered[candidate.src_endpoint]
+    }) {
+        match best_interior.entry(candidate.src_endpoint) {
+            Entry::Occupied(mut entry) if snap_rank(candidate) < snap_rank(*entry.get()) => {
+                entry.insert(candidate);
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(candidate);
+            }
+            Entry::Occupied(_) => {}
+        }
+    }
+    snaps.extend(best_interior.into_values());
+    snaps
+}
+
+fn near_miss_candidates(
+    drafts: &[SegmentDraft],
+    primitives: &[Primitive],
+    snap_primitives: &[SnapPrimitive],
+    index: &RTree<PrimitiveEnvelope>,
+    tolerance_m: f64,
+) -> Vec<SnapCandidate> {
+    let mut candidates = Vec::new();
     for (src_idx, primitive) in primitives.iter().copied().enumerate() {
         for (endpoint_ix, endpoint_t, endpoint) in [(0, 0.0, primitive.a), (1, 1.0, primitive.b)] {
+            let src_endpoint = src_idx * 2 + endpoint_ix;
+            let latitude_radius = tolerance_m / 110_540.0;
+            let longitude_radius =
+                tolerance_m / (111_320.0 * endpoint.lat.to_radians().cos().abs().max(0.05));
             let neighborhood = AABB::from_corners(
-                [endpoint.lon - deg_tol, endpoint.lat - deg_tol],
-                [endpoint.lon + deg_tol, endpoint.lat + deg_tol],
+                [
+                    endpoint.lon - longitude_radius,
+                    endpoint.lat - latitude_radius,
+                ],
+                [
+                    endpoint.lon + longitude_radius,
+                    endpoint.lat + latitude_radius,
+                ],
             );
             for candidate in index.locate_in_envelope_intersecting(&neighborhood) {
-                let target_idx = candidate.index;
+                let target_segment = snap_primitives[candidate.index];
+                let target_idx = target_segment.primitive;
                 let target = primitives[target_idx];
                 if src_idx == target_idx || primitive.src == target.src {
                     continue;
                 }
-                if !junctions_may_be_inferred(drafts, primitive, target) {
+                if !snaps_may_be_inferred(drafts, primitive, target) {
                     continue;
                 }
-                let Some((target_t, coord, distance2)) =
-                    projected_snap(endpoint, target, tolerance2)
-                else {
+                let Some((segment_t, coord, distance2)) = projected_snap(
+                    endpoint,
+                    target_segment.a,
+                    target_segment.b,
+                    tolerance_m * tolerance_m,
+                ) else {
                     continue;
                 };
-                let candidate = SnapCandidate {
+                let target_t = (target_segment.end_t - target_segment.start_t)
+                    .mul_add(segment_t, target_segment.start_t);
+                let target_endpoint = if target_t <= 1.0e-9 {
+                    Some(target_idx * 2)
+                } else if target_t >= 1.0 - 1.0e-9 {
+                    Some(target_idx * 2 + 1)
+                } else {
+                    None
+                };
+                if target_endpoint.is_some_and(|target| src_endpoint > target) {
+                    continue;
+                }
+                candidates.push(SnapCandidate {
                     src_primitive: src_idx,
                     src_t: endpoint_t,
                     target_primitive: target_idx,
                     target_t,
                     coord,
                     distance2,
-                };
-                match best.entry((src_idx, endpoint_ix)) {
-                    Entry::Occupied(mut entry)
-                        if (candidate.distance2, candidate.target_primitive)
-                            < (entry.get().distance2, entry.get().target_primitive) =>
-                    {
-                        entry.insert(candidate);
-                    }
-                    Entry::Vacant(entry) => {
-                        entry.insert(candidate);
-                    }
-                    Entry::Occupied(_) => {}
-                }
+                    src_endpoint,
+                    target_endpoint,
+                });
             }
         }
     }
-    best.into_values().collect()
+    candidates
+}
+
+fn cluster_endpoint_snaps(
+    candidates: &[SnapCandidate],
+    primitives: &[Primitive],
+    tolerance_m: f64,
+) -> (Vec<SnapCandidate>, Vec<bool>) {
+    let endpoint_count = primitives.len() * 2;
+    let mut parent = (0..endpoint_count).collect::<Vec<_>>();
+    let mut members = (0..endpoint_count)
+        .map(|endpoint| vec![endpoint])
+        .collect::<Vec<_>>();
+    let mut endpoint_candidates = candidates
+        .iter()
+        .filter(|candidate| candidate.target_endpoint.is_some())
+        .copied()
+        .collect::<Vec<_>>();
+    endpoint_candidates.sort_by_key(|candidate| {
+        (
+            candidate.distance2.to_bits(),
+            candidate.src_endpoint,
+            candidate.target_endpoint,
+        )
+    });
+    for candidate in endpoint_candidates {
+        let target = candidate.target_endpoint.expect("filtered endpoint snap");
+        let a = endpoint_root(&parent, candidate.src_endpoint);
+        let b = endpoint_root(&parent, target);
+        if a == b || !clusters_fit(&members[a], &members[b], primitives, tolerance_m) {
+            continue;
+        }
+        let (keep, discard) = if a < b { (a, b) } else { (b, a) };
+        parent[discard] = keep;
+        let displaced = std::mem::take(&mut members[discard]);
+        members[keep].extend(displaced);
+    }
+
+    let mut snaps = Vec::new();
+    let mut clustered = vec![false; endpoint_count];
+    for cluster in members.iter().filter(|cluster| cluster.len() > 1) {
+        let canonical = endpoint_medoid(cluster, primitives);
+        let coord = endpoint_coord(primitives, canonical);
+        for &endpoint in cluster {
+            clustered[endpoint] = true;
+            if endpoint == canonical {
+                continue;
+            }
+            snaps.push(SnapCandidate {
+                src_primitive: endpoint / 2,
+                src_t: endpoint_t(endpoint),
+                target_primitive: canonical / 2,
+                target_t: endpoint_t(canonical),
+                coord,
+                distance2: endpoint_coord(primitives, endpoint)
+                    .haversine_m(coord)
+                    .powi(2),
+                src_endpoint: endpoint,
+                target_endpoint: Some(canonical),
+            });
+        }
+    }
+    (snaps, clustered)
+}
+
+const fn snap_rank(candidate: SnapCandidate) -> (u64, usize, u64) {
+    (
+        candidate.distance2.to_bits(),
+        candidate.target_primitive,
+        candidate.target_t.to_bits(),
+    )
+}
+
+const fn endpoint_t(endpoint: usize) -> f64 {
+    if endpoint.is_multiple_of(2) { 0.0 } else { 1.0 }
+}
+
+fn endpoint_root(parent: &[usize], mut endpoint: usize) -> usize {
+    while parent[endpoint] != endpoint {
+        endpoint = parent[endpoint];
+    }
+    endpoint
+}
+
+fn endpoint_coord(primitives: &[Primitive], endpoint: usize) -> Coord {
+    let primitive = primitives[endpoint / 2];
+    if endpoint.is_multiple_of(2) {
+        primitive.a
+    } else {
+        primitive.b
+    }
+}
+
+fn clusters_fit(a: &[usize], b: &[usize], primitives: &[Primitive], tolerance_m: f64) -> bool {
+    a.iter().all(|&lhs| {
+        b.iter().all(|&rhs| {
+            endpoint_coord(primitives, lhs).haversine_m(endpoint_coord(primitives, rhs))
+                <= tolerance_m
+        })
+    })
+}
+
+fn endpoint_medoid(cluster: &[usize], primitives: &[Primitive]) -> usize {
+    cluster
+        .iter()
+        .copied()
+        .min_by(|&lhs, &rhs| {
+            let score = |candidate| {
+                cluster
+                    .iter()
+                    .map(|&other| {
+                        endpoint_coord(primitives, candidate)
+                            .haversine_m(endpoint_coord(primitives, other))
+                    })
+                    .sum::<f64>()
+            };
+            score(lhs).total_cmp(&score(rhs)).then(lhs.cmp(&rhs))
+        })
+        .expect("endpoint cluster is nonempty")
 }
 
 fn projected_snap(
     endpoint: Coord,
-    target: Primitive,
-    tolerance2: f64,
+    target_a: Coord,
+    target_b: Coord,
+    tolerance_m2: f64,
 ) -> Option<(f64, Coord, f64)> {
-    let vx = target.b.lon - target.a.lon;
-    let vy = target.b.lat - target.a.lat;
+    let longitude_scale = 111_320.0 * endpoint.lat.to_radians().cos();
+    let latitude_scale = 110_540.0;
+    let vx = (target_b.lon - target_a.lon) * longitude_scale;
+    let vy = (target_b.lat - target_a.lat) * latitude_scale;
     let len2 = vx.mul_add(vx, vy * vy);
     if len2 <= f64::EPSILON {
         return None;
     }
-    let wx = endpoint.lon - target.a.lon;
-    let wy = endpoint.lat - target.a.lat;
+    let wx = (endpoint.lon - target_a.lon) * longitude_scale;
+    let wy = (endpoint.lat - target_a.lat) * latitude_scale;
     let t = (wx.mul_add(vx, wy * vy) / len2).clamp(0.0, 1.0);
-    if !(1.0e-9..=1.0 - 1.0e-9).contains(&t) {
-        return None;
-    }
-    let coord = target.a.lerp(target.b, t);
-    let distance2 = endpoint.planar_distance2(coord);
-    (distance2 <= tolerance2).then_some((t, coord, distance2))
+    let coord = target_a.lerp(target_b, t);
+    let dx = wx - t * vx;
+    let dy = wy - t * vy;
+    let distance_m2 = dx.mul_add(dx, dy * dy);
+    (distance_m2 <= tolerance_m2).then_some((t, coord, distance_m2))
 }
 
 fn vertex_id(
     coord: Coord,
-    deg_tol: f64,
     vertices: &mut Vec<Vertex>,
-    vertex_by_cell: &mut BTreeMap<(String, String), VertexId>,
+    vertex_by_coord: &mut BTreeMap<(u64, u64), VertexId>,
 ) -> VertexId {
-    let key = (
-        format!("{:.0}", coord.lon / deg_tol),
-        format!("{:.0}", coord.lat / deg_tol),
-    );
-    match vertex_by_cell.entry(key) {
+    match vertex_by_coord.entry((coord.lon.to_bits(), coord.lat.to_bits())) {
         Entry::Occupied(entry) => *entry.get(),
         Entry::Vacant(entry) => {
             let id = VertexId(vertices.len());

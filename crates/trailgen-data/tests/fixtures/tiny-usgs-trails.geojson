@@ -1,0 +1,22 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [[-74.13, 41.19], [-74.12, 41.20]]
+      },
+      "properties": {
+        "objectid": 1,
+        "permanentidentifier": "usgs-fixture-1",
+        "name": "Fixture Path",
+        "sourceoriginator": "Fixture Parks",
+        "sourcedatasetid": "fixture-dataset",
+        "trailsurface": "Unpaved Native",
+        "trailtype": "Terra Trail",
+        "hikerpedestrian": "Y"
+      }
+    }
+  ]
+}

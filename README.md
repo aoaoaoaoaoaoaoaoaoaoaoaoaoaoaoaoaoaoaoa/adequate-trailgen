@@ -25,7 +25,7 @@ Saved trails form a project-owned library. A trail may belong to several familie
 
 Trail types use high-contrast dual strokes and a map legend. Focused routes add an inner terrain trace. The bronze trailhead pin and restrained water response follow the Dwemer Poolrooms design language.
 
-The default trail source is the US-scoped OpenStreetMap/Overpass path described in [data sources](docs/data-sources.md). Raw rectangle responses are independently sequestered under `sources/osm/`; `cache/graph.json` is the deterministic index of their exact union. The internal model remains provider-neutral so official GIS layers and user-owned traces can be added without creating another application pipeline.
+The default US corpus combines OpenStreetMap/Overpass with USGS National Digital Trails. Every rectangle-provider response is independently sequestered beneath `sources/<provider>/`, normalized through one provider-neutral boundary, and explicitly conflated before `cache/graph.json` becomes ready. Informal, unmaintained, and historical paths remain searchable and visibly marked; trail standing never masquerades as legal access. See [data sources](docs/data-sources.md).
 
 ## Debug Frontend
 
@@ -34,6 +34,7 @@ The default trail source is the US-scoped OpenStreetMap/Overpass path described 
 ```sh
 trailgen init /tmp/harriman --name "Harriman"
 trailgen survey /tmp/harriman --place "Harriman State Park, NY"
+trailgen coverage /tmp/harriman --route owned-route.csv --output coverage.json
 trailgen stats /tmp/harriman
 ```
 
@@ -46,7 +47,7 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-The standing Harriman cases replay two user-owned CSV traces through route-derived graphs. They prove deterministic generation, artifact verification, and geometric fidelity. They do not yet prove independent public-source recovery: the current OpenStreetMap comparison has three unmatched transitions. Provider coverage is therefore a separate, explicit acceptance target rather than an embellished claim.
+The standing Harriman cases replay two user-owned CSV traces through route-derived graphs and require deterministic generation, executable artifact verification, and at least 99.5% point survival within 2 m. A separate 2026-07-21 public-source probe found complete current-OSM geometry and topology coverage for both traces: South Lows remained within 2.74 m and West within 5.23 m, with no disconnected transition. USGS enriched the surrounding corpus but did not improve either owned trace.
 
 See [installation](docs/installation.md), [model](docs/model.md), [configuration](docs/config.md), [source adapters](docs/source-adapters.md), and [known limitations](docs/limitations.md).
 

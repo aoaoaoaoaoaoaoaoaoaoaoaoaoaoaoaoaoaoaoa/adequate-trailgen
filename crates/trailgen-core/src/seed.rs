@@ -46,7 +46,7 @@ impl SeedRoute {
         line: &LineString,
         max_snap_m: f64,
     ) -> Self {
-        let snap = graph.snap_line_edges_within(line, max_snap_m);
+        let snap = graph.trace_coverage(line, max_snap_m);
         let snapped_edges = snap.edges;
         let candidate_start = graph.snapped_line_start(line, &snapped_edges);
         let finish =

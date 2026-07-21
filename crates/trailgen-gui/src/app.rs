@@ -26,6 +26,7 @@ use std::{
 };
 use trailgen_core::{
     Coord, LoopConstraints, Route, RouteMetrics, RouteShape, SearchParams, SolverKind, TrailGraph,
+    TrailStanding,
 };
 use trailgen_data::SurveyRegion;
 
@@ -774,6 +775,18 @@ impl TrailApp {
                     metrics.ascent_m,
                     metrics.descent_m,
                 )));
+                if let Some(standing) = self
+                    .focus_standing()
+                    .filter(|standing| *standing != TrailStanding::Established)
+                {
+                    let _standing = ui.colored_label(
+                        map::trail_standing_color(standing),
+                        chrome::eyebrow(format!(
+                            "PATH STATUS · {}",
+                            map::trail_standing_label(standing)
+                        )),
+                    );
+                }
             }
             match &self.focus {
                 Some(Focus::Candidate { .. }) => {
@@ -1437,6 +1450,27 @@ impl TrailApp {
                 .library
                 .trail(id)
                 .map(|trail| (trail.name.clone(), trail.metrics.clone())),
+            None => None,
+        }
+    }
+
+    fn focus_standing(&self) -> Option<TrailStanding> {
+        match &self.focus {
+            Some(Focus::Candidate { family, slot }) => self
+                .candidates
+                .get(family)
+                .and_then(|run| run.routes.get(*slot))
+                .and_then(|route| {
+                    map::frailest_standing(
+                        route
+                            .edges
+                            .iter()
+                            .map(|edge| self.graph.edges[edge.0].attr.standing),
+                    )
+                }),
+            Some(Focus::Saved(id)) => self.library.trail(id).and_then(|trail| {
+                map::frailest_standing(trail.legs.iter().map(|leg| leg.standing))
+            }),
             None => None,
         }
     }

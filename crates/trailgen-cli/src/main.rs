@@ -18,18 +18,17 @@ use trailgen_core::source::{
 };
 use trailgen_core::{
     Access, AccessOverlay, AccessWindow, ArcAsciiGrid, ConstraintAudit, Coord, CrossingKind,
-    DEFAULT_MAX_DISTANCE_M, DEFAULT_MIN_DISTANCE_M, DifficultyBreakdown, DifficultyWeights,
-    EdgeAttr, EdgeId, EdgeTravel, ElevationMosaic, EnrichmentConfig, GeoTiffDem, GradeDistribution,
-    GraphBuilder, JunctionPolicy, LOW_CONFIDENCE_THRESHOLD, LineString, LoopConstraints,
-    LoopMilpFormulation, PlanningDate, PlanningMoment, PlanningTime, Provenance, RasterDem, Route,
-    RouteMetrics, RouteShape, RouteSnapStats, SearchParams, SeedRoute, SegmentDraft, SolverKind,
-    Terrain, TrailClass, TrailGraph, VertexId, VrtDem, apply_access_overlays,
-    apply_access_overlays_at, apply_context_overlays, apply_terrain_overlays, artifact_key,
-    enrich_graph, rank_routes, route_edges_from_solution,
+    DEFAULT_MAX_DISTANCE_M, DEFAULT_MIN_DISTANCE_M, DEFAULT_SNAP_TOLERANCE_M, DifficultyBreakdown,
+    DifficultyWeights, EdgeAttr, EdgeId, EdgeTravel, ElevationMosaic, EnrichmentConfig, GeoTiffDem,
+    GradeDistribution, GraphBuilder, JunctionPolicy, LOW_CONFIDENCE_THRESHOLD, LineString,
+    LoopConstraints, LoopMilpFormulation, PlanningDate, PlanningMoment, PlanningTime, Provenance,
+    RasterDem, Route, RouteMetrics, RouteShape, RouteSnapStats, SearchParams, SeedRoute,
+    SegmentDraft, SolverKind, Terrain, TrailClass, TrailGraph, TrailStanding, VertexId, VrtDem,
+    apply_access_overlays, apply_access_overlays_at, apply_context_overlays,
+    apply_terrain_overlays, artifact_key, enrich_graph, rank_routes, route_edges_from_solution,
 };
 use trailgen_data::{
-    DEFAULT_OVERPASS_ENDPOINT, OsmProfile, Overpass, Surveyor, TrailDataConfig, TrailProvider,
-    inspect_osm,
+    DEFAULT_OVERPASS_ENDPOINT, OsmProfile, Overpass, Surveyor, TrailDataConfig, inspect_osm,
 };
 #[cfg(test)]
 use trailgen_data::{overpass_query, overpass_selector_count};
@@ -83,6 +82,20 @@ enum Cmd {
     Stats {
         /// Project directory containing cache/graph.json.
         project: PathBuf,
+    },
+    /// Locate route segments absent from or disconnected in the indexed graph.
+    Coverage {
+        /// Project directory containing cache/graph.json.
+        project: PathBuf,
+        /// GPX, KML/KMZ, CSV, or route JSON to test against the graph.
+        #[arg(long)]
+        route: PathBuf,
+        /// Farthest a route segment may lie from indexed trail geometry.
+        #[arg(long, default_value_t = 40.0, value_parser = parse_positive_f64)]
+        max_snap_m: f64,
+        /// Optional JSON report path; stdout is used when omitted.
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
     /// Scan sources/ and write the source recommendation and coverage manifest.
     Discover {
@@ -507,7 +520,7 @@ impl ProjectConfig {
             name,
             trail_data: TrailDataConfig::default(),
             area,
-            snap_tolerance_m: 8.0,
+            snap_tolerance_m: DEFAULT_SNAP_TOLERANCE_M,
             enrichment: EnrichmentConfig::default(),
             difficulty: DifficultyWeights::default(),
             constraints: LoopConstraints::default(),
@@ -737,7 +750,7 @@ struct TerrainFraction {
 }
 
 const fn default_snap_tolerance_m() -> f64 {
-    8.0
+    DEFAULT_SNAP_TOLERANCE_M
 }
 
 const fn default_max_start_snap_m() -> f64 {
@@ -785,6 +798,12 @@ fn dispatch(cmd: Cmd) -> Result<()> {
             snap_tolerance_m,
         ),
         Cmd::Stats { project } => stats(&project),
+        Cmd::Coverage {
+            project,
+            route,
+            max_snap_m,
+            output,
+        } => diagnose_coverage(&project, &route, max_snap_m, output.as_deref()),
         Cmd::Discover { project, bbox } => discover(&project, bbox),
         Cmd::SourcePlan { project, kind, all } => source_plan(&project, &kind, all),
         Cmd::CacheSource {
@@ -1188,6 +1207,7 @@ fn route_source_draft_from_line(source: &Path, line: LineString) -> SegmentDraft
         turn_restrictions: Vec::new(),
         geometry: line,
         trail_class: TrailClass::default(),
+        standing: TrailStanding::Unknown,
         terrain: Terrain::Unknown,
         terrain_confidence: Some(0.0),
         surface: None,
@@ -1195,7 +1215,7 @@ fn route_source_draft_from_line(source: &Path, line: LineString) -> SegmentDraft
         travel: EdgeTravel::Both,
         road_exposure: 0.0,
         confidence: 0.65,
-        provenance: Provenance {
+        provenance: vec![Provenance {
             source: "route-file".to_owned(),
             layer: Some("route-derived-network".to_owned()),
             source_id: source
@@ -1203,7 +1223,7 @@ fn route_source_draft_from_line(source: &Path, line: LineString) -> SegmentDraft
                 .and_then(|x| x.to_str())
                 .map(str::to_owned),
             license: None,
-        },
+        }],
     }
 }
 
@@ -1223,9 +1243,47 @@ fn stats(project: &Path) -> Result<()> {
     Ok(())
 }
 
+#[derive(Serialize)]
+struct CoverageLedger<'a> {
+    schema: u8,
+    route: String,
+    max_snap_m: f64,
+    coverage: &'a trailgen_core::RouteCoverage,
+}
+
+fn diagnose_coverage(
+    project: &Path,
+    route: &Path,
+    max_snap_m: f64,
+    output: Option<&Path>,
+) -> Result<()> {
+    let graph = load_graph(project)?;
+    let route_file = load_route_file(route)?;
+    let coverage = graph.trace_coverage(&route_file.line, max_snap_m);
+    let ledger = CoverageLedger {
+        schema: 1,
+        route: route.display().to_string(),
+        max_snap_m,
+        coverage: &coverage,
+    };
+    if let Some(output) = output {
+        write_json(output, &ledger)?;
+        println!(
+            "wrote {} gap(s) across {} route segment(s) to {}",
+            coverage.gaps.len(),
+            coverage.stats.segment_count,
+            output.display()
+        );
+    } else {
+        println!("{}", serde_json::to_string_pretty(&ledger)?);
+    }
+    Ok(())
+}
+
 fn stats_text(graph: &TrailGraph) -> String {
     let mut text = String::new();
     let mut terrain_m = BTreeMap::<Terrain, f64>::new();
+    let mut standing_m = BTreeMap::<TrailStanding, f64>::new();
     let mut access_m = BTreeMap::<Access, f64>::new();
     let mut source_m = BTreeMap::<String, f64>::new();
     let mut confidence_m = BTreeMap::<ConfidenceBand, f64>::new();
@@ -1238,6 +1296,7 @@ fn stats_text(graph: &TrailGraph) -> String {
     for edge in &graph.edges {
         let a = &edge.attr;
         *terrain_m.entry(a.terrain).or_default() += a.length_m;
+        *standing_m.entry(a.standing).or_default() += a.length_m;
         *access_m.entry(a.access).or_default() += a.length_m;
         *source_m.entry(primary_source_label(a)).or_default() += a.length_m;
         *confidence_m
@@ -1306,6 +1365,7 @@ fn stats_text(graph: &TrailGraph) -> String {
         percent(seed_m, total_m)
     );
     write_meter_mix(&mut text, "Terrain mix", &terrain_m, total_m);
+    write_meter_mix(&mut text, "Trail standing", &standing_m, total_m);
     write_meter_mix(&mut text, "Access mix", &access_m, total_m);
     write_labeled_meter_mix(&mut text, "Source mix", &source_m, total_m);
     write_labeled_meter_mix(&mut text, "Confidence mix", &confidence_m, total_m);
@@ -1419,9 +1479,10 @@ fn edge_has_elevation(a: &EdgeAttr) -> bool {
 }
 
 fn primary_source_label(a: &EdgeAttr) -> String {
-    a.provenance
-        .first()
-        .map_or_else(|| "unknown".to_owned(), provenance_label)
+    a.provenance.first().map_or_else(
+        || "unknown".to_owned(),
+        |provenance| provenance.source.clone(),
+    )
 }
 
 fn provenance_label(p: &Provenance) -> String {
@@ -3210,15 +3271,7 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
     let start = snap_generation_start(&graph, start_coord, config.max_start_snap_m)?;
     let solver = config.solver.resolve(&graph);
     let routes = solve_generation_routes(project, &graph, &config, start.snapped, options.count)?;
-    fs::create_dir_all(project.join("routes"))?;
-    fs::create_dir_all(project.join("reports"))?;
-    let previous_artifacts = previous_generated_artifacts(project)?;
-    let (graph, routes) = write_generated_snapshots(project, &graph, &routes)?;
-    write_json(
-        project.join("routes/generated.geojson"),
-        &geojson::routes_to_geojson(&graph, &routes),
-    )?;
-    let mut manifest = generation_manifest(GenerationManifestInput {
+    let routes = press_generation(GenerationManifestInput {
         project,
         options,
         config: &config,
@@ -3228,19 +3281,6 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
         routes: &routes,
         solver_label: solver.label(),
     })?;
-    write_generation_manifest(project, &manifest)?;
-    write_route_artifacts(project, &graph, &routes)?;
-    fs::write(
-        project.join("reports/generated.md"),
-        render_generated_report(project, &graph, &routes)?,
-    )
-    .with_context(|| "write generated report")?;
-    write_bytes(
-        project.join("reports/map.html"),
-        render_map_html(&config.name, &graph, &routes)?,
-    )?;
-    finalize_generation_manifest(project, &mut manifest)?;
-    remove_obsolete_generation_artifacts(project, previous_artifacts, &manifest.artifacts)?;
     println!("generated {} route(s)", routes.len());
     Ok(())
 }
@@ -3277,6 +3317,37 @@ fn write_generated_snapshots(
         load_generated_graph(project)?,
         load_generated_routes(project)?,
     ))
+}
+
+fn press_generation(input: GenerationManifestInput<'_>) -> Result<Vec<Route>> {
+    let project = input.project;
+    fs::create_dir_all(project.join("routes"))?;
+    fs::create_dir_all(project.join("reports"))?;
+    let previous_artifacts = previous_generated_artifacts(project)?;
+    let (graph, routes) = write_generated_snapshots(project, input.graph, input.routes)?;
+    write_json(
+        project.join("routes/generated.geojson"),
+        &geojson::routes_to_geojson(&graph, &routes),
+    )?;
+    let mut manifest = generation_manifest(GenerationManifestInput {
+        graph: &graph,
+        routes: &routes,
+        ..input
+    })?;
+    write_generation_manifest(project, &manifest)?;
+    write_route_artifacts(project, &graph, &routes)?;
+    fs::write(
+        project.join("reports/generated.md"),
+        render_generated_report(project, &graph, &routes)?,
+    )
+    .with_context(|| "write generated report")?;
+    write_bytes(
+        project.join("reports/map.html"),
+        render_map_html(&input.config.name, &graph, &routes)?,
+    )?;
+    finalize_generation_manifest(project, &mut manifest)?;
+    remove_obsolete_generation_artifacts(project, previous_artifacts, &manifest.artifacts)?;
+    Ok(routes)
 }
 
 fn formulate_milp(project: &Path, options: &MilpFormulationOptions) -> Result<()> {
@@ -3354,16 +3425,8 @@ fn import_milp_solution(project: &Path, options: &MilpIncumbentOptions) -> Resul
         &config.constraints,
     )];
     rank_routes(&mut routes, &config.constraints);
-    fs::create_dir_all(project.join("routes"))?;
-    fs::create_dir_all(project.join("reports"))?;
-    let previous_artifacts = previous_generated_artifacts(project)?;
-    let (graph, routes) = write_generated_snapshots(project, &graph, &routes)?;
-    write_json(
-        project.join("routes/generated.geojson"),
-        &geojson::routes_to_geojson(&graph, &routes),
-    )?;
     let incumbent_options = milp_incumbent_generate_options(options, &config);
-    let mut manifest = generation_manifest(GenerationManifestInput {
+    let routes = press_generation(GenerationManifestInput {
         project,
         options: &incumbent_options,
         config: &config,
@@ -3373,19 +3436,6 @@ fn import_milp_solution(project: &Path, options: &MilpIncumbentOptions) -> Resul
         routes: &routes,
         solver_label: "milp-incumbent-import",
     })?;
-    write_generation_manifest(project, &manifest)?;
-    write_route_artifacts(project, &graph, &routes)?;
-    fs::write(
-        project.join("reports/generated.md"),
-        render_generated_report(project, &graph, &routes)?,
-    )
-    .with_context(|| "write generated report")?;
-    write_bytes(
-        project.join("reports/map.html"),
-        render_map_html(&config.name, &graph, &routes)?,
-    )?;
-    finalize_generation_manifest(project, &mut manifest)?;
-    remove_obsolete_generation_artifacts(project, previous_artifacts, &manifest.artifacts)?;
     println!(
         "imported MILP incumbent {} as {} with {:.2} km and {} edge(s)",
         options.solution.display(),
@@ -3647,7 +3697,7 @@ fn snapped_route(
     max_route_snap_m: f64,
 ) -> Result<Route> {
     let route_file = load_route_file(route_path)?;
-    let snap = graph.snap_line_edges_within(&route_file.line, max_route_snap_m);
+    let snap = graph.trace_coverage(&route_file.line, max_route_snap_m);
     ensure_route_snap_accepted(&snap.stats, max_route_snap_m, "route")?;
     let edges = snap.edges;
     let start = graph
@@ -7036,6 +7086,7 @@ mod tests {
                 ])
                 .unwrap(),
                 trail_class: TrailClass::default(),
+                standing: TrailStanding::Unknown,
                 terrain: Terrain::Trail,
                 terrain_confidence: None,
                 surface: None,
@@ -7043,7 +7094,7 @@ mod tests {
                 travel: EdgeTravel::Both,
                 road_exposure: 0.0,
                 confidence: 1.0,
-                provenance: Provenance::fixture("trail"),
+                provenance: vec![Provenance::fixture("trail")],
             },
             SegmentDraft {
                 junctions: JunctionPolicy::default(),
@@ -7052,6 +7103,7 @@ mod tests {
                 geometry: LineString::new(vec![Coord::new(0.01, 0.0), Coord::new(0.02, 0.0)])
                     .unwrap(),
                 trail_class: TrailClass::default(),
+                standing: TrailStanding::Unknown,
                 terrain: Terrain::Road,
                 terrain_confidence: None,
                 surface: Some("gravel".to_owned()),
@@ -7059,7 +7111,7 @@ mod tests {
                 travel: EdgeTravel::Both,
                 road_exposure: 0.25,
                 confidence: 0.5,
-                provenance: Provenance::fixture("restricted-road"),
+                provenance: vec![Provenance::fixture("restricted-road")],
             },
         ])?;
 
@@ -7375,10 +7427,13 @@ mod tests {
         let trails = overpass_query(OsmProfile::Trails, area, 45);
         assert!(trails.starts_with("[out:xml][timeout:45];"));
         assert!(trails.contains(&format!(
-            r#"way["highway"~"^(path|footway|track|pedestrian|steps|bridleway)$"]{bbox};"#
+            r#"way["highway"~"^(path|footway|track|pedestrian|steps|bridleway|service|living_street|residential|unclassified|tertiary|secondary|primary|road)$"]{bbox};"#
         )));
         assert!(trails.contains(&format!(
-            r#"way["highway"~"^(service|unclassified|residential|tertiary|road)$"]["foot"~"^(yes|designated|permissive|official)$"]{bbox};"#
+            r#"way["disused:highway"~"^(path|footway|track|pedestrian|steps|bridleway)$"]{bbox};"#
+        )));
+        assert!(trails.contains(&format!(
+            r#"way["abandoned:highway"~"^(path|footway|track|pedestrian|steps|bridleway)$"]{bbox};"#
         )));
         assert!(trails.contains(&format!(r#"way["route"~"^(hiking|foot|walking)$"]{bbox};"#)));
         assert!(
@@ -7409,7 +7464,7 @@ mod tests {
 
         assert_acquired_classes(
             validate_osm_acquisition(OsmProfile::Trails, tiny_overpass_osm()).unwrap(),
-            &[(SourceKind::TrailNetwork, "osm-xml-network", 1)],
+            &[(SourceKind::TrailNetwork, "osm-xml-network", 2)],
         );
         assert_acquired_classes(
             validate_osm_acquisition(OsmProfile::Roads, tiny_overpass_osm()).unwrap(),
@@ -7422,7 +7477,7 @@ mod tests {
         assert_acquired_classes(
             validate_osm_acquisition(OsmProfile::All, tiny_overpass_osm()).unwrap(),
             &[
-                (SourceKind::TrailNetwork, "osm-xml-network", 1),
+                (SourceKind::TrailNetwork, "osm-xml-network", 2),
                 (SourceKind::Road, "osm-road-context", 1),
                 (SourceKind::Hydrology, "osm-hydrology-context", 1),
             ],
@@ -8490,18 +8545,20 @@ mod tests {
         build(project, &osm)?;
 
         let graph = load_graph(project)?;
-        assert_eq!(graph.edges.len(), 1);
+        assert_eq!(graph.edges.len(), 2);
         assert!(graph.edges.iter().any(|edge| {
             edge.attr
                 .provenance
                 .iter()
                 .any(|p| p.source == "osm-xml" && p.source_id.as_deref() == Some("trail-10"))
         }));
-        assert!(graph.edges.iter().all(|edge| {
-            edge.attr
-                .provenance
-                .iter()
-                .all(|p| p.source_id.as_deref() != Some("service-11"))
+        assert!(graph.edges.iter().any(|edge| {
+            edge.attr.access == Access::Private
+                && edge
+                    .attr
+                    .provenance
+                    .iter()
+                    .any(|p| p.source_id.as_deref() == Some("service-11"))
         }));
 
         let manifest: Value =

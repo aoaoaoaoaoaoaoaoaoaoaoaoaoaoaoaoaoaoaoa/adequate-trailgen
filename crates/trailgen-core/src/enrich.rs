@@ -188,6 +188,9 @@ fn densify_and_sample<S: ElevationSampler>(
             &mut sample_attempts,
         ));
     }
+    if sample_count == 0 {
+        return Ok((line.clone(), Vec::new(), 0.0));
+    }
     if sample_count > 0 && sample_count < sample_attempts {
         confidence = confidence.min(f64::from(sample_count) / f64::from(sample_attempts));
     }
