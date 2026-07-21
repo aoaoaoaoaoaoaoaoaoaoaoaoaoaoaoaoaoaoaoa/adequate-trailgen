@@ -37,17 +37,30 @@ xwininfo -id "$window" >"$out/window.txt"
 
 if [ "${TRAILGEN_GUI_ONLINE:-0}" = 1 ] && [ "${TRAILGEN_GUI_RESUME:-0}" != 1 ]; then
     attempts=0
-    while ! test -s "$project/cache/basemap.pmtiles"; do
+    while :; do
+        if { test -f "$project/cache/graph.json" \
+                || test -f "$project/routes/generated.graph.json"; } \
+            && find "$project/cache" -maxdepth 1 -type f -name 'basemap*.pmtiles' -size +0c \
+                | grep -q .; then
+            break
+        fi
+        if ! test -f "$project/cache/graph.json" \
+            && ! test -f "$project/routes/generated.graph.json" \
+            && test -s "$XDG_CACHE_HOME/trailgen/protomaps-v4/bootstrap-us.pmtiles"; then
+            break
+        fi
         attempts=$((attempts + 1))
         if [ "$attempts" -ge 240 ]; then
             import -window "$window" "$out/basemap-timeout.png"
-            printf 'timed out forging %s\n' "$project/cache/basemap.pmtiles" >&2
+            printf 'timed out forging a vector basemap\n' >&2
             exit 1
         fi
         sleep 0.25
     done
+    sleep "${TRAILGEN_GUI_BASEMAP_SETTLE_S:-1}"
 fi
 
+sleep "${TRAILGEN_GUI_SETTLE_S:-0}"
 attempts=0
 while :; do
     import -window "$window" "$out/atlas.png"
@@ -107,6 +120,22 @@ if [ "${TRAILGEN_GUI_PROJECT_DECK:-0}" = 1 ]; then
     exit 0
 fi
 
+if [ "${TRAILGEN_GUI_REGION_PREVIEW:-0}" = 1 ]; then
+    xdotool mousemove --sync --window "$window" 130 124 click 1
+    xdotool mousemove --sync --window "$window" 1130 420
+    xdotool click --repeat 11 --delay 70 4
+    sleep 0.5
+    xdotool mousemove --sync --window "$window" 980 340
+    xdotool mousedown 1
+    xdotool mousemove --sync --window "$window" 1120 475
+    sleep 0.4
+    import -window "$window" "$out/region-preview.png"
+    xdotool mouseup 1
+    sleep 1
+    import -window "$window" "$out/region-fetch.png"
+    exit 0
+fi
+
 if [ "${TRAILGEN_GUI_PROJECT_SWITCH:-0}" = 1 ]; then
     xdotool key --window "$window" ctrl+o
     sleep 0.5
@@ -133,15 +162,6 @@ if [ "${TRAILGEN_GUI_RESTORE:-0}" = 1 ]; then
     xdotool click 1
     sleep 1
     import -window "$window" "$out/restored.png"
-    exit 0
-fi
-
-if [ "${TRAILGEN_GUI_DRAFT:-0}" = 1 ]; then
-    xdotool mousemove --sync --window "$window" 38 709
-    sleep 0.2
-    xdotool click 1
-    sleep 1
-    import -window "$window" "$out/search-draft.png"
     exit 0
 fi
 
@@ -184,15 +204,24 @@ if [ "${TRAILGEN_GUI_ROAM_RESUME:-0}" = 1 ]; then
 fi
 
 # The terrain-law recess carries the per-surface admissibility and mix envelope.
-xdotool mousemove --window "$window" 130 849 click 1
+# Scroll only the inspector; the map must not consume these wheel events as zoom.
+xdotool mousemove --window "$window" 130 700
+xdotool click --repeat 12 --delay 35 5
 sleep 0.4
 import -window "$window" "$out/terrain-law.png"
-xdotool mousemove --window "$window" 130 849 click 1
+
+# Return to the inspector crown before striking the production search path.
+xdotool click --repeat 12 --delay 35 4
+sleep 0.2
 
 # Exercise the production search path on the project graph.
-xdotool mousemove --window "$window" 130 118 click 1
+xdotool key --window "$window" ctrl+Return
 sleep "${TRAILGEN_GUI_SEARCH_WAIT_S:-1}"
 import -window "$window" "$out/forged.png"
+
+if ! test -f "$project/routes/generated.routes.json"; then
+    exit 0
+fi
 
 # The first gallery plate opens the vector focus surface and elevation profile.
 xdotool mousemove --window "$window" 410 790 click 1

@@ -1,11 +1,13 @@
 use crate::{
-    basemap::{self, Basemap, Source as BasemapSource, TileKey, VectorTile},
+    basemap::Source as BasemapSource,
     gallery::{self, CandidateSort},
+    live_area::{self, RegionScribe, ScribeEvent},
     map::{self, ALLTRAILS_GREEN, Atlas, CANDIDATE_COLORS, Viewport},
     profile::ElevationProfile,
     project::{Project, SearchEvent, SearchForge, SearchRequest},
     slate::{LayerSlate, SearchDraft, Slate},
-    vector_map::VectorPaint,
+    trail_data::{Event as TrailDataEvent, Mutation as TrailDataMutation, TrailData},
+    vector_field::VectorField,
 };
 use anyhow::Result;
 use dwemer_poolrooms::{
@@ -14,7 +16,7 @@ use dwemer_poolrooms::{
 };
 use egui::{Color32, RichText, Stroke, pos2, vec2};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    collections::BTreeMap,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -22,8 +24,8 @@ use std::{
 use trailgen_core::{
     Coord, Edge, Route, RouteShape, SearchParams, SolverKind, Terrain, TrailGraph, VertexId,
 };
+use trailgen_data::SurveyRegion;
 
-const VECTOR_CEILING: usize = 512 * 1_048_576;
 const PROFILE_HEIGHT: f32 = 178.0;
 const GALLERY_HEIGHT: f32 = 190.0;
 const TOOLBAR_HEIGHT: f32 = 38.0;
@@ -71,13 +73,12 @@ pub struct TrailApp {
     fit: Fit,
     serial: u64,
     forge_phase: ForgePhase,
-    basemap: Option<Basemap>,
-    tiles: VectorBank,
-    presented_basemap: Arc<[Arc<VectorTile>]>,
-    tile_inflight: HashSet<TileKey>,
-    tile_faults: HashSet<TileKey>,
+    vector: VectorField,
+    regions: Vec<SurveyRegion>,
+    corpus: Option<TrailData>,
+    scribe: RegionScribe,
+    offline: bool,
     layers: Layers,
-    basemap_preference: bool,
     shutters: BTreeMap<String, bool>,
     inspector_scroll: f32,
     slate_path: PathBuf,
@@ -87,9 +88,14 @@ pub struct TrailApp {
     water: Surface,
     status: String,
     trail_data_status: Option<String>,
-    basemap_status: String,
     map_rect: egui::Rect,
-    project_deck_requested: bool,
+    workspace_signal: Option<Action>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Action {
+    Projects,
+    Reload,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -177,6 +183,43 @@ struct LoadedSearch {
     start: VertexId,
 }
 
+struct LoadedCorpus {
+    regions: Vec<SurveyRegion>,
+    task: Option<TrailData>,
+    status: Option<String>,
+}
+
+impl LoadedCorpus {
+    fn raise(ctx: &egui::Context, root: &Path, offline: bool) -> Result<Self> {
+        let regions = trailgen_data::project_config(root)?.regions;
+        let indexed = trailgen_data::indexed_summary(root)?;
+        let stale = !regions.is_empty() && indexed.is_none();
+        let task = if !offline && stale {
+            Some(TrailData::spawn(
+                ctx.clone(),
+                root.to_owned(),
+                TrailDataMutation::Refresh,
+            )?)
+        } else {
+            None
+        };
+        let status = indexed.as_ref().map(trail_data_status).or_else(|| {
+            stale.then(|| {
+                if offline {
+                    "TRAIL DATA · RECONCILIATION NEEDED · OFFLINE".to_owned()
+                } else {
+                    "RECONCILING LIVE TRAIL AREA".to_owned()
+                }
+            })
+        });
+        Ok(Self {
+            regions,
+            task,
+            status,
+        })
+    }
+}
+
 impl LoadedSearch {
     fn raise(graph: &TrailGraph, project: SearchDraft, saved: Option<&SearchDraft>) -> Self {
         let draft = saved
@@ -218,7 +261,8 @@ impl TrailApp {
         } = Project::open(root)?;
         let slate = Slate::load(&slate_path, &root);
         let forge = SearchForge::spawn(ctx.clone(), Arc::clone(&graph))?;
-        let basemap = spawn_basemap(ctx, &root, &graph, offline)?;
+        let corpus = LoadedCorpus::raise(ctx, &root, offline)?;
+        let vector = spawn_vector_field(ctx, &root, &graph, &corpus.regions, offline)?;
         let candidates = LoadedCandidates::raise(&graph, routes, &slate);
         let search = LoadedSearch::raise(
             &graph,
@@ -233,7 +277,6 @@ impl TrailApp {
             slate.search.as_ref(),
         );
         let atlas = Atlas::forge(&graph);
-        let trail_data_status = trail_data_status(&root)?;
         let water = forge_water();
         let restored_viewport = slate.viewport;
         let viewport = restored_viewport.unwrap_or_else(|| Viewport {
@@ -241,7 +284,7 @@ impl TrailApp {
             zoom: 13.0,
         });
         let layers = Layers {
-            basemap: !offline && slate.layers.basemap,
+            basemap: slate.layers.basemap,
             network: slate.layers.network,
             terrain: slate.layers.terrain,
         };
@@ -278,13 +321,12 @@ impl TrailApp {
             },
             serial: 0,
             forge_phase: ForgePhase::Idle,
-            basemap,
-            tiles: VectorBank::new(VECTOR_CEILING),
-            presented_basemap: Arc::from([]),
-            tile_inflight: HashSet::new(),
-            tile_faults: HashSet::new(),
+            vector,
+            regions: corpus.regions,
+            corpus: corpus.task,
+            scribe: RegionScribe::default(),
+            offline,
             layers,
-            basemap_preference: slate.layers.basemap,
             shutters: slate.shutters.clone(),
             inspector_scroll: slate.inspector_scroll,
             slate_path,
@@ -293,21 +335,17 @@ impl TrailApp {
             slate_dirty: None,
             water,
             status: candidates.status,
-            trail_data_status,
-            basemap_status: if offline {
-                "VECTOR MAP OFFLINE".to_owned()
-            } else {
-                "PROTOMAPS · PREPARING PROJECT CUT".to_owned()
-            },
+            trail_data_status: corpus.status,
             map_rect: egui::Rect::ZERO,
-            project_deck_requested: false,
+            workspace_signal: None,
         };
         app.observed_slate = app.snapshot();
         Ok(app)
     }
 
-    pub fn pulse(&mut self, ui: &mut egui::Ui) -> bool {
+    pub fn pulse(&mut self, ui: &mut egui::Ui) -> Option<Action> {
         self.absorb_events(ui.ctx());
+        self.absorb_corpus();
         self.take_keys(ui.ctx());
         let _left = egui::Panel::left("trail-inspector")
             .resizable(false)
@@ -327,7 +365,7 @@ impl TrailApp {
             });
         let _center = egui::CentralPanel::default().show_inside(ui, |ui| self.arena(ui));
         self.tend_slate(ui.ctx());
-        std::mem::take(&mut self.project_deck_requested)
+        self.workspace_signal.take()
     }
 
     pub fn root(&self) -> &Path {
@@ -355,11 +393,12 @@ impl TrailApp {
         let project =
             project.on_hover_text(format!("Switch projects\nCurrent: {}", self.root.display()));
         if project.clicked() {
-            self.project_deck_requested = true;
+            self.workspace_signal = Some(Action::Projects);
             self.water.click(project.rect);
         }
         ui.add_space(3.0);
 
+        self.section(ui, "regions", "live trail area", true, Self::region_panel);
         self.section(ui, "strike", "find trails", true, Self::strike_panel);
         self.section(ui, "trailhead", "trailhead", true, Self::trailhead_panel);
         self.section(ui, "bounds", "route bounds", true, Self::bounds_panel);
@@ -370,6 +409,74 @@ impl TrailApp {
             self.section(ui, "active", "active trail", true, Self::active_panel);
         }
         self.section(ui, "status", "status", true, Self::status_panel);
+    }
+
+    fn region_panel(&mut self, ui: &mut egui::Ui) {
+        let selecting = self.scribe.active();
+        let select = ui.add_enabled(
+            !self.offline && self.corpus.is_none(),
+            chrome::glyph_button(
+                if selecting {
+                    "×  CANCEL REGION"
+                } else {
+                    "▣  SELECT REGION"
+                },
+                selecting,
+            )
+            .min_size(vec2(ui.available_width(), 27.0)),
+        );
+        chrome::tension(ui, &select);
+        if select.clicked() {
+            if selecting {
+                self.scribe.disarm();
+            } else {
+                self.scribe.arm();
+                self.view = ViewMode::Atlas;
+            }
+            self.water.click(select.rect);
+        }
+        let _count = chrome::note(
+            ui,
+            format!("{} RECTANGLE(S) · UNION INDEX", self.regions.len()),
+        );
+        let mut excision = None;
+        for (slot, region) in self.regions.iter().enumerate() {
+            let _row = ui.horizontal(|ui| {
+                let _label = ui.label(chrome::muted(format!("REGION {:02}", slot + 1)));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let remove = ui
+                        .add_enabled(
+                            self.corpus.is_none(),
+                            chrome::glyph_button("×", false).min_size(vec2(22.0, 22.0)),
+                        )
+                        .on_hover_text("Excise this rectangle and rebuild the trail union.");
+                    if remove.clicked() {
+                        excision = Some((region.id.clone(), remove.rect));
+                    }
+                });
+            });
+        }
+        if let Some((id, rect)) = excision {
+            match self.strike_corpus(ui.ctx(), TrailDataMutation::Remove(id)) {
+                Ok(()) => self.water.click(rect),
+                Err(err) => self.status = format!("cannot excise region: {err:#}"),
+            }
+        }
+        if !self.regions.is_empty() {
+            let refresh = ui.add_enabled(
+                !self.offline && self.corpus.is_none(),
+                chrome::glyph_button("↻  REFRESH TRAIL CORPUS", false)
+                    .min_size(vec2(ui.available_width(), 24.0)),
+            );
+            chrome::tension(ui, &refresh);
+            if refresh.clicked() {
+                match self.strike_corpus(ui.ctx(), TrailDataMutation::Refresh) {
+                    Ok(()) => self.water.click(refresh.rect),
+                    Err(err) => self.status = format!("cannot refresh trail corpus: {err:#}"),
+                }
+            }
+        }
+        let _note = chrome::note(ui, "BRONZE FRAMES ARE LIVE · SHADED GROUND IS DEAD");
     }
 
     fn section(
@@ -400,7 +507,7 @@ impl TrailApp {
         let label = if striking {
             "⌁  FORGING…"
         } else {
-            "⌖  FIND TRAILS"
+            "⌖  FIND TRAILS · CTRL+ENTER"
         };
         let response = ui.add_enabled(
             !striking && validation.is_none(),
@@ -641,10 +748,9 @@ impl TrailApp {
     }
 
     fn layers_panel(&mut self, ui: &mut egui::Ui) {
-        layer_toggle(ui, &mut self.layers.basemap, "VECTOR BASEMAP");
-        if self.basemap.is_some() {
-            self.basemap_preference = self.layers.basemap;
-        }
+        let _basemap = ui.add_enabled_ui(self.vector.available(), |ui| {
+            layer_toggle(ui, &mut self.layers.basemap, "VECTOR BASEMAP");
+        });
         layer_toggle(ui, &mut self.layers.network, "TRAIL NETWORK");
         layer_toggle(ui, &mut self.layers.terrain, "TERRAIN CENTERLINE");
         ui.add_space(4.0);
@@ -765,7 +871,7 @@ impl TrailApp {
                 self.graph.vertices.len(),
                 self.graph.edges.len()
             ),
-            format!("BASE · {}", self.basemap_status),
+            format!("BASE · {}", self.vector.status()),
             format!("PROJECT · {}", self.root.display()),
         ]) {
             let _line = chrome::note(ui, line);
@@ -776,6 +882,9 @@ impl TrailApp {
         let _toolbar = egui::Panel::top("trail-toolbar")
             .exact_size(TOOLBAR_HEIGHT)
             .show_inside(ui, |ui| self.toolbar(ui));
+        let _counsel = egui::Panel::bottom("trail-counsel")
+            .exact_size(42.0)
+            .show_inside(ui, |ui| self.counsel(ui));
         if self.view == ViewMode::Focus {
             if self
                 .selected
@@ -791,6 +900,36 @@ impl TrailApp {
                 .show_inside(ui, |ui| self.gallery(ui));
         }
         let _map = egui::CentralPanel::default().show_inside(ui, |ui| self.map(ui));
+    }
+
+    fn counsel(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(5.0);
+        let _row = ui.horizontal(|ui| {
+            let message = if self.corpus.is_some() {
+                self.trail_data_status
+                    .as_deref()
+                    .unwrap_or("RECONCILING LIVE TRAIL AREA")
+            } else if self.scribe.active() {
+                "DRAG ACROSS THE MAP TO ADD A FETCH RECTANGLE · ESC CANCELS"
+            } else {
+                &self.status
+            };
+            let _message = ui.add(
+                egui::Label::new(RichText::new(message).monospace().color(chrome::TEXT)).wrap(),
+            );
+            if self.corpus.is_none() && !self.scribe.active() {
+                let select = ui.add_enabled(
+                    !self.offline,
+                    chrome::glyph_button("▣  ADD REGION", false).min_size(vec2(130.0, 27.0)),
+                );
+                chrome::tension(ui, &select);
+                if select.clicked() {
+                    self.scribe.arm();
+                    self.view = ViewMode::Atlas;
+                    self.water.click(select.rect);
+                }
+            }
+        });
     }
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
@@ -962,7 +1101,13 @@ impl TrailApp {
         self.water.begin(Domain::shelf(rect));
         self.apply_fit(rect);
         let before = self.viewport;
-        let moved = map::navigate(&mut self.viewport, ui, &response, rect);
+        let moved = map::navigate_with(
+            &mut self.viewport,
+            ui,
+            &response,
+            rect,
+            !self.scribe.active(),
+        );
         if moved {
             self.fit = Fit::None;
             if response.dragged() {
@@ -972,11 +1117,23 @@ impl TrailApp {
                 self.water.bump(rect);
             }
         }
+        let scribe_event = self.scribe.interact(self.viewport, ui, &response, rect);
         let painter = ui.painter_at(rect);
         let _ground = painter.rect_filled(rect, 0.0, map::MAP_GROUND);
-        self.paint_basemap(&painter, rect);
+        if self.layers.basemap {
+            self.vector.paint(&painter, self.viewport, rect);
+        }
         if self.layers.network {
             self.atlas.paint_network(&painter, self.viewport, rect);
+        }
+        if !self.regions.is_empty() || self.scribe.active() {
+            live_area::paint(
+                &painter,
+                self.viewport,
+                rect,
+                &self.regions,
+                self.scribe.preview(self.viewport, rect),
+            );
         }
         self.paint_candidates(&painter, rect);
         map::paint_start(&painter, &self.graph, self.start, self.viewport, rect);
@@ -992,6 +1149,7 @@ impl TrailApp {
             self.paint_hovered_leg(&painter, rect, pointer);
         }
         if response.clicked()
+            && !self.scribe.active()
             && self.view == ViewMode::Atlas
             && let Some(pointer) = response.interact_pointer_pos()
         {
@@ -1004,96 +1162,28 @@ impl TrailApp {
         if before != self.viewport {
             ui.ctx().request_repaint();
         }
-    }
-
-    fn paint_basemap(&mut self, painter: &egui::Painter, rect: egui::Rect) {
-        if !self.layers.basemap || self.basemap.is_none() {
-            return;
-        }
-        let cover = basemap::cover(self.viewport, rect);
-        self.demand_cover(&cover);
-        let coherent = cover
-            .finest_ready(|key| self.tiles.contains(key))
-            .map(|stratum| stratum.keys.clone());
-        if let Some(keys) = coherent
-            && (keys.len() != self.presented_basemap.len()
-                || keys
-                    .iter()
-                    .zip(self.presented_basemap.iter())
-                    .any(|(key, tile)| *key != tile.key))
-        {
-            self.presented_basemap = keys
-                .into_iter()
-                .filter_map(|key| self.tiles.get(key).cloned())
-                .collect();
-        }
-        if !self.presented_basemap.is_empty() {
-            let _basemap = painter.add(egui_wgpu::Callback::new_paint_callback(
-                rect,
-                VectorPaint {
-                    tiles: Arc::clone(&self.presented_basemap),
-                    center_world: self.viewport.center,
-                    world_points: map::world_pixels(self.viewport) as f32,
-                    viewport_points: [rect.width(), rect.height()],
-                    view_zoom: self.viewport.zoom as f32,
-                    apparition_span: basemap::APPARITION_SPAN,
-                },
-            ));
-        }
-        self.paint_labels(painter, rect);
-    }
-
-    fn paint_labels(&self, painter: &egui::Painter, rect: egui::Rect) {
-        let mut candidates = self
-            .presented_basemap
-            .iter()
-            .flat_map(|tile| tile.labels.iter())
-            .collect::<Vec<_>>();
-        candidates.sort_unstable_by_key(|label| label.rank);
-        let mut occupied = Vec::<egui::Rect>::new();
-        for label in candidates {
-            let maturity = basemap::apparition(self.viewport.zoom as f32, label.onset_zoom);
-            if maturity <= 0.01 {
-                continue;
+        match scribe_event {
+            ScribeEvent::None => {}
+            ScribeEvent::Fault(fault) => fault.clone_into(&mut self.status),
+            ScribeEvent::Committed(bounds) => {
+                if let Err(err) = trailgen_data::validate_region(bounds) {
+                    self.status = format!("invalid survey region: {err:#}");
+                    self.scribe.arm();
+                } else {
+                    let region = SurveyRegion::new(bounds)
+                        .expect("validated bounds must forge a survey region");
+                    if self.regions.iter().any(|known| known.id == region.id) {
+                        "that survey region is already live".clone_into(&mut self.status);
+                    } else if let Err(err) =
+                        self.strike_corpus(ui.ctx(), TrailDataMutation::Add(bounds))
+                    {
+                        self.status = format!("cannot add survey region: {err:#}");
+                        self.scribe.arm();
+                    } else {
+                        self.regions.push(region);
+                    }
+                }
             }
-            let anchor = map::screen_at(self.viewport, rect, label.world);
-            let size = label.size * 0.12_f32.mul_add(maturity, 0.88);
-            let width = label.text.chars().count() as f32 * size * 0.58;
-            let footprint =
-                egui::Rect::from_center_size(anchor, vec2(width.max(size), size * 1.25))
-                    .expand(2.0);
-            if !rect.contains_rect(footprint)
-                || occupied.iter().any(|prior| prior.intersects(footprint))
-            {
-                continue;
-            }
-            occupied.push(footprint);
-            if occupied.len() >= 180 {
-                break;
-            }
-            let font = egui::FontId::proportional(size);
-            let halo = Color32::from_white_alpha((75.0 * maturity) as u8);
-            for offset in [
-                vec2(-1.0, 0.0),
-                vec2(1.0, 0.0),
-                vec2(0.0, -1.0),
-                vec2(0.0, 1.0),
-            ] {
-                let _halo = painter.text(
-                    anchor + offset,
-                    egui::Align2::CENTER_CENTER,
-                    label.text.as_ref(),
-                    font.clone(),
-                    halo,
-                );
-            }
-            let _label = painter.text(
-                anchor,
-                egui::Align2::CENTER_CENTER,
-                label.text.as_ref(),
-                font,
-                Color32::from_black_alpha((225.0 * maturity) as u8),
-            );
         }
     }
 
@@ -1157,7 +1247,9 @@ impl TrailApp {
     }
 
     fn paint_map_header(&self, painter: &egui::Painter, rect: egui::Rect) {
-        let text = if self.view == ViewMode::Focus {
+        let text = if self.scribe.active() {
+            "SELECT LIVE REGION · DRAG A RECTANGLE".to_owned()
+        } else if self.view == ViewMode::Focus {
             self.selected_route().map_or_else(
                 || "TRAIL FOCUS".to_owned(),
                 |route| format!("TRAIL FOCUS · {}", route.name.to_ascii_uppercase()),
@@ -1178,7 +1270,7 @@ impl TrailApp {
             egui::StrokeKind::Inside,
         );
         painter.galley(plate.min + vec2(7.0, 4.0), galley, chrome::TEXT);
-        if self.layers.basemap && !self.presented_basemap.is_empty() {
+        if self.layers.basemap && self.vector.has_presented_tiles() {
             let attribution = painter.layout_no_wrap(
                 "PROTOMAPS · © OPENSTREETMAP".to_owned(),
                 egui::FontId::monospace(9.5),
@@ -1263,53 +1355,57 @@ impl TrailApp {
                 SearchEvent::Found { .. } => {}
             }
         }
-        let Some(basemap) = &self.basemap else {
+        self.vector.absorb();
+    }
+
+    fn strike_corpus(&mut self, ctx: &egui::Context, mutation: TrailDataMutation) -> Result<()> {
+        anyhow::ensure!(
+            self.corpus.is_none(),
+            "trail corpus mutation already running"
+        );
+        self.corpus = Some(TrailData::spawn(ctx.clone(), self.root.clone(), mutation)?);
+        self.trail_data_status = Some("RECONCILING LIVE TRAIL AREA".to_owned());
+        Ok(())
+    }
+
+    fn absorb_corpus(&mut self) {
+        let Some(corpus) = &self.corpus else {
             return;
         };
-        while let Ok(event) = basemap.events.try_recv() {
+        let mut finished = false;
+        while let Ok(event) = corpus.events.try_recv() {
             match event {
-                basemap::Event::Forging { complete, total } => {
-                    self.basemap_status = format!(
-                        "FORGING Z{} PROJECT CUT · {complete}/{total} · {:.0}%",
-                        basemap::MAX_SOURCE_ZOOM,
-                        complete as f64 * 100.0 / total.max(1) as f64
-                    );
+                TrailDataEvent::Progress(event) => {
+                    self.trail_data_status = Some(event.status());
                 }
-                basemap::Event::Ready { source_zoom } => {
-                    self.basemap_status = format!("PROTOMAPS Z{source_zoom} · © OPENSTREETMAP");
+                TrailDataEvent::Ready(Some(summary)) => {
+                    self.regions = summary.regions;
+                    self.trail_data_status = Some(format!(
+                        "READY · {} REGION(S) · {} TRAIL SEGMENTS",
+                        self.regions.len(),
+                        summary.inventory.trail_segments
+                    ));
+                    self.workspace_signal = Some(Action::Reload);
+                    finished = true;
                 }
-                basemap::Event::Ranging { total } => {
-                    self.basemap_status = format!("PROTOMAPS · RANGING {total} VECTOR TILE(S)");
+                TrailDataEvent::Ready(None) => {
+                    self.regions.clear();
+                    self.trail_data_status = Some("NO LIVE REGIONS".to_owned());
+                    self.workspace_signal = Some(Action::Reload);
+                    finished = true;
                 }
-                basemap::Event::Relinquished(keys) => {
-                    for key in keys {
-                        let _inflight = self.tile_inflight.remove(&key);
+                TrailDataEvent::Fault(fault) => {
+                    self.status = format!("trail corpus reconciliation failed: {fault}");
+                    self.trail_data_status = Some("TRAIL DATA · RECONCILIATION FAILED".to_owned());
+                    if let Ok(config) = trailgen_data::project_config(&self.root) {
+                        self.regions = config.regions;
                     }
-                }
-                basemap::Event::Loaded(tile) => {
-                    let key = tile.key;
-                    let _inflight = self.tile_inflight.remove(&key);
-                    self.basemap_status = format!(
-                        "PROTOMAPS · {} · {} KB · {} µs MAP + {} µs CUT",
-                        tile.timing.source.label(),
-                        tile.timing.bytes / 1024,
-                        tile.timing.archive_us,
-                        tile.timing.decode_us
-                    );
-                    self.tiles.insert(tile);
-                }
-                basemap::Event::Missing(key) => {
-                    let _inflight = self.tile_inflight.remove(&key);
-                    let _fault = self.tile_faults.insert(key);
-                }
-                basemap::Event::Fault { key, message } => {
-                    if let Some(key) = key {
-                        let _inflight = self.tile_inflight.remove(&key);
-                        let _fault = self.tile_faults.insert(key);
-                    }
-                    self.basemap_status = format!("BASEMAP UNAVAILABLE · {message}");
+                    finished = true;
                 }
             }
+        }
+        if finished {
+            self.corpus = None;
         }
     }
 
@@ -1420,14 +1516,30 @@ impl TrailApp {
 
     fn take_keys(&mut self, ctx: &egui::Context) {
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::O)) {
-            self.project_deck_requested = true;
+            self.workspace_signal = Some(Action::Projects);
             return;
         }
         if ctx.text_edit_focused() {
             return;
         }
+        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Enter)) {
+            if self.forge_phase != ForgePhase::Striking {
+                match self
+                    .search_request(self.serial.saturating_add(1))
+                    .validate(&self.graph)
+                {
+                    Ok(()) => self.strike(),
+                    Err(err) => self.status = format!("cannot find trails: {err}"),
+                }
+            }
+            return;
+        }
         let escape =
             ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        if escape && self.scribe.active() {
+            self.scribe.disarm();
+            return;
+        }
         if escape && self.view == ViewMode::Focus {
             self.view = ViewMode::Atlas;
             self.fit = Fit::Graph;
@@ -1460,41 +1572,6 @@ impl TrailApp {
         self.selected.and_then(|slot| self.routes.get(slot))
     }
 
-    fn demand_cover(&mut self, cover: &basemap::Cover) {
-        if let Some(fallback) = cover.strata.first() {
-            for &key in &fallback.keys {
-                self.demand_tile(key);
-            }
-        }
-        for stratum in &cover.strata {
-            if stratum.intent.demands() {
-                for &key in &stratum.keys {
-                    self.demand_tile(key);
-                }
-            }
-        }
-        for stratum in cover.strata.iter().rev() {
-            if stratum.intent == basemap::Intent::Retained {
-                for &key in &stratum.keys {
-                    self.demand_tile(key);
-                }
-            }
-        }
-    }
-
-    fn demand_tile(&mut self, key: TileKey) {
-        let Some(basemap) = &self.basemap else {
-            return;
-        };
-        if !self.tiles.contains(key)
-            && !self.tile_inflight.contains(&key)
-            && !self.tile_faults.contains(&key)
-            && basemap.request(key)
-        {
-            let _fresh = self.tile_inflight.insert(key);
-        }
-    }
-
     fn snapshot(&self) -> Slate {
         Slate {
             project: self.root.clone(),
@@ -1507,7 +1584,7 @@ impl TrailApp {
             saved_routes_visible: self.saved_routes_visible,
             search: Some(self.search_draft()),
             layers: LayerSlate {
-                basemap: self.basemap_preference,
+                basemap: self.layers.basemap,
                 network: self.layers.network,
                 terrain: self.layers.terrain,
             },
@@ -1544,26 +1621,27 @@ impl TrailApp {
     }
 }
 
-fn trail_data_status(root: &Path) -> Result<Option<String>> {
-    Ok(trailgen_data::indexed_summary(root)?.map(|summary| {
-        format!(
-            "TRAIL DATA · OSM / OVERPASS · {:.1} KM · {} SEGMENTS",
-            summary.demand.radius_km, summary.inventory.trail_segments
-        )
-    }))
+fn trail_data_status(summary: &trailgen_data::Summary) -> String {
+    format!(
+        "TRAIL DATA · OSM / OVERPASS · {} REGION(S) · {} SEGMENTS",
+        summary.regions.len(),
+        summary.inventory.trail_segments
+    )
 }
 
-fn spawn_basemap(
+fn spawn_vector_field(
     ctx: &egui::Context,
     root: &Path,
     graph: &TrailGraph,
+    regions: &[SurveyRegion],
     offline: bool,
-) -> Result<Option<Basemap>> {
-    if offline {
-        return Ok(None);
-    }
-    let source = BasemapSource::project(root, graph)?;
-    Ok(Some(Basemap::spawn(ctx.clone(), source)?))
+) -> Result<VectorField> {
+    let bounds = regions
+        .iter()
+        .map(|region| region.bounds)
+        .collect::<Vec<_>>();
+    let source = BasemapSource::project(root, graph, &bounds)?;
+    VectorField::raise(ctx, source, offline)
 }
 
 impl Drop for TrailApp {
@@ -1601,76 +1679,6 @@ enum FocusAction {
 enum CandidateAction {
     Clear,
     Restore,
-}
-
-struct VectorBank {
-    ceiling: usize,
-    bytes: usize,
-    epoch: u64,
-    tiles: HashMap<TileKey, VectorEntry>,
-    order: VecDeque<(TileKey, u64)>,
-}
-
-struct VectorEntry {
-    tile: Arc<VectorTile>,
-    bytes: usize,
-    touched: u64,
-}
-
-impl VectorBank {
-    fn new(ceiling: usize) -> Self {
-        Self {
-            ceiling,
-            bytes: 0,
-            epoch: 0,
-            tiles: HashMap::new(),
-            order: VecDeque::new(),
-        }
-    }
-
-    fn contains(&self, key: TileKey) -> bool {
-        self.tiles.contains_key(&key)
-    }
-
-    fn get(&mut self, key: TileKey) -> Option<&Arc<VectorTile>> {
-        self.epoch = self.epoch.saturating_add(1);
-        let entry = self.tiles.get_mut(&key)?;
-        entry.touched = self.epoch;
-        self.order.push_back((key, self.epoch));
-        Some(&entry.tile)
-    }
-
-    fn insert(&mut self, tile: Arc<VectorTile>) {
-        let key = tile.key;
-        let bytes = tile.resident_bytes();
-        self.epoch = self.epoch.saturating_add(1);
-        let fresh = VectorEntry {
-            tile,
-            bytes,
-            touched: self.epoch,
-        };
-        self.order.push_back((key, self.epoch));
-        if let Some(prior) = self.tiles.insert(key, fresh) {
-            self.bytes = self.bytes.saturating_sub(prior.bytes);
-        }
-        self.bytes = self.bytes.saturating_add(bytes);
-        while self.bytes > self.ceiling && self.tiles.len() > 1 {
-            let Some((victim, epoch)) = self.order.pop_front() else {
-                break;
-            };
-            if self
-                .tiles
-                .get(&victim)
-                .is_none_or(|entry| entry.touched != epoch)
-            {
-                continue;
-            }
-            let Some(victim) = self.tiles.remove(&victim) else {
-                break;
-            };
-            self.bytes = self.bytes.saturating_sub(victim.bytes);
-        }
-    }
 }
 
 fn usable_coord(coord: Coord) -> bool {

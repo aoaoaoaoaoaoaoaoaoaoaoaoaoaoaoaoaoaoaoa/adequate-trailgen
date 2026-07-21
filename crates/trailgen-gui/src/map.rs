@@ -99,9 +99,15 @@ pub fn world_to_coord(world: [f64; 2]) -> Coord {
     Coord::new(lon, lat)
 }
 
-pub fn navigate(view: &mut Viewport, ui: &egui::Ui, response: &egui::Response, rect: Rect) -> bool {
+pub fn navigate_with(
+    view: &mut Viewport,
+    ui: &egui::Ui,
+    response: &egui::Response,
+    rect: Rect,
+    pan: bool,
+) -> bool {
     let before = *view;
-    if response.dragged_by(egui::PointerButton::Primary) {
+    if pan && response.dragged_by(egui::PointerButton::Primary) {
         let delta = ui.input(|input| input.pointer.delta());
         let scale = world_pixels(*view);
         view.center[0] -= f64::from(delta.x) / scale;

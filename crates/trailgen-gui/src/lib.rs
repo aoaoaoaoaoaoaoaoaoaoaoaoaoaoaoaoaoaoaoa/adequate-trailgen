@@ -10,12 +10,14 @@ mod basemap;
 mod boiler;
 mod gallery;
 mod habitat;
+mod live_area;
 mod map;
 mod profile;
 mod project;
 mod projects;
 mod slate;
 mod trail_data;
+mod vector_field;
 mod vector_map;
 
 use anyhow::Result;

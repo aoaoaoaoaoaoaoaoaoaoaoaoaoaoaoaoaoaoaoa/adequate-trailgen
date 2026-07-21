@@ -1,6 +1,26 @@
 # Project Config
 
-`trailgen init` writes `trailgen.toml` with an optional area of interest, graph snapping, difficulty weights, route constraints, and search parameters. Pass `--bbox west,south,east,north` to persist the project AOI; `trailgen discover --bbox ...` can override it for one discovery pass.
+`trailgen init` writes `trailgen.toml` with an optional area of interest, graph snapping, difficulty weights, route constraints, and search parameters. The GUI owns `[trail_data].regions`: every rectangle drawn with **SELECT REGION** is persisted with a content-derived identity and the routable graph is clipped to their geometric union.
+
+```toml
+[trail_data]
+managed = true
+
+[[trail_data.regions]]
+id = "8cd28c863327f323e563b851"
+
+[trail_data.regions.bounds]
+west = -74.20
+south = 41.10
+east = -74.00
+north = 41.35
+```
+
+Region IDs are receipts, not labels; do not hand-edit them. Add and excise rectangles in the workbench so source sequestration, the union graph, and its index receipt change together. Each rectangle is currently limited to four square degrees to keep Overpass requests bounded. The initial automatic provider surface is US-oriented, while the normalized graph remains provider-neutral.
+
+`managed = true` records that the live-region corpus owns the project graph. It remains true after the last rectangle is excised, preventing an obsolete generated-route snapshot from masquerading as the current graph. Manual CLI-built projects leave it false.
+
+Pass `trailgen init --bbox west,south,east,north` to persist a manual project AOI; `trailgen discover --bbox ...` can override it for one discovery pass.
 
 `area` is serialized as geographic decimal-degree bounds:
 
@@ -12,7 +32,7 @@ east = -104.98
 north = 40.02
 ```
 
-The AOI is not a routing constraint. It is a discovery/reproducibility contract: source recommendations in `sources/manifest.json` carry the same bounds so future acquisition of trail, elevation, terrain, access, road, hydrology, and seed-route inputs stays tied to the region that produced the graph.
+For a GUI-managed corpus, `[area]` is the derived bounding hull of the live rectangles. It remains a compatibility surface for discovery and provider-neutral CLI tooling; `[trail_data].regions` is the exact acquisition and routing boundary. In a manual project with no live rectangles, the AOI is not a routing constraint. In both cases source recommendations in `sources/manifest.json` carry the hull so future elevation, terrain, access, road, hydrology, and seed-route acquisition stays tied to the territory that produced the graph.
 
 `snap_tolerance_m` controls cautious graph-construction snapping for generic vector inputs. Their exact planar intersections are split, and a dangling endpoint may be projected onto another generic segment when the projected point lies inside that segment and within `snap_tolerance_m`; snapped edges receive `graph-builder` / `near-miss-snap` provenance and capped confidence so reports expose the uncertainty instead of pretending the junction was source-authored. OSM ways instead connect only through shared source nodes and never receive inferred planar or near-miss junctions. `trailgen build --snap-tolerance-m N` updates this project setting before writing `cache/graph.json`, because topology policy must be reproducible across later rebuilds and `assemble` runs.
 

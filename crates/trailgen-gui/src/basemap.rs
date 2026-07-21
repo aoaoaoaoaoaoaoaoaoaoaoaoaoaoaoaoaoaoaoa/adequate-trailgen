@@ -18,9 +18,11 @@ use pmtiles::{
     TileCoord, TileId, TileType,
 };
 use serde::Deserialize;
+use sha2::{Digest as _, Sha256};
 use std::{
     cmp::Reverse,
     collections::HashSet,
+    fmt::Write as _,
     fs::{self, File, OpenOptions},
     io::Write as _,
     path::{Path as FsPath, PathBuf},
@@ -47,23 +49,55 @@ const WORKERS: usize = 8;
 #[derive(Clone, Debug)]
 pub struct Source {
     archive: PathBuf,
-    forge_bounds: Option<GeoBounds>,
+    forge_regions: Option<Vec<GeoBounds>>,
+    forge_zoom: u8,
     roaming_cache: PathBuf,
 }
 
 impl Source {
-    pub fn project(root: &FsPath, graph: &TrailGraph) -> Result<Self> {
+    pub fn project(root: &FsPath, graph: &TrailGraph, regions: &[GeoBounds]) -> Result<Self> {
         let roaming_cache = platform_dirs()?.cache_dir().join(ROAMING_CACHE);
         if let Some(override_path) = std::env::var_os("TRAILGEN_BASEMAP_ARCHIVE") {
             return Ok(Self {
                 archive: override_path.into(),
-                forge_bounds: None,
+                forge_regions: None,
+                forge_zoom: MAX_SOURCE_ZOOM,
+                roaming_cache,
+            });
+        }
+        let forge_regions = if regions.is_empty() {
+            vec![forge_bounds(graph)?]
+        } else {
+            regions.to_vec()
+        };
+        let archive = if regions.is_empty() {
+            root.join("cache").join(ARCHIVE_NAME)
+        } else {
+            root.join("cache")
+                .join(format!("basemap-{}.pmtiles", region_key(regions)))
+        };
+        Ok(Self {
+            archive,
+            forge_regions: Some(forge_regions),
+            forge_zoom: MAX_SOURCE_ZOOM,
+            roaming_cache,
+        })
+    }
+
+    pub fn bootstrap() -> Result<Self> {
+        let roaming_cache = platform_dirs()?.cache_dir().join(ROAMING_CACHE);
+        if let Some(override_path) = std::env::var_os("TRAILGEN_BASEMAP_ARCHIVE") {
+            return Ok(Self {
+                archive: override_path.into(),
+                forge_regions: None,
+                forge_zoom: MAX_SOURCE_ZOOM,
                 roaming_cache,
             });
         }
         Ok(Self {
-            archive: root.join("cache").join(ARCHIVE_NAME),
-            forge_bounds: Some(forge_bounds(graph)?),
+            archive: roaming_cache.join("bootstrap-us.pmtiles"),
+            forge_regions: Some(vec![GeoBounds::new(-125.0, 24.0, -66.0, 50.0)]),
+            forge_zoom: 4,
             roaming_cache,
         })
     }
@@ -244,17 +278,22 @@ pub struct Basemap {
 }
 
 impl Basemap {
-    pub fn spawn(ctx: Context, source: Source) -> Result<Self> {
-        Self::spawn_with_workers(ctx, source, WORKERS)
+    pub fn spawn(ctx: Context, source: Source, online: bool) -> Result<Self> {
+        Self::spawn_with_workers(ctx, source, online, WORKERS)
     }
 
-    fn spawn_with_workers(ctx: Context, source: Source, workers: usize) -> Result<Self> {
+    fn spawn_with_workers(
+        ctx: Context,
+        source: Source,
+        online: bool,
+        workers: usize,
+    ) -> Result<Self> {
         purge_partials(&source.archive)?;
         let (commands, command_rx) = bounded(256);
         let (event_tx, events) = bounded(256);
         let thread = thread::Builder::new()
             .name("vector-armory".to_owned())
-            .spawn(move || armory(&ctx, &source, command_rx, event_tx, workers))
+            .spawn(move || armory(&ctx, &source, command_rx, event_tx, online, workers))
             .context("spawn vector basemap armory")?;
         Ok(Self {
             commands,
@@ -268,19 +307,26 @@ impl Basemap {
     }
 }
 
-pub fn cover(view: Viewport, rect: egui::Rect) -> Cover {
+pub fn cover(view: Viewport, rect: egui::Rect, archive_zoom: Option<u8>) -> Cover {
     let zoom = view.zoom.floor().clamp(0.0, f64::from(MAX_SOURCE_ZOOM)) as u8;
     let ceiling = zoom.saturating_add(1).min(MAX_SOURCE_ZOOM);
-    let strata = (zoom.saturating_sub(RETAINED_DEPTH)..=ceiling)
-        .map(|level| Stratum {
-            intent: match level.cmp(&zoom) {
-                std::cmp::Ordering::Less => Intent::Retained,
-                std::cmp::Ordering::Equal => Intent::Required,
-                std::cmp::Ordering::Greater => Intent::Prefetch,
-            },
-            keys: keys_at(view, rect, level),
+    let floor = zoom.saturating_sub(RETAINED_DEPTH);
+    let mut strata = archive_zoom
+        .filter(|archive_zoom| *archive_zoom < floor)
+        .map(|archive_zoom| Stratum {
+            intent: Intent::Retained,
+            keys: keys_at(view, rect, archive_zoom),
         })
-        .collect();
+        .into_iter()
+        .collect::<Vec<_>>();
+    strata.extend((floor..=ceiling).map(|level| Stratum {
+        intent: match level.cmp(&zoom) {
+            std::cmp::Ordering::Less => Intent::Retained,
+            std::cmp::Ordering::Equal => Intent::Required,
+            std::cmp::Ordering::Greater => Intent::Prefetch,
+        },
+        keys: keys_at(view, rect, level),
+    }));
     Cover { strata }
 }
 
@@ -327,6 +373,7 @@ fn armory(
     source: &Source,
     commands: Receiver<TileKey>,
     events: Sender<Event>,
+    online: bool,
     worker_count: usize,
 ) {
     let runtime = match runtime() {
@@ -336,23 +383,13 @@ fn armory(
             return;
         }
     };
-    if !source.archive.is_file() {
-        let Some(bounds) = source.forge_bounds else {
-            send_fault(
-                ctx,
-                &events,
-                None,
-                &anyhow::anyhow!(
-                    "basemap override {} does not exist",
-                    source.archive.display()
-                ),
-            );
-            return;
-        };
-        if let Err(err) = forge_archive(&runtime, ctx, &events, &source.archive, bounds) {
-            send_fault(ctx, &events, None, &err);
-            return;
-        }
+    if let Err(err) = materialize_archive(&runtime, ctx, &events, source, online) {
+        send_fault(ctx, &events, None, &err);
+        return;
+    }
+    if let Err(err) = reap_region_archives(&source.archive) {
+        send_fault(ctx, &events, None, &err);
+        return;
     }
     let reader = match runtime.block_on(Archive::new_with_cached_path(
         HashMapCache::default(),
@@ -375,7 +412,12 @@ fn armory(
     }
     ctx.request_repaint();
     let (roaming_tx, roaming_rx) = bounded(256);
-    let nomad = spawn_nomad(ctx, &source.roaming_cache, roaming_rx, &events);
+    let nomad = if online {
+        spawn_nomad(ctx, &source.roaming_cache, roaming_rx, &events)
+    } else {
+        drop(roaming_rx);
+        None
+    };
     let mut workers = Vec::with_capacity(worker_count);
     for slot in 0..worker_count {
         let worker_ctx = ctx.clone();
@@ -416,6 +458,37 @@ fn armory(
         let _joined = nomad.join();
     }
     drop(events);
+}
+
+fn materialize_archive(
+    runtime: &tokio::runtime::Runtime,
+    ctx: &Context,
+    events: &Sender<Event>,
+    source: &Source,
+    online: bool,
+) -> Result<()> {
+    if source.archive.is_file() {
+        return Ok(());
+    }
+    ensure!(
+        online,
+        "cached basemap {} is unavailable while offline",
+        source.archive.display()
+    );
+    let regions = source.forge_regions.as_deref().with_context(|| {
+        format!(
+            "basemap override {} does not exist",
+            source.archive.display()
+        )
+    })?;
+    forge_archive(
+        runtime,
+        ctx,
+        events,
+        &source.archive,
+        regions,
+        source.forge_zoom,
+    )
 }
 
 fn spawn_nomad(
@@ -466,19 +539,16 @@ fn forge_archive(
     ctx: &Context,
     events: &Sender<Event>,
     target: &FsPath,
-    bounds: GeoBounds,
+    regions: &[GeoBounds],
+    zoom: u8,
 ) -> Result<()> {
     let parent = target.parent().context("basemap archive has no parent")?;
     fs::create_dir_all(parent)
         .with_context(|| format!("create basemap cache {}", parent.display()))?;
     let remote = runtime.block_on(open_remote())?;
-    let max_zoom = remote.max_zoom.min(MAX_SOURCE_ZOOM);
-    let tiles = extraction_keys(bounds, max_zoom)?;
-    ensure!(
-        tiles.len() <= MAX_FORGE_TILES,
-        "project basemap requires {} tiles; narrow the graph or install a prepared archive through TRAILGEN_BASEMAP_ARCHIVE",
-        tiles.len()
-    );
+    let requested_zoom = remote.max_zoom.min(zoom).min(MAX_SOURCE_ZOOM);
+    let bounds = region_hull(regions).context("basemap cut has no regions")?;
+    let (max_zoom, tiles) = bounded_extraction(regions, requested_zoom, MAX_FORGE_TILES)?;
     let mut staging = Staging::raise(target)?;
     let center = [
         (bounds.west + bounds.east) * 0.5,
@@ -512,6 +582,44 @@ fn forge_archive(
     }
     writer.finalize().context("seal project basemap")?;
     staging.commit(target)
+}
+
+fn region_hull(regions: &[GeoBounds]) -> Option<GeoBounds> {
+    regions.iter().copied().reduce(|left, right| {
+        GeoBounds::new(
+            left.west.min(right.west),
+            left.south.min(right.south),
+            left.east.max(right.east),
+            left.north.max(right.north),
+        )
+    })
+}
+
+fn region_key(regions: &[GeoBounds]) -> String {
+    let mut law = String::from("protomaps-v4:");
+    let mut canonical = regions.to_vec();
+    canonical.sort_by(|left, right| {
+        left.west
+            .total_cmp(&right.west)
+            .then_with(|| left.south.total_cmp(&right.south))
+            .then_with(|| left.east.total_cmp(&right.east))
+            .then_with(|| left.north.total_cmp(&right.north))
+    });
+    for region in canonical {
+        write!(
+            law,
+            "{:.8},{:.8},{:.8},{:.8};",
+            region.west, region.south, region.east, region.north
+        )
+        .expect("write region law");
+    }
+    let digest = Sha256::digest(law.as_bytes());
+    digest[..8]
+        .iter()
+        .fold(String::with_capacity(16), |mut key, byte| {
+            write!(key, "{byte:02x}").expect("write region key");
+            key
+        })
 }
 
 async fn open_remote() -> Result<RemoteSource> {
@@ -885,7 +993,7 @@ fn quarry(
 }
 
 fn send_fault(ctx: &Context, events: &Sender<Event>, key: Option<TileKey>, err: &anyhow::Error) {
-    let _sent = events.try_send(Event::Fault {
+    let _sent = events.send(Event::Fault {
         key,
         message: format!("{err:#}"),
     });
@@ -1532,6 +1640,41 @@ fn extraction_keys(bounds: GeoBounds, max_zoom: u8) -> Result<Vec<TileKey>> {
     Ok(keys)
 }
 
+fn extraction_keys_for_regions(regions: &[GeoBounds], max_zoom: u8) -> Result<Vec<TileKey>> {
+    let mut keys = regions
+        .iter()
+        .map(|bounds| extraction_keys(*bounds, max_zoom))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    keys.sort_unstable_by_key(|key| {
+        TileId::from(
+            key.coordinate()
+                .expect("validated extraction key must have a tile id"),
+        )
+    });
+    keys.dedup();
+    Ok(keys)
+}
+
+fn bounded_extraction(
+    regions: &[GeoBounds],
+    requested_zoom: u8,
+    tile_ceiling: usize,
+) -> Result<(u8, Vec<TileKey>)> {
+    ensure!(tile_ceiling > 0, "basemap extraction tile ceiling is zero");
+    let mut accepted = extraction_keys_for_regions(regions, 0)?;
+    for zoom in 1..=requested_zoom {
+        let candidate = extraction_keys_for_regions(regions, zoom)?;
+        if candidate.len() > tile_ceiling {
+            return Ok((zoom - 1, accepted));
+        }
+        accepted = candidate;
+    }
+    Ok((requested_zoom, accepted))
+}
+
 fn mercator_y(latitude: f64) -> f64 {
     (1.0 - latitude.to_radians().tan().asinh() / std::f64::consts::PI) * 0.5
 }
@@ -1592,8 +1735,10 @@ fn purge_partials(target: &FsPath) -> Result<()> {
     let Some(directory) = target.parent() else {
         return Ok(());
     };
-    let Ok(entries) = std::fs::read_dir(directory) else {
-        return Ok(());
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err).with_context(|| format!("read {}", directory.display())),
     };
     for entry in entries {
         let entry = entry?;
@@ -1610,6 +1755,38 @@ fn purge_partials(target: &FsPath) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn reap_region_archives(retained: &FsPath) -> Result<()> {
+    let Some(directory) = retained.parent() else {
+        return Ok(());
+    };
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err).with_context(|| format!("read {}", directory.display())),
+    };
+    for entry in entries {
+        let path = entry?.path();
+        if path != retained && region_archive_path(&path) {
+            fs::remove_file(&path)
+                .with_context(|| format!("remove superseded basemap {}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn region_archive_path(path: &FsPath) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let Some(identity) = name
+        .strip_prefix("basemap-")
+        .and_then(|name| name.strip_suffix(".pmtiles"))
+    else {
+        return false;
+    };
+    identity.len() == 16 && identity.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn staging_path(target: &FsPath, candidate: &FsPath) -> bool {
@@ -1648,7 +1825,7 @@ mod tests {
     #[test]
     fn vector_cover_prefetches_without_presenting() {
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
-        let cover = cover(VIEW, rect);
+        let cover = cover(VIEW, rect, None);
         assert_eq!(cover.strata.len(), 6);
         assert_eq!(cover.strata[4].intent, Intent::Required);
         assert_eq!(cover.strata[5].intent, Intent::Prefetch);
@@ -1667,6 +1844,7 @@ mod tests {
                 ..VIEW
             },
             rect,
+            None,
         );
         for stratum in cover.strata {
             let distinct = stratum
@@ -1685,7 +1863,7 @@ mod tests {
             zoom: Viewport::MAX_ZOOM,
             ..VIEW
         };
-        let cover = cover(view, rect);
+        let cover = cover(view, rect, None);
         let crown = cover.strata.last().context("top stratum")?;
         assert_eq!(crown.intent, Intent::Required);
         assert!(crown.keys.iter().all(|tile| tile.zoom == MAX_SOURCE_ZOOM));
@@ -1699,6 +1877,21 @@ mod tests {
             join_normal(&points, 1)
                 .iter()
                 .all(|value| value.is_finite())
+        );
+    }
+
+    #[test]
+    fn archive_crown_remains_a_coherent_deep_zoom_fallback() {
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
+        let view = Viewport { zoom: 11.0, ..VIEW };
+
+        let cover = cover(view, rect, Some(4));
+
+        assert!(
+            cover
+                .strata
+                .first()
+                .is_some_and(|stratum| stratum.keys.iter().all(|key| key.zoom == 4))
         );
     }
 
@@ -1750,6 +1943,38 @@ mod tests {
             let right = TileId::from(pair[1].coordinate().expect("valid coordinate"));
             left < right
         }));
+        Ok(())
+    }
+
+    #[test]
+    fn disjoint_region_cut_is_sparse_and_order_invariant() -> Result<()> {
+        let east = GeoBounds::new(-74.2, 41.1, -74.0, 41.3);
+        let west = GeoBounds::new(-105.2, 39.9, -105.0, 40.1);
+        let sparse = extraction_keys_for_regions(&[east, west], 8)?;
+        let hull = extraction_keys(
+            region_hull(&[east, west]).context("two regions have a hull")?,
+            8,
+        )?;
+
+        assert!(sparse.len() < hull.len());
+        assert_eq!(region_key(&[east, west]), region_key(&[west, east]));
+        assert!(sparse.windows(2).all(|pair| {
+            let left = TileId::from(pair[0].coordinate().expect("valid coordinate"));
+            let right = TileId::from(pair[1].coordinate().expect("valid coordinate"));
+            left < right
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn oversized_region_cut_recedes_to_a_bounded_offline_stratum() -> Result<()> {
+        let region = GeoBounds::new(-125.0, 24.0, -66.0, 50.0);
+
+        let (zoom, keys) = bounded_extraction(&[region], MAX_SOURCE_ZOOM, 64)?;
+
+        assert!(zoom < MAX_SOURCE_ZOOM);
+        assert!(keys.len() <= 64);
+        assert!(keys.iter().any(|key| key.zoom == zoom));
         Ok(())
     }
 
@@ -1820,5 +2045,17 @@ mod tests {
             target,
             FsPath::new("basemap.pmtiles.backup.partial")
         ));
+    }
+
+    #[test]
+    fn region_archive_reaper_cannot_bite_manual_or_bootstrap_maps() {
+        assert!(region_archive_path(FsPath::new(
+            "basemap-0123456789abcdef.pmtiles"
+        )));
+        assert!(!region_archive_path(FsPath::new("basemap.pmtiles")));
+        assert!(!region_archive_path(FsPath::new("bootstrap-us.pmtiles")));
+        assert!(!region_archive_path(FsPath::new(
+            "basemap-../../malice.pmtiles"
+        )));
     }
 }

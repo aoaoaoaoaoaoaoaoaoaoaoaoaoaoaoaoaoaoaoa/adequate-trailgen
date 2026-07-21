@@ -5,6 +5,7 @@ use reqwest::blocking::Response;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::{
+    collections::{BTreeMap, BTreeSet},
     env,
     fmt::Write as _,
     fs::{self, File, OpenOptions},
@@ -14,8 +15,9 @@ use std::{
     time::Duration,
 };
 use trailgen_core::{
-    Access, Coord, CrossingKind, DifficultyWeights, Edge, EdgeTravel, EnrichmentConfig,
-    GraphBuilder, LineString, Provenance, Terrain, TrailGraph, apply_context_overlays,
+    Access, ContextOverlay, Coord, CrossingKind, DifficultyWeights, Edge, EdgeTravel,
+    EnrichmentConfig, GraphBuilder, LineString, Provenance, SegmentDraft, Terrain, TrailGraph,
+    apply_context_overlays,
     io::{geojson, osm},
     model::TerrainEvidence,
     source::{
@@ -30,11 +32,11 @@ pub const MAX_RADIUS_KM: f64 = 40.0;
 pub const DEFAULT_NOMINATIM_ENDPOINT: &str = "https://nominatim.openstreetmap.org/search";
 pub const DEFAULT_OVERPASS_ENDPOINT: &str = "https://overpass-api.de/api/interpreter";
 pub const FALLBACK_OVERPASS_ENDPOINT: &str = "https://overpass.private.coffee/api/interpreter";
-const MAX_OVERPASS_BBOX_DEG2: f64 = 4.0;
+pub const MAX_REGION_DEG2: f64 = 4.0;
 const MAX_SOURCE_BYTES: u64 = 256 * 1024 * 1024;
 const AUTOMATIC_OSM_PROFILE: OsmProfile = OsmProfile::All;
-const INDEX_SCHEMA: u8 = 5;
-const RAW_SCHEMA: u8 = 2;
+const INDEX_SCHEMA: u8 = 6;
+const RAW_SCHEMA: u8 = 3;
 const LOCATION_CACHE: &str = "sources/location.json";
 const TRAIL_INDEX: &str = "cache/trails.json";
 const GRAPH: &str = "cache/graph.json";
@@ -105,11 +107,30 @@ pub struct Place {
     pub provider: String,
 }
 
+/// One durable rectangle whose trail corpus should be live in a project.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Demand {
-    pub center: Coord,
+pub struct SurveyRegion {
+    pub id: String,
     pub bounds: GeoBounds,
-    pub radius_km: f64,
+}
+
+impl SurveyRegion {
+    pub fn new(bounds: GeoBounds) -> Result<Self> {
+        validate_region(bounds)?;
+        Ok(Self {
+            id: region_key(bounds),
+            bounds,
+        })
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        validate_region(self.bounds)?;
+        ensure!(
+            self.id == region_key(self.bounds),
+            "survey-region id does not match its bounds"
+        );
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -121,37 +142,28 @@ pub struct Inventory {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Summary {
-    pub place: Place,
-    pub demand: Demand,
+    pub regions: Vec<SurveyRegion>,
     pub inventory: Inventory,
     pub vertices: usize,
     pub edges: usize,
-    pub raw_path: PathBuf,
+    pub raw_paths: Vec<PathBuf>,
     pub reused: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TrailDataConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub place: Option<String>,
-    pub radius_km: f64,
-}
-
-impl Default for TrailDataConfig {
-    fn default() -> Self {
-        Self {
-            place: None,
-            radius_km: DEFAULT_RADIUS_KM,
-        }
-    }
+    /// Whether this project graph is governed by the live-region corpus.
+    pub managed: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub regions: Vec<SurveyRegion>,
 }
 
 #[derive(Clone, Debug)]
 pub enum Event {
     Locating,
     Located(Place),
-    Ranging(Demand),
+    Ranging(SurveyRegion),
     Downloaded { bytes: u64 },
     Indexing,
     Ready(Summary),
@@ -163,7 +175,10 @@ impl Event {
         match self {
             Self::Locating => "LOCATING US TRAIL AREA".to_owned(),
             Self::Located(place) => format!("LOCATED · {}", place.label.to_ascii_uppercase()),
-            Self::Ranging(_) => "RANGING OPENSTREETMAP TRAILS + CONTEXT".to_owned(),
+            Self::Ranging(region) => format!(
+                "RANGING OPENSTREETMAP REGION · {:.4}, {:.4} TO {:.4}, {:.4}",
+                region.bounds.west, region.bounds.south, region.bounds.east, region.bounds.north
+            ),
             Self::Downloaded { bytes } => {
                 let mib = bytes / 1_048_576;
                 let tenth = (bytes % 1_048_576) * 10 / 1_048_576;
@@ -299,8 +314,8 @@ impl TrailProvider for Overpass {
         let area_deg2 = (bounds.east - bounds.west) * (bounds.north - bounds.south);
         ensure!(bounds.is_valid(), "invalid trail-data bounds");
         ensure!(
-            area_deg2 <= MAX_OVERPASS_BBOX_DEG2,
-            "trail-data bounds span {area_deg2:.2} square degrees; limit is {MAX_OVERPASS_BBOX_DEG2:.2}"
+            area_deg2 <= MAX_REGION_DEG2,
+            "trail-data bounds span {area_deg2:.2} square degrees; limit is {MAX_REGION_DEG2:.2}"
         );
         let query = self.query(profile, bounds);
         let client = reqwest::blocking::Client::builder()
@@ -376,48 +391,107 @@ where
         radius_km: f64,
         mut emit: impl FnMut(Event),
     ) -> Result<Summary> {
-        ensure!(
-            project.join("trailgen.toml").is_file(),
-            "{} is not a trailgen project",
-            project.display()
-        );
+        validate_project(project)?;
         let query = query.trim();
         ensure!(!query.is_empty(), "enter a US place or trailhead");
         validate_radius(radius_km)?;
-        configure_project(
-            project,
-            &TrailDataConfig {
-                place: Some(query.to_owned()),
-                radius_km,
-            },
-        )?;
         emit(Event::Locating);
         let place =
             cached_place(project, query)?.map_or_else(|| self.locator.locate_us(query), Ok)?;
         write_json_atomic(project.join(LOCATION_CACHE), &place)?;
         emit(Event::Located(place.clone()));
-        let demand = demand(&place, radius_km)?;
+        self.add_region(project, bounds_around(&place, radius_km)?, emit)
+    }
 
-        if let Some(mut summary) = reusable_index(project, &demand)? {
+    /// Add a rectangle to the project's live area and reconcile its union graph.
+    pub fn add_region(
+        &self,
+        project: &Path,
+        bounds: GeoBounds,
+        mut emit: impl FnMut(Event),
+    ) -> Result<Summary> {
+        validate_project(project)?;
+        let region = SurveyRegion::new(bounds)?;
+        let mut config = project_config(project)?;
+        config.managed = true;
+        if !config.regions.iter().any(|known| known.id == region.id) {
+            config.regions.push(region);
+            configure_project(project, &config)?;
+        }
+        self.reconcile(project, &config, true, &mut emit)
+    }
+
+    /// Rebuild the live-area graph, fetching any missing region receipts.
+    pub fn refresh(&self, project: &Path, mut emit: impl FnMut(Event)) -> Result<Option<Summary>> {
+        validate_project(project)?;
+        let config = project_config(project)?;
+        if config.regions.is_empty() {
+            clear_corpus(project)?;
+            return Ok(None);
+        }
+        self.reconcile(project, &config, true, &mut emit).map(Some)
+    }
+
+    /// Excise one rectangle and rebuild solely from the surviving receipts.
+    pub fn remove_region(
+        &self,
+        project: &Path,
+        id: &str,
+        mut emit: impl FnMut(Event),
+    ) -> Result<Option<Summary>> {
+        validate_project(project)?;
+        let mut config = project_config(project)?;
+        let before = config.regions.len();
+        config.regions.retain(|region| region.id != id);
+        ensure!(
+            config.regions.len() != before,
+            "project has no survey region {id}"
+        );
+        configure_project(project, &config)?;
+        if config.regions.is_empty() {
+            clear_corpus(project)?;
+            return Ok(None);
+        }
+        self.reconcile(project, &config, false, &mut emit).map(Some)
+    }
+
+    fn reconcile(
+        &self,
+        project: &Path,
+        config: &TrailDataConfig,
+        fetch_missing: bool,
+        emit: &mut impl FnMut(Event),
+    ) -> Result<Summary> {
+        ensure!(
+            !config.regions.is_empty(),
+            "live area has no survey regions"
+        );
+        if let Some(mut summary) = reusable_index(project, config)? {
             summary.reused = true;
             emit(Event::Ready(summary.clone()));
             return Ok(summary);
         }
 
-        let key = demand_key(&demand);
-        let raw_relative = PathBuf::from("sources/osm").join(format!("{key}.osm"));
-        let raw_path = project.join(&raw_relative);
-        let query_path = raw_path.with_extension("overpassql");
-        let artifact_path = raw_path.with_extension("json");
-        let (bytes, origin) =
-            if let Some(cached) = cached_osm(&raw_path, &query_path, &artifact_path, &demand)? {
+        let mut sources = Vec::with_capacity(config.regions.len());
+        for region in &config.regions {
+            let raw_relative = PathBuf::from("sources/osm").join(format!("{}.osm", region.id));
+            let raw_path = project.join(&raw_relative);
+            let query_path = raw_path.with_extension("overpassql");
+            let artifact_path = raw_path.with_extension("json");
+            let cached = cached_osm(&raw_path, &query_path, &artifact_path, region)?;
+            let (bytes, origin) = if let Some(cached) = cached {
                 (cached.bytes, cached.origin)
             } else {
-                emit(Event::Ranging(demand.clone()));
-                let payload = self.provider.fetch(AUTOMATIC_OSM_PROFILE, demand.bounds)?;
+                ensure!(
+                    fetch_missing,
+                    "survey region {} has no intact source receipt",
+                    region.id
+                );
+                emit(Event::Ranging(region.clone()));
+                let payload = self.provider.fetch(AUTOMATIC_OSM_PROFILE, region.bounds)?;
                 let artifact = OsmArtifact {
                     schema: RAW_SCHEMA,
-                    demand: demand.clone(),
+                    region: region.clone(),
                     profile: AUTOMATIC_OSM_PROFILE,
                     origin: payload.origin.clone(),
                     query: payload.query.clone(),
@@ -425,16 +499,23 @@ where
                 };
                 write_atomic(&query_path, payload.query.as_bytes())?;
                 write_json_atomic(&artifact_path, &artifact)?;
-                // The raw path is the artifact's commit marker: its sidecars must
-                // already be durable before it becomes visible.
+                // The raw path is the region receipt's commit marker.
                 write_atomic(&raw_path, &payload.bytes)?;
                 emit(Event::Downloaded {
                     bytes: payload.bytes.len() as u64,
                 });
                 (payload.bytes, payload.origin)
             };
+            sources.push(RegionSource {
+                region: region.clone(),
+                raw_relative,
+                fingerprint: fingerprint(&bytes),
+                bytes,
+                origin,
+            });
+        }
         emit(Event::Indexing);
-        let summary = index_osm(project, place, demand, raw_relative, &bytes, &origin)?;
+        let summary = index_corpus(project, config, &sources)?;
         emit(Event::Ready(summary.clone()));
         Ok(summary)
     }
@@ -568,14 +649,21 @@ struct NominatimReply {
 struct TrailIndex {
     schema: u8,
     summary: Summary,
-    raw: SourceFingerprint,
+    sources: Vec<RegionReceipt>,
     graph: SourceFingerprint,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct RegionReceipt {
+    region: SurveyRegion,
+    raw_path: PathBuf,
+    raw: SourceFingerprint,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct OsmArtifact {
     schema: u8,
-    demand: Demand,
+    region: SurveyRegion,
     profile: OsmProfile,
     origin: String,
     query: String,
@@ -583,6 +671,14 @@ struct OsmArtifact {
 }
 
 struct CachedOsm {
+    bytes: Vec<u8>,
+    origin: String,
+}
+
+struct RegionSource {
+    region: SurveyRegion,
+    raw_relative: PathBuf,
+    fingerprint: SourceFingerprint,
     bytes: Vec<u8>,
     origin: String,
 }
@@ -605,76 +701,265 @@ impl Default for GraphLaw {
     }
 }
 
-fn index_osm(
+fn index_corpus(
     project: &Path,
-    place: Place,
-    demand: Demand,
-    raw_relative: PathBuf,
-    bytes: &[u8],
-    origin: &str,
+    config: &TrailDataConfig,
+    sources: &[RegionSource],
 ) -> Result<Summary> {
-    let raw = std::str::from_utf8(bytes).context("OpenStreetMap response is not UTF-8 XML")?;
-    let inventory = inspect_osm(OsmProfile::All, raw)?;
+    let corpus_bytes = sources
+        .iter()
+        .map(|source| source.bytes.len() as u64)
+        .sum::<u64>();
     ensure!(
-        inventory.trail_segments > 0,
-        "the selected area contains no routable OSM trails"
+        corpus_bytes <= MAX_SOURCE_BYTES * 4,
+        "live trail corpus exceeds {} MiB",
+        MAX_SOURCE_BYTES * 4 / 1_048_576
     );
+    let merged = merge_osm(sources)?;
+    let drafts = clip_drafts(osm::network_from_str(&merged)?, &config.regions);
+    ensure!(
+        !drafts.is_empty(),
+        "the live area contains no routable OSM trails"
+    );
+    let overlays = clip_overlays(osm::context_overlays_from_str(&merged)?, &config.regions);
+    let inventory = Inventory {
+        trail_segments: drafts.len(),
+        road_features: overlays
+            .iter()
+            .filter(|overlay| overlay.kind == CrossingKind::Road)
+            .count(),
+        waterway_features: overlays
+            .iter()
+            .filter(|overlay| overlay.kind == CrossingKind::Water)
+            .count(),
+    };
     let law = read_graph_law(project)?;
-    let drafts = osm::network_from_str(raw)?;
     let mut graph = GraphBuilder {
         snap_tolerance_m: law.snap_tolerance_m,
         enrichment: law.enrichment,
         weights: law.difficulty,
     }
     .build(&drafts)
-    .context("index OpenStreetMap trail topology")?;
-    let overlays = osm::context_overlays_from_str(raw)?;
+    .context("index live-area trail topology")?;
     apply_context_overlays(&mut graph, &overlays, law.difficulty);
     let surfaces = GraphSurfaces::engrave(&graph)?;
     surfaces.write_auxiliaries(project)?;
-    store_area(project, demand.bounds)?;
-    let raw_fingerprint = fingerprint(bytes);
-    write_source_manifest(
-        project,
-        &raw_relative,
-        &inventory,
-        &raw_fingerprint,
-        origin,
-        demand.bounds,
-    )?;
+    let bounds = live_bounds(&config.regions).context("live area has no bounds")?;
+    store_area(project, Some(bounds))?;
+    write_source_manifest(project, sources, &inventory, bounds)?;
     let summary = Summary {
-        place,
-        demand,
-        inventory: Inventory {
-            trail_segments: inventory.trail_segments,
-            road_features: inventory.road_features,
-            waterway_features: inventory.waterway_features,
-        },
+        regions: config.regions.clone(),
+        inventory,
         vertices: graph.vertices.len(),
         edges: graph.edges.len(),
-        raw_path: raw_relative,
+        raw_paths: sources
+            .iter()
+            .map(|source| source.raw_relative.clone())
+            .collect(),
         reused: false,
     };
+    let receipts = sources
+        .iter()
+        .map(|source| RegionReceipt {
+            region: source.region.clone(),
+            raw_path: source.raw_relative.clone(),
+            raw: source.fingerprint.clone(),
+        })
+        .collect();
     write_json_atomic(
         project.join(TRAIL_INDEX),
         &TrailIndex {
             schema: INDEX_SCHEMA,
             summary: summary.clone(),
-            raw: raw_fingerprint,
+            sources: receipts,
             graph: surfaces.fingerprint(),
         },
     )?;
     // graph.json is the workbench commit marker. No GUI can mistake an
-    // interrupted indexing pass for a ready project.
+    // interrupted indexing pass for a ready corpus.
     surfaces.commit(project)?;
     Ok(summary)
+}
+
+fn merge_osm(sources: &[RegionSource]) -> Result<String> {
+    struct Object {
+        version: u64,
+        xml: String,
+    }
+
+    let mut objects = BTreeMap::<(u8, String), Object>::new();
+    for source in sources {
+        let raw = std::str::from_utf8(&source.bytes)
+            .context("OpenStreetMap response is not UTF-8 XML")?;
+        let document = roxmltree::Document::parse(raw).context("parse region OSM XML")?;
+        let root = document.root_element();
+        ensure!(root.has_tag_name("osm"), "region source has no OSM root");
+        for node in root.children().filter(roxmltree::Node::is_element) {
+            let rank = match node.tag_name().name() {
+                "node" => 0,
+                "way" => 1,
+                "relation" => 2,
+                _ => continue,
+            };
+            let Some(id) = node.attribute("id") else {
+                continue;
+            };
+            let version = node
+                .attribute("version")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0);
+            let xml = raw[node.range()].to_owned();
+            let key = (rank, id.to_owned());
+            match objects.get_mut(&key) {
+                Some(known)
+                    if version > known.version || (version == known.version && xml > known.xml) =>
+                {
+                    *known = Object { version, xml };
+                }
+                Some(_) => {}
+                None => {
+                    objects.insert(key, Object { version, xml });
+                }
+            }
+        }
+    }
+    let mut merged = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<osm version=\"0.6\" generator=\"trailgen-corpus\">\n",
+    );
+    for object in objects.into_values() {
+        merged.push_str(&object.xml);
+        merged.push('\n');
+    }
+    merged.push_str("</osm>\n");
+    Ok(merged)
+}
+
+fn clip_drafts(drafts: Vec<SegmentDraft>, regions: &[SurveyRegion]) -> Vec<SegmentDraft> {
+    drafts
+        .into_iter()
+        .flat_map(|draft| {
+            clip_line(&draft.geometry, regions)
+                .into_iter()
+                .map(move |geometry| {
+                    let mut clipped = draft.clone();
+                    clipped.turn_restrictions.retain(|restriction| {
+                        geometry
+                            .points
+                            .iter()
+                            .any(|point| same_location(*point, restriction.via))
+                    });
+                    clipped.geometry = geometry;
+                    clipped
+                })
+        })
+        .collect()
+}
+
+fn clip_overlays(overlays: Vec<ContextOverlay>, regions: &[SurveyRegion]) -> Vec<ContextOverlay> {
+    overlays
+        .into_iter()
+        .flat_map(|overlay| {
+            clip_line(&overlay.geometry, regions)
+                .into_iter()
+                .map(move |geometry| {
+                    let mut clipped = overlay.clone();
+                    clipped.geometry = geometry;
+                    clipped
+                })
+        })
+        .collect()
+}
+
+fn clip_line(line: &LineString, regions: &[SurveyRegion]) -> Vec<LineString> {
+    let mut result = Vec::new();
+    let mut points = Vec::new();
+    for segment in line.points.windows(2) {
+        let [a, b] = [segment[0], segment[1]];
+        let mut cuts = vec![0.0, 1.0];
+        for region in regions {
+            let dx = b.lon - a.lon;
+            if dx.abs() > f64::EPSILON {
+                cuts.extend(
+                    [region.bounds.west, region.bounds.east]
+                        .map(|lon| (lon - a.lon) / dx)
+                        .into_iter()
+                        .filter(|t| (0.0..=1.0).contains(t)),
+                );
+            }
+            let dy = b.lat - a.lat;
+            if dy.abs() > f64::EPSILON {
+                cuts.extend(
+                    [region.bounds.south, region.bounds.north]
+                        .map(|lat| (lat - a.lat) / dy)
+                        .into_iter()
+                        .filter(|t| (0.0..=1.0).contains(t)),
+                );
+            }
+        }
+        cuts.sort_by(f64::total_cmp);
+        cuts.dedup_by(|left, right| (*left - *right).abs() <= 1.0e-12);
+        for interval in cuts.windows(2) {
+            let [from, to] = [interval[0], interval[1]];
+            if to - from <= 1.0e-12 {
+                continue;
+            }
+            let midpoint = a.lerp(b, (from + to) * 0.5);
+            if regions
+                .iter()
+                .any(|region| contains(region.bounds, midpoint))
+            {
+                append_clipped_segment(&mut result, &mut points, a.lerp(b, from), a.lerp(b, to));
+            } else {
+                seal_line(&mut result, &mut points);
+            }
+        }
+    }
+    seal_line(&mut result, &mut points);
+    result
+}
+
+fn append_clipped_segment(
+    result: &mut Vec<LineString>,
+    points: &mut Vec<Coord>,
+    start: Coord,
+    end: Coord,
+) {
+    let joins = points
+        .last()
+        .is_some_and(|last| same_location(*last, start));
+    if !joins {
+        seal_line(result, points);
+        points.push(start);
+    }
+    if points.last().is_none_or(|last| !same_location(*last, end)) {
+        points.push(end);
+    }
+}
+
+fn seal_line(result: &mut Vec<LineString>, points: &mut Vec<Coord>) {
+    if points.len() >= 2 {
+        result.push(LineString::unchecked(std::mem::take(points)));
+    } else {
+        points.clear();
+    }
+}
+
+fn contains(bounds: GeoBounds, coord: Coord) -> bool {
+    bounds.west <= coord.lon
+        && coord.lon <= bounds.east
+        && bounds.south <= coord.lat
+        && coord.lat <= bounds.north
+}
+
+const fn same_location(left: Coord, right: Coord) -> bool {
+    left.lon.to_bits() == right.lon.to_bits() && left.lat.to_bits() == right.lat.to_bits()
 }
 
 fn cached_osm(
     raw_path: &Path,
     query_path: &Path,
     artifact_path: &Path,
-    demand: &Demand,
+    region: &SurveyRegion,
 ) -> Result<Option<CachedOsm>> {
     let bytes = match fs::read(raw_path) {
         Ok(bytes) => bytes,
@@ -704,7 +989,7 @@ fn cached_osm(
     };
     if artifact.schema != RAW_SCHEMA
         || artifact.profile != AUTOMATIC_OSM_PROFILE
-        || &artifact.demand != demand
+        || &artifact.region != region
         || artifact.query != query
         || artifact.raw != fingerprint(&bytes)
     {
@@ -734,7 +1019,7 @@ fn cached_place(project: &Path, query: &str) -> Result<Option<Place>> {
     }
 }
 
-fn reusable_index(project: &Path, demand: &Demand) -> Result<Option<Summary>> {
+fn reusable_index(project: &Path, config: &TrailDataConfig) -> Result<Option<Summary>> {
     let index_path = project.join(TRAIL_INDEX);
     let raw = match fs::read_to_string(&index_path) {
         Ok(raw) => raw,
@@ -747,21 +1032,24 @@ fn reusable_index(project: &Path, demand: &Demand) -> Result<Option<Summary>> {
         return Ok(None);
     };
     if index.schema != INDEX_SCHEMA
-        || &index.summary.demand != demand
+        || index.summary.regions != config.regions
+        || index.sources.len() != config.regions.len()
         || !project.join(GRAPH).is_file()
     {
         return Ok(None);
     }
-    let raw_path = project.join(&index.summary.raw_path);
-    let bytes = match fs::read(&raw_path) {
-        Ok(bytes) => bytes,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => {
-            return Err(err).with_context(|| format!("read trail source {}", raw_path.display()));
+    for receipt in &index.sources {
+        if !config.regions.contains(&receipt.region) {
+            return Ok(None);
         }
-    };
-    if fingerprint(&bytes) != index.raw {
-        return Ok(None);
+        let bytes = match fs::read(project.join(&receipt.raw_path)) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(err).context("read region source receipt"),
+        };
+        if fingerprint(&bytes) != receipt.raw {
+            return Ok(None);
+        }
     }
     let graph_bytes = fs::read(project.join(GRAPH)).context("read cached trail graph")?;
     if fingerprint(&graph_bytes) != index.graph {
@@ -776,7 +1064,7 @@ fn reusable_index(project: &Path, demand: &Demand) -> Result<Option<Summary>> {
     Ok(Some(index.summary))
 }
 
-fn demand(place: &Place, radius_km: f64) -> Result<Demand> {
+fn bounds_around(place: &Place, radius_km: f64) -> Result<GeoBounds> {
     validate_radius(radius_km)?;
     let lat_radius = radius_km / 111.32;
     let longitude_scale = place.center.lat.to_radians().cos().abs().max(0.05);
@@ -787,15 +1075,8 @@ fn demand(place: &Place, radius_km: f64) -> Result<Demand> {
         (place.center.lon + lon_radius).min(180.0),
         (place.center.lat + lat_radius).min(90.0),
     );
-    ensure!(
-        bounds.is_valid(),
-        "place produces invalid trail survey bounds"
-    );
-    Ok(Demand {
-        center: place.center,
-        bounds,
-        radius_km,
-    })
+    validate_region(bounds)?;
+    Ok(bounds)
 }
 
 fn validate_radius(radius_km: f64) -> Result<()> {
@@ -806,15 +1087,37 @@ fn validate_radius(radius_km: f64) -> Result<()> {
     Ok(())
 }
 
-fn demand_key(demand: &Demand) -> String {
+pub fn validate_region(bounds: GeoBounds) -> Result<()> {
+    let area = (bounds.east - bounds.west) * (bounds.north - bounds.south);
+    ensure!(
+        bounds.is_valid(),
+        "survey region has invalid lon/lat bounds"
+    );
+    ensure!(
+        area <= MAX_REGION_DEG2,
+        "survey region spans {area:.2} square degrees; limit is {MAX_REGION_DEG2:.2}"
+    );
+    Ok(())
+}
+
+fn validate_project(project: &Path) -> Result<()> {
+    ensure!(
+        project.join("trailgen.toml").is_file(),
+        "{} is not a trailgen project",
+        project.display()
+    );
+    Ok(())
+}
+
+fn region_key(bounds: GeoBounds) -> String {
     let digest = Sha256::digest(
         format!(
             "osm-{}-v{RAW_SCHEMA}:{:.8}:{:.8}:{:.8}:{:.8}",
             AUTOMATIC_OSM_PROFILE.label(),
-            demand.bounds.west,
-            demand.bounds.south,
-            demand.bounds.east,
-            demand.bounds.north
+            bounds.west,
+            bounds.south,
+            bounds.east,
+            bounds.north
         )
         .as_bytes(),
     );
@@ -826,26 +1129,57 @@ fn demand_key(demand: &Demand) -> String {
         })
 }
 
+#[must_use]
+pub fn live_bounds(regions: &[SurveyRegion]) -> Option<GeoBounds> {
+    regions
+        .iter()
+        .map(|region| region.bounds)
+        .reduce(|left, right| {
+            GeoBounds::new(
+                left.west.min(right.west),
+                left.south.min(right.south),
+                left.east.max(right.east),
+                left.north.max(right.north),
+            )
+        })
+}
+
 fn read_graph_law(project: &Path) -> Result<GraphLaw> {
     let path = project.join("trailgen.toml");
     let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     toml::from_str(&raw).with_context(|| format!("parse {}", path.display()))
 }
 
-/// Read the durable trail-data demand from a project marker.
+/// Read and validate the project's durable live area.
 pub fn project_config(project: &Path) -> Result<TrailDataConfig> {
     #[derive(Deserialize)]
     struct ProjectConfig {
         #[serde(default)]
         trail_data: TrailDataConfig,
+        #[serde(default)]
+        area: Option<GeoBounds>,
     }
 
     let path = project.join("trailgen.toml");
     let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
-    let config = toml::from_str::<ProjectConfig>(&raw)
-        .with_context(|| format!("parse {}", path.display()))?
-        .trail_data;
-    validate_radius(config.radius_km)?;
+    let document =
+        toml::from_str::<toml::Value>(&raw).with_context(|| format!("parse {}", path.display()))?;
+    let parsed = toml::from_str::<ProjectConfig>(&raw)
+        .with_context(|| format!("parse {}", path.display()))?;
+    let mut config = parsed.trail_data;
+    let legacy_place = document
+        .get("trail_data")
+        .and_then(|trail_data| trail_data.get("place"))
+        .and_then(toml::Value::as_str)
+        .is_some_and(|place| !place.trim().is_empty());
+    if config.regions.is_empty()
+        && legacy_place
+        && let Some(bounds) = parsed.area
+    {
+        config.regions.push(SurveyRegion::new(bounds)?);
+    }
+    config.managed |= legacy_place || !config.regions.is_empty();
+    validate_config(&config)?;
     Ok(config)
 }
 
@@ -863,18 +1197,13 @@ pub fn indexed_summary(project: &Path) -> Result<Option<Summary>> {
     if index.schema != INDEX_SCHEMA {
         return Ok(None);
     }
-    reusable_index(project, &index.summary.demand)
+    let config = project_config(project)?;
+    reusable_index(project, &config)
 }
 
-/// Persist the canonical trail-data demand without disturbing other project law.
+/// Persist the canonical live area without disturbing other project law.
 pub fn configure_project(project: &Path, trail_data: &TrailDataConfig) -> Result<()> {
-    validate_radius(trail_data.radius_km)?;
-    if let Some(place) = &trail_data.place {
-        ensure!(
-            !place.trim().is_empty(),
-            "trail-data place must not be empty"
-        );
-    }
+    validate_config(trail_data)?;
     let path = project.join("trailgen.toml");
     let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     let mut config =
@@ -886,7 +1215,20 @@ pub fn configure_project(project: &Path, trail_data: &TrailDataConfig) -> Result
     write_atomic(&path, toml::to_string_pretty(&config)?.as_bytes())
 }
 
-fn store_area(project: &Path, bounds: GeoBounds) -> Result<()> {
+fn validate_config(config: &TrailDataConfig) -> Result<()> {
+    let mut ids = BTreeSet::new();
+    for region in &config.regions {
+        region.validate()?;
+        ensure!(
+            ids.insert(&region.id),
+            "duplicate survey region {}",
+            region.id
+        );
+    }
+    Ok(())
+}
+
+fn store_area(project: &Path, bounds: Option<GeoBounds>) -> Result<()> {
     let path = project.join("trailgen.toml");
     let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     let mut config =
@@ -894,52 +1236,20 @@ fn store_area(project: &Path, bounds: GeoBounds) -> Result<()> {
     let table = config
         .as_table_mut()
         .context("trailgen.toml root must be a table")?;
-    table.insert("area".to_owned(), toml::Value::try_from(bounds)?);
+    if let Some(bounds) = bounds {
+        table.insert("area".to_owned(), toml::Value::try_from(bounds)?);
+    } else {
+        table.remove("area");
+    }
     write_atomic(&path, toml::to_string_pretty(&config)?.as_bytes())
 }
 
 fn write_source_manifest(
     project: &Path,
-    raw_relative: &Path,
-    inventory: &OsmInventory,
-    fingerprint: &SourceFingerprint,
-    origin: &str,
+    sources: &[RegionSource],
+    inventory: &Inventory,
     bounds: GeoBounds,
 ) -> Result<()> {
-    let raw_path = raw_relative.display().to_string();
-    let origin = format!(
-        "overpass:{origin} profile={} bbox={},{},{},{}",
-        AUTOMATIC_OSM_PROFILE.label(),
-        bounds.west,
-        bounds.south,
-        bounds.east,
-        bounds.north
-    );
-    let mut candidates = vec![candidate(
-        &raw_path,
-        SourceKind::TrailNetwork,
-        "osm-xml-network",
-        fingerprint,
-        &origin,
-    )];
-    if inventory.road_features > 0 {
-        candidates.push(candidate(
-            &raw_path,
-            SourceKind::Road,
-            "osm-road-context",
-            fingerprint,
-            &origin,
-        ));
-    }
-    if inventory.waterway_features > 0 {
-        candidates.push(candidate(
-            &raw_path,
-            SourceKind::Hydrology,
-            "osm-hydrology-context",
-            fingerprint,
-            &origin,
-        ));
-    }
     let manifest_path = project.join(SOURCE_MANIFEST);
     let mut manifest = match fs::read_to_string(&manifest_path) {
         Ok(raw) => serde_json::from_str::<SourceManifest>(&raw)
@@ -954,15 +1264,48 @@ fn write_source_manifest(
             return Err(err).with_context(|| format!("read {}", manifest_path.display()));
         }
     };
-    for candidate in candidates {
-        if let Some(existing) = manifest
-            .candidates
-            .iter_mut()
-            .find(|existing| existing.path == candidate.path && existing.kind == candidate.kind)
-        {
-            *existing = candidate;
-        } else {
-            manifest.candidates.push(candidate);
+    manifest.candidates.retain(|candidate| {
+        !candidate
+            .origin
+            .as_deref()
+            .is_some_and(|origin| origin.starts_with("overpass:"))
+    });
+    for source in sources {
+        let raw_path = source.raw_relative.display().to_string();
+        let region = source.region.bounds;
+        let origin = format!(
+            "overpass:{} profile={} bbox={},{},{},{}",
+            source.origin,
+            AUTOMATIC_OSM_PROFILE.label(),
+            region.west,
+            region.south,
+            region.east,
+            region.north
+        );
+        manifest.candidates.push(candidate(
+            &raw_path,
+            SourceKind::TrailNetwork,
+            "osm-xml-network",
+            &source.fingerprint,
+            &origin,
+        ));
+        if inventory.road_features > 0 {
+            manifest.candidates.push(candidate(
+                &raw_path,
+                SourceKind::Road,
+                "osm-road-context",
+                &source.fingerprint,
+                &origin,
+            ));
+        }
+        if inventory.waterway_features > 0 {
+            manifest.candidates.push(candidate(
+                &raw_path,
+                SourceKind::Hydrology,
+                "osm-hydrology-context",
+                &source.fingerprint,
+                &origin,
+            ));
         }
     }
     manifest.candidates.sort_by(|left, right| {
@@ -976,6 +1319,49 @@ fn write_source_manifest(
         &manifest.candidates,
     );
     write_json_atomic(manifest_path, &manifest)
+}
+
+fn clear_corpus(project: &Path) -> Result<()> {
+    for relative in [
+        TRAIL_INDEX,
+        GRAPH,
+        GRAPH_GEOJSON,
+        "cache/edges.csv",
+        "cache/vertices.csv",
+    ] {
+        match fs::remove_file(project.join(relative)) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err).with_context(|| format!("remove {relative}")),
+        }
+    }
+    store_area(project, None)?;
+    let manifest_path = project.join(SOURCE_MANIFEST);
+    match fs::read_to_string(&manifest_path) {
+        Ok(raw) => {
+            let mut manifest = serde_json::from_str::<SourceManifest>(&raw)
+                .with_context(|| format!("parse {}", manifest_path.display()))?;
+            manifest.candidates.retain(|candidate| {
+                !candidate
+                    .origin
+                    .as_deref()
+                    .is_some_and(|origin| origin.starts_with("overpass:"))
+            });
+            manifest.adapters = adapter_registry();
+            manifest.recommendations = discovery_recommendations(None);
+            manifest.coverage = source_coverage(
+                &manifest.adapters,
+                &manifest.recommendations,
+                &manifest.candidates,
+            );
+            write_json_atomic(manifest_path, &manifest)?;
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(err).with_context(|| format!("read {}", manifest_path.display()));
+        }
+    }
+    Ok(())
 }
 
 fn candidate(
@@ -1324,6 +1710,7 @@ impl Drop for Staging {
 mod tests {
     use super::*;
     use std::cell::Cell;
+    use trailgen_core::JunctionPolicy;
 
     #[derive(Clone)]
     struct FixedPlace;
@@ -1359,20 +1746,23 @@ mod tests {
     }
 
     #[test]
-    fn demands_are_bounded_around_the_resolved_place() -> Result<()> {
+    fn place_debug_frontend_produces_a_bounded_region() -> Result<()> {
         let place = FixedPlace.locate_us("Harriman")?;
-        let demand = demand(&place, 20.0)?;
-        assert!(demand.bounds.is_valid());
-        assert!((demand.bounds.north - demand.bounds.south) < 0.37);
-        assert!((demand.bounds.east - demand.bounds.west) < 0.49);
+        let bounds = bounds_around(&place, 20.0)?;
+        assert!(bounds.is_valid());
+        assert!((bounds.north - bounds.south) < 0.37);
+        assert!((bounds.east - bounds.west) < 0.49);
         Ok(())
     }
 
     #[test]
-    fn demand_receipts_round_trip_without_spatial_drift() -> Result<()> {
-        let expected = demand(&FixedPlace.locate_us("Harriman")?, DEFAULT_RADIUS_KM)?;
+    fn region_receipts_round_trip_without_spatial_drift() -> Result<()> {
+        let expected = SurveyRegion::new(bounds_around(
+            &FixedPlace.locate_us("Harriman")?,
+            DEFAULT_RADIUS_KM,
+        )?)?;
         let encoded = serde_json::to_vec(&expected)?;
-        let decoded = serde_json::from_slice::<Demand>(&encoded)?;
+        let decoded = serde_json::from_slice::<SurveyRegion>(&encoded)?;
         assert_eq!(decoded, expected);
         Ok(())
     }
@@ -1389,14 +1779,82 @@ mod tests {
     }
 
     #[test]
+    fn line_clipping_realizes_the_exact_rectangle_union() -> Result<()> {
+        let line = LineString::new(vec![Coord::new(-2.0, 0.0), Coord::new(2.0, 0.0)])?;
+        let regions = [
+            SurveyRegion::new(GeoBounds::new(-1.0, -0.5, -0.2, 0.5))?,
+            SurveyRegion::new(GeoBounds::new(0.3, -0.5, 1.0, 0.5))?,
+        ];
+
+        let clipped = clip_line(&line, &regions);
+
+        assert_eq!(clipped.len(), 2);
+        for (actual, expected) in [
+            (clipped[0].start(), Coord::new(-1.0, 0.0)),
+            (clipped[0].end(), Coord::new(-0.2, 0.0)),
+            (clipped[1].start(), Coord::new(0.3, 0.0)),
+            (clipped[1].end(), Coord::new(1.0, 0.0)),
+        ] {
+            assert!((actual.lon - expected.lon).abs() < 1.0e-12);
+            assert!((actual.lat - expected.lat).abs() < 1.0e-12);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn clipping_preserves_contracted_osm_junctions() -> Result<()> {
+        let raw = r#"<osm version="0.6">
+          <node id="1" lon="-1" lat="0"/><node id="2" lon="0" lat="0"/>
+          <node id="3" lon="1" lat="0"/><node id="4" lon="0" lat="1"/>
+          <way id="10"><nd ref="1"/><nd ref="2"/><nd ref="3"/><tag k="highway" v="path"/></way>
+          <way id="11"><nd ref="2"/><nd ref="4"/><tag k="highway" v="path"/></way>
+        </osm>"#;
+        let region = SurveyRegion::new(GeoBounds::new(-0.5, -0.5, 0.5, 0.5))?;
+
+        let drafts = clip_drafts(osm::network_from_str(raw)?, &[region]);
+        assert!(
+            drafts
+                .iter()
+                .all(|draft| draft.junctions == JunctionPolicy::ExplicitEndpoints)
+        );
+        let graph = GraphBuilder::default().build(&drafts)?;
+        let junction = graph
+            .vertices
+            .iter()
+            .find(|vertex| same_location(vertex.coord, Coord::new(0.0, 0.0)))
+            .context("shared OSM node should survive clipping")?;
+        assert_eq!(graph.adjacency[junction.id.0].len(), 3);
+        Ok(())
+    }
+
+    #[test]
     fn project_area_update_preserves_the_project_name() -> Result<()> {
         let temp = tempfile::tempdir()?;
         fs::write(temp.path().join("trailgen.toml"), "name = 'Harriman'\n")?;
         let bounds = GeoBounds::new(-74.2, 41.1, -74.0, 41.35);
-        store_area(temp.path(), bounds)?;
+        store_area(temp.path(), Some(bounds))?;
         let config = fs::read_to_string(temp.path().join("trailgen.toml"))?;
         assert!(config.contains("name = \"Harriman\""));
         assert!(config.contains("[area]"));
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_place_demand_migrates_to_its_recorded_rectangle() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        fs::write(
+            temp.path().join("trailgen.toml"),
+            "name = 'Harriman'\n[trail_data]\nplace = 'Harriman, NY'\nradius_km = 8\n\
+             [area]\nwest = -74.2\nsouth = 41.1\neast = -74.0\nnorth = 41.35\n",
+        )?;
+
+        let config = project_config(temp.path())?;
+
+        assert_eq!(config.regions.len(), 1);
+        assert_eq!(
+            config.regions[0].bounds,
+            GeoBounds::new(-74.2, 41.1, -74.0, 41.35)
+        );
         Ok(())
     }
 
@@ -1418,17 +1876,19 @@ mod tests {
         assert_eq!(first.inventory.waterway_features, 1);
         assert_eq!(surveyor.provider.calls.get(), 1);
         assert_eq!(first_events.len(), 6);
-        assert!(project.join(&first.raw_path).is_file());
+        assert_eq!(first.regions.len(), 1);
+        assert_eq!(first.raw_paths.len(), 1);
+        assert!(project.join(&first.raw_paths[0]).is_file());
         assert_eq!(indexed_summary(project)?, Some(first.clone()));
         assert!(
             project
-                .join(&first.raw_path)
+                .join(&first.raw_paths[0])
                 .with_extension("json")
                 .is_file()
         );
         assert!(
             project
-                .join(&first.raw_path)
+                .join(&first.raw_paths[0])
                 .with_extension("overpassql")
                 .is_file()
         );
@@ -1459,7 +1919,7 @@ mod tests {
             second_events.push(event.status());
         })?;
         assert!(second.reused);
-        assert_eq!(second.raw_path, first.raw_path);
+        assert_eq!(second.raw_paths, first.raw_paths);
         assert_eq!(surveyor.provider.calls.get(), 1);
         assert_eq!(second_events.len(), 3);
         assert!(
@@ -1500,13 +1960,48 @@ mod tests {
 
         assert!(!repaired.reused);
         assert_eq!(surveyor.provider.calls.get(), 1);
-        let artifact = project.join(first.raw_path).with_extension("json");
+        let artifact = project.join(&first.raw_paths[0]).with_extension("json");
         fs::write(artifact, b"{")?;
         fs::write(project.join(TRAIL_INDEX), b"{")?;
 
         surveyor.survey(project, "Harriman", 20.0, drop)?;
 
         assert_eq!(surveyor.provider.calls.get(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn overlapping_regions_form_one_deduplicated_corpus_and_can_be_excised() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let project = temp.path();
+        fs::write(project.join("trailgen.toml"), "name = 'Harriman'\n")?;
+        let surveyor = Surveyor::new(FixedPlace, FixedProvider::default());
+        let west = GeoBounds::new(-74.130, 41.225, -74.120, 41.235);
+        let east = GeoBounds::new(-74.127, 41.228, -74.123, 41.234);
+
+        let first = surveyor.add_region(project, west, drop)?;
+        let joined = surveyor.add_region(project, east, drop)?;
+
+        assert_eq!(surveyor.provider.calls.get(), 2);
+        assert_eq!(joined.regions.len(), 2);
+        assert_eq!(joined.inventory, first.inventory);
+        assert_eq!(joined.vertices, first.vertices);
+        assert_eq!(joined.edges, first.edges);
+        assert_eq!(project_config(project)?.regions, joined.regions);
+
+        let shorn = surveyor
+            .remove_region(project, &joined.regions[1].id, drop)?
+            .context("one region should survive")?;
+        assert_eq!(shorn.regions, first.regions);
+        assert_eq!(surveyor.provider.calls.get(), 2);
+        assert!(
+            surveyor
+                .remove_region(project, &first.regions[0].id, drop)?
+                .is_none()
+        );
+        assert!(project_config(project)?.regions.is_empty());
+        assert!(project_config(project)?.managed);
+        assert!(!project.join(GRAPH).exists());
         Ok(())
     }
 }
