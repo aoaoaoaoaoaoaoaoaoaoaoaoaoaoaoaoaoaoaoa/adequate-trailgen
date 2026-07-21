@@ -339,7 +339,7 @@ impl SurveyWorkbench {
         ui.add_space(3.0);
         let projects = ui.add_sized(
             [ui.available_width(), 27.0],
-            chrome::glyph_button("▦  PROJECTS · CTRL+O", false),
+            chrome::glyph_button("PROJECTS · CTRL+O", false),
         );
         chrome::tension(ui, &projects);
         if projects.clicked() {
@@ -353,9 +353,9 @@ impl SurveyWorkbench {
             !self.offline && self.corpus.is_none(),
             chrome::glyph_button(
                 if selecting {
-                    "×  CANCEL DRAWING"
+                    "CANCEL DRAWING"
                 } else {
-                    "▣  ADD MAP AREA"
+                    "ADD MAP AREA"
                 },
                 selecting,
             )
@@ -379,7 +379,7 @@ impl SurveyWorkbench {
                 let remove = ui
                     .add_enabled(
                         self.corpus.is_none(),
-                        chrome::glyph_button("×", false).min_size(vec2(24.0, 24.0)),
+                        chrome::glyph_button("REMOVE", false).min_size(vec2(60.0, 24.0)),
                     )
                     .on_hover_text("Remove this downloaded area and update trails.");
                 if remove.clicked() {
@@ -399,7 +399,7 @@ impl SurveyWorkbench {
             ui.add_space(6.0);
             let refresh = ui.add_enabled(
                 !self.offline && self.corpus.is_none(),
-                chrome::glyph_button("↻  REFRESH TRAILS", false)
+                chrome::glyph_button("REFRESH TRAILS", false)
                     .min_size(vec2(ui.available_width(), 27.0)),
             );
             chrome::tension(ui, &refresh);
@@ -443,7 +443,7 @@ impl SurveyWorkbench {
             if self.corpus.is_none() && !self.scribe.active() {
                 let select = ui.add_enabled(
                     !self.offline,
-                    chrome::glyph_button("▣  ADD MAP AREA", true).min_size(vec2(164.0, 29.0)),
+                    chrome::glyph_button("ADD MAP AREA", true).min_size(vec2(164.0, 29.0)),
                 );
                 chrome::tension(ui, &select);
                 if select.clicked() {
@@ -719,7 +719,7 @@ impl ProjectDeck {
                     .text_color(chrome::TEXT),
             );
             chrome::tension(ui, &edit);
-            let browse = ui.add_sized([142.0, 28.0], chrome::glyph_button("□  BROWSE…", false));
+            let browse = ui.add_sized([142.0, 28.0], chrome::glyph_button("BROWSE…", false));
             chrome::tension(ui, &browse);
             if browse.clicked()
                 && let Some(parent) = self.pick_parent()
@@ -733,7 +733,7 @@ impl ProjectDeck {
         let ready = target.is_some();
         let create = ui.add_enabled(
             ready,
-            chrome::glyph_button("＋  CREATE PROJECT", true).min_size(vec2(245.0, 34.0)),
+            chrome::glyph_button("CREATE PROJECT", true).min_size(vec2(245.0, 34.0)),
         );
         let create =
             create.on_disabled_hover_text("Enter a project name and choose a parent folder.");
@@ -766,7 +766,7 @@ impl ProjectDeck {
             if edit.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
                 *action = Some(ProjectAction::Open(PathBuf::from(self.open_root.trim())));
             }
-            let browse = ui.add_sized([142.0, 28.0], chrome::glyph_button("□  BROWSE…", false));
+            let browse = ui.add_sized([142.0, 28.0], chrome::glyph_button("BROWSE…", false));
             chrome::tension(ui, &browse);
             if browse.clicked()
                 && let Some(root) = self.pick_project()
@@ -779,7 +779,7 @@ impl ProjectDeck {
         let _actions = ui.horizontal(|ui| {
             let open = ui.add_enabled(
                 !self.open_root.trim().is_empty(),
-                chrome::glyph_button("↗  OPEN PROJECT", true).min_size(vec2(210.0, 34.0)),
+                chrome::glyph_button("OPEN PROJECT", true).min_size(vec2(210.0, 34.0)),
             );
             let open = open.on_disabled_hover_text("Choose a project folder first.");
             chrome::tension(ui, &open);
@@ -811,10 +811,7 @@ impl ProjectDeck {
             let response = ui
                 .add_sized(
                     [ui.available_width(), 31.0],
-                    chrome::glyph_button(
-                        format!("◇  {}", project.name.to_ascii_uppercase()),
-                        false,
-                    ),
+                    chrome::glyph_button(project.name.to_ascii_uppercase(), false),
                 )
                 .on_hover_text(project.root.display().to_string());
             chrome::tension(ui, &response);

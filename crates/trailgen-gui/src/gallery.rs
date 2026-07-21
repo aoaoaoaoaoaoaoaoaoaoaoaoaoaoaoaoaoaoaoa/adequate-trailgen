@@ -1,14 +1,14 @@
 use crate::{
     library::SavedTrail,
     map::{
-        CANDIDATE_COLORS, frailest_standing, terrain_color, trail_standing_badge,
+        CANDIDATE_COLORS, frailest_standing, paint_trail_tube, trail_mark, trail_standing_badge,
         trail_standing_color,
     },
 };
 use dwemer_poolrooms::chrome;
-use egui::{Color32, Rect, Response, Sense, Shape, Stroke, Ui, pos2, vec2};
+use egui::{Color32, Rect, Response, Sense, Stroke, Ui, pos2, vec2};
 use serde::{Deserialize, Serialize};
-use trailgen_core::{LineString, Route, Terrain, TrailGraph, TrailStanding};
+use trailgen_core::{LineString, Route, TrailGraph, TrailStanding};
 
 pub const TILE_SIZE: egui::Vec2 = egui::Vec2::new(224.0, 146.0);
 const PLATE_PAD: f32 = 4.0;
@@ -86,12 +86,7 @@ pub fn candidate_tile(
         ),
         active,
         |ui, rect| {
-            paint_miniature(
-                ui,
-                rect,
-                &geometry,
-                CANDIDATE_COLORS[ordinal % CANDIDATE_COLORS.len()],
-            );
+            let color = CANDIDATE_COLORS[ordinal % CANDIDATE_COLORS.len()];
             let mut at = route.start;
             for edge_id in &route.edges {
                 let edge = &graph.edges[edge_id.0];
@@ -100,7 +95,13 @@ pub fn candidate_tile(
                     rect,
                     &geometry,
                     &edge.oriented_geometry(at),
-                    edge.attr.terrain,
+                    color,
+                    trail_mark(
+                        edge.attr.trail_class,
+                        edge.attr.standing,
+                        edge.attr.terrain,
+                        edge.attr.surface.as_deref(),
+                    ),
                 );
                 at = edge
                     .traverse(at)
@@ -119,9 +120,20 @@ pub fn saved_tile(ui: &mut Ui, trail: &SavedTrail, active: bool) -> Response {
         frailest_standing(trail.legs.iter().map(|leg| leg.standing)),
         active,
         |ui, rect| {
-            paint_miniature(ui, rect, &geometry, crate::map::ALLTRAILS_GREEN);
             for leg in &trail.legs {
-                paint_miniature_leg(ui, rect, &geometry, &leg.geometry, leg.terrain);
+                paint_miniature_leg(
+                    ui,
+                    rect,
+                    &geometry,
+                    &leg.geometry,
+                    crate::map::ALLTRAILS_GREEN,
+                    trail_mark(
+                        leg.trail_class,
+                        leg.standing,
+                        leg.terrain,
+                        leg.surface.as_deref(),
+                    ),
+                );
             }
         },
     )
@@ -237,34 +249,16 @@ fn paint_grid(ui: &Ui, rect: Rect) {
     }
 }
 
-fn paint_miniature(ui: &Ui, rect: Rect, geometry: &LineString, color: Color32) {
-    let points = miniature_points(rect, geometry, geometry);
-    if points.len() < 2 {
-        return;
-    }
-    let _envelope = ui.painter().add(Shape::line(
-        points.clone(),
-        Stroke::new(5.4_f32, Color32::from_black_alpha(210)),
-    ));
-    let _path = ui
-        .painter()
-        .add(Shape::line(points, Stroke::new(3.2_f32, color)));
-}
-
 fn paint_miniature_leg(
     ui: &Ui,
     rect: Rect,
     route: &LineString,
     leg: &LineString,
-    terrain: Terrain,
+    color: Color32,
+    mark: crate::map::TrailMark,
 ) {
     let points = miniature_points(rect, route, leg);
-    if points.len() >= 2 {
-        let _terrain = ui.painter().add(Shape::line(
-            points,
-            Stroke::new(1.25_f32, terrain_color(terrain)),
-        ));
-    }
+    paint_trail_tube(ui.painter(), &points, 5.4, color, mark);
 }
 
 fn miniature_points(rect: Rect, route: &LineString, line: &LineString) -> Vec<egui::Pos2> {

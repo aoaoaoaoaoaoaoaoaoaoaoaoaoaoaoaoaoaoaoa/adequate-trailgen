@@ -61,6 +61,7 @@ pub struct TrailApp {
     sort: TrailSort,
     gallery: GalleryDeck,
     viewport: Viewport,
+    focus_frame: FocusFrame,
     fit: Fit,
     serial: u64,
     forge_phase: ForgePhase,
@@ -100,6 +101,25 @@ enum FocusAction {
     Save(egui::Rect),
     Delete(egui::Rect),
     Toggle(FamilyId, egui::Rect),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct FocusFrame {
+    return_to: Option<Viewport>,
+}
+
+impl FocusFrame {
+    fn push(&mut self, viewport: Viewport) {
+        let _ = self.return_to.get_or_insert(viewport);
+    }
+
+    const fn pop(&mut self) -> Option<Viewport> {
+        self.return_to.take()
+    }
+
+    fn base(self, viewport: Viewport) -> Viewport {
+        self.return_to.unwrap_or(viewport)
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -237,6 +257,7 @@ impl TrailApp {
             sort: slate.sort,
             gallery,
             viewport,
+            focus_frame: FocusFrame::default(),
             fit: if restored_viewport.is_some() {
                 Fit::None
             } else {
@@ -310,7 +331,7 @@ impl TrailApp {
         ui.add_space(3.0);
         let projects = ui.add_sized(
             [ui.available_width(), 27.0],
-            chrome::glyph_button("▦  PROJECTS · CTRL+O", false),
+            chrome::glyph_button("PROJECTS · CTRL+O", false),
         );
         chrome::tension(ui, &projects);
         if projects.clicked() {
@@ -343,8 +364,7 @@ impl TrailApp {
 
     fn library_panel(&mut self, ui: &mut egui::Ui) {
         let create = ui.add(
-            chrome::glyph_button("＋  NEW FAMILY", false)
-                .min_size(vec2(ui.available_width(), 27.0)),
+            chrome::glyph_button("NEW FAMILY", false).min_size(vec2(ui.available_width(), 27.0)),
         );
         chrome::tension(ui, &create);
         if create.clicked() {
@@ -360,7 +380,7 @@ impl TrailApp {
         let unfiled = ui.add_sized(
             [ui.available_width(), 25.0],
             chrome::glyph_button(
-                format!("◇  UNFILED                                      {loose}"),
+                format!("UNFILED                                      {loose}"),
                 self.active_family.is_none(),
             ),
         );
@@ -382,11 +402,11 @@ impl TrailApp {
         let mut remove = None;
         for (id, name, count) in families {
             let _row = ui.horizontal(|ui| {
-                let width = (ui.available_width() - 27.0).max(30.0);
+                let width = (ui.available_width() - 58.0).max(30.0);
                 let family = ui.add_sized(
                     [width, 25.0],
                     chrome::glyph_button(
-                        format!("◇  {}    {count}", name.to_ascii_uppercase()),
+                        format!("{}    {count}", name.to_ascii_uppercase()),
                         self.active_family == Some(id),
                     ),
                 );
@@ -395,7 +415,7 @@ impl TrailApp {
                     select = Some((id, family.rect));
                 }
                 let excise = ui
-                    .add(chrome::glyph_button("×", false).min_size(vec2(23.0, 23.0)))
+                    .add(chrome::glyph_button("DELETE", false).min_size(vec2(54.0, 23.0)))
                     .on_hover_text("Delete this family. Its trails remain in Unfiled.");
                 if excise.clicked() {
                     remove = Some((id, excise.rect));
@@ -415,8 +435,7 @@ impl TrailApp {
                 self.select_family(self.library.families().first().map(|family| family.id));
             }
             if matches!(self.focus, Some(Focus::Candidate { family, .. }) if family == id) {
-                self.focus = None;
-                self.fit = Fit::Graph;
+                self.leave_focus();
             }
             self.flush_library();
             "Family deleted. Its trails are now Unfiled.".clone_into(&mut self.status);
@@ -472,9 +491,9 @@ impl TrailApp {
             !striking && validation.is_none(),
             chrome::glyph_button(
                 if striking {
-                    "◌  FINDING TRAILS…"
+                    "FINDING TRAILS…"
                 } else {
-                    "⌕  FIND TRAILS"
+                    "FIND TRAILS"
                 },
                 !striking && validation.is_none(),
             )
@@ -498,11 +517,11 @@ impl TrailApp {
             let place = ui.add(
                 chrome::glyph_button(
                     if placing {
-                        "×  CANCEL"
+                        "CANCEL"
                     } else if recipe.trailhead.is_some() {
-                        "⌖  MOVE ON MAP"
+                        "MOVE ON MAP"
                     } else {
-                        "⌖  PLACE ON MAP"
+                        "PLACE ON MAP"
                     },
                     placing,
                 )
@@ -520,12 +539,12 @@ impl TrailApp {
                 self.placing_trailhead = !placing;
                 if self.placing_trailhead {
                     self.scribe.disarm();
-                    self.focus = None;
+                    self.leave_focus();
                 }
                 self.water.click(place.rect);
             }
             if recipe.trailhead.is_some() {
-                let clear = ui.add(chrome::glyph_button("×", false).min_size(vec2(27.0, 27.0)));
+                let clear = ui.add(chrome::glyph_button("CLEAR", false).min_size(vec2(48.0, 27.0)));
                 if clear.clicked() {
                     recipe.trailhead = None;
                     self.placing_trailhead = false;
@@ -571,9 +590,9 @@ impl TrailApp {
             !self.offline && self.corpus.is_none(),
             chrome::glyph_button(
                 if selecting {
-                    "×  CANCEL DRAWING"
+                    "CANCEL DRAWING"
                 } else {
-                    "▣  ADD MAP AREA"
+                    "ADD MAP AREA"
                 },
                 selecting,
             )
@@ -586,7 +605,7 @@ impl TrailApp {
             } else {
                 self.scribe.arm();
                 self.placing_trailhead = false;
-                self.focus = None;
+                self.leave_focus();
             }
             self.water.click(select.rect);
         }
@@ -599,7 +618,7 @@ impl TrailApp {
                     let remove = ui
                         .add_enabled(
                             self.corpus.is_none(),
-                            chrome::glyph_button("×", false).min_size(vec2(22.0, 22.0)),
+                            chrome::glyph_button("REMOVE", false).min_size(vec2(58.0, 22.0)),
                         )
                         .on_hover_text("Remove this downloaded area and update trails.");
                     if remove.clicked() {
@@ -617,7 +636,7 @@ impl TrailApp {
         if !self.regions.is_empty() {
             let refresh = ui.add_enabled(
                 !self.offline && self.corpus.is_none(),
-                chrome::glyph_button("↻  REFRESH TRAILS", false)
+                chrome::glyph_button("REFRESH TRAILS", false)
                     .min_size(vec2(ui.available_width(), 24.0)),
             );
             chrome::tension(ui, &refresh);
@@ -713,7 +732,7 @@ impl TrailApp {
                     .and_then(|family| self.candidates.get(&family))
                     .is_some_and(|run| !run.routes.is_empty())
             {
-                let response = chrome::glyph(ui, "× CLEAR", false);
+                let response = chrome::glyph(ui, "CLEAR RESULTS", false);
                 if response.clicked() {
                     clear = Some(response.rect);
                 }
@@ -759,11 +778,13 @@ impl TrailApp {
             if back.clicked() {
                 action = Some(FocusAction::Close(back.rect));
             }
-            let previous = chrome::glyph_enabled(ui, self.focus_count() > 1, "◀", false);
+            let previous = chrome::glyph_enabled(ui, self.focus_count() > 1, "◀", false)
+                .on_hover_text("Previous trail");
             if previous.clicked() {
                 action = Some(FocusAction::Step(-1, previous.rect));
             }
-            let next = chrome::glyph_enabled(ui, self.focus_count() > 1, "▶", false);
+            let next = chrome::glyph_enabled(ui, self.focus_count() > 1, "▶", false)
+                .on_hover_text("Next trail");
             if next.clicked() {
                 action = Some(FocusAction::Step(1, next.rect));
             }
@@ -790,7 +811,7 @@ impl TrailApp {
             }
             match &self.focus {
                 Some(Focus::Candidate { .. }) => {
-                    let save = chrome::glyph(ui, "＋ SAVE TRAIL", true);
+                    let save = chrome::glyph(ui, "SAVE TRAIL", true);
                     if save.clicked() {
                         action = Some(FocusAction::Save(save.rect));
                     }
@@ -805,12 +826,17 @@ impl TrailApp {
                                 name.to_ascii_uppercase()
                             ),
                             *member,
-                        );
+                        )
+                        .on_hover_text(if *member {
+                            "Remove this trail from the family"
+                        } else {
+                            "Add this trail to the family"
+                        });
                         if response.clicked() {
                             action = Some(FocusAction::Toggle(*family, response.rect));
                         }
                     }
-                    let delete = chrome::glyph(ui, "× DELETE TRAIL", false);
+                    let delete = chrome::glyph(ui, "DELETE TRAIL", false);
                     if delete.clicked() {
                         action = Some(FocusAction::Delete(delete.rect));
                     }
@@ -824,8 +850,7 @@ impl TrailApp {
     fn enact_focus_action(&mut self, action: Option<&FocusAction>) {
         match action {
             Some(FocusAction::Close(rect)) => {
-                self.focus = None;
-                self.fit = Fit::Graph;
+                self.leave_focus();
                 self.water.click(*rect);
             }
             Some(FocusAction::Step(delta, rect)) => {
@@ -897,8 +922,7 @@ impl TrailApp {
             });
         self.water.heave(ui.ctx(), scroll.state.offset.x);
         if let Some((id, rect)) = opened {
-            self.fit = Fit::Saved(id.clone());
-            self.focus = Some(Focus::Saved(id));
+            self.enter_focus(Focus::Saved(id));
             self.water.click(rect);
         }
     }
@@ -960,8 +984,7 @@ impl TrailApp {
             });
         self.water.heave(ui.ctx(), scroll.state.offset.x);
         if let Some((slot, rect)) = opened {
-            self.fit = Fit::Candidate { family, slot };
-            self.focus = Some(Focus::Candidate { family, slot });
+            self.enter_focus(Focus::Candidate { family, slot });
             self.water.click(rect);
         }
     }
@@ -1072,20 +1095,12 @@ impl TrailApp {
                         self.viewport,
                         rect,
                         ALLTRAILS_GREEN,
-                        true,
                     );
                 }
             }
             Some(Focus::Saved(id)) => {
                 if let Some(trail) = self.library.trail(id) {
-                    map::paint_saved_trail(
-                        painter,
-                        trail,
-                        self.viewport,
-                        rect,
-                        ALLTRAILS_GREEN,
-                        true,
-                    );
+                    map::paint_saved_trail(painter, trail, self.viewport, rect, ALLTRAILS_GREEN);
                 }
             }
             None if self.gallery == GalleryDeck::Results => {
@@ -1104,7 +1119,6 @@ impl TrailApp {
                             self.viewport,
                             rect,
                             CANDIDATE_COLORS[ordinal % CANDIDATE_COLORS.len()],
-                            false,
                         );
                     }
                 }
@@ -1117,7 +1131,6 @@ impl TrailApp {
                         self.viewport,
                         rect,
                         ALLTRAILS_GREEN.gamma_multiply(0.92),
-                        false,
                     );
                 }
             }
@@ -1374,7 +1387,7 @@ impl TrailApp {
             .and_then(|id| self.library.family(id))
             .map_or_else(String::new, |family| family.name.to_string());
         self.placing_trailhead = false;
-        self.focus = None;
+        self.leave_focus();
     }
 
     fn commit_family_name(&mut self) {
@@ -1417,8 +1430,7 @@ impl TrailApp {
         };
         match self.library.promote(family, &self.graph, &route) {
             Ok(id) => {
-                self.focus = Some(Focus::Saved(id.clone()));
-                self.fit = Fit::Saved(id);
+                self.enter_focus(Focus::Saved(id));
                 self.gallery = GalleryDeck::Library;
                 self.flush_library();
                 "Trail saved to its family.".clone_into(&mut self.status);
@@ -1432,8 +1444,7 @@ impl TrailApp {
             return;
         };
         if self.library.remove_trail(&id) {
-            self.focus = None;
-            self.fit = Fit::Graph;
+            self.leave_focus();
             self.flush_library();
             "Trail deleted from the project.".clone_into(&mut self.status);
         }
@@ -1541,6 +1552,26 @@ impl TrailApp {
         self.focus = Some(next);
     }
 
+    fn enter_focus(&mut self, focus: Focus) {
+        self.focus_frame.push(self.viewport);
+        self.fit = match &focus {
+            Focus::Candidate { family, slot } => Fit::Candidate {
+                family: *family,
+                slot: *slot,
+            },
+            Focus::Saved(id) => Fit::Saved(id.clone()),
+        };
+        self.focus = Some(focus);
+    }
+
+    fn leave_focus(&mut self) {
+        self.focus = None;
+        if let Some(viewport) = self.focus_frame.pop() {
+            self.viewport = viewport;
+        }
+        self.fit = Fit::None;
+    }
+
     fn apply_fit(&mut self, rect: egui::Rect) {
         let viewport = match &self.fit {
             Fit::Graph => Some(Viewport::fit_graph(&self.graph, rect)),
@@ -1588,8 +1619,7 @@ impl TrailApp {
             return;
         }
         if escape && self.focus.is_some() {
-            self.focus = None;
-            self.fit = Fit::Graph;
+            self.leave_focus();
         }
         if self.focus.is_none() {
             return;
@@ -1636,7 +1666,7 @@ impl TrailApp {
     fn snapshot(&self) -> Slate {
         Slate {
             project: self.root.clone(),
-            viewport: Some(self.viewport),
+            viewport: Some(self.focus_frame.base(self.viewport)),
             shutters: self.shutters.clone(),
             inspector_scroll: self.inspector_scroll,
             sort: self.sort,
@@ -1805,5 +1835,25 @@ mod tests {
         assert_eq!(cyclic_step(&order, 1, 1), Some(7));
         assert_eq!(cyclic_step(&order, 4, -1), Some(7));
         assert_eq!(cyclic_step(&order, 8, 1), None);
+    }
+
+    #[test]
+    fn focus_frame_restores_the_view_that_opened_it() {
+        let base = Viewport {
+            center: [0.21, 0.37],
+            zoom: 14.5,
+        };
+        let second_focus = Viewport {
+            center: [0.72, 0.81],
+            zoom: 19.0,
+        };
+        let mut frame = FocusFrame::default();
+
+        frame.push(base);
+        frame.push(second_focus);
+
+        assert_eq!(frame.base(second_focus), base);
+        assert_eq!(frame.pop(), Some(base));
+        assert_eq!(frame.pop(), None);
     }
 }

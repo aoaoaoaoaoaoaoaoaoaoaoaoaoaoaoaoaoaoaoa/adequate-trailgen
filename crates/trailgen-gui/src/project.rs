@@ -229,13 +229,13 @@ impl SearchForge {
                 while let Ok(request) = commands.recv() {
                     let started = Instant::now();
                     let solver = request.solver.resolve(&worker_graph);
-                    let routes = solver.solve(
+                    let routes = exact_matches(solver.solve(
                         request.params,
                         &worker_graph,
                         request.start,
                         &request.constraints,
                         request.count,
-                    );
+                    ));
                     if events_tx
                         .send(SearchEvent::Found {
                             serial: request.serial,
@@ -265,6 +265,13 @@ impl SearchForge {
             .try_send(request)
             .map_err(|_| anyhow::anyhow!("trail search is already running"))
     }
+}
+
+fn exact_matches(routes: Vec<Route>) -> Vec<Route> {
+    routes
+        .into_iter()
+        .filter(|route| route.verdict.satisfied)
+        .collect()
 }
 
 #[cfg(test)]
@@ -306,6 +313,33 @@ mod tests {
             count: 1,
         };
         assert!(request.validate(&graph).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn gui_discards_solver_near_misses() -> Result<()> {
+        let graph = fixture_graph()?;
+        let mut constraints = LoopConstraints {
+            min_distance_m: 100_000.0,
+            max_distance_m: 200_000.0,
+            ..LoopConstraints::default()
+        };
+        constraints.max_road_fraction = 1.0;
+        constraints.max_low_confidence_fraction = 1.0;
+        constraints.max_repeated_edge_fraction = 1.0;
+        let routes = SolverKind::Exact.solve(
+            SearchParams::default(),
+            &graph,
+            VertexId(0),
+            &constraints,
+            12,
+        );
+        assert!(
+            !routes.is_empty(),
+            "fixture should produce ranked near misses"
+        );
+        assert!(routes.iter().all(|route| !route.verdict.satisfied));
+        assert!(exact_matches(routes).is_empty());
         Ok(())
     }
 

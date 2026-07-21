@@ -145,15 +145,33 @@ pub fn navigate_with(
 pub struct Atlas {
     edges: Vec<WorldEdge>,
     classes: Vec<TrailClass>,
-    standings: Vec<TrailStanding>,
 }
 
 struct WorldEdge {
     points: Vec<[f64; 2]>,
     bounds: [f64; 4],
     trail_class: TrailClass,
-    standing: TrailStanding,
+    mark: TrailMark,
     access: Access,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrailMark {
+    Solid,
+    Dashed,
+    Dotted,
+}
+
+impl TrailMark {
+    const ALL: [Self; 3] = [Self::Solid, Self::Dashed, Self::Dotted];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Solid => "EASY / GRAVEL",
+            Self::Dashed => "ROUGHER",
+            Self::Dotted => "SEVERE / FADED",
+        }
+    }
 }
 
 impl Atlas {
@@ -173,7 +191,12 @@ impl Atlas {
                     bounds: enclosing_bounds(&points),
                     points,
                     trail_class: edge.attr.trail_class,
-                    standing: edge.attr.standing,
+                    mark: trail_mark(
+                        edge.attr.trail_class,
+                        edge.attr.standing,
+                        edge.attr.terrain,
+                        edge.attr.surface.as_deref(),
+                    ),
                     access: edge.attr.access,
                 }
             })
@@ -184,29 +207,16 @@ impl Atlas {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
-        let standings = edges
-            .iter()
-            .map(|edge| edge.standing)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        Self {
-            edges,
-            classes,
-            standings,
-        }
+        Self { edges, classes }
     }
 
     pub fn paint_legend(&self, painter: &Painter, rect: Rect) {
         if self.classes.is_empty() {
             return;
         }
-        let width = 150.0;
+        let width = 166.0;
         let row = 16.0;
-        let status_rows = self.standings.len();
-        let height = 28.0
-            + row * (self.classes.len() + status_rows) as f32
-            + if status_rows == 0 { 0.0 } else { 18.0 };
+        let height = 46.0 + row * (self.classes.len() + TrailMark::ALL.len()) as f32;
         let plate = Rect::from_min_size(
             pos2(rect.right() - width - 12.0, rect.top() + 12.0),
             vec2(width, height),
@@ -227,13 +237,12 @@ impl Atlas {
         );
         for (slot, class) in self.classes.iter().copied().enumerate() {
             let y = (slot as f32).mul_add(row, plate.top() + 23.0);
-            painter.line_segment(
-                [pos2(plate.left() + 9.0, y), pos2(plate.left() + 27.0, y)],
-                Stroke::new(5.0_f32, Color32::from_black_alpha(215)),
-            );
-            painter.line_segment(
-                [pos2(plate.left() + 9.0, y), pos2(plate.left() + 27.0, y)],
-                Stroke::new(2.7_f32, trail_class_color(class)),
+            paint_trail_tube(
+                painter,
+                &[pos2(plate.left() + 9.0, y), pos2(plate.left() + 27.0, y)],
+                5.2,
+                trail_class_color(class),
+                TrailMark::Solid,
             );
             painter.text(
                 pos2(plate.left() + 34.0, y),
@@ -243,33 +252,30 @@ impl Atlas {
                 chrome::TEXT,
             );
         }
-        if !self.standings.is_empty() {
-            let heading_y = (self.classes.len() as f32).mul_add(row, plate.top() + 27.0);
-            painter.text(
-                pos2(plate.left() + 8.0, heading_y),
-                egui::Align2::LEFT_TOP,
-                "PATH STATUS",
-                egui::FontId::monospace(9.5),
-                chrome::MUTED,
+        let heading_y = (self.classes.len() as f32).mul_add(row, plate.top() + 27.0);
+        painter.text(
+            pos2(plate.left() + 8.0, heading_y),
+            egui::Align2::LEFT_TOP,
+            "SURFACE / CONDITION",
+            egui::FontId::monospace(9.5),
+            chrome::MUTED,
+        );
+        for (slot, mark) in TrailMark::ALL.into_iter().enumerate() {
+            let y = (slot as f32).mul_add(row, heading_y + 19.0);
+            paint_trail_tube(
+                painter,
+                &[pos2(plate.left() + 9.0, y), pos2(plate.left() + 27.0, y)],
+                5.2,
+                ALLTRAILS_GREEN,
+                mark,
             );
-            for (slot, standing) in self.standings.iter().copied().enumerate() {
-                let y = (slot as f32).mul_add(row, heading_y + 19.0);
-                painter.line_segment(
-                    [pos2(plate.left() + 9.0, y), pos2(plate.left() + 27.0, y)],
-                    Stroke::new(5.0_f32, trail_standing_color(standing)),
-                );
-                painter.line_segment(
-                    [pos2(plate.left() + 9.0, y), pos2(plate.left() + 27.0, y)],
-                    Stroke::new(2.0_f32, chrome::TEXT),
-                );
-                painter.text(
-                    pos2(plate.left() + 34.0, y),
-                    egui::Align2::LEFT_CENTER,
-                    trail_standing_label(standing),
-                    egui::FontId::monospace(9.5),
-                    chrome::TEXT,
-                );
-            }
+            painter.text(
+                pos2(plate.left() + 34.0, y),
+                egui::Align2::LEFT_CENTER,
+                mark.label(),
+                egui::FontId::monospace(9.5),
+                chrome::TEXT,
+            );
         }
     }
 
@@ -285,17 +291,13 @@ impl Atlas {
                 .copied()
                 .map(|world| screen_at(view, rect, world))
                 .collect::<Vec<_>>();
-            let envelope = if matches!(edge.access, Access::Closed | Access::Private) {
-                Color32::from_rgb(145, 70, 57)
-            } else {
-                trail_standing_color(edge.standing)
-            };
-            let _envelope =
-                painter.add(Shape::line(points.clone(), Stroke::new(5.2_f32, envelope)));
-            let _core = painter.add(Shape::line(
-                points,
-                Stroke::new(2.65_f32, trail_class_color(edge.trail_class)),
-            ));
+            paint_trail_tube(
+                painter,
+                &points,
+                5.4,
+                accessible_tube(trail_class_color(edge.trail_class), edge.access),
+                edge.mark,
+            );
         }
     }
 }
@@ -307,7 +309,6 @@ pub fn paint_route(
     view: Viewport,
     rect: Rect,
     color: Color32,
-    terrain_detail: bool,
 ) {
     let mut at = route.start;
     for edge_id in &route.edges {
@@ -320,23 +321,18 @@ pub fn paint_route(
             .map(world_from_coord)
             .map(|world| screen_at(view, rect, world))
             .collect::<Vec<_>>();
-        let _shadow = painter.add(Shape::line(
-            points.clone(),
-            Stroke::new(
-                if terrain_detail { 9.0_f32 } else { 7.2_f32 },
-                path_envelope(edge.attr.standing, edge.attr.access),
+        paint_trail_tube(
+            painter,
+            &points,
+            7.2,
+            accessible_tube(color, edge.attr.access),
+            trail_mark(
+                edge.attr.trail_class,
+                edge.attr.standing,
+                edge.attr.terrain,
+                edge.attr.surface.as_deref(),
             ),
-        ));
-        let _route = painter.add(Shape::line(
-            points.clone(),
-            Stroke::new(if terrain_detail { 6.0_f32 } else { 4.4_f32 }, color),
-        ));
-        if terrain_detail {
-            let _terrain = painter.add(Shape::line(
-                points,
-                Stroke::new(2.3_f32, terrain_color(edge.attr.terrain)),
-            ));
-        }
+        );
         at = edge
             .traverse(at)
             .expect("validated route edge must be traversable");
@@ -349,7 +345,6 @@ pub fn paint_saved_trail(
     view: Viewport,
     rect: Rect,
     color: Color32,
-    terrain_detail: bool,
 ) {
     for leg in &trail.legs {
         paint_line(
@@ -357,9 +352,13 @@ pub fn paint_saved_trail(
             &leg.geometry,
             view,
             rect,
-            color,
-            path_envelope(leg.standing, leg.access),
-            terrain_detail.then_some(terrain_color(leg.terrain)),
+            accessible_tube(color, leg.access),
+            trail_mark(
+                leg.trail_class,
+                leg.standing,
+                leg.terrain,
+                leg.surface.as_deref(),
+            ),
         );
     }
 }
@@ -370,8 +369,7 @@ fn paint_line(
     view: Viewport,
     rect: Rect,
     color: Color32,
-    envelope: Color32,
-    detail: Option<Color32>,
+    mark: TrailMark,
 ) {
     let points = line
         .points
@@ -383,16 +381,126 @@ fn paint_line(
     if points.len() < 2 {
         return;
     }
-    let _envelope = painter.add(Shape::line(
-        points.clone(),
-        Stroke::new(if detail.is_some() { 9.0_f32 } else { 7.2_f32 }, envelope),
-    ));
-    let _core = painter.add(Shape::line(
-        points.clone(),
-        Stroke::new(if detail.is_some() { 6.0_f32 } else { 4.4_f32 }, color),
-    ));
-    if let Some(detail) = detail {
-        let _detail = painter.add(Shape::line(points, Stroke::new(2.3_f32, detail)));
+    paint_trail_tube(painter, &points, 7.2, color, mark);
+}
+
+pub fn paint_trail_tube(
+    painter: &Painter,
+    points: &[Pos2],
+    width: f32,
+    color: Color32,
+    mark: TrailMark,
+) {
+    if points.len() < 2 {
+        return;
+    }
+    let _tube = painter.add(Shape::line(points.to_vec(), Stroke::new(width, color)));
+    let core = Stroke::new((width * 0.30).max(1.2), Color32::from_rgb(20, 19, 17));
+    match mark {
+        TrailMark::Solid => {
+            let _core = painter.add(Shape::line(points.to_vec(), core));
+        }
+        TrailMark::Dashed => {
+            painter.extend(Shape::dashed_line(points, core, width * 1.35, width * 0.82));
+        }
+        TrailMark::Dotted => {
+            painter.extend(Shape::dotted_line(
+                points,
+                core.color,
+                width * 1.15,
+                core.width * 0.55,
+            ));
+        }
+    }
+}
+
+pub fn trail_mark(
+    class: TrailClass,
+    standing: TrailStanding,
+    terrain: Terrain,
+    surface: Option<&str>,
+) -> TrailMark {
+    if class.pathless()
+        || matches!(
+            standing,
+            TrailStanding::Unmaintained | TrailStanding::Informal | TrailStanding::Historical
+        )
+        || matches!(terrain, Terrain::Talus | Terrain::Scramble | Terrain::Water)
+        || surface_has_any(
+            surface,
+            &[
+                "rock", "rocky", "scree", "boulder", "mud", "sand", "snow", "ice",
+            ],
+        )
+    {
+        return TrailMark::Dotted;
+    }
+    if surface_has_any(
+        surface,
+        &[
+            "dirt",
+            "earth",
+            "ground",
+            "grass",
+            "unpaved",
+            "native",
+            "clay",
+            "soil",
+            "stone",
+            "cobblestone",
+            "woodchips",
+            "leaf",
+            "litter",
+        ],
+    ) {
+        return TrailMark::Dashed;
+    }
+    if surface_has_any(
+        surface,
+        &[
+            "asphalt",
+            "concrete",
+            "paved",
+            "paving",
+            "compacted",
+            "gravel",
+            "pebblestone",
+            "boardwalk",
+            "wood",
+        ],
+    ) {
+        return TrailMark::Solid;
+    }
+    if matches!(
+        terrain,
+        Terrain::Unknown | Terrain::Forest | Terrain::Alpine
+    ) || matches!(
+        class,
+        TrailClass::Unknown | TrailClass::Path | TrailClass::Steps | TrailClass::Bridleway
+    ) {
+        TrailMark::Dashed
+    } else {
+        TrailMark::Solid
+    }
+}
+
+fn surface_has_any(surface: Option<&str>, needles: &[&str]) -> bool {
+    surface.is_some_and(|surface| {
+        surface
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .any(|word| {
+                needles
+                    .iter()
+                    .any(|needle| word.eq_ignore_ascii_case(needle))
+            })
+    })
+}
+
+const fn accessible_tube(color: Color32, access: Access) -> Color32 {
+    if matches!(access, Access::Closed | Access::Private) {
+        Color32::from_rgb(184, 70, 58)
+    } else {
+        color
     }
 }
 
@@ -529,14 +637,6 @@ pub fn frailest_standing(
     })
 }
 
-const fn path_envelope(standing: TrailStanding, access: Access) -> Color32 {
-    if matches!(access, Access::Closed | Access::Private) {
-        Color32::from_rgb(145, 70, 57)
-    } else {
-        trail_standing_color(standing)
-    }
-}
-
 fn fit_coords(coords: impl Iterator<Item = Coord>, rect: Rect) -> Viewport {
     let mut worlds = coords.map(world_from_coord);
     let Some(first) = worlds.next() else {
@@ -651,7 +751,7 @@ mod tests {
             points: vec![[0.1, 0.5], [0.9, 0.5]],
             bounds: [0.1, 0.5, 0.9, 0.5],
             trail_class: TrailClass::Path,
-            standing: TrailStanding::Established,
+            mark: TrailMark::Solid,
             access: Access::Open,
         };
         assert!(intersects(&edge, [0.4, 0.4, 0.6, 0.6]));
@@ -663,6 +763,55 @@ mod tests {
         assert_ne!(
             trail_class_color(TrailClass::Bushwhack),
             trail_class_color(TrailClass::Path)
+        );
+    }
+
+    #[test]
+    fn trail_marks_encode_surface_and_condition() {
+        assert_eq!(
+            trail_mark(
+                TrailClass::Path,
+                TrailStanding::Established,
+                Terrain::Trail,
+                Some("gravel")
+            ),
+            TrailMark::Solid
+        );
+        assert_eq!(
+            trail_mark(
+                TrailClass::Path,
+                TrailStanding::Established,
+                Terrain::Trail,
+                Some("dirt")
+            ),
+            TrailMark::Dashed
+        );
+        assert_eq!(
+            trail_mark(
+                TrailClass::Path,
+                TrailStanding::Established,
+                Terrain::Scramble,
+                Some("gravel")
+            ),
+            TrailMark::Dotted
+        );
+        assert_eq!(
+            trail_mark(
+                TrailClass::Path,
+                TrailStanding::Unmaintained,
+                Terrain::Trail,
+                Some("gravel")
+            ),
+            TrailMark::Dotted
+        );
+        assert_eq!(
+            trail_mark(
+                TrailClass::Bushwhack,
+                TrailStanding::Unknown,
+                Terrain::Forest,
+                None
+            ),
+            TrailMark::Dotted
         );
     }
 }

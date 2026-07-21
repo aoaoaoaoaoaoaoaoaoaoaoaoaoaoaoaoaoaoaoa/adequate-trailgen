@@ -7433,7 +7433,10 @@ mod tests {
         let trails = overpass_query(OsmProfile::Trails, area, 45);
         assert!(trails.starts_with("[out:xml][timeout:45];"));
         assert!(trails.contains(&format!(
-            r#"way["highway"~"^(path|footway|track|pedestrian|steps|bridleway|service|living_street|residential|unclassified|tertiary|secondary|primary|road)$"]{bbox};"#
+            r#"way["highway"~"^(path|track|steps|bridleway)$"]{bbox};"#
+        )));
+        assert!(trails.contains(&format!(
+            r#"way["highway"="footway"]["footway"!~"^(sidewalk|crossing|traffic_island)$"]{bbox};"#
         )));
         assert!(trails.contains(&format!(
             r#"way["disused:highway"~"^(path|footway|track|pedestrian|steps|bridleway)$"]{bbox};"#
@@ -7466,6 +7469,7 @@ mod tests {
         assert_eq!(
             all.matches(bbox).count(),
             overpass_selector_count(OsmProfile::Trails) - 2
+                + overpass_selector_count(OsmProfile::Roads)
         );
 
         assert_acquired_classes(

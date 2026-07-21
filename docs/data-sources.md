@@ -28,11 +28,13 @@ hiker/pedestrian trails. It preserves permanent or source feature identity, sour
 dataset identity, surface, and public-domain provenance. USGS inclusion does not prove public access,
 so its edges deliberately carry `access = unknown`.
 
-The OSM adapter accepts path, footway, track, steps, bridleway, and ordinary walkable road/service
-connectors. Motorway and trunk geometry is not admitted merely because it is a road. Hiking, foot,
-and walking route relations raise evidence; simple node-via foot turn restrictions become graph turn
-bans. `foot`/`access`, direction, surface, trail visibility, maintenance, `informal`, `disused`, and
-`abandoned` tags remain semantic input rather than display trivia.
+The OSM adapter accepts path, non-sidewalk footway, track, steps, and bridleway geometry as trail
+evidence. A street is never a trail merely because walking is legal there: service, pedestrian, and
+road segments survive only when they form the nearest bridge of at most 1 km between two genuine
+trail junctions. The unpruned road layer remains sequestered as context for crossings and exposure.
+Hiking, foot, and walking route relations raise evidence; simple node-via foot turn restrictions
+become graph turn bans. `foot`/`access`, direction, surface, trail visibility, maintenance,
+`informal`, `disused`, and `abandoned` tags remain semantic input rather than display trivia.
 
 ## Standing And Access
 
@@ -118,9 +120,9 @@ The standing owned fixtures are `harriman-south-lows.csv` and `harriman-west.csv
 end-to-end generation tests. A 2026-07-21 public-source probe additionally matched every source
 segment of both traces to the current OSM graph within 40 m and found no disconnected transition;
 maximum geometric separation was 2.74 m for South Lows and 5.23 m for West. USGS enriched the wider
-Harriman corpus but did not improve either owned trace. The decisive South Lows repair was admitting
-ordinary walkable service/road connectors and cautiously joining provider-fragment endpoints, not
-inventing missing trail geometry.
+Harriman corpus but did not improve either owned trace. The decisive South Lows repair was retaining
+a bounded street bridge between genuine trail junctions and cautiously joining provider-fragment
+endpoints, not admitting the surrounding street mesh or inventing missing trail geometry.
 
 See the [USGS access guide](https://www.usgs.gov/national-digital-trails/how-access-or-view-usgs-trails-dataset),
 [USGS dataset Q&A](https://www.usgs.gov/national-digital-trails/qas-about-usgs-trail-data),

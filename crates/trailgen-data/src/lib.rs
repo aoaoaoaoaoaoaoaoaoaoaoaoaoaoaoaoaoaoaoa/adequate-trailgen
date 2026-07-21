@@ -12,7 +12,8 @@ use reqwest::blocking::Response;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    cmp::Ordering,
+    collections::{BTreeMap, BTreeSet, BinaryHeap},
     env,
     fmt::Write as _,
     fs::{self, File, OpenOptions},
@@ -42,8 +43,9 @@ pub const FALLBACK_OVERPASS_ENDPOINT: &str = "https://overpass.private.coffee/ap
 pub const MAX_REGION_DEG2: f64 = 4.0;
 pub(crate) const MAX_SOURCE_BYTES: u64 = 256 * 1024 * 1024;
 const AUTOMATIC_OSM_PROFILE: OsmProfile = OsmProfile::All;
-const INDEX_SCHEMA: u8 = 7;
+const INDEX_SCHEMA: u8 = 8;
 const RAW_SCHEMA: u8 = 4;
+const MAX_OSM_CONNECTOR_M: f64 = 1_000.0;
 const LOCATION_CACHE: &str = "sources/location.json";
 const TRAIL_INDEX: &str = "cache/trails.json";
 const GRAPH: &str = "cache/graph.json";
@@ -51,7 +53,8 @@ const GRAPH_GEOJSON: &str = "cache/graph.geojson";
 const CONFLATION_REPORT: &str = "cache/conflation.json";
 const SOURCE_MANIFEST: &str = "sources/manifest.json";
 const OSM_TRAIL_SELECTORS: &[&str] = &[
-    r#"way["highway"~"^(path|footway|track|pedestrian|steps|bridleway|service|living_street|residential|unclassified|tertiary|secondary|primary|road)$"]"#,
+    r#"way["highway"~"^(path|track|steps|bridleway)$"]"#,
+    r#"way["highway"="footway"]["footway"!~"^(sidewalk|crossing|traffic_island)$"]"#,
     r#"way["disused:highway"~"^(path|footway|track|pedestrian|steps|bridleway)$"]"#,
     r#"way["abandoned:highway"~"^(path|footway|track|pedestrian|steps|bridleway)$"]"#,
     r#"way["route"~"^(hiking|foot|walking)$"]"#,
@@ -650,7 +653,7 @@ impl NetworkProvider for Overpass {
         ProviderDescriptor {
             id: ProviderId::new("osm").expect("static provider id is valid"),
             label: "OpenStreetMap",
-            adapter_revision: 3,
+            adapter_revision: 4,
             precedence: 0,
             extension: "osm",
             request_extension: "overpassql",
@@ -669,10 +672,194 @@ impl NetworkProvider for Overpass {
     fn normalize(&self, shards: &[RawShard<'_>]) -> Result<NormalizedNetwork> {
         let merged = merge_osm(shards)?;
         Ok(NormalizedNetwork {
-            drafts: osm::network_from_str(&merged)?,
+            drafts: sever_osm_street_mesh(osm::network_from_str(&merged)?),
             context: osm::context_overlays_from_str(&merged)?,
         })
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct OsmJunction(u64, u64);
+
+impl From<Coord> for OsmJunction {
+    fn from(coord: Coord) -> Self {
+        Self(coord.lon.to_bits(), coord.lat.to_bits())
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct OsmConnector {
+    draft: usize,
+    a: OsmJunction,
+    b: OsmJunction,
+    length_m: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct OsmWalk {
+    junction: OsmJunction,
+    distance_m: f64,
+}
+
+impl Eq for OsmWalk {}
+
+impl Ord for OsmWalk {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .distance_m
+            .total_cmp(&self.distance_m)
+            .then_with(|| self.junction.cmp(&other.junction))
+    }
+}
+
+impl PartialOrd for OsmWalk {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Admit streets only when they form the nearest short bridge between two
+/// genuine trail junctions. Road geometry remains in the context stratum, so
+/// this excision does not discard crossing or exposure evidence.
+fn sever_osm_street_mesh(mut drafts: Vec<SegmentDraft>) -> Vec<SegmentDraft> {
+    let mut keep = drafts.iter().map(osm_trail_anchor).collect::<Vec<_>>();
+    let mut anchor_junctions = BTreeSet::new();
+    let mut connectors = Vec::new();
+    for (index, draft) in drafts.iter().enumerate() {
+        let a = OsmJunction::from(draft.geometry.start());
+        let b = OsmJunction::from(draft.geometry.end());
+        if keep[index] {
+            let _ = anchor_junctions.insert(a);
+            let _ = anchor_junctions.insert(b);
+        } else if osm_connector(draft) {
+            connectors.push(OsmConnector {
+                draft: index,
+                a,
+                b,
+                length_m: draft.geometry.length_m(),
+            });
+        }
+    }
+
+    let mut adjacency = BTreeMap::<OsmJunction, Vec<usize>>::new();
+    for (index, connector) in connectors.iter().enumerate() {
+        adjacency.entry(connector.a).or_default().push(index);
+        adjacency.entry(connector.b).or_default().push(index);
+    }
+    let terminals = adjacency
+        .keys()
+        .filter(|junction| anchor_junctions.contains(junction))
+        .copied()
+        .collect::<BTreeSet<_>>();
+    for terminal in terminals.iter().copied() {
+        retain_nearest_connector(terminal, &terminals, &adjacency, &connectors, &mut keep);
+    }
+
+    let mut restrictions = drafts
+        .iter_mut()
+        .flat_map(|draft| std::mem::take(&mut draft.turn_restrictions))
+        .collect::<Vec<_>>();
+    let retained_refs = drafts
+        .iter()
+        .zip(&keep)
+        .filter(|(_, keep)| **keep)
+        .filter_map(|(draft, _)| draft.turn_ref.clone())
+        .collect::<BTreeSet<_>>();
+    restrictions.retain(|restriction| {
+        retained_refs.contains(&restriction.from) && retained_refs.contains(&restriction.to)
+    });
+    let mut retained = drafts
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(draft, keep)| keep.then_some(draft))
+        .collect::<Vec<_>>();
+    if let Some(carrier) = retained.first_mut() {
+        carrier.turn_restrictions = restrictions;
+    }
+    retained
+}
+
+fn retain_nearest_connector(
+    start: OsmJunction,
+    terminals: &BTreeSet<OsmJunction>,
+    adjacency: &BTreeMap<OsmJunction, Vec<usize>>,
+    connectors: &[OsmConnector],
+    keep: &mut [bool],
+) {
+    let mut distance = BTreeMap::from([(start, 0.0)]);
+    let mut predecessor = BTreeMap::<OsmJunction, (OsmJunction, usize)>::new();
+    let mut frontier = BinaryHeap::from([OsmWalk {
+        junction: start,
+        distance_m: 0.0,
+    }]);
+    let mut destination = None;
+    while let Some(walk) = frontier.pop() {
+        if walk.distance_m > MAX_OSM_CONNECTOR_M
+            || distance
+                .get(&walk.junction)
+                .is_some_and(|known| walk.distance_m > *known)
+        {
+            continue;
+        }
+        if walk.junction != start && terminals.contains(&walk.junction) {
+            destination = Some(walk.junction);
+            break;
+        }
+        for edge in adjacency.get(&walk.junction).into_iter().flatten() {
+            let connector = connectors[*edge];
+            let next = if connector.a == walk.junction {
+                connector.b
+            } else {
+                connector.a
+            };
+            let candidate = walk.distance_m + connector.length_m;
+            if candidate <= MAX_OSM_CONNECTOR_M
+                && distance.get(&next).is_none_or(|known| candidate < *known)
+            {
+                let _ = distance.insert(next, candidate);
+                let _ = predecessor.insert(next, (walk.junction, *edge));
+                frontier.push(OsmWalk {
+                    junction: next,
+                    distance_m: candidate,
+                });
+            }
+        }
+    }
+    let Some(mut junction) = destination else {
+        return;
+    };
+    while junction != start {
+        let Some((prior, edge)) = predecessor.get(&junction).copied() else {
+            break;
+        };
+        keep[connectors[edge].draft] = true;
+        junction = prior;
+    }
+}
+
+fn osm_trail_anchor(draft: &SegmentDraft) -> bool {
+    matches!(
+        draft.trail_class,
+        TrailClass::Path
+            | TrailClass::Footway
+            | TrailClass::Track
+            | TrailClass::Steps
+            | TrailClass::Bridleway
+            | TrailClass::Bushwhack
+    ) || draft.standing != TrailStanding::Established
+        || draft.provenance.iter().any(|provenance| {
+            provenance
+                .layer
+                .as_deref()
+                .is_some_and(|layer| layer.contains("route-relation"))
+        })
+}
+
+const fn osm_connector(draft: &SegmentDraft) -> bool {
+    matches!(
+        draft.trail_class,
+        TrailClass::Service | TrailClass::Pedestrian | TrailClass::Road
+    )
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -758,10 +945,11 @@ fn trail_overpass_query(bbox: &str, timeout_s: u64, context: bool) -> String {
     );
     if context {
         query.push_str("node(w.trailways)->.trailnodes;\n(\n");
-        for selector in [OSM_ROAD_SELECTORS[0], OSM_HYDROLOGY_SELECTORS[0]] {
-            let filter = selector.strip_prefix("way").expect("way selector");
-            writeln!(query, "  way(bn.trailnodes){filter};").expect("write to string");
-        }
+        writeln!(query, "  {}{bbox};", OSM_ROAD_SELECTORS[0]).expect("write to string");
+        let hydrology = OSM_HYDROLOGY_SELECTORS[0]
+            .strip_prefix("way")
+            .expect("way selector");
+        writeln!(query, "  way(bn.trailnodes){hydrology};").expect("write to string");
         query.push_str(
             ")->.context;\n\
              (.trailways; .routes; .restrictions; .context; .trailways >; .context >;);\n",
@@ -2102,6 +2290,70 @@ mod tests {
         assert!(query.contains(r#"["waterway"~"#));
         assert!(query.contains(r#"rel(bw.trailways)["type"="route"]"#));
         assert!(query.contains("way(bn.trailnodes)"));
+        let trail_seed = query
+            .split(")->.trailways")
+            .next()
+            .expect("query has a trail seed");
+        assert!(!trail_seed.contains("residential"));
+        assert!(!trail_seed.contains("service"));
+        assert!(trail_seed.contains(r#"["footway"!~"^(sidewalk|crossing|traffic_island)$"]"#));
+        assert!(
+            query.contains("residential"),
+            "roads remain context evidence"
+        );
+    }
+
+    #[test]
+    fn osm_streets_survive_only_as_sparse_trail_bridges() -> Result<()> {
+        let raw = r#"<osm version="0.6">
+          <node id="1" lon="0.000" lat="0.000"/><node id="2" lon="0.001" lat="0.000"/>
+          <node id="3" lon="0.002" lat="0.000"/><node id="4" lon="0.003" lat="0.000"/>
+          <node id="5" lon="0.002" lat="0.001"/><node id="6" lon="0.002" lat="0.002"/>
+          <node id="7" lon="0.010" lat="0.000"/><node id="8" lon="0.011" lat="0.000"/>
+          <node id="9" lon="0.020" lat="0.000"/><node id="10" lon="0.021" lat="0.000"/>
+          <node id="11" lon="0.041" lat="0.000"/><node id="12" lon="0.042" lat="0.000"/>
+          <way id="trail-a"><nd ref="1"/><nd ref="2"/><tag k="highway" v="path"/></way>
+          <way id="bridge"><nd ref="2"/><nd ref="3"/><tag k="highway" v="service"/></way>
+          <way id="trail-b"><nd ref="3"/><nd ref="4"/><tag k="highway" v="path"/></way>
+          <way id="street-spur"><nd ref="3"/><nd ref="5"/><nd ref="6"/><tag k="highway" v="residential"/></way>
+          <way id="street-island"><nd ref="7"/><nd ref="8"/><tag k="highway" v="residential"/></way>
+          <way id="trail-c"><nd ref="9"/><nd ref="10"/><tag k="highway" v="path"/></way>
+          <way id="street-too-long"><nd ref="10"/><nd ref="11"/><tag k="highway" v="service"/></way>
+          <way id="trail-d"><nd ref="11"/><nd ref="12"/><tag k="highway" v="path"/></way>
+        </osm>"#;
+
+        let drafts = sever_osm_street_mesh(osm::network_from_str(raw)?);
+        let source_ids = drafts
+            .iter()
+            .flat_map(|draft| &draft.provenance)
+            .filter_map(|provenance| provenance.source_id.as_deref())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            source_ids,
+            BTreeSet::from(["bridge", "trail-a", "trail-b", "trail-c", "trail-d"])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn nearest_street_bridge_may_close_a_trail_loop() -> Result<()> {
+        let raw = r#"<osm version="0.6">
+          <node id="1" lon="0.000" lat="0.000"/><node id="2" lon="0.001" lat="0.001"/>
+          <node id="3" lon="0.002" lat="0.000"/>
+          <way id="trail"><nd ref="1"/><nd ref="2"/><nd ref="3"/><tag k="highway" v="path"/></way>
+          <way id="street-closure"><nd ref="1"/><nd ref="3"/><tag k="highway" v="service"/></way>
+        </osm>"#;
+
+        let drafts = sever_osm_street_mesh(osm::network_from_str(raw)?);
+
+        assert!(drafts.iter().any(|draft| {
+            draft
+                .provenance
+                .iter()
+                .any(|provenance| provenance.source_id.as_deref() == Some("street-closure"))
+        }));
+        Ok(())
     }
 
     #[test]
