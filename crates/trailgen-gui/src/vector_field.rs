@@ -105,8 +105,23 @@ impl VectorField {
         let cover = basemap::cover(viewport, rect, self.archive_zoom);
         self.demand_cover(&cover, painter.ctx());
         let coherent = cover
-            .finest_ready(|key| self.tiles.contains(key))
-            .map(|stratum| stratum.keys.clone());
+            .finest_resolved(|key| {
+                if self.tiles.contains(key) {
+                    basemap::Residency::Resident
+                } else if self.missing.contains(&key) {
+                    basemap::Residency::Missing
+                } else {
+                    basemap::Residency::Pending
+                }
+            })
+            .map(|stratum| {
+                stratum
+                    .keys
+                    .iter()
+                    .copied()
+                    .filter(|key| self.tiles.contains(*key))
+                    .collect::<Vec<_>>()
+            });
         if let Some(keys) = coherent
             && (keys.len() != self.presented.len()
                 || keys
@@ -189,25 +204,9 @@ impl VectorField {
     }
 
     fn demand_cover(&mut self, cover: &basemap::Cover, ctx: &egui::Context) {
-        if let Some(fallback) = cover.strata.first() {
-            for &key in &fallback.keys {
-                self.demand(key, ctx);
-            }
-        }
-        for stratum in &cover.strata {
-            if stratum.intent.demands() {
-                for &key in &stratum.keys {
-                    self.demand(key, ctx);
-                }
-            }
-        }
-        for stratum in cover.strata.iter().rev() {
-            if stratum.intent == basemap::Intent::Retained {
-                for &key in &stratum.keys {
-                    self.demand(key, ctx);
-                }
-            }
-        }
+        for_each_demand(cover, |key| {
+            self.demand(key, ctx);
+        });
     }
 
     fn demand(&mut self, key: TileKey, ctx: &egui::Context) {
@@ -228,6 +227,34 @@ impl VectorField {
             self.inflight.insert(key);
         }
     }
+}
+
+fn for_each_demand(cover: &basemap::Cover, mut demand: impl FnMut(TileKey)) {
+    if let Some(fallback) = cover.strata.first() {
+        fallback.keys.iter().copied().for_each(&mut demand);
+    }
+    cover
+        .strata
+        .iter()
+        .skip(1)
+        .filter(|stratum| stratum.intent == basemap::Intent::Required)
+        .flat_map(|stratum| stratum.keys.iter().copied())
+        .for_each(&mut demand);
+    cover
+        .strata
+        .iter()
+        .skip(1)
+        .rev()
+        .filter(|stratum| stratum.intent == basemap::Intent::Retained)
+        .flat_map(|stratum| stratum.keys.iter().copied())
+        .for_each(&mut demand);
+    cover
+        .strata
+        .iter()
+        .skip(1)
+        .filter(|stratum| stratum.intent == basemap::Intent::Prefetch)
+        .flat_map(|stratum| stratum.keys.iter().copied())
+        .for_each(demand);
 }
 
 struct VectorBank {
@@ -315,5 +342,33 @@ mod tests {
             prior = retry.after;
         }
         assert_eq!(retry.after.duration_since(now), RETRY_CEILING);
+    }
+
+    #[test]
+    fn demand_serves_detail_and_fallback_before_speculation() {
+        fn stratum(intent: basemap::Intent, zoom: u8) -> basemap::Stratum {
+            basemap::Stratum {
+                intent,
+                keys: vec![TileKey { zoom, x: 0, y: 0 }],
+            }
+        }
+        let cover = basemap::Cover {
+            strata: vec![
+                stratum(basemap::Intent::Retained, 7),
+                stratum(basemap::Intent::Retained, 8),
+                stratum(basemap::Intent::Retained, 9),
+                stratum(basemap::Intent::Required, 10),
+                stratum(basemap::Intent::Prefetch, 11),
+            ],
+        };
+
+        assert_eq!(
+            {
+                let mut order = Vec::new();
+                for_each_demand(&cover, |key| order.push(key.zoom));
+                order
+            },
+            [7, 10, 9, 8, 11]
+        );
     }
 }

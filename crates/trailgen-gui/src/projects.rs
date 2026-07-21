@@ -902,14 +902,20 @@ fn open_project(
     let has_graph = root.join("routes/generated.graph.json").is_file()
         || root.join("cache/graph.json").is_file();
     let config = trailgen_data::project_config(&root)?;
-    let indexed = config.managed && trailgen_data::indexed_summary(&root)?.is_some();
-    let trail_ready = trail_workspace_ready(has_graph, config.managed, indexed);
+    let indexed = if config.managed {
+        trailgen_data::indexed_summary(&root)?
+    } else {
+        None
+    };
+    let trail_ready = trail_workspace_ready(has_graph, config.managed, indexed.is_some());
     let workspace = if trail_ready {
         ProjectWorkspace::Trail(Box::new(TrailApp::open(
             ctx,
             &root,
             offline,
             habitat.slate_path(&root),
+            config,
+            indexed.as_ref(),
         )?))
     } else {
         ProjectWorkspace::Survey(Box::new(SurveyWorkbench::new(

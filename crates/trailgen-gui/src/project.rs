@@ -55,13 +55,14 @@ impl Project {
             .canonicalize()
             .with_context(|| format!("open project {}", root.display()))?;
         let config = read_toml(&root.join("trailgen.toml"))?;
-        let cached_graph = read_optional_json::<TrailGraph>(&root.join("cache/graph.json"))?;
-        let generated_graph =
-            read_optional_json::<TrailGraph>(&root.join("routes/generated.graph.json"))?;
         let graph = Arc::new(
-            cached_graph
-                .or(generated_graph)
-                .context("project has no trail data")?,
+            match read_optional_json::<TrailGraph>(&root.join("cache/graph.json"))? {
+                Some(graph) => graph,
+                None => {
+                    read_optional_json::<TrailGraph>(&root.join("routes/generated.graph.json"))?
+                        .context("project has no trail data")?
+                }
+            },
         );
         ensure!(!graph.vertices.is_empty(), "project has no usable trails");
         let library = Library::open(&root, &graph)?;
@@ -80,8 +81,8 @@ fn read_toml<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
 }
 
 fn read_optional_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Option<T>> {
-    match fs::read_to_string(path) {
-        Ok(raw) => serde_json::from_str(&raw)
+    match fs::read(path) {
+        Ok(raw) => serde_json::from_slice(&raw)
             .with_context(|| format!("parse {}", path.display()))
             .map(Some),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -350,16 +351,12 @@ mod tests {
         fs::create_dir(temp.path().join("routes"))?;
         fs::write(temp.path().join("trailgen.toml"), "name = 'live project'\n")?;
         let cached = fixture_graph()?;
-        let mut generated = cached.clone();
-        generated.vertices[0].coord.lat += 1.0;
         fs::write(
             temp.path().join("cache/graph.json"),
             serde_json::to_vec_pretty(&cached)?,
         )?;
-        fs::write(
-            temp.path().join("routes/generated.graph.json"),
-            serde_json::to_vec_pretty(&generated)?,
-        )?;
+        fs::write(temp.path().join("routes/generated.graph.json"), b"obsolete")?;
+        Library::default().save(temp.path())?;
 
         let project = Project::open(temp.path())?;
 

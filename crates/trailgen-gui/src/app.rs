@@ -157,9 +157,14 @@ struct LoadedCorpus {
 }
 
 impl LoadedCorpus {
-    fn raise(ctx: &egui::Context, root: &Path, offline: bool) -> Result<Self> {
-        let regions = trailgen_data::project_config(root)?.regions;
-        let indexed = trailgen_data::indexed_summary(root)?;
+    fn raise(
+        ctx: &egui::Context,
+        root: &Path,
+        offline: bool,
+        config: trailgen_data::TrailDataConfig,
+        indexed: Option<&trailgen_data::Summary>,
+    ) -> Result<Self> {
+        let regions = config.regions;
         let stale = !regions.is_empty() && indexed.is_none();
         let task = if !offline && stale {
             Some(TrailData::spawn(
@@ -171,7 +176,6 @@ impl LoadedCorpus {
             None
         };
         let status = indexed
-            .as_ref()
             .map(|summary| format!("Trail data ready in {} map area(s).", summary.regions.len()))
             .or_else(|| {
                 stale.then(|| {
@@ -196,6 +200,8 @@ impl TrailApp {
         root: &Path,
         offline: bool,
         slate_path: PathBuf,
+        trail_data: trailgen_data::TrailDataConfig,
+        indexed: Option<&trailgen_data::Summary>,
     ) -> Result<Self> {
         let Project {
             root,
@@ -211,7 +217,7 @@ impl TrailApp {
         let family_name = active_family
             .and_then(|id| library.family(id))
             .map_or_else(String::new, |family| family.name.to_string());
-        let corpus = LoadedCorpus::raise(ctx, &root, offline)?;
+        let corpus = LoadedCorpus::raise(ctx, &root, offline, trail_data, indexed)?;
         let vector = spawn_vector_field(ctx, &root, &graph, &corpus.regions, offline)?;
         let restored_viewport = slate.viewport;
         let viewport = restored_viewport.unwrap_or(Viewport {

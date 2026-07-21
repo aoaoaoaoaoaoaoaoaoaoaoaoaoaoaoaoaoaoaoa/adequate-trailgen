@@ -476,21 +476,16 @@ where
         let region = SurveyRegion::new(bounds)?;
         let mut config = project_config(project)?;
         config.managed = true;
-        let mut changed = false;
         if self.fixed_providers {
             let providers = self.provider_ids();
             if config.providers != providers {
                 config.providers = providers;
-                changed = true;
             }
         }
         if !config.regions.iter().any(|known| known.id == region.id) {
             config.regions.push(region);
-            changed = true;
         }
-        if changed {
-            configure_project(project, &config)?;
-        }
+        configure_project(project, &config)?;
         self.reconcile(project, &config, true, &mut emit)
     }
 
@@ -502,6 +497,10 @@ where
             clear_corpus(project)?;
             return Ok(None);
         }
+        // Reading refines legacy region identities from their bounds. A refresh
+        // is the migration boundary: persist that canonical law before any
+        // receipt is judged or fetched.
+        configure_project(project, &config)?;
         self.reconcile(project, &config, true, &mut emit).map(Some)
     }
 
@@ -1403,10 +1402,7 @@ fn reusable_index(
     let Ok(index) = serde_json::from_str::<TrailIndex>(&raw) else {
         return Ok(None);
     };
-    if index.schema != INDEX_SCHEMA
-        || index.summary.regions != config.regions
-        || index.summary.providers != config.providers
-        || index.sources.len() != config.regions.len() * config.providers.len()
+    if !index_matches_config(&index, config)
         || !project.join(GRAPH).is_file()
         || !project.join(CONFLATION_REPORT).is_file()
     {
@@ -1456,6 +1452,35 @@ fn reusable_index(
         return Ok(None);
     }
     Ok(Some(index.summary))
+}
+
+fn index_matches_config(index: &TrailIndex, config: &TrailDataConfig) -> bool {
+    let mut receipts = BTreeSet::new();
+    let lawful_receipts = index.sources.iter().all(|receipt| {
+        config.regions.contains(&receipt.region)
+            && config.providers.contains(&receipt.provider)
+            && receipt.adapter_revision != 0
+            && receipts.insert((receipt.provider.clone(), receipt.region.id.clone()))
+    });
+    let raw_paths = index
+        .sources
+        .iter()
+        .map(|receipt| receipt.raw_path.as_path())
+        .collect::<BTreeSet<_>>();
+    index.schema == INDEX_SCHEMA
+        && index.summary.regions == config.regions
+        && index.summary.providers == config.providers
+        && index.sources.len() == config.regions.len() * config.providers.len()
+        && lawful_receipts
+        && receipts.len() == index.sources.len()
+        && raw_paths.len() == index.sources.len()
+        && raw_paths
+            == index
+                .summary
+                .raw_paths
+                .iter()
+                .map(PathBuf::as_path)
+                .collect()
 }
 
 fn bounds_around(place: &Place, radius_km: f64) -> Result<GeoBounds> {
@@ -1592,7 +1617,21 @@ pub fn indexed_summary(project: &Path) -> Result<Option<Summary>> {
         return Ok(None);
     }
     let config = project_config(project)?;
-    reusable_index(project, &config, None)
+    if !index_matches_config(&index, &config) {
+        return Ok(None);
+    }
+    let graph = match fs::metadata(project.join(GRAPH)) {
+        Ok(graph) => graph,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).context("inspect cached trail graph"),
+    };
+    if !graph.is_file()
+        || graph.len() != index.graph.bytes
+        || !project.join(CONFLATION_REPORT).is_file()
+    {
+        return Ok(None);
+    }
+    Ok(Some(index.summary))
 }
 
 /// Persist the canonical live area without disturbing other project law.
@@ -2282,6 +2321,28 @@ mod tests {
     }
 
     #[test]
+    fn refresh_seals_canonical_region_identity_onto_disk() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let project = temp.path();
+        fs::write(project.join("trailgen.toml"), "name = 'Harriman'\n")?;
+        let (surveyor, calls) = fixed_surveyor();
+        let indexed = surveyor.survey(project, "Harriman", 20.0, drop)?;
+        let canonical = &indexed.regions[0].id;
+        let path = project.join("trailgen.toml");
+        let legacy = fs::read_to_string(&path)?.replace(canonical, "legacy-osm-receipt");
+        fs::write(&path, legacy)?;
+
+        let refreshed = surveyor.refresh(project, drop)?.context("indexed corpus")?;
+
+        assert!(refreshed.reused);
+        assert_eq!(calls.get(), 1);
+        let persisted = fs::read_to_string(path)?;
+        assert!(persisted.contains(canonical));
+        assert!(!persisted.contains("legacy-osm-receipt"));
+        Ok(())
+    }
+
+    #[test]
     fn overpass_queries_are_profiled_and_bbox_scoped() {
         let area = GeoBounds::new(-74.2, 41.1, -74.0, 41.35);
         let query = overpass_query(OsmProfile::All, area, 90);
@@ -2544,6 +2605,7 @@ mod tests {
             .find(|path| path.starts_with("sources/usgs-national-trails"))
             .context("USGS receipt missing")?;
         fs::write(project.join(usgs_raw), b"damaged")?;
+        assert_eq!(indexed_summary(project)?, Some(first));
         let repaired = surveyor.survey(project, "Harriman", 20.0, drop)?;
         assert!(!repaired.reused);
         assert_eq!(osm_calls.get(), 1);
@@ -2559,6 +2621,8 @@ mod tests {
         let (surveyor, calls) = fixed_surveyor();
         surveyor.survey(project, "Harriman", 20.0, drop)?;
         fs::write(project.join(GRAPH), b"drift")?;
+
+        assert!(indexed_summary(project)?.is_none());
 
         let repaired = surveyor.survey(project, "Harriman", 20.0, drop)?;
 

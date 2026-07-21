@@ -26,9 +26,9 @@ use std::{
     fs::{self, File, OpenOptions},
     io::Write as _,
     path::{Path as FsPath, PathBuf},
-    sync::Arc,
+    sync::{Arc, OnceLock},
     thread,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 use trailgen_core::{TrailGraph, source::GeoBounds};
 
@@ -127,11 +127,33 @@ pub struct Cover {
 }
 
 impl Cover {
-    pub fn finest_ready(&self, mut resident: impl FnMut(TileKey) -> bool) -> Option<&Stratum> {
+    pub fn finest_resolved(
+        &self,
+        mut residency: impl FnMut(TileKey) -> Residency,
+    ) -> Option<&Stratum> {
         self.strata.iter().rev().find(|stratum| {
-            stratum.intent.presents() && stratum.keys.iter().all(|key| resident(*key))
+            if !stratum.intent.presents() {
+                return false;
+            }
+            let mut visible = false;
+            let resolved = stratum.keys.iter().all(|key| match residency(*key) {
+                Residency::Resident => {
+                    visible = true;
+                    true
+                }
+                Residency::Missing => true,
+                Residency::Pending => false,
+            });
+            resolved && visible
         })
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Residency {
+    Pending,
+    Missing,
+    Resident,
 }
 
 #[derive(Debug)]
@@ -148,10 +170,6 @@ pub enum Intent {
 }
 
 impl Intent {
-    pub const fn demands(self) -> bool {
-        matches!(self, Self::Required | Self::Prefetch)
-    }
-
     pub const fn presents(self) -> bool {
         !matches!(self, Self::Prefetch)
     }
@@ -779,8 +797,25 @@ async fn fetch_roaming_tiles(remote: &RemoteArchive, keys: &[TileKey]) -> Vec<Ro
 }
 
 fn cut_event(key: TileKey, bytes: &[u8]) -> Event {
+    static PROFILE: OnceLock<bool> = OnceLock::new();
+    let started = PROFILE
+        .get_or_init(|| std::env::var_os("TRAILGEN_PROFILE_BASEMAP").is_some())
+        .then(Instant::now);
     match decode_tile(key, bytes) {
-        Ok(tile) => Event::Loaded(Arc::new(tile)),
+        Ok(tile) => {
+            if let Some(started) = started {
+                eprintln!(
+                    "vector-decode key={}/{}/{} input_bytes={} resident_bytes={} elapsed_us={}",
+                    key.zoom,
+                    key.x,
+                    key.y,
+                    bytes.len(),
+                    tile.resident_bytes(),
+                    started.elapsed().as_micros()
+                );
+            }
+            Event::Loaded(Arc::new(tile))
+        }
         Err(err) => Event::Fault {
             key: Some(key),
             message: format!("decode vector tile {key:?}: {err:#}"),
@@ -1765,7 +1800,32 @@ mod tests {
         assert_eq!(cover.strata[4].intent, Intent::Required);
         assert_eq!(cover.strata[5].intent, Intent::Prefetch);
         assert_eq!(
-            cover.finest_ready(|_| true).map(|stratum| stratum.intent),
+            cover
+                .finest_resolved(|_| Residency::Resident)
+                .map(|stratum| stratum.intent),
+            Some(Intent::Required)
+        );
+    }
+
+    #[test]
+    fn absent_fringe_tiles_do_not_imprison_a_resolved_stratum() {
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
+        let cover = cover(VIEW, rect, None);
+        let required = &cover.strata[4];
+        let absent = required.keys[0];
+
+        let resolved = cover.finest_resolved(|key| {
+            if key == absent {
+                Residency::Missing
+            } else if key.zoom <= absent.zoom {
+                Residency::Resident
+            } else {
+                Residency::Pending
+            }
+        });
+
+        assert_eq!(
+            resolved.map(|stratum| stratum.intent),
             Some(Intent::Required)
         );
     }
