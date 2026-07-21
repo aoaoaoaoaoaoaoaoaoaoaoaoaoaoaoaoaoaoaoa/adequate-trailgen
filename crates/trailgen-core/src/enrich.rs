@@ -388,6 +388,13 @@ fn terrain_inference(edge: &Edge, profile: &GradeProfile) -> TerrainInference {
                 .cloned()
                 .or(edge_provenance),
         }
+    } else if edge.attr.trail_class.pathless() {
+        TerrainInference {
+            terrain: Terrain::Unknown,
+            confidence: 0.0,
+            rationale: format!("no surrounding-terrain evidence for pathless route: {grade_basis}"),
+            provenance: edge_provenance,
+        }
     } else {
         TerrainInference {
             terrain: Terrain::Trail,

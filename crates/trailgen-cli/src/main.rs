@@ -640,7 +640,7 @@ impl ProjectConfig {
     }
 }
 
-const fn difficulty_values(weights: DifficultyWeights) -> [(&'static str, f64); 18] {
+const fn difficulty_values(weights: DifficultyWeights) -> [(&'static str, f64); 19] {
     let terrain = weights.terrain_multipliers;
     [
         ("distance_per_km", weights.distance_per_km),
@@ -659,6 +659,7 @@ const fn difficulty_values(weights: DifficultyWeights) -> [(&'static str, f64); 
         ("road_penalty", weights.road_penalty),
         ("technical_penalty", weights.technical_penalty),
         ("navigation_penalty", weights.navigation_penalty),
+        ("bushwhack_penalty", weights.bushwhack_penalty),
         ("low_confidence_penalty", weights.low_confidence_penalty),
         ("closed_access_penalty", weights.closed_access_penalty),
     ]
@@ -685,6 +686,7 @@ enum CalibrationFamily {
     Road,
     Technical,
     Navigation,
+    Bushwhack,
     Confidence,
     Access,
 }
@@ -3816,6 +3818,7 @@ impl CalibrationFamily {
             Self::Road => breakdown.road,
             Self::Technical => breakdown.technical,
             Self::Navigation => breakdown.navigation,
+            Self::Bushwhack => breakdown.bushwhack,
             Self::Confidence => breakdown.confidence,
             Self::Access => breakdown.access,
         }
@@ -3838,6 +3841,7 @@ impl CalibrationFamily {
             Self::Road => weights.road_penalty *= multiplier,
             Self::Technical => weights.technical_penalty *= multiplier,
             Self::Navigation => weights.navigation_penalty *= multiplier,
+            Self::Bushwhack => weights.bushwhack_penalty *= multiplier,
             Self::Confidence => weights.low_confidence_penalty *= multiplier,
             Self::Access => weights.closed_access_penalty *= multiplier,
         }
@@ -3854,6 +3858,7 @@ fn scale_global_weights(weights: &mut DifficultyWeights, multiplier: f64) {
     weights.road_penalty *= multiplier;
     weights.technical_penalty *= multiplier;
     weights.navigation_penalty *= multiplier;
+    weights.bushwhack_penalty *= multiplier;
     weights.low_confidence_penalty *= multiplier;
     weights.closed_access_penalty *= multiplier;
 }
@@ -3885,6 +3890,7 @@ fn ensure_valid_difficulty_weights(weights: DifficultyWeights) -> Result<()> {
         ("road_penalty", weights.road_penalty),
         ("technical_penalty", weights.technical_penalty),
         ("navigation_penalty", weights.navigation_penalty),
+        ("bushwhack_penalty", weights.bushwhack_penalty),
         ("low_confidence_penalty", weights.low_confidence_penalty),
         ("closed_access_penalty", weights.closed_access_penalty),
         (

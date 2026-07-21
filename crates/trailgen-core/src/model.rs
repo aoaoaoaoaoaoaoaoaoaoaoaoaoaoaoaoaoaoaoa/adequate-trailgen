@@ -15,8 +15,8 @@ pub struct VertexId(pub usize);
 #[serde(transparent)]
 pub struct EdgeId(pub usize);
 
-/// The source-authored structural kind of a routable way. This is orthogonal
-/// to terrain and surface: a forest footway is still a footway.
+/// The source-authored structural kind of a routable segment. This is
+/// orthogonal to terrain and surface: a forest footway is still a footway.
 #[derive(
     Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize,
 )]
@@ -31,6 +31,9 @@ pub enum TrailClass {
     Pedestrian,
     Steps,
     Bridleway,
+    /// A deliberate route across ground where no path is asserted to exist.
+    /// Physical ground cover remains represented by [`Terrain`].
+    Bushwhack,
     Road,
 }
 
@@ -74,6 +77,9 @@ impl TrailClass {
             "pedestrian" | "pedestrian-way" => Self::Pedestrian,
             "steps" | "stairs" => Self::Steps,
             "bridleway" => Self::Bridleway,
+            "bushwhack" | "bushwhacking" | "off-trail" | "offtrail" | "cross-country" => {
+                Self::Bushwhack
+            }
             "road" | "living_street" | "residential" | "unclassified" | "tertiary"
             | "secondary" | "primary" => Self::Road,
             _ => Self::Unknown,
@@ -83,6 +89,11 @@ impl TrailClass {
     #[must_use]
     pub const fn road_like(self) -> bool {
         matches!(self, Self::Track | Self::Service | Self::Road)
+    }
+
+    #[must_use]
+    pub const fn pathless(self) -> bool {
+        matches!(self, Self::Bushwhack)
     }
 }
 

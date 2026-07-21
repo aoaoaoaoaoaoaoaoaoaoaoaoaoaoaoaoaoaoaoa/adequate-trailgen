@@ -21,6 +21,8 @@ pub struct DifficultyWeights {
     pub technical_penalty: f64,
     #[serde(default = "default_navigation_penalty")]
     pub navigation_penalty: f64,
+    #[serde(default = "default_bushwhack_penalty")]
+    pub bushwhack_penalty: f64,
     #[serde(default = "default_low_confidence_penalty")]
     pub low_confidence_penalty: f64,
     #[serde(default = "default_closed_access_penalty")]
@@ -60,6 +62,7 @@ impl Default for DifficultyWeights {
             road_penalty: default_road_penalty(),
             technical_penalty: default_technical_penalty(),
             navigation_penalty: default_navigation_penalty(),
+            bushwhack_penalty: default_bushwhack_penalty(),
             low_confidence_penalty: default_low_confidence_penalty(),
             closed_access_penalty: default_closed_access_penalty(),
         }
@@ -100,6 +103,7 @@ impl DifficultyWeights {
         let road = a.road_exposure.clamp(0.0, 1.0) * self.road_penalty * distance_km;
         let technical = technical_pressure(edge) * self.technical_penalty * distance_km;
         let navigation = navigation_pressure(edge) * self.navigation_penalty * distance_km;
+        let bushwhack = f64::from(a.trail_class.pathless()) * self.bushwhack_penalty * distance_km;
         let confidence =
             (1.0 - a.confidence.clamp(0.0, 1.0)) * self.low_confidence_penalty * distance_km;
         let access = match a.access {
@@ -116,6 +120,7 @@ impl DifficultyWeights {
             road,
             technical,
             navigation,
+            bushwhack,
             confidence,
             access,
         }
@@ -177,6 +182,10 @@ const fn default_navigation_penalty() -> f64 {
     0.8
 }
 
+const fn default_bushwhack_penalty() -> f64 {
+    3.0
+}
+
 const fn default_low_confidence_penalty() -> f64 {
     1.5
 }
@@ -229,6 +238,8 @@ pub struct DifficultyBreakdown {
     pub technical: f64,
     #[serde(default)]
     pub navigation: f64,
+    #[serde(default)]
+    pub bushwhack: f64,
     pub confidence: f64,
     pub access: f64,
 }
@@ -244,12 +255,13 @@ impl DifficultyBreakdown {
             + self.road
             + self.technical
             + self.navigation
+            + self.bushwhack
             + self.confidence
             + self.access
     }
 
     #[must_use]
-    pub const fn factors(self) -> [(DifficultyFactor, f64); 10] {
+    pub const fn factors(self) -> [(DifficultyFactor, f64); 11] {
         [
             (DifficultyFactor::Distance, self.distance),
             (DifficultyFactor::Ascent, self.ascent),
@@ -259,6 +271,7 @@ impl DifficultyBreakdown {
             (DifficultyFactor::Road, self.road),
             (DifficultyFactor::Technical, self.technical),
             (DifficultyFactor::Navigation, self.navigation),
+            (DifficultyFactor::Bushwhack, self.bushwhack),
             (DifficultyFactor::Confidence, self.confidence),
             (DifficultyFactor::Access, self.access),
         ]
@@ -275,6 +288,7 @@ impl AddAssign for DifficultyBreakdown {
         self.road += rhs.road;
         self.technical += rhs.technical;
         self.navigation += rhs.navigation;
+        self.bushwhack += rhs.bushwhack;
         self.confidence += rhs.confidence;
         self.access += rhs.access;
     }
@@ -291,6 +305,7 @@ pub enum DifficultyFactor {
     Road,
     Technical,
     Navigation,
+    Bushwhack,
     Confidence,
     Access,
 }
@@ -306,6 +321,7 @@ impl fmt::Display for DifficultyFactor {
             Self::Road => "road",
             Self::Technical => "technical",
             Self::Navigation => "navigation",
+            Self::Bushwhack => "bushwhack",
             Self::Confidence => "confidence",
             Self::Access => "access",
         };

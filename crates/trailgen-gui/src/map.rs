@@ -467,6 +467,7 @@ pub const fn trail_class_color(class: TrailClass) -> Color32 {
         TrailClass::Pedestrian => Color32::from_rgb(190, 153, 229),
         TrailClass::Steps => Color32::from_rgb(238, 91, 89),
         TrailClass::Bridleway => Color32::from_rgb(234, 137, 184),
+        TrailClass::Bushwhack => Color32::from_rgb(241, 110, 213),
         TrailClass::Road => Color32::from_rgb(211, 207, 196),
     }
 }
@@ -481,6 +482,7 @@ pub const fn trail_class_label(class: TrailClass) -> &'static str {
         TrailClass::Pedestrian => "PEDESTRIAN",
         TrailClass::Steps => "STEPS",
         TrailClass::Bridleway => "BRIDLEWAY",
+        TrailClass::Bushwhack => "BUSHWHACK",
         TrailClass::Road => "ROAD",
     }
 }
@@ -653,5 +655,14 @@ mod tests {
             access: Access::Open,
         };
         assert!(intersects(&edge, [0.4, 0.4, 0.6, 0.6]));
+    }
+
+    #[test]
+    fn bushwhacks_have_an_unambiguous_legend_identity() {
+        assert_eq!(trail_class_label(TrailClass::Bushwhack), "BUSHWHACK");
+        assert_ne!(
+            trail_class_color(TrailClass::Bushwhack),
+            trail_class_color(TrailClass::Path)
+        );
     }
 }

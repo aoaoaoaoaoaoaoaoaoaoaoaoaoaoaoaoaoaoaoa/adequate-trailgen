@@ -1817,6 +1817,7 @@ const fn trail_class_tag(class: TrailClass) -> &'static str {
         TrailClass::Pedestrian => "pedestrian",
         TrailClass::Steps => "steps",
         TrailClass::Bridleway => "bridleway",
+        TrailClass::Bushwhack => "bushwhack",
         TrailClass::Road => "road",
     }
 }

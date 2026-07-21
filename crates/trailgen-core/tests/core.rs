@@ -690,6 +690,39 @@ fn terrain_multipliers_are_configurable_and_defaulted() {
         .abs()
             <= f64::EPSILON
     );
+    assert!(
+        (weights.bushwhack_penalty - DifficultyWeights::default().bushwhack_penalty).abs()
+            <= f64::EPSILON
+    );
+}
+
+#[test]
+fn bushwhack_class_and_surrounding_terrain_compose() {
+    let drafts = geojson::network_from_str(
+        r#"{"type":"FeatureCollection","features":[{
+            "type":"Feature",
+            "properties":{
+                "trail_class":"off-trail",
+                "terrain":"forest",
+                "surface":"leaf-litter",
+                "confidence":1.0,
+                "source":"fixture",
+                "id":"ridge-bushwhack"
+            },
+            "geometry":{"type":"LineString","coordinates":[[0.0,0.0],[0.01,0.0]]}
+        }]}"#,
+    )
+    .unwrap();
+    assert_eq!(drafts[0].trail_class, TrailClass::Bushwhack);
+    assert_eq!(drafts[0].terrain, Terrain::Forest);
+    assert_eq!(drafts[0].surface.as_deref(), Some("leaf-litter"));
+
+    let graph = GraphBuilder::default().build(&drafts).unwrap();
+    let breakdown = graph.edges[0].attr.difficulty_breakdown;
+    let expected =
+        graph.edges[0].attr.length_m / 1_000.0 * DifficultyWeights::default().bushwhack_penalty;
+    assert!((breakdown.bushwhack - expected).abs() <= 1.0e-9);
+    assert!(breakdown.terrain.abs() <= f64::EPSILON);
 }
 
 #[test]
@@ -4213,6 +4246,39 @@ fn elevation_enrichment_densifies_rates_and_infers_terrain() {
             .iter()
             .any(|e| e.terrain == Terrain::Trail
                 && e.rationale.contains("inferred default hiking surface"))
+    );
+}
+
+#[test]
+fn enrichment_does_not_invent_a_trail_under_a_bushwhack() {
+    let draft = SegmentDraft {
+        junctions: JunctionPolicy::default(),
+        turn_ref: None,
+        turn_restrictions: Vec::new(),
+        geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.0, 0.01)]).unwrap(),
+        trail_class: TrailClass::Bushwhack,
+        standing: TrailStanding::Unknown,
+        terrain: Terrain::Unknown,
+        terrain_confidence: None,
+        surface: None,
+        access: Access::Open,
+        travel: EdgeTravel::Both,
+        road_exposure: 0.0,
+        confidence: 0.9,
+        provenance: vec![Provenance::fixture("pathless")],
+    };
+    let mut graph = GraphBuilder::default().build(&[draft]).unwrap();
+    enrich_with_north_plane(&mut graph, 0.0, 0.8);
+
+    let edge = &graph.edges[0];
+    assert_eq!(edge.attr.terrain, Terrain::Unknown);
+    assert!(edge.attr.terrain_confidence.abs() <= f64::EPSILON);
+    assert!(edge.attr.difficulty_breakdown.bushwhack > 0.0);
+    assert!(
+        edge.attr
+            .terrain_evidence
+            .iter()
+            .any(|e| e.rationale.contains("no surrounding-terrain evidence"))
     );
 }
 

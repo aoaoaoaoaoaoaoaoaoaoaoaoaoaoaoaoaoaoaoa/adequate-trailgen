@@ -11,6 +11,7 @@ The app is useful today as a local-first route generator over normalized project
 - The native workbench acquires and conflates the default rectangle-scoped OSM and USGS corpus, searches it, and persists a graph-independent trail library. It does not yet expose topology editing, route export, or generation manifests; those provenance-sensitive operations remain debug CLI contracts. The separate `trailgen map` artifact remains a self-contained offline SVG/HTML diagnostic.
 - AllTrails write-back uses only manual-compatible exports. The core deliberately avoids brittle private APIs.
 - Terrain inference is transparent but coarse. Explicit tags, overlays, road context, slope, and confidence are preserved; they do not replace field judgment.
+- Explicit bushwhack lines are first-class pathless graph edges with independent surrounding terrain and difficulty, but the solver does not yet synthesize safe off-network corridors from blank land cover. Automatic bushwhack generation requires obstacle, ownership/access, vegetation, and substrate evidence rather than arbitrary straight lines.
 - Large real regions will need careful source curation and search-parameter tuning. The fixture demo proves the pipeline, not global performance.
 
 These are product boundaries, not excuses. New work should reduce this list only by adding reproducible code, tests, docs, and demo evidence.
