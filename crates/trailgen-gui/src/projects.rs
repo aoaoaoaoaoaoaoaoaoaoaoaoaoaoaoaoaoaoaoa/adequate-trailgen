@@ -262,6 +262,7 @@ struct SurveyWorkbench {
     fault: Option<String>,
     vector: VectorField,
     viewport: Viewport,
+    fit_regions: bool,
     scribe: RegionScribe,
     slate_path: PathBuf,
     committed_slate: Slate,
@@ -279,6 +280,7 @@ impl SurveyWorkbench {
     ) -> Result<Self> {
         let config = trailgen_data::project_config(&place.root)?;
         let slate = Slate::load(&slate_path, &place.root);
+        let fit_regions = slate.viewport.is_none() && !config.regions.is_empty();
         let viewport = slate.viewport.unwrap_or_else(|| Viewport {
             center: map::world_from_coord(Coord::new(-98.5, 39.5)),
             zoom: 4.2,
@@ -298,6 +300,7 @@ impl SurveyWorkbench {
             fault: None,
             vector,
             viewport,
+            fit_regions,
             scribe: RegionScribe::default(),
             slate_path,
             committed_slate: slate.clone(),
@@ -457,6 +460,19 @@ impl SurveyWorkbench {
     fn map(&mut self, ui: &mut egui::Ui) {
         let (rect, response) =
             ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
+        if self.fit_regions {
+            self.viewport = map::fit_coords(
+                self.regions.iter().flat_map(|region| {
+                    let bounds = region.bounds;
+                    [
+                        Coord::new(bounds.west, bounds.south),
+                        Coord::new(bounds.east, bounds.north),
+                    ]
+                }),
+                rect,
+            );
+            self.fit_regions = false;
+        }
         self.water
             .begin(dwemer_poolrooms::water::Domain::shelf(rect));
         if map::navigate_with(

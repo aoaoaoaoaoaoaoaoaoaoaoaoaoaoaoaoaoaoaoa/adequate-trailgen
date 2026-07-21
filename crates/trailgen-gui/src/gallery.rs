@@ -126,7 +126,7 @@ pub fn saved_tile(ui: &mut Ui, trail: &SavedTrail, active: bool) -> Response {
                     rect,
                     &geometry,
                     &leg.geometry,
-                    crate::map::ALLTRAILS_GREEN,
+                    crate::map::SELECTED_TRAIL_COLOR,
                     trail_mark(
                         leg.trail_class,
                         leg.standing,
@@ -186,14 +186,19 @@ fn tile_shell(
         egui::FontId::monospace(12.0),
         if active { chrome::HOT } else { chrome::TEXT },
     );
+    let measurements = if metrics.elevation_fraction >= 0.8 {
+        format!(
+            "{:.1} KM   ASCENT {:.0} M",
+            metrics.distance_m / 1_000.0,
+            metrics.ascent_m,
+        )
+    } else {
+        format!("{:.1} KM   NO ELEVATION", metrics.distance_m / 1_000.0)
+    };
     ui.painter().text(
         pos2(title.left(), title.bottom()),
         egui::Align2::LEFT_BOTTOM,
-        format!(
-            "{:.1} KM   ↗ {:.0} M",
-            metrics.distance_m / 1_000.0,
-            metrics.ascent_m,
-        ),
+        measurements,
         egui::FontId::monospace(10.5),
         chrome::MUTED,
     );

@@ -60,6 +60,22 @@ if [ "${TRAILGEN_GUI_ONLINE:-0}" = 1 ] && [ "${TRAILGEN_GUI_RESUME:-0}" != 1 ]; 
     sleep "${TRAILGEN_GUI_BASEMAP_SETTLE_S:-1}"
 fi
 
+if [ -n "${TRAILGEN_GUI_WAIT_INDEX_SCHEMA:-}" ]; then
+    attempts=0
+    while ! jq -e --argjson schema "$TRAILGEN_GUI_WAIT_INDEX_SCHEMA" \
+        '.schema == $schema' "$project/cache/trails.json" >/dev/null 2>&1; do
+        attempts=$((attempts + 1))
+        if [ "$attempts" -ge 600 ]; then
+            import -window "$window" "$out/index-timeout.png"
+            printf 'timed out waiting for trail index schema %s\n' \
+                "$TRAILGEN_GUI_WAIT_INDEX_SCHEMA" >&2
+            exit 1
+        fi
+        sleep 0.25
+    done
+    sleep 1
+fi
+
 sleep "${TRAILGEN_GUI_SETTLE_S:-0}"
 attempts=0
 while :; do
@@ -179,6 +195,27 @@ fi
 if [ "${TRAILGEN_GUI_ROAM_RESUME:-0}" = 1 ]; then
     sleep 1
     import -window "$window" "$out/harriman-resumed.png"
+    exit 0
+fi
+
+if [ "${TRAILGEN_GUI_EDITOR_FLOW:-0}" = 1 ]; then
+    xdotool mousemove --sync --window "$window" 140 325 click 1
+    sleep 0.5
+    import -window "$window" "$out/editor-empty.png"
+    xdotool mousemove --sync --window "$window" 781 396 click 1
+    sleep 0.4
+    xdotool mousemove --sync --window "$window" 850 400 click 1
+    sleep 1
+    import -window "$window" "$out/editor-route.png"
+    # Seize the second pin's raised bulb and move it onto another spine.
+    xdotool mousemove --sync --window "$window" 842 400
+    xdotool mousedown 1
+    sleep 0.2
+    xdotool mousemove --sync --window "$window" 900 370
+    sleep 0.2
+    xdotool mouseup 1
+    sleep 1
+    import -window "$window" "$out/editor-moved.png"
     exit 0
 fi
 

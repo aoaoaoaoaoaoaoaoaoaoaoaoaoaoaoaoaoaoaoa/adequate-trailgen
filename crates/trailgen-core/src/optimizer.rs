@@ -2,11 +2,12 @@ use crate::RouteShape;
 use crate::constraints::LoopConstraints;
 use crate::model::{EdgeId, TrailGraph, VertexId};
 use crate::route::{Route, rank_routes};
+use crate::trail::RoutingLaw;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SearchParams {
     pub max_hops: usize,
     pub max_frontier: usize,
@@ -15,6 +16,8 @@ pub struct SearchParams {
     pub closure_paths: usize,
     #[serde(default)]
     pub seed: u64,
+    #[serde(default)]
+    pub routing: RoutingLaw,
 }
 
 const fn default_closure_paths() -> usize {
@@ -29,6 +32,7 @@ impl Default for SearchParams {
             keep: 12,
             closure_paths: default_closure_paths(),
             seed: 0,
+            routing: RoutingLaw::default(),
         }
     }
 }
@@ -72,6 +76,9 @@ impl SolverKind {
         constraints: &LoopConstraints,
         count: usize,
     ) -> Vec<Route> {
+        if constraints.allowed_shapes.as_slice() == [RouteShape::OutAndBack] {
+            return support_out_and_backs(params, graph, start, constraints, count);
+        }
         match self.resolve(graph) {
             Self::Auto => unreachable!("auto solver must resolve to a concrete backend"),
             Self::Heuristic => LoopHunter { params }.solve(graph, start, constraints, count),
@@ -80,12 +87,12 @@ impl SolverKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct LoopHunter {
     pub params: SearchParams,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ExactLoopSolver {
     pub params: SearchParams,
 }
@@ -145,15 +152,16 @@ impl RouteSolver for LoopHunter {
             }
             if closes_allowed(constraints) && state.at != start && !state.edges.is_empty() {
                 let max_return_m = constraints.max_distance_m.mul_add(1.35, -state.distance_m);
-                for return_edges in shortest_return_paths(
+                for return_edges in shortest_return_paths(ReturnHunt {
                     graph,
-                    state.at,
-                    start,
-                    state.edges.last().copied(),
-                    &state.used,
-                    max_return_m,
-                    self.params.closure_paths,
-                ) {
+                    from: state.at,
+                    target: start,
+                    previous: state.edges.last().copied(),
+                    barred: &state.used,
+                    max_distance_m: max_return_m,
+                    keep: self.params.closure_paths,
+                    law: self.params.routing,
+                }) {
                     let mut route_edges = state.edges.clone();
                     route_edges.extend(return_edges);
                     push_allowed_route(&mut routes, graph, start, route_edges, constraints);
@@ -169,10 +177,14 @@ impl RouteSolver for LoopHunter {
                 self.params.seed,
                 state.edges.len(),
                 state.at,
+                self.params.routing,
             );
 
             for edge_id in fanout {
                 if state.used.contains(&edge_id) {
+                    continue;
+                }
+                if self.params.routing.edge_cost(graph, edge_id).is_none() {
                     continue;
                 }
                 if !graph.turn_allowed(state.edges.last().copied(), state.at, edge_id) {
@@ -219,7 +231,7 @@ impl RouteSolver for LoopHunter {
             }
         }
 
-        finish_routes(routes, constraints, count, self.params.keep)
+        finish_routes(routes, graph, constraints, count, self.params.keep)
     }
 }
 
@@ -270,6 +282,9 @@ impl RouteSolver for ExactLoopSolver {
                 if state.used.contains(&edge_id) {
                     continue;
                 }
+                if self.params.routing.edge_cost(graph, edge_id).is_none() {
+                    continue;
+                }
                 if !graph.turn_allowed(state.edges.last().copied(), state.at, edge_id) {
                     continue;
                 }
@@ -309,8 +324,142 @@ impl RouteSolver for ExactLoopSolver {
             }
         }
 
-        finish_routes(routes, constraints, count, self.params.keep)
+        finish_routes(routes, graph, constraints, count, self.params.keep)
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct SupportWalk {
+    at: VertexId,
+    previous: Option<EdgeId>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SupportFrontier {
+    cost: f64,
+    walk: SupportWalk,
+}
+
+impl Eq for SupportFrontier {}
+
+impl Ord for SupportFrontier {
+    fn cmp(&self, rhs: &Self) -> Ordering {
+        rhs.cost
+            .total_cmp(&self.cost)
+            .then_with(|| rhs.walk.cmp(&self.walk))
+    }
+}
+
+impl PartialOrd for SupportFrontier {
+    fn partial_cmp(&self, rhs: &Self) -> Option<Ordering> {
+        Some(self.cmp(rhs))
+    }
+}
+
+fn support_out_and_backs(
+    params: SearchParams,
+    graph: &TrailGraph,
+    start: VertexId,
+    constraints: &LoopConstraints,
+    count: usize,
+) -> Vec<Route> {
+    let law = params.routing;
+    let origin = SupportWalk {
+        at: start,
+        previous: None,
+    };
+    let mut frontier = BinaryHeap::from([SupportFrontier {
+        cost: 0.0,
+        walk: origin,
+    }]);
+    let mut distance = BTreeMap::from([(origin, 0.0)]);
+    let mut predecessor = BTreeMap::<SupportWalk, (SupportWalk, EdgeId)>::new();
+    let mut emitted = BTreeSet::new();
+    let mut routes = Vec::new();
+    let mut expanded = 0usize;
+    let maximum_outward_m = constraints.max_distance_m * 0.675;
+    let maximum_cost = maximum_outward_m * (1.0 + law.road_aversion);
+
+    while let Some(SupportFrontier { cost, walk }) = frontier.pop() {
+        if expanded >= params.max_frontier || cost > maximum_cost {
+            break;
+        }
+        if distance
+            .get(&walk)
+            .is_some_and(|best| cost > *best + f64::EPSILON)
+        {
+            continue;
+        }
+        expanded += 1;
+        let path = support_path(origin, walk, &predecessor);
+        let outward_m = route_distance(graph, &path);
+        if walk.at != start
+            && emitted.insert(walk.at)
+            && !path.is_empty()
+            && path.len() <= params.max_hops
+            && outward_m <= maximum_outward_m
+            && path.iter().copied().collect::<BTreeSet<_>>().len() == path.len()
+        {
+            push_allowed_route(
+                &mut routes,
+                graph,
+                start,
+                mirrored_route(&path),
+                constraints,
+            );
+        }
+        if path.len() >= params.max_hops || outward_m > maximum_outward_m {
+            continue;
+        }
+        for edge in graph.adjacency[walk.at.0].iter().copied() {
+            if !graph.turn_allowed(walk.previous, walk.at, edge) {
+                continue;
+            }
+            let Some(edge_cost) = law.edge_cost(graph, edge) else {
+                continue;
+            };
+            let next_cost = cost + edge_cost;
+            if next_cost > maximum_cost {
+                continue;
+            }
+            let Some(at) = graph.edges[edge.0].traverse(walk.at) else {
+                continue;
+            };
+            let next = SupportWalk {
+                at,
+                previous: Some(edge),
+            };
+            if distance
+                .get(&next)
+                .is_none_or(|best| next_cost < *best - f64::EPSILON)
+            {
+                distance.insert(next, next_cost);
+                predecessor.insert(next, (walk, edge));
+                frontier.push(SupportFrontier {
+                    cost: next_cost,
+                    walk: next,
+                });
+            }
+        }
+    }
+    finish_routes(routes, graph, constraints, count, params.keep)
+}
+
+fn support_path(
+    origin: SupportWalk,
+    mut cursor: SupportWalk,
+    predecessor: &BTreeMap<SupportWalk, (SupportWalk, EdgeId)>,
+) -> Vec<EdgeId> {
+    let mut edges = Vec::new();
+    while cursor != origin {
+        let Some((prior, edge)) = predecessor.get(&cursor).copied() else {
+            return Vec::new();
+        };
+        edges.push(edge);
+        cursor = prior;
+    }
+    edges.reverse();
+    edges
 }
 
 fn closes_allowed(constraints: &LoopConstraints) -> bool {
@@ -341,6 +490,7 @@ fn push_allowed_route(
 
 fn finish_routes(
     mut routes: Vec<Route>,
+    graph: &TrailGraph,
     constraints: &LoopConstraints,
     count: usize,
     keep: usize,
@@ -348,11 +498,89 @@ fn finish_routes(
     let mut seen = BTreeSet::new();
     routes.retain(|route| seen.insert(route_signature(route)));
     rank_routes(&mut routes, constraints);
-    routes.truncate(count.max(1).min(keep));
+    routes = diverse_portfolio(routes, graph, graphless_limit(count, keep));
     for (i, route) in routes.iter_mut().enumerate() {
         route.name = format!("candidate-{}", i + 1);
     }
     routes
+}
+
+const fn graphless_limit(count: usize, keep: usize) -> usize {
+    if count < 1 {
+        1
+    } else if count < keep {
+        count
+    } else {
+        keep
+    }
+}
+
+fn diverse_portfolio(routes: Vec<Route>, graph: &TrailGraph, limit: usize) -> Vec<Route> {
+    if routes.len() <= limit {
+        return routes;
+    }
+    let tier = routes
+        .iter()
+        .position(|route| !route.verdict.satisfied)
+        .unwrap_or(routes.len());
+    let mut misses = routes;
+    let near = misses.split_off(tier);
+    let mut chosen = Vec::with_capacity(limit);
+    admit_diverse_tier(misses, graph, limit, &mut chosen);
+    admit_diverse_tier(near, graph, limit, &mut chosen);
+    chosen
+}
+
+fn admit_diverse_tier(
+    routes: Vec<Route>,
+    graph: &TrailGraph,
+    limit: usize,
+    chosen: &mut Vec<Route>,
+) {
+    let mut pool = routes.into_iter().map(Some).collect::<Vec<_>>();
+    for exclusion_radius in [0.35, 0.20, 0.08, 0.0] {
+        for candidate in &mut pool {
+            if chosen.len() >= limit {
+                break;
+            }
+            let admit = candidate.as_ref().is_some_and(|route| {
+                chosen
+                    .iter()
+                    .all(|known| route_distance_between(graph, route, known) >= exclusion_radius)
+            });
+            if admit {
+                chosen.push(candidate.take().expect("admitted route exists"));
+            }
+        }
+    }
+}
+
+fn route_distance_between(graph: &TrailGraph, left: &Route, right: &Route) -> f64 {
+    let counts = |route: &Route| {
+        let mut counts = BTreeMap::<EdgeId, u32>::new();
+        for edge in &route.edges {
+            let count = counts.entry(*edge).or_default();
+            *count = count
+                .checked_add(1)
+                .expect("a route has fewer than 2³² legs");
+        }
+        counts
+    };
+    let left_counts = counts(left);
+    let right_counts = counts(right);
+    let shared_m = left_counts
+        .iter()
+        .map(|(edge, count)| {
+            graph.edges[edge.0].attr.length_m
+                * f64::from(*count.min(right_counts.get(edge).unwrap_or(&0)))
+        })
+        .sum::<f64>();
+    let basis_m = left
+        .metrics
+        .distance_m
+        .min(right.metrics.distance_m)
+        .max(1.0);
+    1.0 - shared_m / basis_m
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -379,35 +607,35 @@ fn route_distance(graph: &TrailGraph, edges: &[EdgeId]) -> f64 {
         .sum()
 }
 
-fn shortest_return_paths(
-    graph: &TrailGraph,
+#[derive(Clone, Copy)]
+struct ReturnHunt<'a> {
+    graph: &'a TrailGraph,
     from: VertexId,
     target: VertexId,
     previous: Option<EdgeId>,
-    banned_edges: &BTreeSet<EdgeId>,
+    barred: &'a BTreeSet<EdgeId>,
     max_distance_m: f64,
     keep: usize,
-) -> Vec<Vec<EdgeId>> {
-    if max_distance_m < 0.0 {
+    law: RoutingLaw,
+}
+
+fn shortest_return_paths(hunt: ReturnHunt<'_>) -> Vec<Vec<EdgeId>> {
+    if hunt.max_distance_m < 0.0 {
         return Vec::new();
     }
-    let keep = keep.max(1);
-    if keep == 1 {
-        return shortest_return_path(graph, from, target, previous, banned_edges, max_distance_m)
-            .into_iter()
-            .collect();
-    }
+    let keep = hunt.keep.max(1);
     let expansion_cap = keep
-        .saturating_mul(graph.edges.len().max(1))
+        .saturating_mul(hunt.graph.edges.len().max(1))
         .saturating_mul(8)
         .max(64);
     let mut heap = BinaryHeap::new();
     heap.push(ReturnPathState {
-        cost_m: 0.0,
-        at: from,
-        previous,
+        routing_cost_m: 0.0,
+        distance_m: 0.0,
+        at: hunt.from,
+        previous: hunt.previous,
         edges: Vec::new(),
-        used: banned_edges.clone(),
+        used: hunt.barred.clone(),
     });
     let mut expanded = 0usize;
     let mut paths = Vec::new();
@@ -417,23 +645,26 @@ fn shortest_return_paths(
             break;
         }
         expanded += 1;
-        if state.at == target && !state.edges.is_empty() {
+        if state.at == hunt.target && !state.edges.is_empty() {
             paths.push(state.edges);
             continue;
         }
-        for edge_id in &graph.adjacency[state.at.0] {
+        for edge_id in &hunt.graph.adjacency[state.at.0] {
             if state.used.contains(edge_id) {
                 continue;
             }
-            if !graph.turn_allowed(state.previous, state.at, *edge_id) {
+            if !hunt.graph.turn_allowed(state.previous, state.at, *edge_id) {
                 continue;
             }
-            let edge = &graph.edges[edge_id.0];
+            let Some(edge_cost) = hunt.law.edge_cost(hunt.graph, *edge_id) else {
+                continue;
+            };
+            let edge = &hunt.graph.edges[edge_id.0];
             let Some(next) = edge.traverse(state.at) else {
                 continue;
             };
-            let next_cost_m = state.cost_m + edge.attr.length_m;
-            if next_cost_m > max_distance_m {
+            let distance_m = state.distance_m + edge.attr.length_m;
+            if distance_m > hunt.max_distance_m {
                 continue;
             }
             let mut edges = state.edges.clone();
@@ -441,7 +672,8 @@ fn shortest_return_paths(
             let mut used = state.used.clone();
             used.insert(*edge_id);
             heap.push(ReturnPathState {
-                cost_m: next_cost_m,
+                routing_cost_m: state.routing_cost_m + edge_cost,
+                distance_m,
                 at: next,
                 previous: Some(*edge_id),
                 edges,
@@ -452,94 +684,34 @@ fn shortest_return_paths(
     paths
 }
 
-fn shortest_return_path(
-    graph: &TrailGraph,
-    from: VertexId,
-    target: VertexId,
-    previous: Option<EdgeId>,
-    banned_edges: &BTreeSet<EdgeId>,
-    max_distance_m: f64,
-) -> Option<Vec<EdgeId>> {
-    let origin = ReturnWalk { at: from, previous };
-    let mut frontier = BinaryHeap::from([ReturnFrontier {
-        cost_m: 0.0,
-        walk: origin,
-    }]);
-    let mut distance = BTreeMap::from([(origin, 0.0)]);
-    let mut predecessor = BTreeMap::<ReturnWalk, (ReturnWalk, EdgeId)>::new();
-
-    while let Some(ReturnFrontier { cost_m, walk }) = frontier.pop() {
-        if cost_m > max_distance_m
-            || distance
-                .get(&walk)
-                .is_some_and(|best| cost_m > *best + f64::EPSILON)
-        {
-            continue;
-        }
-        if walk.at == target {
-            let mut path = Vec::new();
-            let mut cursor = walk;
-            while cursor != origin {
-                let (prior, edge) = predecessor.get(&cursor).copied()?;
-                path.push(edge);
-                cursor = prior;
-            }
-            path.reverse();
-            let mut seen = BTreeSet::new();
-            if path.iter().all(|edge| seen.insert(*edge)) {
-                return Some(path);
-            }
-            continue;
-        }
-        for edge_id in graph.adjacency[walk.at.0].iter().copied() {
-            if banned_edges.contains(&edge_id)
-                || !graph.turn_allowed(walk.previous, walk.at, edge_id)
-            {
-                continue;
-            }
-            let edge = &graph.edges[edge_id.0];
-            let Some(at) = edge.traverse(walk.at) else {
-                continue;
-            };
-            let next_cost_m = cost_m + edge.attr.length_m;
-            if next_cost_m > max_distance_m {
-                continue;
-            }
-            let next = ReturnWalk {
-                at,
-                previous: Some(edge_id),
-            };
-            if distance.get(&next).is_none_or(|best| next_cost_m < *best) {
-                distance.insert(next, next_cost_m);
-                predecessor.insert(next, (walk, edge_id));
-                frontier.push(ReturnFrontier {
-                    cost_m: next_cost_m,
-                    walk: next,
-                });
-            }
-        }
-    }
-    None
-}
-
 fn sort_heuristic_fanout(
     graph: &TrailGraph,
     fanout: &mut [EdgeId],
     seed: u64,
     depth: usize,
     at: VertexId,
+    law: RoutingLaw,
 ) {
     fanout.sort_by(|a, b| {
-        branch_score(graph, *b, seed, depth, at)
-            .total_cmp(&branch_score(graph, *a, seed, depth, at))
+        branch_score(graph, *b, seed, depth, at, law)
+            .total_cmp(&branch_score(graph, *a, seed, depth, at, law))
             .then_with(|| b.cmp(a))
     });
 }
 
-fn branch_score(graph: &TrailGraph, edge_id: EdgeId, seed: u64, depth: usize, at: VertexId) -> f64 {
-    graph.edges[edge_id.0]
-        .attr
-        .difficulty
+fn branch_score(
+    graph: &TrailGraph,
+    edge_id: EdgeId,
+    seed: u64,
+    depth: usize,
+    at: VertexId,
+    law: RoutingLaw,
+) -> f64 {
+    let edge = &graph.edges[edge_id.0];
+    let road_detour_km = law
+        .edge_cost(graph, edge_id)
+        .map_or(f64::MAX, |cost| (cost - edge.attr.length_m) / 1_000.0);
+    (edge.attr.difficulty + road_detour_km)
         .mul_add(1_024.0, seeded_unit(seed, depth, at, edge_id) * 128.0)
 }
 
@@ -558,7 +730,8 @@ const fn splitmix64(mut x: u64) -> u64 {
 
 #[derive(Clone, Debug, PartialEq)]
 struct ReturnPathState {
-    cost_m: f64,
+    routing_cost_m: f64,
+    distance_m: f64,
     at: VertexId,
     previous: Option<EdgeId>,
     edges: Vec<EdgeId>,
@@ -569,8 +742,9 @@ impl Eq for ReturnPathState {}
 
 impl Ord for ReturnPathState {
     fn cmp(&self, rhs: &Self) -> Ordering {
-        rhs.cost_m
-            .total_cmp(&self.cost_m)
+        rhs.routing_cost_m
+            .total_cmp(&self.routing_cost_m)
+            .then_with(|| rhs.distance_m.total_cmp(&self.distance_m))
             .then_with(|| rhs.at.cmp(&self.at))
             .then_with(|| rhs.edges.cmp(&self.edges))
     }
@@ -582,38 +756,147 @@ impl PartialOrd for ReturnPathState {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct ReturnWalk {
-    at: VertexId,
-    previous: Option<EdgeId>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct ReturnFrontier {
-    cost_m: f64,
-    walk: ReturnWalk,
-}
-
-impl Eq for ReturnFrontier {}
-
-impl Ord for ReturnFrontier {
-    fn cmp(&self, rhs: &Self) -> Ordering {
-        rhs.cost_m
-            .total_cmp(&self.cost_m)
-            .then_with(|| rhs.walk.cmp(&self.walk))
-    }
-}
-
-impl PartialOrd for ReturnFrontier {
-    fn partial_cmp(&self, rhs: &Self) -> Option<Ordering> {
-        Some(self.cmp(rhs))
-    }
-}
-
 fn mirrored_route(edges: &[EdgeId]) -> Vec<EdgeId> {
     edges
         .iter()
         .copied()
         .chain(edges.iter().rev().copied())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        Access, Coord, EdgeTravel, GraphBuilder, JunctionPolicy, LineString, Provenance,
+        SegmentDraft, Terrain, TrailClass, TrailStanding,
+    };
+
+    fn branch(points: Vec<Coord>, name: &str) -> SegmentDraft {
+        SegmentDraft {
+            geometry: LineString::new(points).expect("valid branch"),
+            junctions: JunctionPolicy::Planar,
+            turn_ref: None,
+            turn_restrictions: Vec::new(),
+            trail_class: TrailClass::Path,
+            standing: TrailStanding::Established,
+            terrain: Terrain::Trail,
+            terrain_confidence: Some(1.0),
+            surface: None,
+            access: Access::Open,
+            travel: EdgeTravel::Both,
+            road_exposure: 0.0,
+            confidence: 1.0,
+            provenance: vec![Provenance::fixture(name)],
+        }
+    }
+
+    #[test]
+    fn out_and_back_portfolio_spends_slots_on_distinct_spines_first() {
+        let origin = Coord::new(0.0, 0.0);
+        let graph = GraphBuilder::default()
+            .build(&[
+                branch(
+                    vec![
+                        origin,
+                        Coord::new(0.001, 0.0),
+                        Coord::new(0.002, 0.0),
+                        Coord::new(0.003, 0.0),
+                    ],
+                    "east",
+                ),
+                branch(
+                    vec![
+                        origin,
+                        Coord::new(0.0, 0.001),
+                        Coord::new(0.0, 0.002),
+                        Coord::new(0.0, 0.003),
+                    ],
+                    "north",
+                ),
+                branch(
+                    vec![
+                        origin,
+                        Coord::new(-0.001, 0.0),
+                        Coord::new(-0.002, 0.0),
+                        Coord::new(-0.003, 0.0),
+                    ],
+                    "west",
+                ),
+            ])
+            .expect("build branching graph");
+        let start = graph.nearest_vertex(origin).expect("origin vertex");
+        let constraints = LoopConstraints {
+            min_distance_m: 200.0,
+            max_distance_m: 800.0,
+            max_difficulty: f64::MAX,
+            max_repeated_edge_fraction: 1.0,
+            allowed_shapes: vec![RouteShape::OutAndBack],
+            ..LoopConstraints::default()
+        };
+        let routes = SolverKind::Auto.solve(
+            SearchParams {
+                max_hops: 4,
+                max_frontier: 100,
+                keep: 12,
+                closure_paths: 1,
+                seed: 0,
+                routing: RoutingLaw::default(),
+            },
+            &graph,
+            start,
+            &constraints,
+            3,
+        );
+        assert_eq!(routes.len(), 3);
+        assert_eq!(
+            routes
+                .iter()
+                .map(|route| route.edges[0])
+                .collect::<BTreeSet<_>>()
+                .len(),
+            3
+        );
+    }
+
+    #[test]
+    fn diversity_never_spends_a_slot_on_a_near_miss_while_matches_remain() {
+        let origin = Coord::new(0.0, 0.0);
+        let graph = GraphBuilder::default()
+            .build(&[
+                branch(
+                    vec![
+                        origin,
+                        Coord::new(0.001, 0.0),
+                        Coord::new(0.002, 0.0),
+                        Coord::new(0.003, 0.0),
+                    ],
+                    "exact-spine",
+                ),
+                branch(vec![origin, Coord::new(0.0, 0.0004)], "short-near-miss"),
+            ])
+            .expect("build tiered graph");
+        let start = graph.nearest_vertex(origin).expect("origin vertex");
+        let constraints = LoopConstraints {
+            min_distance_m: 200.0,
+            max_distance_m: 800.0,
+            max_difficulty: f64::MAX,
+            max_repeated_edge_fraction: 1.0,
+            allowed_shapes: vec![RouteShape::OutAndBack],
+            ..LoopConstraints::default()
+        };
+        let routes = SolverKind::Auto.solve(
+            SearchParams {
+                keep: 12,
+                max_frontier: 100,
+                ..SearchParams::default()
+            },
+            &graph,
+            start,
+            &constraints,
+            3,
+        );
+        assert_eq!(routes.len(), 3);
+        assert!(routes.iter().all(|route| route.verdict.satisfied));
+    }
 }

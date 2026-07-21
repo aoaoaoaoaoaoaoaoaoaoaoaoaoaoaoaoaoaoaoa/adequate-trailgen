@@ -1,29 +1,90 @@
 # Optimizer
 
-`RouteSolver` is the solver seam. Two backends ship today:
+## Objective
 
-- `LoopHunter`: a bounded sparse-graph heuristic over the normalized `TrailGraph`
-- `ExactLoopSolver`: a bounded exhaustive edge-simple enumerator for small subgraphs
+Trailgen separates physical effort from desirability:
 
-Select them with `solver = "auto"|"heuristic"|"exact"` in `trailgen.toml` or `trailgen generate --solver auto|heuristic|exact`. `auto` records the requested strategy but resolves per graph: small graphs use `ExactLoopSolver`, larger graphs use `LoopHunter`.
+- **Difficulty** is a target. Distance, climb, grade, substrate, technical pressure, navigation,
+  confidence, and access evidence produce the scalar; ranking minimizes distance from the requested
+  target inside the hard difficulty window.
+- **Quality** is maximized. It is a length-normalized 0–100 score reduced by road exposure,
+  uncertainty, and dubious access. Difficulty is deliberately absent, so a severe route can still
+  be excellent.
 
-Generation snaps the requested `--start lon,lat` to the nearest graph vertex only inside `max_start_snap_m`; a remote coordinate fails loudly instead of silently producing a route from the wrong trailhead. `LoopHunter` expands from that selected start vertex, orders fanout by edge difficulty, and keeps a bounded outward frontier using `[search]` parameters, which can be overridden per run with `generate --max-hops`, `--max-frontier`, `--keep`, and `--closure-paths`:
+Roads are not banned by default. `search.routing.road_aversion = 2` makes a fully road-exposed meter
+cost three routing meters, while `constraints.max_road_fraction` remains available for an explicit
+hard cap and defaults to `1`. Closed and private edges are never traversable. Pavement and road
+terrain remain physically easier under the default difficulty multipliers; the optional
+`difficulty.road_effort_penalty` is zero unless a project intentionally defines road walking as
+extra effort.
 
-- `max_hops`: maximum edge count in the outward search
-- `max_frontier`: maximum expanded states before stopping
-- `keep`: maximum candidates retained before the CLI truncates to `--count`
-- `closure_paths`: legal return paths tried from each outward frontier
+## Support Designs
 
-The outward frontier is closure-augmented: from each partial route, `LoopHunter` enumerates a bounded set of shortest legal return paths to the start while forbidding already-used edges. This k-shortest closure hybrid lets shallow outward exploration produce real sparse-graph loops, and lets non-shortest returns survive when the absolute shortest closure is road-heavy, closed, low-confidence, wrong-terrain, or otherwise constraint-poisoned. Closed edge-simple candidates are measured as loops or figure-eights according to their vertex visits, then discarded unless their measured shape is in `constraints.allowed_shapes`. When `FigureEight` is allowed, the search may continue through the start after a closed lobe, producing deliberate multi-lobe closed routes. When `OutAndBack` is allowed, the solver mirrors each outward path into a return path, creating deliberate repeated-edge candidates only when the full edge sequence is directionally walkable. To make those mirrored candidates satisfiable, set `constraints.max_repeated_edge_fraction` above zero.
+The canonical `Trail` is a shape, ordered geographic support points, and a routing law. Consecutive
+support points are joined by the least-cost lawful graph path. Open trails end at the final point;
+out-and-backs reverse the outward edge sequence exactly; loops add the least-cost return to the
+trailhead. The GUI manual editor and editable library trails call this engine directly.
 
-`ExactLoopSolver` does not synthesize closure shortcuts. It enumerates all legal edge-simple traversals within `max_hops` and `max_frontier`, emits only measured route shapes allowed by the constraint set, and mirrors out-and-back branches under the same directional walkability checks as `LoopHunter`. Its guarantee is exact only inside the configured hop/frontier/distance envelope; it is the small-subgraph correctness backend, not a global graph optimizer.
+Search need not discover candidates in support-point space, but it must recover an exact design
+before offering **Edit Trail**. Out-and-backs have a two-point form: trailhead and turnaround. For
+loops and open routes, recursive arc contraction removes every control point whose neighboring walk
+is already the least-cost lawful path. A candidate with an irreducible parallel-edge ambiguity is
+saveable but is not falsely presented as editable. Figure-eight support topology remains undefined.
 
-`trailgen formulate-milp <project> --start lon,lat --output loop.lp` emits the exact backend seam as a deterministic LP/MILP artifact. The formulation uses binary directed arc variables, binary visited-vertex variables, continuous flow variables, in/out degree equalities, start anchoring, single-commodity flow connectivity, and forbidden-transition inequalities so selected edges form one legal connected simple loop through the snapped trailhead. Linear rows encode distance, scalar difficulty, ascent/descent, road/pavement exposure, low-confidence exposure, restricted-access exposure, forbidden terrain, and min/max terrain fractions. The CLI still does not invoke a MILP solver itself, but `trailgen import-milp-solution <project> --start lon,lat --solution loop.sol` closes the external-solver loop: it parses selected `z_e{edge}_v{from}_v{to}` incumbent variables from common text solution formats, verifies directional and turn legality, rejects disconnected subtours, reconstructs the start loop, and writes the result through the same generated route, report, manifest, map, GPX, GeoJSON, CSV, KML, and KMZ artifact path as `generate`. A future in-process solver backend can target the same formulation/import seam without changing graph construction, reports, exports, or the heuristic generator.
+## Candidate Production
 
-Every candidate is scored after full metric measurement and constraint judgment. The persisted route score is `constraint_penalty + 0.05 × scalar_difficulty + 10 × low_confidence_fraction`; lower is better. Constraint judgment covers distance, scalar difficulty, ascent/descent windows, road/pavement fraction, restricted-access fraction, low-confidence fraction, repeated-edge fraction, shape, terrain mix, and one-run forbidden areas expressed as closed access overlays. Each measured route also carries sustained steep meters and fixed-bin grade distribution for elevation-covered spans. Each verdict carries a constraint audit: measured value, requirement, signed margin, and pass/fail state for every route bound, so a satisfied route has positive evidence rather than mere absence of violations.
+`RouteSolver` is the search seam. Loops use `LoopHunter`, a bounded edge-simple outward frontier
+closed by routing-cost-ordered legal return paths. Small graphs may use `ExactLoopSolver`, which is
+exhaustive only inside its hop, frontier, and distance envelope. `solver = "auto"` selects the exact
+backend for graphs with at most 32 edges and the heuristic otherwise.
 
-Constraint satisfaction is lexicographic; Pareto rank and scalar score refine each tier. Before ranking, solvers collapse equivalent candidates with the same measured shape and edge multiset, so a reversed loop traversal or reordered figure-eight lobe does not crowd out a genuinely different route; `--count` is therefore an upper bound after canonical collapse, not a promise to synthesize duplicates. `rank_routes` first partitions exact matches from near misses, then builds fronts within each tier over constraint penalty, distance-window deviation, ascent-window deviation, descent-window deviation, scalar difficulty, road/pavement fraction, low-confidence fraction, restricted-access fraction, and repeated-edge fraction. No attractive violation can outrank a lawful route. Inside a tier, a route is demoted only when another route is no worse on every objective and strictly better on at least one; scalar score orders a front. Reports, GeoJSON exports, route JSON, and generation manifests expose both `score` and the integer Pareto rank/front alongside the measured shape, repeated-edge fraction, constraint audit, route-level difficulty decomposition, route-level grade distribution, largest edge-factor contributors, crossing counts, terrain mix, access mix, access warnings, directed travel constraints, and evidence.
+Out-and-backs bypass DFS prefix enumeration. One turn-aware, road-aware shortest-path frontier emits
+the canonical shortest spine to each reachable turnaround and mirrors it. Dense chains therefore
+produce one candidate per meaningful endpoint rather than combinatorial perturbations around the
+same traversal.
 
-Both built-in solvers are deterministic for a fixed input ledger. `trailgen generate --seed N` records `N` in `routes/generated.manifest.json` together with the app version, requested solver, concrete solver, effective config, requested start coordinate, snapped start vertex/coordinate, snap distance, fingerprinted source manifest, source coverage summary, fingerprinted `seeds/seeds.json` state, one-run forbidden-area fingerprints/touched-edge counts, graph summary, graph elevation summary, directed-travel edge count, turn-ban count/provenance, exact edge-id route sequences, route metric/verdict/audit snapshots, emitted artifact list, and artifact fingerprints. `trailgen verify-generation` recomputes that ledger’s generated artifact and snapshotted source fingerprints, verifies run metadata, seed-ledger state, and one-run forbidden-area fingerprints/touched-edge counts, replays the source coverage and graph summaries from the manifest snapshots, checks route edge walks, and replays route metrics, grade distributions, sustained steepness, constraint audit rows, constraint verdicts, scores, and Pareto ranks from the effective constraints. For native `generate` runs, it also reruns the solver pipeline from the recorded effective config, generated graph snapshot, snapped start, seed, seed-route ledger, and count, then compares the replayed route names, edge sequences, metrics, verdicts, scores, and Pareto ranks against `routes/generated.routes.json`. Reproduction-critical values are therefore executable rather than merely archival. Generated and selected Markdown reports render the same generation ledger before the constraint envelope, so reproduction-critical values are visible without opening JSON. `LoopHunter` uses that seed as deterministic branch jitter inside its difficulty-ordered frontier, so repeated runs with the same seed reproduce the same sparse-frontier choices while different seeds can explore different symmetric or near-symmetric lobes; `closure_paths` records the k-shortest return breadth. `ExactLoopSolver` remains canonical and ignores seed and closure breadth for enumeration order. The same run writes `routes/generated.graph.json`, the effective graph after temporal access overlays, one-run forbidden-area overlays, and one-run config overrides. The trait and formulation boundaries are intentionally narrow so a stochastic heuristic or MILP/CP-SAT backend can target small subgraphs without changing ingestion, route export, reports, difficulty modeling, or the reproduction contract.
+The search envelope lives under `[search]`:
 
-Route names in `routes/generated.routes.json` are the stable post-generation selection handles for the CLI. `trailgen export` and `trailgen report` both rehydrate selected routes from that artifact and `routes/generated.graph.json` instead of rerunning the solver.
+- `max_hops`: maximum outward edge count
+- `max_frontier`: maximum expanded states
+- `keep`: maximum retained portfolio
+- `closure_paths`: return alternatives tried for a loop frontier
+- `seed`: deterministic heuristic fanout jitter
+- `routing.road_aversion`: finite road detour cost
+
+The GUI defaults to 5,000 frontier states, one closure, 12 retained candidates, seed 2, and road
+aversion 2. The CLI retains a larger diagnostic envelope.
+
+## Ranking And Diversity
+
+Every route is fully measured and judged before ranking. Hard constraint satisfaction is
+lexicographic: no attractive violation outranks a lawful route. Within each tier, Pareto fronts use
+constraint penalty, distance/ascent/descent window deviations, difficulty-target deviation, quality
+loss, restricted-access fraction, and repeated-edge fraction. Scalar score then orders a front:
+
+```text
+score = constraint_penalty + 0.1 × (100 - quality)
+```
+
+Equivalent edge multisets collapse first. The diversity portfolio then measures length-weighted
+edge overlap:
+
+```text
+distance(a, b) = 1 - shared_length / min(length(a), length(b))
+```
+
+It admits ranked routes at exclusion radii 0.35, 0.20, 0.08, then 0. This spends result slots on
+different spines or lobes before allowing close variants, while still filling the gallery in a
+sparse network. `--count` is consequently an upper bound, not a promise to fabricate duplicates.
+
+## Reproduction
+
+Both built-in solvers are deterministic for a fixed graph, effective config, start snap, seed, and
+seed-route ledger. `trailgen generate` records those inputs, source fingerprints, graph summaries,
+one-run overlays, exact edge sequences, measurements, verdicts, scores, ranks, and emitted artifact
+fingerprints in `routes/generated.manifest.json`. `trailgen verify-generation` verifies the ledger,
+replays metric and constraint computation, and reruns native generation before comparing candidates.
+
+`trailgen formulate-milp` and `trailgen import-milp-solution` remain the exact external-solver seam
+for connected simple loops. They share graph legality, measurements, reports, and artifact emission
+with native generation rather than forming another product vertical.

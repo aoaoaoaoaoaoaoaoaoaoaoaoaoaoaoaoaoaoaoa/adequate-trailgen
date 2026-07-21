@@ -17,15 +17,15 @@ Projects are ordinary portable directories rooted by `trailgen.toml`. Per-projec
 
 1. Create a project and pan to its broad territory.
 2. Draw one or more bronze-framed map areas. Trailgen downloads and indexes the union automatically; ground outside that union remains dimmed.
-3. Create flat trail families such as `long`, `climby`, or `easy`.
-4. Select a family, place its trailhead on the map, choose distance, climb, and shape, then press **Find Trails**.
-5. Open any result for a smooth full-map view and elevation profile. Save it into the family to make it durable.
+3. Press **Draw a Trail** to build one directly from draggable support points, with no search or family required.
+4. For discovery, create a flat family such as `long`, `climby`, or `easy`; place its trailhead, choose distance, climb, target difficulty, and shape, then press **Find Trails**.
+5. Open any result for a smooth full-map view and elevation profile. Save it, or edit any candidate whose exact walk admits a support-point design.
 
 Saved trails form a project-owned library. A trail may belong to several families. Deleting a family preserves its trails in **Unfiled**; deleting a trail removes it deliberately from the whole project. Search results remain transient.
 
 Trail types use high-contrast dual strokes and a map legend. Focused routes add an inner terrain trace. The bronze trailhead pin and restrained water response follow the Dwemer Poolrooms design language.
 
-The default US corpus combines OpenStreetMap/Overpass with USGS National Digital Trails. Every rectangle-provider response is independently sequestered beneath `sources/<provider>/`, normalized through one provider-neutral boundary, and explicitly conflated before `cache/graph.json` becomes ready. Informal, unmaintained, and historical paths remain searchable and visibly marked; trail standing never masquerades as legal access. See [data sources](docs/data-sources.md).
+The default US corpus combines OpenStreetMap/Overpass with USGS National Digital Trails and cached Mapzen terrain tiles. Every rectangle-provider response is independently sequestered beneath `sources/`, fingerprinted, and rebuilt through one graph path before `cache/graph.json` becomes ready. Informal, unmaintained, and historical paths remain searchable and visibly marked; trail standing never masquerades as legal access. See [data sources](docs/data-sources.md).
 
 ## Debug Frontend
 

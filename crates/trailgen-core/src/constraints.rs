@@ -16,6 +16,10 @@ pub struct LoopConstraints {
     pub min_difficulty: f64,
     #[serde(default = "default_max_difficulty")]
     pub max_difficulty: f64,
+    /// Preferred scalar difficulty inside the lawful difficulty window. This
+    /// guides ranking; it is not another constraint.
+    #[serde(default)]
+    pub target_difficulty: Option<f64>,
     #[serde(default)]
     pub min_ascent_m: f64,
     #[serde(default = "default_max_elevation_m")]
@@ -49,11 +53,12 @@ impl Default for LoopConstraints {
             max_distance_m: DEFAULT_MAX_DISTANCE_M,
             min_difficulty: 0.0,
             max_difficulty: 90.0,
+            target_difficulty: None,
             min_ascent_m: 0.0,
             max_ascent_m: 3_000.0,
             min_descent_m: 0.0,
             max_descent_m: 3_000.0,
-            max_road_fraction: 0.12,
+            max_road_fraction: 1.0,
             max_low_confidence_fraction: 0.20,
             max_restricted_access_fraction: 0.0,
             max_repeated_edge_fraction: 0.0,
@@ -542,7 +547,7 @@ const fn default_max_elevation_m() -> f64 {
 }
 
 const fn default_max_road_fraction() -> f64 {
-    0.12
+    1.0
 }
 
 const fn default_max_low_confidence_fraction() -> f64 {

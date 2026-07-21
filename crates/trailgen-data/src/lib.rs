@@ -1,6 +1,7 @@
 //! Shared trail-source acquisition, sequestration, and graph indexing.
 
 mod providers;
+mod terrain;
 
 pub use providers::{
     DEFAULT_USGS_TRAILS_ENDPOINT, NetworkProvider, NormalizedNetwork, ProviderDescriptor,
@@ -43,7 +44,7 @@ pub const FALLBACK_OVERPASS_ENDPOINT: &str = "https://overpass.private.coffee/ap
 pub const MAX_REGION_DEG2: f64 = 4.0;
 pub(crate) const MAX_SOURCE_BYTES: u64 = 256 * 1024 * 1024;
 const AUTOMATIC_OSM_PROFILE: OsmProfile = OsmProfile::All;
-const INDEX_SCHEMA: u8 = 8;
+const INDEX_SCHEMA: u8 = 11;
 const RAW_SCHEMA: u8 = 4;
 const MAX_OSM_CONNECTOR_M: f64 = 1_000.0;
 const LOCATION_CACHE: &str = "sources/location.json";
@@ -159,6 +160,8 @@ pub struct Summary {
     pub inventory: Inventory,
     pub vertices: usize,
     pub edges: usize,
+    #[serde(default)]
+    pub elevation_tiles: usize,
     pub raw_paths: Vec<PathBuf>,
     pub conflation: trailgen_core::ConflationStats,
     pub reused: bool,
@@ -203,6 +206,10 @@ pub enum Event {
         provider: ProviderId,
         bytes: u64,
     },
+    Elevating {
+        complete: usize,
+        total: usize,
+    },
     Indexing,
     Ready(Summary),
 }
@@ -221,6 +228,9 @@ impl Event {
                 let mib = bytes / 1_048_576;
                 let tenth = (bytes % 1_048_576) * 10 / 1_048_576;
                 format!("SEQUESTERED {mib}.{tenth} MIB FROM {provider}")
+            }
+            Self::Elevating { complete, total } => {
+                format!("FETCHING TOPOGRAPHY · {complete}/{total} TILES")
             }
             Self::Indexing => "INDEXING ROUTABLE TRAIL GRAPH".to_owned(),
             Self::Ready(summary) if summary.reused => {
@@ -543,7 +553,9 @@ where
             .iter()
             .map(|provider| provider.descriptor())
             .collect::<Vec<_>>();
-        if let Some(mut summary) = reusable_index(project, config, Some(&descriptors))? {
+        if let Some(mut summary) =
+            reusable_index(project, config, Some(&descriptors), !self.fixed_providers)?
+        {
             summary.reused = true;
             emit(Event::Ready(summary.clone()));
             return Ok(summary);
@@ -609,8 +621,13 @@ where
                 });
             }
         }
+        let terrain = if self.fixed_providers {
+            Vec::new()
+        } else {
+            terrain::acquire(project, &config.regions, fetch_missing, emit)?
+        };
         emit(Event::Indexing);
-        let summary = index_corpus(project, config, &sources, &providers)?;
+        let summary = index_corpus(project, config, &sources, &providers, &terrain)?;
         emit(Event::Ready(summary.clone()));
         Ok(summary)
     }
@@ -985,6 +1002,8 @@ struct TrailIndex {
     schema: u8,
     summary: Summary,
     sources: Vec<ProviderReceipt>,
+    #[serde(default)]
+    elevation: Vec<terrain::TerrainReceipt>,
     graph: SourceFingerprint,
 }
 
@@ -1047,6 +1066,7 @@ fn index_corpus(
     config: &TrailDataConfig,
     sources: &[ProviderSource],
     providers: &[&dyn NetworkProvider],
+    terrain: &[terrain::TerrainSource],
 ) -> Result<Summary> {
     let corpus_bytes = sources
         .iter()
@@ -1094,14 +1114,7 @@ fn index_corpus(
             .filter(|overlay| overlay.kind == CrossingKind::Water)
             .count(),
     };
-    let mut graph = GraphBuilder {
-        snap_tolerance_m: law.snap_tolerance_m,
-        enrichment: law.enrichment,
-        weights: law.difficulty,
-    }
-    .build(&drafts)
-    .context("index live-area trail topology")?;
-    apply_context_overlays(&mut graph, &overlays, law.difficulty);
+    let graph = forge_graph(&drafts, &overlays, terrain, law)?;
     let surfaces = GraphSurfaces::engrave(&graph)?;
     GraphSurfaces::write_auxiliaries(project, &graph)?;
     write_json_atomic(project.join(CONFLATION_REPORT), &conflated.report)?;
@@ -1114,6 +1127,7 @@ fn index_corpus(
         inventory,
         vertices: graph.vertices.len(),
         edges: graph.edges.len(),
+        elevation_tiles: terrain.len(),
         raw_paths: sources
             .iter()
             .map(|source| source.raw_relative.clone())
@@ -1137,6 +1151,10 @@ fn index_corpus(
             schema: INDEX_SCHEMA,
             summary: summary.clone(),
             sources: receipts,
+            elevation: terrain
+                .iter()
+                .map(|source| source.receipt.clone())
+                .collect(),
             graph: surfaces.fingerprint(),
         },
     )?;
@@ -1144,6 +1162,27 @@ fn index_corpus(
     // interrupted indexing pass for a ready corpus.
     surfaces.commit(project)?;
     Ok(summary)
+}
+
+fn forge_graph(
+    drafts: &[SegmentDraft],
+    overlays: &[ContextOverlay],
+    terrain: &[terrain::TerrainSource],
+    law: GraphLaw,
+) -> Result<TrailGraph> {
+    let mut graph = GraphBuilder {
+        snap_tolerance_m: law.snap_tolerance_m,
+        enrichment: law.enrichment,
+        weights: law.difficulty,
+    }
+    .build(drafts)
+    .context("index live-area trail topology")?;
+    apply_context_overlays(&mut graph, overlays, law.difficulty);
+    if let Some(atlas) = terrain::TerrainAtlas::decode(terrain)? {
+        trailgen_core::enrich_graph(&mut graph, &atlas, law.enrichment, law.difficulty)
+            .context("sample live-area topography")?;
+    }
+    Ok(graph)
 }
 
 fn merge_osm(sources: &[RawShard<'_>]) -> Result<String> {
@@ -1390,6 +1429,7 @@ fn reusable_index(
     project: &Path,
     config: &TrailDataConfig,
     descriptors: Option<&[ProviderDescriptor]>,
+    terrain_expected: bool,
 ) -> Result<Option<Summary>> {
     let index_path = project.join(TRAIL_INDEX);
     let raw = match fs::read_to_string(&index_path) {
@@ -1439,6 +1479,31 @@ fn reusable_index(
         }
     }
     if receipts.len() != config.regions.len() * config.providers.len() {
+        return Ok(None);
+    }
+    if terrain_expected {
+        let desired = terrain::desired_tiles(&config.regions);
+        if index.elevation.len() != desired.len()
+            || index
+                .elevation
+                .iter()
+                .map(|receipt| receipt.tile)
+                .collect::<Vec<_>>()
+                != desired
+        {
+            return Ok(None);
+        }
+        for receipt in &index.elevation {
+            let bytes = match fs::read(project.join(&receipt.raw_path)) {
+                Ok(bytes) => bytes,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(err) => return Err(err).context("read terrain receipt"),
+            };
+            if fingerprint(&bytes) != receipt.raw {
+                return Ok(None);
+            }
+        }
+    } else if !index.elevation.is_empty() {
         return Ok(None);
     }
     let graph_bytes = fs::read(project.join(GRAPH)).context("read cached trail graph")?;
@@ -1630,6 +1695,19 @@ pub fn indexed_summary(project: &Path) -> Result<Option<Summary>> {
         || !project.join(CONFLATION_REPORT).is_file()
     {
         return Ok(None);
+    }
+    if index.summary.elevation_tiles != index.elevation.len() {
+        return Ok(None);
+    }
+    for receipt in &index.elevation {
+        let bytes = match fs::read(project.join(&receipt.raw_path)) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(err).context("read terrain receipt"),
+        };
+        if fingerprint(&bytes) != receipt.raw {
+            return Ok(None);
+        }
     }
     Ok(Some(index.summary))
 }

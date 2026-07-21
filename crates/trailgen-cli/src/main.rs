@@ -636,7 +636,7 @@ impl ProjectConfig {
                 && self.search.closure_paths > 0,
             "search limits must be positive"
         );
-        Ok(())
+        self.search.routing.validate().map_err(anyhow::Error::from)
     }
 }
 
@@ -656,7 +656,7 @@ const fn difficulty_values(weights: DifficultyWeights) -> [(&'static str, f64); 
         ("terrain.pavement", terrain.pavement),
         ("terrain.road", terrain.road),
         ("terrain.water", terrain.water),
-        ("road_penalty", weights.road_penalty),
+        ("road_effort_penalty", weights.road_effort_penalty),
         ("technical_penalty", weights.technical_penalty),
         ("navigation_penalty", weights.navigation_penalty),
         ("bushwhack_penalty", weights.bushwhack_penalty),
@@ -3838,7 +3838,7 @@ impl CalibrationFamily {
             Self::Descent => weights.descent_per_m *= multiplier,
             Self::Grade => weights.grade_per_abs_fraction *= multiplier,
             Self::Terrain => scale_terrain_offsets(weights, multiplier),
-            Self::Road => weights.road_penalty *= multiplier,
+            Self::Road => weights.road_effort_penalty *= multiplier,
             Self::Technical => weights.technical_penalty *= multiplier,
             Self::Navigation => weights.navigation_penalty *= multiplier,
             Self::Bushwhack => weights.bushwhack_penalty *= multiplier,
@@ -3855,7 +3855,7 @@ fn scale_global_weights(weights: &mut DifficultyWeights, multiplier: f64) {
     weights.descent_per_m *= multiplier;
     weights.grade_per_abs_fraction *= multiplier;
     scale_terrain_offsets(weights, multiplier);
-    weights.road_penalty *= multiplier;
+    weights.road_effort_penalty *= multiplier;
     weights.technical_penalty *= multiplier;
     weights.navigation_penalty *= multiplier;
     weights.bushwhack_penalty *= multiplier;
@@ -3887,7 +3887,6 @@ fn ensure_valid_difficulty_weights(weights: DifficultyWeights) -> Result<()> {
         ("ascent_per_m", weights.ascent_per_m),
         ("descent_per_m", weights.descent_per_m),
         ("grade_per_abs_fraction", weights.grade_per_abs_fraction),
-        ("road_penalty", weights.road_penalty),
         ("technical_penalty", weights.technical_penalty),
         ("navigation_penalty", weights.navigation_penalty),
         ("bushwhack_penalty", weights.bushwhack_penalty),
@@ -3932,6 +3931,11 @@ fn ensure_valid_difficulty_weights(weights: DifficultyWeights) -> Result<()> {
             bail!("calibration produced invalid {name}={value}");
         }
     }
+    ensure!(
+        weights.road_effort_penalty.is_finite() && weights.road_effort_penalty >= 0.0,
+        "calibration produced invalid road_effort_penalty={}",
+        weights.road_effort_penalty
+    );
     Ok(())
 }
 

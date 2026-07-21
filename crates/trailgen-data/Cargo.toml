@@ -13,6 +13,7 @@ categories = ["science::geo", "algorithms"]
 [dependencies]
 anyhow.workspace = true
 reqwest.workspace = true
+png.workspace = true
 roxmltree.workspace = true
 serde.workspace = true
 serde_json.workspace = true

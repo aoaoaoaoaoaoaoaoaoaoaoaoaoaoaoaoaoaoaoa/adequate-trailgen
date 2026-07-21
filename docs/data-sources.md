@@ -23,6 +23,16 @@ provenance and useful missing attributes survive. Residual nonparallel geometry 
 provider remains routable. `cache/conflation.json` records every bounded suppression decision;
 `cache/trails.json` keeps only compact counts.
 
+Elevation follows the same acquisition law without pretending to be a trail-network provider. The
+GUI downloads the rectangle union's Mapzen Terrarium PNGs from the AWS Open Data terrain bucket at
+the deepest common zoom that stays at or below 256 tiles. Tiles live beneath
+`sources/mapzen-terrain/<z>/<x>/<y>.png`; `cache/trails.json` records their fingerprints and
+coordinates, so damaged tiles are reacquired and an index cannot silently reuse different terrain.
+The graph is densified and sampled only after network conflation. Implausible void or bathymetric
+pixels below -150 m or above 9,000 m become missing evidence rather than catastrophic grade spikes.
+This is bare-earth terrain: bridge decks and other elevated structures may still require explicit
+elevation evidence.
+
 The USGS adapter queries the Transportation service's National Digital Trails layer for terrestrial,
 hiker/pedestrian trails. It preserves permanent or source feature identity, source originator,
 dataset identity, surface, and public-domain provenance. USGS inclusion does not prove public access,
@@ -127,4 +137,6 @@ endpoints, not admitting the surrounding street mesh or inventing missing trail 
 See the [USGS access guide](https://www.usgs.gov/national-digital-trails/how-access-or-view-usgs-trails-dataset),
 [USGS dataset Q&A](https://www.usgs.gov/national-digital-trails/qas-about-usgs-trail-data),
 [USGS Transportation service](https://cartowfs.nationalmap.gov/arcgis/rest/services/transportation/MapServer),
+[AWS Open Data terrain registry](https://registry.opendata.aws/terrain-tiles/),
+[Mapzen terrain attribution](https://github.com/tilezen/joerd/blob/master/docs/attribution.md),
 and [OpenStreetMap copyright and attribution](https://www.openstreetmap.org/copyright/en-US).

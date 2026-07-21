@@ -2,7 +2,7 @@ use crate::constraints::{ConstraintVerdict, LoopConstraints};
 use crate::difficulty::DifficultyBreakdown;
 use crate::geo::LineString;
 use crate::model::{
-    Access, CrossingKind, EdgeId, GradeDistribution, Terrain, TrailGraph, VertexId,
+    Access, CrossingKind, EdgeAttr, EdgeId, GradeDistribution, Terrain, TrailGraph, VertexId,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -88,9 +88,7 @@ impl Route {
 
 #[must_use]
 pub fn route_score(metrics: &RouteMetrics, verdict: &ConstraintVerdict) -> f64 {
-    metrics
-        .low_confidence_fraction
-        .mul_add(10.0, metrics.difficulty.mul_add(0.05, verdict.penalty))
+    (100.0 - metrics.quality).mul_add(0.1, verdict.penalty)
 }
 
 pub fn rank_routes(routes: &mut [Route], constraints: &LoopConstraints) {
@@ -140,9 +138,8 @@ struct ParetoPoint {
     distance_deviation_m: f64,
     ascent_deviation_m: f64,
     descent_deviation_m: f64,
-    difficulty: f64,
-    road_fraction: f64,
-    low_confidence_fraction: f64,
+    difficulty_deviation: f64,
+    quality_loss: f64,
     restricted_access_fraction: f64,
     repeated_edge_fraction: f64,
 }
@@ -167,9 +164,17 @@ impl ParetoPoint {
                 constraints.min_descent_m,
                 constraints.max_descent_m,
             ),
-            difficulty: m.difficulty,
-            road_fraction: m.road_fraction,
-            low_confidence_fraction: m.low_confidence_fraction,
+            difficulty_deviation: constraints.target_difficulty.map_or_else(
+                || {
+                    range_deviation(
+                        m.difficulty,
+                        constraints.min_difficulty,
+                        constraints.max_difficulty,
+                    )
+                },
+                |target| (m.difficulty - target).abs(),
+            ),
+            quality_loss: 100.0 - m.quality,
             restricted_access_fraction: m.restricted_access_fraction,
             repeated_edge_fraction: m.repeated_edge_fraction,
         }
@@ -187,15 +192,14 @@ impl ParetoPoint {
                 .any(|(a, b)| a < b)
     }
 
-    const fn objectives(self) -> [f64; 9] {
+    const fn objectives(self) -> [f64; 8] {
         [
             self.constraint_penalty,
             self.distance_deviation_m,
             self.ascent_deviation_m,
             self.descent_deviation_m,
-            self.difficulty,
-            self.road_fraction,
-            self.low_confidence_fraction,
+            self.difficulty_deviation,
+            self.quality_loss,
             self.restricted_access_fraction,
             self.repeated_edge_fraction,
         ]
@@ -220,6 +224,10 @@ pub struct RouteMetrics {
     pub ascent_m: f64,
     pub descent_m: f64,
     pub difficulty: f64,
+    /// Length-normalized desirability in 0–100. Difficulty is deliberately
+    /// absent: a hard route may still be an excellent route.
+    #[serde(default)]
+    pub quality: f64,
     #[serde(default)]
     pub difficulty_breakdown: DifficultyBreakdown,
     #[serde(default)]
@@ -228,6 +236,8 @@ pub struct RouteMetrics {
     pub grade_distribution: GradeDistribution,
     pub road_fraction: f64,
     pub low_confidence_fraction: f64,
+    #[serde(default)]
+    pub elevation_fraction: f64,
     #[serde(default)]
     pub restricted_access_fraction: f64,
     pub repeated_edge_fraction: f64,
@@ -247,6 +257,8 @@ impl RouteMetrics {
         let mut at = start;
         let mut road_m = 0.0;
         let mut low_conf_m = 0.0;
+        let mut elevation_m = 0.0;
+        let mut quality_m = 0.0;
         let mut restricted_access_m = 0.0;
         let mut repeated_edge_m = 0.0;
         let mut previous = None;
@@ -273,6 +285,14 @@ impl RouteMetrics {
             m.difficulty_breakdown += a.difficulty_breakdown;
             m.sustained_steep_m += a.sustained_steep_m;
             m.grade_distribution += a.grade_distribution;
+            quality_m = edge_quality(a).mul_add(a.length_m, quality_m);
+            elevation_m += edge
+                .geometry
+                .points
+                .windows(2)
+                .filter(|segment| segment[0].ele.is_some() && segment[1].ele.is_some())
+                .map(|segment| segment[0].haversine_m(segment[1]))
+                .sum::<f64>();
             road_m = a
                 .length_m
                 .mul_add(road_pavement_exposure(a.terrain, a.road_exposure), road_m);
@@ -296,6 +316,8 @@ impl RouteMetrics {
         if m.distance_m > 0.0 {
             m.road_fraction = road_m / m.distance_m;
             m.low_confidence_fraction = low_conf_m / m.distance_m;
+            m.elevation_fraction = (elevation_m / m.distance_m).clamp(0.0, 1.0);
+            m.quality = (100.0 * quality_m / m.distance_m).clamp(0.0, 100.0);
             m.restricted_access_fraction = restricted_access_m / m.distance_m;
             m.repeated_edge_fraction = repeated_edge_m / m.distance_m;
         }
@@ -318,6 +340,19 @@ impl RouteMetrics {
             .map(|(access, meters)| (*access, meters / self.distance_m.max(1.0)))
             .collect()
     }
+}
+
+fn edge_quality(attr: &EdgeAttr) -> f64 {
+    let road = road_pavement_exposure(attr.terrain, attr.road_exposure);
+    let uncertainty = 1.0 - attr.confidence.clamp(0.0, 1.0);
+    let access = match attr.access {
+        Access::Closed | Access::Private => 1.0,
+        Access::Restricted => 0.25,
+        Access::Unknown | Access::Open => 0.0,
+    };
+    1.0 - 0.70_f64
+        .mul_add(road, 0.25_f64.mul_add(uncertainty, 0.50 * access))
+        .clamp(0.0, 1.0)
 }
 
 #[must_use]

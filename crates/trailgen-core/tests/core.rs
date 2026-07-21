@@ -17,7 +17,7 @@ use trailgen_core::{
     Access, ArcAsciiGrid, CrossingKind, DailyTimeWindow, EdgeId, EdgeTravel, ElevationSample,
     ElevationSampler, ExactLoopSolver, GeoTiffDem, LoopMilpFormulation, MilpSelectedArc, MonthDay,
     PlanningDate, PlanningMoment, PlanningTime, RasterCrs, Route, RouteMetrics, RouteShape,
-    SearchParams, SeasonalWindow, SolverKind, VertexId, VrtDem, Weekday, WeekdaySet,
+    RoutingLaw, SearchParams, SeasonalWindow, SolverKind, VertexId, VrtDem, Weekday, WeekdaySet,
 };
 use trailgen_core::{
     Coord, DifficultyWeights, EnrichmentConfig, GraphBuilder, JunctionPolicy, LineString,
@@ -1130,6 +1130,7 @@ fn road_fraction_counts_road_and_pavement_terrain() {
             min_distance_m: 0.0,
             max_distance_m: 10_000.0,
             max_difficulty: 10_000.0,
+            max_road_fraction: 0.12,
             allowed_shapes: vec![RouteShape::Open],
             ..LoopConstraints::default()
         },
@@ -1157,6 +1158,7 @@ fn pareto_ranking_preserves_tradeoffs_and_demotes_dominated_routes() {
     let constraints = LoopConstraints {
         min_distance_m: 3_000.0,
         max_distance_m: 8_000.0,
+        target_difficulty: Some(5.0),
         max_repeated_edge_fraction: 1.0,
         ..LoopConstraints::default()
     };
@@ -1168,9 +1170,9 @@ fn pareto_ranking_preserves_tradeoffs_and_demotes_dominated_routes() {
 
     rank_routes(&mut routes, &constraints);
 
-    assert_eq!(routes[0].name, "easy-roadish");
+    assert_eq!(routes[0].name, "clean-hard");
     assert_eq!(routes[0].pareto_rank, 1);
-    assert_eq!(routes[1].name, "clean-hard");
+    assert_eq!(routes[1].name, "easy-roadish");
     assert_eq!(routes[1].pareto_rank, 1);
     assert_eq!(routes[2].name, "hard-roadish");
     assert_eq!(routes[2].pareto_rank, 2);
@@ -1182,6 +1184,7 @@ fn pareto_ranking_never_trades_constraint_satisfaction_for_quality() {
         min_distance_m: 3_000.0,
         max_distance_m: 8_000.0,
         max_difficulty: 1_000.0,
+        max_road_fraction: 0.12,
         ..LoopConstraints::default()
     };
     let mut routes = vec![
@@ -1210,6 +1213,7 @@ fn synthetic_rank_route(
         distance_m,
         difficulty,
         road_fraction,
+        quality: 70.0_f64.mul_add(-road_fraction, 100.0),
         terrain_m: BTreeMap::from([(Terrain::Trail, distance_m)]),
         ..RouteMetrics::default()
     };
@@ -1913,7 +1917,7 @@ fn context_overlays_infer_road_and_water_crossings() {
         graph
             .edges
             .iter()
-            .any(|edge| edge.attr.difficulty_breakdown.road > 0.0)
+            .all(|edge| edge.attr.difficulty_breakdown.road.abs() <= f64::EPSILON)
     );
 
     let start = graph.nearest_vertex(Coord::new(-105.0, 40.0)).unwrap();
@@ -1941,6 +1945,7 @@ fn context_overlays_infer_road_and_water_crossings() {
             .unwrap_or_default()
             > 0
     );
+    assert!(route.metrics.quality < 100.0);
     assert!(
         route
             .metrics
@@ -2463,7 +2468,7 @@ fn loop_hunter_closes_sparse_frontier_with_shortest_return_path() {
 }
 
 #[test]
-fn loop_hunter_tries_alternate_return_paths_when_shortest_closure_violates_constraints() {
+fn loop_hunter_road_aversion_finds_a_clean_closure_without_extra_breadth() {
     let graph = GraphBuilder::default()
         .build(&closure_trap_drafts())
         .unwrap();
@@ -2489,7 +2494,11 @@ fn loop_hunter_tries_alternate_return_paths_when_shortest_closure_violates_const
         .hunt(&graph, start, &constraints, 8)
     };
 
-    assert!(!hunt(1).iter().any(|route| route.verdict.satisfied));
+    assert!(hunt(1).iter().any(|route| {
+        route.verdict.satisfied
+            && route.metrics.road_fraction <= constraints.max_road_fraction
+            && route.edges.len() > 2
+    }));
     assert!(hunt(2).iter().any(|route| {
         route.verdict.satisfied
             && route.metrics.road_fraction <= constraints.max_road_fraction
@@ -2516,6 +2525,7 @@ fn loop_hunter_seed_diversifies_sparse_frontier_order() {
                 keep: 1,
                 closure_paths: 1,
                 seed,
+                routing: RoutingLaw::default(),
             },
         }
         .hunt(&graph, start, &constraints, 1)

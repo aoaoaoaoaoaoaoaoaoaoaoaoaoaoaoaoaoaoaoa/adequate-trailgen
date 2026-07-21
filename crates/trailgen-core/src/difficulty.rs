@@ -15,8 +15,8 @@ pub struct DifficultyWeights {
     pub grade_per_abs_fraction: f64,
     #[serde(default)]
     pub terrain_multipliers: TerrainMultipliers,
-    #[serde(default = "default_road_penalty")]
-    pub road_penalty: f64,
+    #[serde(default = "default_road_effort_penalty", alias = "road_penalty")]
+    pub road_effort_penalty: f64,
     #[serde(default = "default_technical_penalty")]
     pub technical_penalty: f64,
     #[serde(default = "default_navigation_penalty")]
@@ -59,7 +59,7 @@ impl Default for DifficultyWeights {
             descent_per_m: default_descent_per_m(),
             grade_per_abs_fraction: default_grade_per_abs_fraction(),
             terrain_multipliers: TerrainMultipliers::default(),
-            road_penalty: default_road_penalty(),
+            road_effort_penalty: default_road_effort_penalty(),
             technical_penalty: default_technical_penalty(),
             navigation_penalty: default_navigation_penalty(),
             bushwhack_penalty: default_bushwhack_penalty(),
@@ -100,7 +100,7 @@ impl DifficultyWeights {
         let descent = a.descent_m * self.descent_per_m;
         let grade = a.grade_abs_mean * self.grade_per_abs_fraction * distance_km;
         let terrain = distance_km * (self.terrain_multiplier(a.terrain) - 1.0);
-        let road = a.road_exposure.clamp(0.0, 1.0) * self.road_penalty * distance_km;
+        let road = a.road_exposure.clamp(0.0, 1.0) * self.road_effort_penalty * distance_km;
         let technical = technical_pressure(edge) * self.technical_penalty * distance_km;
         let navigation = navigation_pressure(edge) * self.navigation_penalty * distance_km;
         let bushwhack = f64::from(a.trail_class.pathless()) * self.bushwhack_penalty * distance_km;
@@ -170,8 +170,8 @@ const fn default_grade_per_abs_fraction() -> f64 {
     2.4
 }
 
-const fn default_road_penalty() -> f64 {
-    2.0
+const fn default_road_effort_penalty() -> f64 {
+    0.0
 }
 
 const fn default_technical_penalty() -> f64 {

@@ -17,6 +17,7 @@ pub mod raster;
 pub mod route;
 pub mod seed;
 pub mod source;
+pub mod trail;
 
 pub use builder::{
     DEFAULT_SNAP_TOLERANCE_M, GraphBuilder, JunctionPolicy, SegmentDraft, TurnRestrictionDraft,
@@ -60,6 +61,9 @@ pub use route::{
     LOW_CONFIDENCE_THRESHOLD, Route, RouteMetrics, RouteShape, is_restricted_access, rank_routes,
 };
 pub use seed::{SeedRoute, artifact_key};
+pub use trail::{
+    DEFAULT_ROAD_AVERSION, RoutingLaw, SupportBinding, SupportPoint, Trail, TrailRealization,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum TrailgenError {

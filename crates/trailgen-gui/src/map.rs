@@ -14,16 +14,16 @@ const FIT_PADDING: f32 = 44.0;
 pub const MAP_GROUND_SRGB: [u8; 3] = [196, 194, 176];
 pub const MAP_GROUND: Color32 =
     Color32::from_rgb(MAP_GROUND_SRGB[0], MAP_GROUND_SRGB[1], MAP_GROUND_SRGB[2]);
-pub const ALLTRAILS_GREEN: Color32 = Color32::from_rgb(82, 190, 43);
+pub const SELECTED_TRAIL_COLOR: Color32 = Color32::from_rgb(244, 91, 55);
 pub const CANDIDATE_COLORS: [Color32; 8] = [
-    ALLTRAILS_GREEN,
-    Color32::from_rgb(28, 190, 174),
+    SELECTED_TRAIL_COLOR,
+    Color32::from_rgb(35, 164, 224),
     Color32::from_rgb(245, 150, 38),
     Color32::from_rgb(61, 151, 238),
     Color32::from_rgb(190, 91, 214),
-    Color32::from_rgb(239, 80, 59),
+    Color32::from_rgb(237, 67, 132),
     Color32::from_rgb(216, 194, 39),
-    Color32::from_rgb(50, 177, 218),
+    Color32::from_rgb(126, 102, 226),
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -292,7 +292,7 @@ impl Atlas {
                 painter,
                 &[pos2(plate.left() + 9.0, y), pos2(plate.left() + 27.0, y)],
                 5.2,
-                ALLTRAILS_GREEN,
+                SELECTED_TRAIL_COLOR,
                 mark,
             );
             painter.text(
@@ -662,7 +662,7 @@ pub fn frailest_standing(
     })
 }
 
-fn fit_coords(coords: impl Iterator<Item = Coord>, rect: Rect) -> Viewport {
+pub fn fit_coords(coords: impl Iterator<Item = Coord>, rect: Rect) -> Viewport {
     let mut worlds = coords.map(world_from_coord);
     let Some(first) = worlds.next() else {
         return Viewport {
@@ -822,8 +822,8 @@ mod tests {
                 .all(|color| chroma(color) <= 110)
         );
         assert!(
-            chroma(TrailSalience::Selected.access_color(ALLTRAILS_GREEN, Access::Closed))
-                > chroma(TrailSalience::Context.access_color(ALLTRAILS_GREEN, Access::Closed))
+            chroma(TrailSalience::Selected.access_color(SELECTED_TRAIL_COLOR, Access::Closed))
+                > chroma(TrailSalience::Context.access_color(SELECTED_TRAIL_COLOR, Access::Closed))
         );
     }
 

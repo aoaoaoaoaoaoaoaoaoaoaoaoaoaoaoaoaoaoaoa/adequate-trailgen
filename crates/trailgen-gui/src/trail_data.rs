@@ -11,6 +11,9 @@ pub fn progress_status(event: &EngineEvent) -> String {
         EngineEvent::Located(_) => "Map area found.".to_owned(),
         EngineEvent::Ranging { .. } => "Downloading trails…".to_owned(),
         EngineEvent::Downloaded { .. } => "Trail download complete.".to_owned(),
+        EngineEvent::Elevating { complete, total } => {
+            format!("Downloading topography… {complete}/{total}")
+        }
         EngineEvent::Indexing => "Preparing trails…".to_owned(),
         EngineEvent::Ready(summary) => {
             format!("Trail data ready in {} map area(s).", summary.regions.len())

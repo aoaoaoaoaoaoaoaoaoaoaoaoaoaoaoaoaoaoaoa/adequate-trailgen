@@ -212,10 +212,10 @@ impl ElevationProfile {
         fill.reserve_vertices(points.len() * 2);
         fill.reserve_triangles(points.len().saturating_sub(1) * 2);
         for point in &points {
-            fill.colored_vertex(*point, Color32::from_rgb(18, 31, 16));
+            fill.colored_vertex(*point, Color32::from_rgb(43, 22, 18));
             fill.colored_vertex(
                 pos2(point.x, plot.bottom() - 5.0),
-                Color32::from_rgb(18, 31, 16),
+                Color32::from_rgb(43, 22, 18),
             );
         }
         for slot in 0..points.len().saturating_sub(1) {
@@ -226,7 +226,7 @@ impl ElevationProfile {
         let _fill = painter.add(Shape::mesh(fill));
         let _line = painter.add(Shape::line(
             points,
-            Stroke::new(1.8_f32, crate::map::ALLTRAILS_GREEN),
+            Stroke::new(1.8_f32, crate::map::SELECTED_TRAIL_COLOR),
         ));
     }
 

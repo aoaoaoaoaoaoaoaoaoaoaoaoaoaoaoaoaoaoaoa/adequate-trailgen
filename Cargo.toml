@@ -24,6 +24,7 @@ geo-types = "0.7.19"
 lyon_tessellation = "1.0.20"
 num-traits = "0.2.19"
 pmtiles = { version = "0.23.1", default-features = false, features = ["http-async", "mmap-async-tokio", "reqwest-rustls", "write"] }
+png = "0.18.0"
 roxmltree = "0.20.0"
 osmpbfreader = "0.19.1"
 pollster = "0.4"

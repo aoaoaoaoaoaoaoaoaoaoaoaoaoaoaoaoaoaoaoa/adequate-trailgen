@@ -9,11 +9,11 @@ use std::{
     path::{Path, PathBuf},
 };
 use trailgen_core::{
-    Access, Coord, LineString, LoopConstraints, Route, RouteMetrics, RouteShape, Terrain,
-    TrailClass, TrailGraph, TrailStanding,
+    Access, Coord, LineString, LoopConstraints, Route, RouteMetrics, RouteShape, RoutingLaw,
+    SupportPoint, Terrain, Trail, TrailClass, TrailGraph, TrailRealization, TrailStanding,
 };
 
-const SCHEMA: u32 = 1;
+const SCHEMA: u32 = 2;
 const INDEX: &str = "library/index.json";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -102,7 +102,13 @@ pub struct SearchRecipe {
     pub trailhead: Option<Trailhead>,
     pub distance_m: MeasureRange,
     pub climb_m: MeasureRange,
+    #[serde(default = "default_difficulty_target")]
+    pub difficulty: f64,
     pub shape: RouteShape,
+}
+
+const fn default_difficulty_target() -> f64 {
+    30.0
 }
 
 impl SearchRecipe {
@@ -117,6 +123,9 @@ impl SearchRecipe {
                 min: defaults.min_ascent_m,
                 max: defaults.max_ascent_m,
             },
+            difficulty: defaults
+                .target_difficulty
+                .unwrap_or((defaults.min_difficulty + defaults.max_difficulty) * 0.5),
             shape: defaults
                 .allowed_shapes
                 .first()
@@ -128,6 +137,10 @@ impl SearchRecipe {
     pub fn validate(&self) -> Result<()> {
         self.distance_m.validate("distance")?;
         self.climb_m.validate("climb")?;
+        ensure!(
+            self.difficulty.is_finite() && self.difficulty >= 0.0,
+            "difficulty target must be finite and nonnegative"
+        );
         ensure!(
             self.trailhead.is_none_or(|trailhead| {
                 let coord = trailhead.coord();
@@ -149,6 +162,11 @@ impl SearchRecipe {
         constraints.min_ascent_m = self.climb_m.min;
         constraints.max_ascent_m = self.climb_m.max;
         constraints.allowed_shapes = vec![self.shape];
+        constraints.target_difficulty = Some(self.difficulty);
+        // Roads are undesirable rather than intrinsically unlawful. Their
+        // finite routing/quality penalty may yield when they are the only way
+        // to hit an easier target; closed and private edges remain excluded.
+        constraints.max_road_fraction = 1.0;
         if self.shape == RouteShape::Open {
             constraints.min_descent_m = 0.0;
         } else {
@@ -183,10 +201,18 @@ pub struct SavedTrail {
     pub name: String,
     pub legs: Vec<TrailLeg>,
     pub metrics: RouteMetrics,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub support_points: Vec<SupportPoint>,
+    #[serde(default)]
+    pub routing: RoutingLaw,
 }
 
 impl SavedTrail {
     pub fn capture(graph: &TrailGraph, route: &Route) -> Result<Self> {
+        Self::capture_design(graph, route, None)
+    }
+
+    fn capture_design(graph: &TrailGraph, route: &Route, trail: Option<&Trail>) -> Result<Self> {
         ensure!(
             graph.walk_edges(route.start, &route.edges).is_some(),
             "candidate `{}` is not a legal graph walk",
@@ -218,7 +244,18 @@ impl SavedTrail {
             name: route.name.clone(),
             legs,
             metrics: route.metrics.clone(),
+            support_points: trail.map_or_else(Vec::new, |trail| trail.support_points.clone()),
+            routing: trail.map_or_else(RoutingLaw::default, |trail| trail.routing),
         })
+    }
+
+    pub fn design(&self) -> Option<Trail> {
+        Trail::forge(
+            self.metrics.shape,
+            self.support_points.clone(),
+            self.routing,
+        )
+        .ok()
     }
 
     pub fn geometry(&self) -> LineString {
@@ -270,9 +307,17 @@ impl Library {
         let path = index_path(project);
         match fs::read(&path) {
             Ok(bytes) => {
-                let library = serde_json::from_slice::<Self>(&bytes)
+                let mut library = serde_json::from_slice::<Self>(&bytes)
                     .with_context(|| format!("parse {}", path.display()))?;
+                let legacy = library.schema == 1;
+                if legacy {
+                    library.schema = SCHEMA;
+                }
+                let repaired = library.recover_metrics(legacy) || legacy;
                 library.validate()?;
+                if repaired {
+                    library.save(project)?;
+                }
                 Ok(library)
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -407,6 +452,69 @@ impl Library {
         Ok(id)
     }
 
+    pub fn promote_realization(
+        &mut self,
+        family: Option<FamilyId>,
+        graph: &TrailGraph,
+        realization: &TrailRealization,
+    ) -> Result<TrailId> {
+        if let Some(family) = family {
+            ensure!(
+                self.family(family).is_some(),
+                "trail family no longer exists"
+            );
+        }
+        let trail =
+            SavedTrail::capture_design(graph, &realization.route, Some(&realization.trail))?;
+        let id = trail.id.clone();
+        if self.trail(&id).is_none() {
+            self.trails.push(trail);
+        }
+        if let Some(family) = family {
+            let members = &mut self
+                .family_mut(family)
+                .expect("family existence checked")
+                .trails;
+            if !members.contains(&id) {
+                members.push(id.clone());
+            }
+        }
+        Ok(id)
+    }
+
+    pub fn replace_realization(
+        &mut self,
+        old: &TrailId,
+        graph: &TrailGraph,
+        realization: &TrailRealization,
+    ) -> Result<TrailId> {
+        ensure!(self.trail(old).is_some(), "trail no longer exists");
+        let memberships = self
+            .families
+            .iter()
+            .filter(|family| family.trails.contains(old))
+            .map(|family| family.id)
+            .collect::<Vec<_>>();
+        let replacement =
+            SavedTrail::capture_design(graph, &realization.route, Some(&realization.trail))?;
+        let id = replacement.id.clone();
+        if &id != old {
+            self.trails.retain(|trail| &trail.id != old);
+            if self.trail(&id).is_none() {
+                self.trails.push(replacement);
+            }
+            for family in &mut self.families {
+                family.trails.retain(|trail| trail != old);
+                if memberships.contains(&family.id) && !family.trails.contains(&id) {
+                    family.trails.push(id.clone());
+                }
+            }
+        } else if let Some(stored) = self.trails.iter_mut().find(|trail| &trail.id == old) {
+            *stored = replacement;
+        }
+        Ok(id)
+    }
+
     pub fn toggle_membership(&mut self, family: FamilyId, trail: &TrailId) -> bool {
         if self.trail(trail).is_none() {
             return false;
@@ -460,6 +568,15 @@ impl Library {
                     "saved trail contains invalid geometry"
                 );
             }
+            trail.routing.validate().map_err(anyhow::Error::from)?;
+            if !trail.support_points.is_empty() {
+                Trail::forge(
+                    trail.metrics.shape,
+                    trail.support_points.clone(),
+                    trail.routing,
+                )
+                .map_err(anyhow::Error::from)?;
+            }
         }
         for family in &self.families {
             ensure!(family_ids.insert(family.id), "duplicate family identity");
@@ -489,6 +606,50 @@ impl Library {
             "family identity counter regressed"
         );
         Ok(())
+    }
+
+    fn recover_metrics(&mut self, legacy: bool) -> bool {
+        let mut changed = false;
+        for trail in &mut self.trails {
+            if legacy {
+                let disutility = 0.70_f64.mul_add(
+                    trail.metrics.road_fraction,
+                    0.25_f64.mul_add(
+                        trail.metrics.low_confidence_fraction,
+                        0.50 * trail.metrics.restricted_access_fraction,
+                    ),
+                );
+                trail.metrics.quality = 100.0 * (1.0 - disutility.clamp(0.0, 1.0));
+                changed = true;
+            }
+            if trail.metrics.elevation_fraction <= f64::EPSILON {
+                let (covered, total) = trail
+                    .legs
+                    .iter()
+                    .flat_map(|leg| {
+                        leg.geometry.points.windows(2).map(|segment| {
+                            let length = segment[0].haversine_m(segment[1]);
+                            (
+                                if segment[0].ele.is_some() && segment[1].ele.is_some() {
+                                    length
+                                } else {
+                                    0.0
+                                },
+                                length,
+                            )
+                        })
+                    })
+                    .fold((0.0, 0.0), |(covered, total), (c, t)| {
+                        (covered + c, total + t)
+                    });
+                let elevation_fraction = covered / total.max(1.0);
+                if elevation_fraction > 0.0 {
+                    trail.metrics.elevation_fraction = elevation_fraction.clamp(0.0, 1.0);
+                    changed = true;
+                }
+            }
+        }
+        changed
     }
 
     fn spare_family_name(&self) -> FamilyName {
@@ -554,7 +715,9 @@ pub fn index_path(project: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use trailgen_core::{GraphBuilder, SearchParams, SolverKind, io::geojson};
+    use trailgen_core::{
+        GraphBuilder, RoutingLaw, SearchParams, SolverKind, SupportPoint, Trail, io::geojson,
+    };
 
     fn fixture() -> Result<(TrailGraph, Route)> {
         let graph = GraphBuilder::default().build(&geojson::network_from_str(include_str!(
@@ -638,5 +801,52 @@ mod tests {
         let mut recipe = SearchRecipe::from_defaults(&LoopConstraints::default());
         recipe.trailhead = Some(Trailhead(Coord::new(f64::NAN, 41.0)));
         assert!(recipe.validate().is_err());
+    }
+
+    #[test]
+    fn support_design_survives_library_round_trip_and_replacement() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let (graph, _) = fixture()?;
+        let realize = |end: usize| -> Result<TrailRealization> {
+            let trail = Trail::forge(
+                RouteShape::OutAndBack,
+                vec![
+                    SupportPoint::forge(graph.vertices[0].coord).context("valid start")?,
+                    SupportPoint::forge(graph.vertices[end].coord).context("valid end")?,
+                ],
+                RoutingLaw::default(),
+            )?;
+            let constraints = LoopConstraints {
+                min_distance_m: 0.0,
+                max_distance_m: f64::MAX,
+                max_difficulty: f64::MAX,
+                max_repeated_edge_fraction: 1.0,
+                allowed_shapes: vec![RouteShape::OutAndBack],
+                ..LoopConstraints::default()
+            };
+            Ok(trail.realize("manual", &graph, &constraints, 1.0)?)
+        };
+
+        let mut library = Library::default();
+        let family = library.add_family(&LoopConstraints::default());
+        let original = library.promote_realization(Some(family), &graph, &realize(2)?)?;
+        library.save(temp.path())?;
+
+        let mut reopened = Library::open(temp.path(), &graph)?;
+        assert!(
+            reopened
+                .trail(&original)
+                .and_then(SavedTrail::design)
+                .is_some()
+        );
+        let replacement = reopened.replace_realization(&original, &graph, &realize(1)?)?;
+        assert!(reopened.contains(family, &replacement));
+        assert!(
+            reopened
+                .trail(&replacement)
+                .and_then(SavedTrail::design)
+                .is_some()
+        );
+        Ok(())
     }
 }

@@ -39,6 +39,7 @@ const fn interactive_search() -> SearchParams {
         keep: 12,
         closure_paths: 1,
         seed: 2,
+        routing: trailgen_core::RoutingLaw { road_aversion: 2.0 },
     }
 }
 
@@ -124,83 +125,93 @@ impl SearchRequest {
             self.params.closure_paths > 0,
             "closure path count must be positive"
         );
-        let constraints = &self.constraints;
-        for (name, value) in [
-            ("minimum distance", constraints.min_distance_m),
-            ("maximum distance", constraints.max_distance_m),
-            ("minimum difficulty", constraints.min_difficulty),
-            ("maximum difficulty", constraints.max_difficulty),
-            ("minimum ascent", constraints.min_ascent_m),
-            ("maximum ascent", constraints.max_ascent_m),
-            ("minimum descent", constraints.min_descent_m),
-            ("maximum descent", constraints.max_descent_m),
-        ] {
-            ensure!(
-                value.is_finite() && value >= 0.0,
-                "{name} must be finite and nonnegative"
-            );
-        }
-        for (name, low, high) in [
-            (
-                "distance",
-                constraints.min_distance_m,
-                constraints.max_distance_m,
-            ),
-            (
-                "difficulty",
-                constraints.min_difficulty,
-                constraints.max_difficulty,
-            ),
-            ("ascent", constraints.min_ascent_m, constraints.max_ascent_m),
-            (
-                "descent",
-                constraints.min_descent_m,
-                constraints.max_descent_m,
-            ),
-        ] {
-            ensure!(low <= high, "{name} minimum exceeds maximum");
-        }
-        for (name, fraction) in [
-            ("road", constraints.max_road_fraction),
-            ("low confidence", constraints.max_low_confidence_fraction),
-            (
-                "restricted access",
-                constraints.max_restricted_access_fraction,
-            ),
-            ("repeated edge", constraints.max_repeated_edge_fraction),
-        ] {
-            ensure!(
-                fraction.is_finite() && (0.0..=1.0).contains(&fraction),
-                "maximum {name} fraction must lie in 0–1"
-            );
-        }
-        for (terrain, fraction) in &constraints.min_terrain_fraction {
-            ensure!(
-                fraction.is_finite() && (0.0..=1.0).contains(fraction),
-                "minimum {terrain:?} fraction must lie in 0–1"
-            );
-        }
-        for (terrain, maximum) in &constraints.max_terrain_fraction {
-            ensure!(
-                maximum.is_finite() && (0.0..=1.0).contains(maximum),
-                "maximum {terrain:?} fraction must lie in 0–1"
-            );
-            let minimum = constraints
-                .min_terrain_fraction
-                .get(terrain)
-                .copied()
-                .unwrap_or_default();
-            ensure!(
-                minimum <= *maximum,
-                "{terrain:?} minimum fraction exceeds maximum"
-            );
-        }
-        ensure!(
-            !constraints.allowed_shapes.is_empty(),
-            "choose a route shape"
-        );
-        Ok(())
+        self.params.routing.validate()?;
+        validate_constraints(&self.constraints)
     }
+}
+
+fn validate_constraints(constraints: &LoopConstraints) -> Result<()> {
+    for (name, value) in [
+        ("minimum distance", constraints.min_distance_m),
+        ("maximum distance", constraints.max_distance_m),
+        ("minimum difficulty", constraints.min_difficulty),
+        ("maximum difficulty", constraints.max_difficulty),
+        ("minimum ascent", constraints.min_ascent_m),
+        ("maximum ascent", constraints.max_ascent_m),
+        ("minimum descent", constraints.min_descent_m),
+        ("maximum descent", constraints.max_descent_m),
+    ] {
+        ensure!(
+            value.is_finite() && value >= 0.0,
+            "{name} must be finite and nonnegative"
+        );
+    }
+    ensure!(
+        constraints
+            .target_difficulty
+            .is_none_or(|target| target.is_finite() && target >= 0.0),
+        "target difficulty must be finite and nonnegative"
+    );
+    for (name, low, high) in [
+        (
+            "distance",
+            constraints.min_distance_m,
+            constraints.max_distance_m,
+        ),
+        (
+            "difficulty",
+            constraints.min_difficulty,
+            constraints.max_difficulty,
+        ),
+        ("ascent", constraints.min_ascent_m, constraints.max_ascent_m),
+        (
+            "descent",
+            constraints.min_descent_m,
+            constraints.max_descent_m,
+        ),
+    ] {
+        ensure!(low <= high, "{name} minimum exceeds maximum");
+    }
+    for (name, fraction) in [
+        ("road", constraints.max_road_fraction),
+        ("low confidence", constraints.max_low_confidence_fraction),
+        (
+            "restricted access",
+            constraints.max_restricted_access_fraction,
+        ),
+        ("repeated edge", constraints.max_repeated_edge_fraction),
+    ] {
+        ensure!(
+            fraction.is_finite() && (0.0..=1.0).contains(&fraction),
+            "maximum {name} fraction must lie in 0–1"
+        );
+    }
+    for (terrain, fraction) in &constraints.min_terrain_fraction {
+        ensure!(
+            fraction.is_finite() && (0.0..=1.0).contains(fraction),
+            "minimum {terrain:?} fraction must lie in 0–1"
+        );
+    }
+    for (terrain, maximum) in &constraints.max_terrain_fraction {
+        ensure!(
+            maximum.is_finite() && (0.0..=1.0).contains(maximum),
+            "maximum {terrain:?} fraction must lie in 0–1"
+        );
+        let minimum = constraints
+            .min_terrain_fraction
+            .get(terrain)
+            .copied()
+            .unwrap_or_default();
+        ensure!(
+            minimum <= *maximum,
+            "{terrain:?} minimum fraction exceeds maximum"
+        );
+    }
+    ensure!(
+        !constraints.allowed_shapes.is_empty(),
+        "choose a route shape"
+    );
+    Ok(())
 }
 
 pub enum SearchEvent {
