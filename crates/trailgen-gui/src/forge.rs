@@ -3,10 +3,10 @@
 use egui::{Color32, Mesh, Painter, Pos2, Rect, Stroke, Vec2};
 use std::f32::consts::TAU;
 
-pub const PIN_RISE: f32 = 18.0;
-pub const PIN_GRIP: f32 = 16.0;
+pub const PIN_RISE: f32 = 25.0;
+pub const PIN_GRIP: f32 = 28.0;
 
-const BULB_RADIUS: f32 = 4.6;
+const BULB_RADIUS: f32 = 8.0;
 const BRONZE_SHADOW: [f32; 3] = [34.0, 28.0, 19.0];
 const BRONZE_BODY: [f32; 3] = [104.0, 86.0, 58.0];
 const BRONZE_GLINT: [f32; 3] = [196.0, 170.0, 124.0];
@@ -20,17 +20,20 @@ pub fn pin_bulb(anchor: Pos2) -> Pos2 {
 }
 
 pub fn pin_grip(anchor: Pos2) -> Rect {
-    Rect::from_center_size(pin_bulb(anchor), Vec2::splat(PIN_GRIP))
+    Rect::from_min_max(
+        pin_bulb(anchor) - Vec2::splat(PIN_GRIP / 2.0),
+        anchor + Vec2::new(PIN_GRIP / 2.0, 4.0),
+    )
 }
 
 pub fn pin(painter: &Painter, anchor: Pos2, seized: bool) {
     let bulb = pin_bulb(anchor);
     let heat = if seized { 0.07 } else { 0.0 };
-    let left = bulb + Vec2::new(-2.5, 2.2);
-    let right = bulb + Vec2::new(2.5, 2.2);
+    let left = bulb + Vec2::new(-4.2, 3.7);
+    let right = bulb + Vec2::new(4.2, 3.7);
     let shadow = vec![
-        left + Vec2::splat(0.8),
-        right + Vec2::splat(0.8),
+        left + Vec2::splat(1.1),
+        right + Vec2::splat(1.1),
         anchor + Vec2::new(0.0, 1.0),
     ];
     let _shadow = painter.add(egui::Shape::convex_polygon(
@@ -46,7 +49,7 @@ pub fn pin(painter: &Painter, anchor: Pos2, seized: bool) {
         heat,
     );
     sphere(painter, bulb, heat);
-    let _rim = painter.circle_stroke(bulb, BULB_RADIUS, Stroke::new(0.75_f32, bronze(0.16)));
+    let _rim = painter.circle_stroke(bulb, BULB_RADIUS, Stroke::new(1.1_f32, bronze(0.16)));
 }
 
 fn stamp(
@@ -130,7 +133,7 @@ mod tests {
         let anchor = Pos2::new(30.0, 40.0);
         assert_eq!(pin_bulb(anchor), Pos2::new(30.0, 40.0 - PIN_RISE));
         assert!(pin_grip(anchor).contains(pin_bulb(anchor)));
-        assert!(!pin_grip(anchor).contains(anchor));
+        assert!(pin_grip(anchor).contains(anchor));
     }
 
     #[test]

@@ -3,7 +3,7 @@ use crate::{
     gallery::{self, TrailSort},
     library::{FamilyId, Library, SavedTrail, SearchRecipe, TrailId, Trailhead},
     live_area::{self, RegionScribe, ScribeEvent},
-    map::{self, Atlas, CANDIDATE_COLORS, SELECTED_TRAIL_COLOR, Viewport},
+    map::{self, Atlas, SELECTED_TRAIL_COLOR, Viewport},
     profile::ElevationProfile,
     project::{Project, SearchEvent, SearchForge, SearchRequest},
     slate::{GalleryDeck, Slate},
@@ -19,7 +19,7 @@ use dwemer_poolrooms::{
 };
 use egui::{Color32, RichText, Stroke, vec2};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -36,6 +36,7 @@ const TOOLBAR_HEIGHT: f32 = 44.0;
 const STATE_SETTLE: Duration = Duration::from_millis(400);
 const CANDIDATE_COUNT: usize = 12;
 const TRAILHEAD_SNAP_M: f64 = 500.0;
+const UNDO_DEPTH: usize = 128;
 const SHAPES: [(RouteShape, &str); 3] = [
     (RouteShape::Loop, "LOOP"),
     (RouteShape::OutAndBack, "OUT + BACK"),
@@ -100,7 +101,84 @@ struct TrailEditor {
     realization: Option<TrailRealization>,
     profile: Option<ElevationProfile>,
     fault: Option<String>,
-    seized: Option<usize>,
+    undo: VecDeque<TrailSketch>,
+    redo: VecDeque<TrailSketch>,
+    drag: Option<PinDrag>,
+}
+
+#[derive(Clone, PartialEq)]
+struct TrailSketch {
+    support_points: Vec<SupportPoint>,
+}
+
+struct PinDrag {
+    slot: usize,
+    before: TrailSketch,
+    grab: egui::Vec2,
+}
+
+impl TrailEditor {
+    fn sketch(&self) -> TrailSketch {
+        TrailSketch {
+            support_points: self.support_points.clone(),
+        }
+    }
+
+    fn push(history: &mut VecDeque<TrailSketch>, sketch: TrailSketch) {
+        if history.len() == UNDO_DEPTH {
+            let _oldest = history.pop_front();
+        }
+        history.push_back(sketch);
+    }
+
+    fn commit(&mut self, sketch: TrailSketch) {
+        Self::push(&mut self.undo, sketch);
+        self.redo.clear();
+    }
+
+    fn checkpoint(&mut self) {
+        self.finish_drag();
+        self.commit(self.sketch());
+    }
+
+    fn finish_drag(&mut self) {
+        let Some(drag) = self.drag.take() else {
+            return;
+        };
+        if drag.before != self.sketch() {
+            self.commit(drag.before);
+        }
+    }
+
+    fn undo(&mut self) -> bool {
+        let current = self.sketch();
+        let target = self
+            .drag
+            .take()
+            .and_then(|drag| (drag.before != current).then_some(drag.before))
+            .or_else(|| self.undo.pop_back());
+        let Some(target) = target else {
+            return false;
+        };
+        Self::push(&mut self.redo, current);
+        self.restore(target);
+        true
+    }
+
+    fn redo(&mut self) -> bool {
+        self.finish_drag();
+        let Some(target) = self.redo.pop_back() else {
+            return false;
+        };
+        let current = self.sketch();
+        Self::push(&mut self.undo, current);
+        self.restore(target);
+        true
+    }
+
+    fn restore(&mut self, target: TrailSketch) {
+        self.support_points = target.support_points;
+    }
 }
 
 #[derive(Clone)]
@@ -689,29 +767,10 @@ impl TrailApp {
         let Some(editor) = &self.editor else {
             return;
         };
-        let mut shape = editor.shape;
         let count = editor.support_points.len();
         let ready = editor.realization.is_some();
         let fault = editor.fault.clone();
         let _mode = chrome::note(ui, format!("{count} SUPPORT POINT(S)"));
-        let _shape = ui.label(chrome::eyebrow("SHAPE"));
-        let mut changed = false;
-        let _shapes = ui.horizontal_wrapped(|ui| {
-            for (candidate, label) in SHAPES {
-                let response = chrome::glyph(ui, label, shape == candidate);
-                if response.clicked() && shape != candidate {
-                    shape = candidate;
-                    changed = true;
-                    self.water.select(response.rect);
-                }
-            }
-        });
-        if changed {
-            if let Some(editor) = &mut self.editor {
-                editor.shape = shape;
-            }
-            self.reforge_editor();
-        }
         ui.add_space(5.0);
         let _help = chrome::note(
             ui,
@@ -726,33 +785,48 @@ impl TrailApp {
         }
         ui.add_space(5.0);
         let _undo_row = ui.horizontal(|ui| {
+            let can_undo = self
+                .editor
+                .as_ref()
+                .is_some_and(|editor| !editor.undo.is_empty());
+            let can_redo = self
+                .editor
+                .as_ref()
+                .is_some_and(|editor| !editor.redo.is_empty());
             let undo = ui.add_enabled(
-                count > 0,
-                chrome::glyph_button("UNDO POINT", false).min_size(vec2(106.0, 27.0)),
+                can_undo,
+                chrome::glyph_button("UNDO · CTRL+Z", false).min_size(vec2(112.0, 27.0)),
             );
             if undo.clicked() {
-                if let Some(editor) = &mut self.editor {
-                    let _removed = editor.support_points.pop();
-                }
-                self.reforge_editor();
+                self.undo_editor();
                 self.water.click(undo.rect);
             }
-            let clear = ui.add_enabled(
-                count > 0,
-                chrome::glyph_button("CLEAR", false).min_size(vec2(64.0, 27.0)),
+            let redo = ui.add_enabled(
+                can_redo,
+                chrome::glyph_button("REDO · CTRL+Y", false).min_size(vec2(112.0, 27.0)),
             );
-            if clear.clicked() {
-                if let Some(editor) = &mut self.editor {
-                    editor.support_points.clear();
-                }
-                self.reforge_editor();
-                self.water.click(clear.rect);
+            if redo.clicked() {
+                self.redo_editor();
+                self.water.click(redo.rect);
             }
         });
+        let clear = ui.add_enabled(
+            count > 0,
+            chrome::glyph_button("CLEAR", false).min_size(vec2(ui.available_width(), 27.0)),
+        );
+        if clear.clicked() {
+            self.remember_editor();
+            if let Some(editor) = &mut self.editor {
+                editor.support_points.clear();
+            }
+            self.reforge_editor();
+            self.water.click(clear.rect);
+        }
         ui.add_space(5.0);
         let save = ui.add_enabled(
             ready,
-            chrome::glyph_button("SAVE TRAIL", ready).min_size(vec2(ui.available_width(), 34.0)),
+            chrome::glyph_button("SAVE TRAIL · CTRL+S", ready)
+                .min_size(vec2(ui.available_width(), 34.0)),
         );
         chrome::tension(ui, &save);
         if save.clicked() {
@@ -1166,12 +1240,16 @@ impl TrailApp {
                 let _rack = ui.horizontal(|ui| {
                     ui.add_space(6.0);
                     for (ordinal, slot) in order.iter().copied().enumerate() {
+                        let active = self
+                            .focus
+                            .as_ref()
+                            .is_some_and(|focus| *focus == Focus::Candidate { family, slot });
                         let response = gallery::candidate_tile(
                             ui,
                             &self.graph,
                             &run.routes[slot],
                             ordinal,
-                            false,
+                            active,
                         );
                         if response.hovered() {
                             self.water.hover(("candidate", slot), response.rect);
@@ -1231,16 +1309,13 @@ impl TrailApp {
         let pointer = response.interact_pointer_pos();
         let support_under_pointer =
             pointer.and_then(|pointer| self.editor_support_at(pointer, rect));
-        if response.drag_started_by(egui::PointerButton::Primary)
-            && let Some(slot) = support_under_pointer
-            && let Some(editor) = &mut self.editor
-        {
-            editor.seized = Some(slot);
+        if ui.input(|input| input.pointer.button_pressed(egui::PointerButton::Primary)) {
+            self.seize_editor_support(pointer, support_under_pointer, rect);
         }
         let editor_dragging = self
             .editor
             .as_ref()
-            .and_then(|editor| editor.seized)
+            .and_then(|editor| editor.drag.as_ref())
             .is_some();
         let before = self.viewport;
         let moved = map::navigate_with(
@@ -1291,21 +1366,27 @@ impl TrailApp {
 
         if editor_dragging
             && let Some(pointer) = pointer
-            && let Some(slot) = self.editor.as_ref().and_then(|editor| editor.seized)
+            && let Some((slot, grab)) = self
+                .editor
+                .as_ref()
+                .and_then(|editor| editor.drag.as_ref())
+                .map(|drag| (drag.slot, drag.grab))
         {
-            self.place_editor_support(map::coord_at(self.viewport, rect, pointer), Some(slot));
+            self.place_editor_support(
+                map::coord_at(self.viewport, rect, pointer - grab),
+                Some(slot),
+                false,
+            );
         }
-        if response.drag_stopped_by(egui::PointerButton::Primary)
-            && let Some(editor) = &mut self.editor
-        {
-            editor.seized = None;
+        if ui.input(|input| input.pointer.button_released(egui::PointerButton::Primary)) {
+            self.finish_editor_drag();
         }
         if response.clicked()
             && self.editor.is_some()
             && support_under_pointer.is_none()
             && let Some(pointer) = pointer
         {
-            self.place_editor_support(map::coord_at(self.viewport, rect, pointer), None);
+            self.place_editor_support(map::coord_at(self.viewport, rect, pointer), None, true);
         } else if response.clicked()
             && self.placing_trailhead
             && let Some(pointer) = response.interact_pointer_pos()
@@ -1319,16 +1400,15 @@ impl TrailApp {
     }
 
     fn paint_trails(&self, painter: &egui::Painter, rect: egui::Rect) {
-        if let Some(route) = self
+        if let Some(realization) = self
             .editor
             .as_ref()
             .and_then(|editor| editor.realization.as_ref())
-            .map(|realization| &realization.route)
         {
             map::paint_route(
                 painter,
-                &self.graph,
-                route,
+                realization.graph(&self.graph),
+                &realization.route,
                 self.viewport,
                 rect,
                 map::SELECTED_TRAIL_COLOR,
@@ -1378,7 +1458,7 @@ impl TrailApp {
                             &run.routes[slot],
                             self.viewport,
                             rect,
-                            CANDIDATE_COLORS[ordinal % CANDIDATE_COLORS.len()],
+                            map::candidate_color(ordinal, false),
                         );
                     }
                 }
@@ -1395,6 +1475,27 @@ impl TrailApp {
                 }
             }
         }
+    }
+
+    fn seize_editor_support(
+        &mut self,
+        pointer: Option<egui::Pos2>,
+        slot: Option<usize>,
+        rect: egui::Rect,
+    ) {
+        let (Some(pointer), Some(slot), Some(editor)) = (pointer, slot, &mut self.editor) else {
+            return;
+        };
+        let anchor = map::screen_at(
+            self.viewport,
+            rect,
+            map::world_from_coord(editor.support_points[slot].coord()),
+        );
+        editor.drag = Some(PinDrag {
+            slot,
+            before: editor.sketch(),
+            grab: pointer - anchor,
+        });
     }
 
     fn paint_map_header(&self, painter: &egui::Painter, rect: egui::Rect) {
@@ -1527,41 +1628,76 @@ impl TrailApp {
         for (slot, support) in editor.support_points.iter().enumerate() {
             let anchor =
                 map::screen_at(self.viewport, rect, map::world_from_coord(support.coord()));
-            crate::forge::pin(painter, anchor, editor.seized == Some(slot));
+            crate::forge::pin(
+                painter,
+                anchor,
+                editor.drag.as_ref().is_some_and(|drag| drag.slot == slot),
+            );
             painter.text(
                 crate::forge::pin_bulb(anchor),
                 egui::Align2::CENTER_CENTER,
                 (slot + 1).to_string(),
-                egui::FontId::monospace(7.5),
+                egui::FontId::monospace(12.0),
                 chrome::TEXT,
             );
         }
     }
 
-    fn place_editor_support(&mut self, requested: Coord, slot: Option<usize>) {
-        let Some((vertex, distance_m)) = self.graph.nearest_vertex_with_distance(requested) else {
+    fn place_editor_support(&mut self, requested: Coord, slot: Option<usize>, remember: bool) {
+        let Some(projection) = self.graph.project_onto_edge(requested) else {
             return;
         };
-        if distance_m > TRAILHEAD_SNAP_M {
+        if projection.distance_m > TRAILHEAD_SNAP_M {
             if let Some(editor) = &mut self.editor {
                 editor.fault = Some("Move closer to a downloaded trail.".to_owned());
             }
             return;
         }
-        let support = SupportPoint::forge(self.graph.vertices[vertex.0].coord)
-            .expect("graph vertices contain valid coordinates");
-        let Some(editor) = &mut self.editor else {
+        let support = SupportPoint::forge(projection.coord)
+            .expect("edge projections contain valid coordinates");
+        let Some(editor) = &self.editor else {
             return;
         };
-        match slot {
-            Some(slot) if editor.support_points.get(slot) != Some(&support) => {
-                editor.support_points[slot] = support;
-            }
-            Some(_) => return,
-            None if editor.support_points.last() == Some(&support) => return,
-            None => editor.support_points.push(support),
+        if slot.map_or_else(
+            || editor.support_points.last() == Some(&support),
+            |slot| editor.support_points.get(slot) == Some(&support),
+        ) {
+            return;
+        }
+        if remember {
+            self.remember_editor();
+        }
+        let editor = self.editor.as_mut().expect("editor existence checked");
+        if let Some(slot) = slot {
+            editor.support_points[slot] = support;
+        } else {
+            editor.support_points.push(support);
         }
         self.reforge_editor();
+    }
+
+    fn remember_editor(&mut self) {
+        if let Some(editor) = &mut self.editor {
+            editor.checkpoint();
+        }
+    }
+
+    fn finish_editor_drag(&mut self) {
+        if let Some(editor) = &mut self.editor {
+            editor.finish_drag();
+        }
+    }
+
+    fn undo_editor(&mut self) {
+        if self.editor.as_mut().is_some_and(TrailEditor::undo) {
+            self.reforge_editor();
+        }
+    }
+
+    fn redo_editor(&mut self) {
+        if self.editor.as_mut().is_some_and(TrailEditor::redo) {
+            self.reforge_editor();
+        }
     }
 
     fn strike(&mut self, family: FamilyId) {
@@ -1841,7 +1977,7 @@ impl TrailApp {
                 let shape = self
                     .active_family
                     .and_then(|family| self.library.family(family))
-                    .map_or(RouteShape::OutAndBack, |family| family.search.shape);
+                    .map_or(RouteShape::Open, |family| family.search.shape);
                 ("manual trail".to_owned(), shape, Vec::new())
             },
             |(name, trail)| (name, trail.shape, trail.support_points),
@@ -1858,7 +1994,9 @@ impl TrailApp {
             realization: None,
             profile: None,
             fault: None,
-            seized: None,
+            undo: VecDeque::new(),
+            redo: VecDeque::new(),
+            drag: None,
         });
         self.reforge_editor();
         "Manual editor ready. Place support points on the map.".clone_into(&mut self.status);
@@ -1912,7 +2050,8 @@ impl TrailApp {
         if let Some(editor) = &mut self.editor {
             match result {
                 Ok(realization) => {
-                    editor.profile = ElevationProfile::forge(&self.graph, &realization.route);
+                    editor.profile =
+                        ElevationProfile::forge(realization.graph(&self.graph), &realization.route);
                     editor.realization = Some(realization);
                     editor.fault = None;
                 }
@@ -2132,6 +2271,29 @@ impl TrailApp {
             return;
         }
         if ctx.text_edit_focused() {
+            return;
+        }
+        let redo = ctx.input_mut(|input| {
+            input.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Z)
+                || input.consume_key(egui::Modifiers::CTRL, egui::Key::Y)
+        });
+        if redo && self.editor.is_some() {
+            self.redo_editor();
+            return;
+        }
+        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Z))
+            && self.editor.is_some()
+        {
+            self.undo_editor();
+            return;
+        }
+        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::S))
+            && self
+                .editor
+                .as_ref()
+                .is_some_and(|editor| editor.realization.is_some())
+        {
+            self.save_editor();
             return;
         }
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Enter)) {
@@ -2420,5 +2582,44 @@ mod tests {
         assert_eq!(frame.base(second_focus), base);
         assert_eq!(frame.pop(), Some(base));
         assert_eq!(frame.pop(), None);
+    }
+
+    #[test]
+    fn editor_undo_restores_whole_gestures() {
+        let first = SupportPoint::forge(Coord::new(-74.0, 41.0)).expect("valid support");
+        let second = SupportPoint::forge(Coord::new(-73.99, 41.01)).expect("valid support");
+        let mut editor = TrailEditor {
+            name: "test".to_owned(),
+            origin: EditorOrigin::New(None),
+            return_focus: None,
+            shape: RouteShape::OutAndBack,
+            support_points: vec![first],
+            realization: None,
+            profile: None,
+            fault: None,
+            undo: VecDeque::new(),
+            redo: VecDeque::new(),
+            drag: None,
+        };
+
+        editor.checkpoint();
+        editor.support_points.push(second);
+        assert!(editor.undo());
+        assert_eq!(editor.support_points, vec![first]);
+        assert!(editor.redo());
+        assert_eq!(editor.support_points, vec![first, second]);
+        assert!(editor.undo());
+
+        editor.drag = Some(PinDrag {
+            slot: 0,
+            before: editor.sketch(),
+            grab: egui::Vec2::ZERO,
+        });
+        editor.support_points[0] = second;
+        editor.finish_drag();
+        assert!(editor.undo());
+        assert_eq!(editor.support_points, vec![first]);
+        assert!(editor.redo());
+        assert_eq!(editor.support_points, vec![second]);
     }
 }

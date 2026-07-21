@@ -46,8 +46,8 @@ pub use milp::{
 };
 pub use model::{
     Access, CoverageGap, CoverageGapKind, CrossingEvidence, CrossingKind, Edge, EdgeAttr, EdgeId,
-    EdgeTravel, GradeDistribution, Provenance, RouteCoverage, RouteSnapStats, Terrain, TrailClass,
-    TrailGraph, TrailStanding, TurnBan, Vertex, VertexId,
+    EdgeProjection, EdgeTravel, GradeDistribution, Provenance, RouteCoverage, RouteSnapStats,
+    Terrain, TrailClass, TrailGraph, TrailStanding, TurnBan, Vertex, VertexId,
 };
 pub use optimizer::{ExactLoopSolver, LoopHunter, RouteSolver, SearchParams, SolverKind};
 pub use overlay::{

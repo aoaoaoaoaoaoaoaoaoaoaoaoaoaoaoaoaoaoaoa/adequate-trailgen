@@ -464,8 +464,11 @@ impl Library {
                 "trail family no longer exists"
             );
         }
-        let trail =
-            SavedTrail::capture_design(graph, &realization.route, Some(&realization.trail))?;
+        let trail = SavedTrail::capture_design(
+            realization.graph(graph),
+            &realization.route,
+            Some(&realization.trail),
+        )?;
         let id = trail.id.clone();
         if self.trail(&id).is_none() {
             self.trails.push(trail);
@@ -495,8 +498,11 @@ impl Library {
             .filter(|family| family.trails.contains(old))
             .map(|family| family.id)
             .collect::<Vec<_>>();
-        let replacement =
-            SavedTrail::capture_design(graph, &realization.route, Some(&realization.trail))?;
+        let replacement = SavedTrail::capture_design(
+            realization.graph(graph),
+            &realization.route,
+            Some(&realization.trail),
+        )?;
         let id = replacement.id.clone();
         if &id != old {
             self.trails.retain(|trail| &trail.id != old);

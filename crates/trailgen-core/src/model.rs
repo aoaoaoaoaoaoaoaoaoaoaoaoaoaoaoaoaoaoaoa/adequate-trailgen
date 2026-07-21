@@ -407,6 +407,14 @@ pub struct Edge {
     pub attr: EdgeAttr,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EdgeProjection {
+    pub edge: EdgeId,
+    pub coord: Coord,
+    pub progress_m: f64,
+    pub distance_m: f64,
+}
+
 impl Edge {
     #[must_use]
     pub fn other(&self, v: VertexId) -> Option<VertexId> {
@@ -1016,10 +1024,25 @@ impl TrailGraph {
 
     #[must_use]
     pub fn nearest_edge_with_distance(&self, coord: crate::geo::Coord) -> Option<(EdgeId, f64)> {
+        self.project_onto_edge(coord)
+            .map(|projection| (projection.edge, projection.distance_m))
+    }
+
+    #[must_use]
+    pub fn project_onto_edge(&self, coord: Coord) -> Option<EdgeProjection> {
         self.edges
             .iter()
-            .min_by(|a, b| edge_distance_m(a, coord).total_cmp(&edge_distance_m(b, coord)))
-            .map(|e| (e.id, edge_distance_m(e, coord)))
+            .filter_map(|edge| {
+                line_projection(&edge.geometry, coord).map(|(distance_m, progress_m, coord)| {
+                    EdgeProjection {
+                        edge: edge.id,
+                        coord,
+                        progress_m,
+                        distance_m,
+                    }
+                })
+            })
+            .min_by(|left, right| left.distance_m.total_cmp(&right.distance_m))
     }
 
     #[must_use]
@@ -1138,12 +1161,7 @@ fn valid_coord(coord: Coord) -> bool {
 }
 
 fn edge_distance_m(edge: &Edge, coord: Coord) -> f64 {
-    edge.geometry
-        .points
-        .windows(2)
-        .map(|w| segment_distance_m(w[0], w[1], coord))
-        .min_by(f64::total_cmp)
-        .unwrap_or(f64::INFINITY)
+    line_projection(&edge.geometry, coord).map_or(f64::INFINITY, |projection| projection.0)
 }
 
 fn edge_spatial_index(edges: &[Edge]) -> RTree<EdgeEnvelope> {
@@ -1244,22 +1262,26 @@ fn route_span_fits_edge(
         .all(|(_, segment)| edge_distance_m(edge, segment[0].lerp(segment[1], 0.5)) <= max_snap_m)
 }
 
-fn segment_distance_m(head: Coord, tail: Coord, point: Coord) -> f64 {
-    segment_projection(head, tail, point).0
+fn line_progress_m(line: &LineString, point: Coord) -> f64 {
+    line_projection(line, point).map_or(0.0, |projection| projection.1)
 }
 
-fn line_progress_m(line: &LineString, point: Coord) -> f64 {
+fn line_projection(line: &LineString, point: Coord) -> Option<(f64, f64, Coord)> {
     let mut traversed_m = 0.0;
-    let mut nearest = (f64::INFINITY, 0.0);
+    let mut nearest = None::<(f64, f64, Coord)>;
     for segment in line.points.windows(2) {
         let length_m = segment[0].haversine_m(segment[1]);
         let (distance_m, interpolation) = segment_projection(segment[0], segment[1], point);
-        if distance_m < nearest.0 {
-            nearest = (distance_m, length_m.mul_add(interpolation, traversed_m));
+        if nearest.is_none_or(|nearest| distance_m < nearest.0) {
+            nearest = Some((
+                distance_m,
+                length_m.mul_add(interpolation, traversed_m),
+                segment[0].lerp(segment[1], interpolation),
+            ));
         }
         traversed_m += length_m;
     }
-    nearest.1
+    nearest
 }
 
 fn segment_projection(head: Coord, tail: Coord, point: Coord) -> (f64, f64) {

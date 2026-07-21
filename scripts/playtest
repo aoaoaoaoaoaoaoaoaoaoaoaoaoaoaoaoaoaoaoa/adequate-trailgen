@@ -207,12 +207,21 @@ if [ "${TRAILGEN_GUI_EDITOR_FLOW:-0}" = 1 ]; then
     xdotool mousemove --sync --window "$window" 850 400 click 1
     sleep 1
     import -window "$window" "$out/editor-route.png"
+    xdotool key --window "$window" ctrl+z
+    sleep 1
+    import -window "$window" "$out/editor-undone.png"
+    xdotool key --window "$window" ctrl+y
+    sleep 1
+    import -window "$window" "$out/editor-redone.png"
     # Seize the second pin's raised bulb and move it onto another spine.
-    xdotool mousemove --sync --window "$window" 842 400
+    xdotool mousemove --sync --window "$window" 850 284
     xdotool mousedown 1
     sleep 0.2
-    xdotool mousemove --sync --window "$window" 900 370
+    xdotool mousemove --sync --window "$window" 856 290
     sleep 0.2
+    xdotool mousemove --sync --window "$window" 900 290
+    sleep 0.2
+    import -window "$window" "$out/editor-dragging.png"
     xdotool mouseup 1
     sleep 1
     import -window "$window" "$out/editor-moved.png"

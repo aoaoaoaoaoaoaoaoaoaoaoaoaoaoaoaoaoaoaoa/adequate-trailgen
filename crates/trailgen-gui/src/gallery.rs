@@ -1,7 +1,7 @@
 use crate::{
     library::SavedTrail,
     map::{
-        CANDIDATE_COLORS, frailest_standing, paint_trail_tube, trail_mark, trail_standing_badge,
+        candidate_color, frailest_standing, paint_trail_tube, trail_mark, trail_standing_badge,
         trail_standing_color,
     },
 };
@@ -86,7 +86,7 @@ pub fn candidate_tile(
         ),
         active,
         |ui, rect| {
-            let color = CANDIDATE_COLORS[ordinal % CANDIDATE_COLORS.len()];
+            let color = candidate_color(ordinal, active);
             let mut at = route.start;
             for edge_id in &route.edges {
                 let edge = &graph.edges[edge_id.0];

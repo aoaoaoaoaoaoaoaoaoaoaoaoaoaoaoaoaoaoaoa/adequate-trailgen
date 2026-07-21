@@ -26,6 +26,14 @@ pub const CANDIDATE_COLORS: [Color32; 8] = [
     Color32::from_rgb(126, 102, 226),
 ];
 
+pub const fn candidate_color(ordinal: usize, selected: bool) -> Color32 {
+    if selected {
+        SELECTED_TRAIL_COLOR
+    } else {
+        CANDIDATE_COLORS[ordinal % CANDIDATE_COLORS.len()]
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TrailSalience {
     Context,
@@ -240,9 +248,9 @@ impl Atlas {
         if self.classes.is_empty() {
             return;
         }
-        let width = 166.0;
-        let row = 16.0;
-        let height = 46.0 + row * (self.classes.len() + TrailMark::ALL.len()) as f32;
+        let width = 204.0;
+        let row = 21.0;
+        let height = 51.0 + row * (self.classes.len() + TrailMark::ALL.len()) as f32;
         let plate = Rect::from_min_size(
             pos2(rect.right() - width - 12.0, rect.top() + 12.0),
             vec2(width, height),
@@ -255,51 +263,51 @@ impl Atlas {
             egui::StrokeKind::Inside,
         );
         painter.text(
-            plate.min + vec2(8.0, 6.0),
+            plate.min + vec2(9.0, 7.0),
             egui::Align2::LEFT_TOP,
             "TRAIL TYPES",
-            egui::FontId::monospace(9.5),
+            egui::FontId::monospace(13.0),
             chrome::MUTED,
         );
         for (slot, class) in self.classes.iter().copied().enumerate() {
-            let y = (slot as f32).mul_add(row, plate.top() + 23.0);
+            let y = (slot as f32).mul_add(row, plate.top() + 29.0);
             paint_trail_tube(
                 painter,
-                &[pos2(plate.left() + 9.0, y), pos2(plate.left() + 27.0, y)],
-                5.2,
+                &[pos2(plate.left() + 10.0, y), pos2(plate.left() + 32.0, y)],
+                TrailSalience::Context.width(),
                 trail_class_color(class),
                 TrailMark::Solid,
             );
             painter.text(
-                pos2(plate.left() + 34.0, y),
+                pos2(plate.left() + 41.0, y),
                 egui::Align2::LEFT_CENTER,
                 trail_class_label(class),
-                egui::FontId::monospace(9.5),
+                egui::FontId::monospace(13.0),
                 chrome::TEXT,
             );
         }
-        let heading_y = (self.classes.len() as f32).mul_add(row, plate.top() + 27.0);
+        let heading_y = (self.classes.len() as f32).mul_add(row, plate.top() + 34.0);
         painter.text(
             pos2(plate.left() + 8.0, heading_y),
             egui::Align2::LEFT_TOP,
             "SURFACE / CONDITION",
-            egui::FontId::monospace(9.5),
+            egui::FontId::monospace(13.0),
             chrome::MUTED,
         );
         for (slot, mark) in TrailMark::ALL.into_iter().enumerate() {
-            let y = (slot as f32).mul_add(row, heading_y + 19.0);
+            let y = (slot as f32).mul_add(row, heading_y + 24.0);
             paint_trail_tube(
                 painter,
-                &[pos2(plate.left() + 9.0, y), pos2(plate.left() + 27.0, y)],
-                5.2,
-                SELECTED_TRAIL_COLOR,
+                &[pos2(plate.left() + 10.0, y), pos2(plate.left() + 32.0, y)],
+                TrailSalience::Context.width(),
+                trail_class_color(TrailClass::Path),
                 mark,
             );
             painter.text(
-                pos2(plate.left() + 34.0, y),
+                pos2(plate.left() + 41.0, y),
                 egui::Align2::LEFT_CENTER,
                 mark.label(),
-                egui::FontId::monospace(9.5),
+                egui::FontId::monospace(13.0),
                 chrome::TEXT,
             );
         }
