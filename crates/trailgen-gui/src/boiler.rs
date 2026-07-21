@@ -140,7 +140,7 @@ impl ApplicationHandler<Spark> for Boiler {
         match Rig::raise(event_loop, &self.ctx) {
             Ok(rig) => self.rig = Some(rig),
             Err(err) => {
-                eprintln!("could not raise trail forge window: {err:#}");
+                eprintln!("could not raise trailgen window: {err:#}");
                 event_loop.exit();
             }
         }

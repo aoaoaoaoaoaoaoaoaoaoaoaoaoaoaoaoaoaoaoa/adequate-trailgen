@@ -6,7 +6,9 @@ use crate::{
     live_area::{self, RegionScribe, ScribeEvent},
     map::{self, Viewport},
     slate::Slate,
-    trail_data::{Event as TrailDataEvent, Mutation as TrailDataMutation, TrailData},
+    trail_data::{
+        Event as TrailDataEvent, Mutation as TrailDataMutation, TrailData, progress_status,
+    },
     vector_field::VectorField,
 };
 use anyhow::{Context as _, Result, ensure};
@@ -288,9 +290,9 @@ impl SurveyWorkbench {
             regions: config.regions,
             corpus: None,
             corpus_status: if offline {
-                "OFFLINE · REGION DOWNLOADS ARE SUSPENDED".to_owned()
+                "Go online to download trails.".to_owned()
             } else {
-                "WAITING FOR A LIVE REGION".to_owned()
+                "Draw a map area to download its trails.".to_owned()
             },
             offline,
             fault: None,
@@ -345,15 +347,15 @@ impl SurveyWorkbench {
             self.water.click(projects.rect);
         }
         ui.add_space(14.0);
-        let _label = ui.label(chrome::section_title("LIVE TRAIL AREA"));
+        let _label = ui.label(chrome::section_title("MAP AREAS"));
         let selecting = self.scribe.active();
         let select = ui.add_enabled(
             !self.offline && self.corpus.is_none(),
             chrome::glyph_button(
                 if selecting {
-                    "×  CANCEL REGION"
+                    "×  CANCEL DRAWING"
                 } else {
-                    "▣  SELECT REGION"
+                    "▣  ADD MAP AREA"
                 },
                 selecting,
             )
@@ -369,30 +371,17 @@ impl SurveyWorkbench {
             self.water.click(select.rect);
         }
         ui.add_space(7.0);
-        let _count = chrome::note(
-            ui,
-            format!("{} LIVE REGION(S) · UNION INDEX", self.regions.len()),
-        );
+        let _count = chrome::note(ui, format!("{} DOWNLOADED AREA(S)", self.regions.len()));
         let mut excision = None;
         for (slot, region) in self.regions.iter().enumerate() {
             let _region = ui.horizontal(|ui| {
-                let _bounds = ui.add(
-                    egui::Label::new(chrome::muted(format!(
-                        "{:02}  {:.3}, {:.3}\n     {:.3}, {:.3}",
-                        slot + 1,
-                        region.bounds.west,
-                        region.bounds.south,
-                        region.bounds.east,
-                        region.bounds.north
-                    )))
-                    .wrap(),
-                );
+                let _area = ui.label(chrome::muted(format!("AREA {:02}", slot + 1)));
                 let remove = ui
                     .add_enabled(
                         self.corpus.is_none(),
                         chrome::glyph_button("×", false).min_size(vec2(24.0, 24.0)),
                     )
-                    .on_hover_text("Excise this region and rebuild the union index.");
+                    .on_hover_text("Remove this downloaded area and update trails.");
                 if remove.clicked() {
                     excision = Some((region.id.clone(), remove.rect));
                 }
@@ -402,7 +391,7 @@ impl SurveyWorkbench {
             if let Err(err) = self.strike(ui.ctx(), TrailDataMutation::Remove(id)) {
                 self.fault = Some(format!("{err:#}"));
             } else {
-                "EXCISING REGION + REBUILDING UNION".clone_into(&mut self.corpus_status);
+                "Removing that map area…".clone_into(&mut self.corpus_status);
                 self.water.click(rect);
             }
         }
@@ -410,7 +399,7 @@ impl SurveyWorkbench {
             ui.add_space(6.0);
             let refresh = ui.add_enabled(
                 !self.offline && self.corpus.is_none(),
-                chrome::glyph_button("↻  REFRESH TRAIL CORPUS", false)
+                chrome::glyph_button("↻  REFRESH TRAILS", false)
                     .min_size(vec2(ui.available_width(), 27.0)),
             );
             chrome::tension(ui, &refresh);
@@ -420,22 +409,6 @@ impl SurveyWorkbench {
                 self.fault = Some(format!("{err:#}"));
             }
         }
-        self.status_panel(ui);
-    }
-
-    fn status_panel(&self, ui: &mut egui::Ui) {
-        ui.add_space(14.0);
-        let _status_label = ui.label(chrome::section_title("STATUS"));
-        let _status = ui.horizontal(|ui| {
-            if self.corpus.is_some() {
-                let _spinner = ui.add(egui::Spinner::new().size(12.0));
-            }
-            let _text = ui.add(egui::Label::new(chrome::muted(&self.corpus_status)).wrap());
-        });
-        let _base = chrome::note(ui, format!("BASE · {}", self.vector.status()));
-        let _provider = chrome::note(ui, "TRAILS · OPENSTREETMAP / OVERPASS");
-        let _country = chrome::note(ui, "INITIAL PROVIDER SURFACE · UNITED STATES");
-        let _path = chrome::note(ui, format!("PROJECT · {}", self.root.display()));
         if let Some(fault) = &self.fault {
             fault_label(ui, fault);
         }
@@ -454,13 +427,15 @@ impl SurveyWorkbench {
             let message = if self.corpus.is_some() {
                 &self.corpus_status
             } else if self.scribe.active() {
-                "DRAG ACROSS THE MAP TO DEFINE A FETCH RECTANGLE · ESC CANCELS"
+                "Drag a rectangle across the map to download its trails. Esc cancels."
+            } else if self.offline && !self.vector.has_presented_tiles() {
+                "Go online once to load the map and download trails."
             } else if self.offline {
-                "VECTOR NAVIGATION IS AVAILABLE · GO ONLINE TO FETCH TRAIL REGIONS"
+                "The cached map is available offline. Go online to download trails."
             } else if self.regions.is_empty() {
-                "USE SELECT REGION TO MARK WHERE TRAILS SHOULD BECOME LIVE"
+                "Use Add Map Area to choose where Trailgen should download trails."
             } else {
-                "ADD ANOTHER REGION OR REFRESH THE TRAIL CORPUS"
+                "Add another map area or refresh the downloaded trails."
             };
             let _message = ui.add(
                 egui::Label::new(RichText::new(message).monospace().color(chrome::TEXT)).wrap(),
@@ -468,7 +443,7 @@ impl SurveyWorkbench {
             if self.corpus.is_none() && !self.scribe.active() {
                 let select = ui.add_enabled(
                     !self.offline,
-                    chrome::glyph_button("▣  SELECT REGION", true).min_size(vec2(164.0, 29.0)),
+                    chrome::glyph_button("▣  ADD MAP AREA", true).min_size(vec2(164.0, 29.0)),
                 );
                 chrome::tension(ui, &select);
                 if select.clicked() {
@@ -521,7 +496,7 @@ impl SurveyWorkbench {
             ScribeEvent::Fault(fault) => self.fault = Some(fault.to_owned()),
             ScribeEvent::Committed(bounds) => {
                 if self.offline {
-                    self.fault = Some("trail regions cannot be fetched while offline".to_owned());
+                    self.fault = Some("map areas cannot be downloaded while offline".to_owned());
                 } else if let Err(err) = trailgen_data::validate_region(bounds) {
                     self.fault = Some(format!("{err:#}"));
                     self.scribe.arm();
@@ -529,7 +504,7 @@ impl SurveyWorkbench {
                     let region = SurveyRegion::new(bounds)
                         .expect("validated bounds must forge a survey region");
                     if self.regions.iter().any(|known| known.id == region.id) {
-                        self.fault = Some("that survey region is already live".to_owned());
+                        self.fault = Some("that map area is already downloaded".to_owned());
                     } else if let Err(err) = self.strike(ui.ctx(), TrailDataMutation::Add(bounds)) {
                         self.fault = Some(format!("{err:#}"));
                         self.scribe.arm();
@@ -543,7 +518,7 @@ impl SurveyWorkbench {
 
     fn strike(&mut self, ctx: &egui::Context, mutation: TrailDataMutation) -> Result<()> {
         self.fault = None;
-        "RANGING LIVE TRAIL AREA".clone_into(&mut self.corpus_status);
+        "Updating trails…".clone_into(&mut self.corpus_status);
         self.corpus = Some(TrailData::spawn(ctx.clone(), self.root.clone(), mutation)?);
         Ok(())
     }
@@ -555,14 +530,10 @@ impl SurveyWorkbench {
         let mut finished = false;
         while let Ok(event) = corpus.events.try_recv() {
             match event {
-                TrailDataEvent::Progress(event) => self.corpus_status = event.status(),
+                TrailDataEvent::Progress(event) => self.corpus_status = progress_status(&event),
                 TrailDataEvent::Ready(Some(summary)) => {
-                    self.corpus_status = format!(
-                        "READY · {} REGION(S) · {} VERTICES · {} EDGES",
-                        summary.regions.len(),
-                        summary.vertices,
-                        summary.edges
-                    );
+                    self.corpus_status =
+                        format!("Trail data ready in {} map area(s).", summary.regions.len());
                     self.regions = summary.regions;
                     self.fault = None;
                     *action = Some(WorkspaceAction::Reload);
@@ -570,12 +541,12 @@ impl SurveyWorkbench {
                 }
                 TrailDataEvent::Ready(None) => {
                     self.regions.clear();
-                    "NO LIVE REGIONS".clone_into(&mut self.corpus_status);
+                    "No map areas downloaded.".clone_into(&mut self.corpus_status);
                     self.fault = None;
                     finished = true;
                 }
                 TrailDataEvent::Fault(fault) => {
-                    "TRAIL CORPUS RECONCILIATION FAILED".clone_into(&mut self.corpus_status);
+                    "Trail update failed.".clone_into(&mut self.corpus_status);
                     self.fault = Some(fault);
                     if let Ok(config) = trailgen_data::project_config(&self.root) {
                         self.regions = config.regions;

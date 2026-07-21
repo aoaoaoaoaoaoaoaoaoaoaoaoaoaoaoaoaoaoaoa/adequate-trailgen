@@ -1,7 +1,10 @@
-use crate::map::{terrain_color, terrain_label};
+use crate::{
+    library::SavedTrail,
+    map::{terrain_color, terrain_label},
+};
 use dwemer_poolrooms::chrome;
 use egui::{Color32, Rect, Response, Sense, Shape, Stroke, Ui, pos2, vec2};
-use trailgen_core::{Route, Terrain, TrailGraph};
+use trailgen_core::{LineString, Route, Terrain, TrailGraph};
 
 pub struct ElevationProfile {
     samples: Vec<Sample>,
@@ -27,13 +30,44 @@ struct Span {
 
 impl ElevationProfile {
     pub fn forge(graph: &TrailGraph, route: &Route) -> Option<Self> {
+        let mut at = route.start;
+        let legs = route
+            .edges
+            .iter()
+            .map(|edge_id| {
+                let edge = &graph.edges[edge_id.0];
+                let line = edge.oriented_geometry(at);
+                at = edge
+                    .traverse(at)
+                    .expect("validated route edge must be traversable");
+                (line, edge.attr.terrain, edge.attr.grade_abs_mean)
+            })
+            .collect::<Vec<_>>();
+        Self::from_legs(
+            legs.iter()
+                .map(|(line, terrain, grade)| (line, *terrain, *grade)),
+            route.metrics.distance_m,
+        )
+    }
+
+    pub fn forge_saved(trail: &SavedTrail) -> Option<Self> {
+        Self::from_legs(
+            trail
+                .legs
+                .iter()
+                .map(|leg| (&leg.geometry, leg.terrain, mean_grade(&leg.geometry))),
+            trail.metrics.distance_m,
+        )
+    }
+
+    fn from_legs<'a>(
+        legs: impl IntoIterator<Item = (&'a LineString, Terrain, f64)>,
+        measured_distance_m: f64,
+    ) -> Option<Self> {
         let mut samples = Vec::new();
         let mut spans = Vec::new();
         let mut raw_distance_m = 0.0;
-        let mut at = route.start;
-        for edge_id in &route.edges {
-            let edge = &graph.edges[edge_id.0];
-            let line = edge.oriented_geometry(at);
+        for (line, terrain, grade) in legs {
             let from_m = raw_distance_m;
             for (slot, coord) in line.points.iter().copied().enumerate() {
                 if slot > 0 {
@@ -49,17 +83,14 @@ impl ElevationProfile {
             spans.push(Span {
                 from_m,
                 to_m: raw_distance_m,
-                terrain: edge.attr.terrain,
-                grade: edge.attr.grade_abs_mean,
+                terrain,
+                grade,
             });
-            at = edge
-                .traverse(at)
-                .expect("validated route edge must be traversable");
         }
         if samples.len() < 2 || raw_distance_m <= f64::EPSILON {
             return None;
         }
-        let rescale = route.metrics.distance_m / raw_distance_m;
+        let rescale = measured_distance_m / raw_distance_m;
         for sample in &mut samples {
             sample.distance_m *= rescale;
         }
@@ -78,7 +109,7 @@ impl ElevationProfile {
         Some(Self {
             samples,
             spans,
-            distance_m: route.metrics.distance_m,
+            distance_m: measured_distance_m,
             minimum_m,
             maximum_m,
         })
@@ -266,6 +297,21 @@ impl ElevationProfile {
             ((elevation_m - self.minimum_m) / span) as f32,
         )
     }
+}
+
+fn mean_grade(line: &LineString) -> f64 {
+    let (rise, run) = line
+        .points
+        .windows(2)
+        .fold((0.0, 0.0), |(rise, run), pair| {
+            let distance = pair[0].haversine_m(pair[1]);
+            let change = pair[0]
+                .ele
+                .zip(pair[1].ele)
+                .map_or(0.0, |(from, to)| (to - from).abs());
+            (rise + change, run + distance)
+        });
+    rise / run.max(1.0)
 }
 
 const fn grade_color(grade: f64) -> Color32 {

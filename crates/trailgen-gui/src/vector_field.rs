@@ -24,8 +24,6 @@ pub struct VectorField {
     missing: HashSet<TileKey>,
     retries: HashMap<TileKey, Retry>,
     archive_zoom: Option<u8>,
-    offline: bool,
-    status: String,
 }
 
 struct Retry {
@@ -55,28 +53,12 @@ impl VectorField {
             missing: HashSet::new(),
             retries: HashMap::new(),
             archive_zoom: None,
-            offline,
-            status: if offline {
-                "PROTOMAPS · CACHE ONLY".to_owned()
-            } else {
-                "PROTOMAPS · PREPARING VECTOR CUT".to_owned()
-            },
         })
-    }
-
-    #[must_use]
-    pub const fn available(&self) -> bool {
-        self.armory.is_some()
     }
 
     #[must_use]
     pub fn has_presented_tiles(&self) -> bool {
         !self.presented.is_empty()
-    }
-
-    #[must_use]
-    pub fn status(&self) -> &str {
-        &self.status
     }
 
     pub fn absorb(&mut self) {
@@ -85,22 +67,8 @@ impl VectorField {
         };
         while let Ok(event) = armory.events.try_recv() {
             match event {
-                basemap::Event::Forging { complete, total } => {
-                    self.status = format!(
-                        "FORGING VECTOR CUT · {complete}/{total} · {:.0}%",
-                        complete as f64 * 100.0 / total.max(1) as f64
-                    );
-                }
                 basemap::Event::Ready { source_zoom } => {
                     self.archive_zoom = Some(source_zoom);
-                    self.status = if self.offline {
-                        format!("PROTOMAPS Z{source_zoom} · CACHE ONLY")
-                    } else {
-                        format!("PROTOMAPS Z{source_zoom} · © OPENSTREETMAP")
-                    };
-                }
-                basemap::Event::Ranging { total } => {
-                    self.status = format!("PROTOMAPS · RANGING {total} VECTOR TILE(S)");
                 }
                 basemap::Event::Relinquished(keys) => {
                     for key in keys {
@@ -111,13 +79,6 @@ impl VectorField {
                     let key = tile.key;
                     self.inflight.remove(&key);
                     self.retries.remove(&key);
-                    self.status = format!(
-                        "PROTOMAPS · {} · {} KB · {} µs MAP + {} µs CUT",
-                        tile.timing.source.label(),
-                        tile.timing.bytes / 1024,
-                        tile.timing.archive_us,
-                        tile.timing.decode_us
-                    );
                     self.tiles.insert(tile);
                 }
                 basemap::Event::Missing(key) => {
@@ -126,12 +87,12 @@ impl VectorField {
                     self.missing.insert(key);
                 }
                 basemap::Event::Fault { key, message } => {
+                    eprintln!("basemap unavailable: {message}");
                     if let Some(key) = key {
                         self.inflight.remove(&key);
                         let retry = Retry::fail(self.retries.get(&key), Instant::now());
                         self.retries.insert(key, retry);
                     }
-                    self.status = format!("BASEMAP UNAVAILABLE · {message}");
                 }
             }
         }

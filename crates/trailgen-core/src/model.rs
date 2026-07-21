@@ -14,6 +14,52 @@ pub struct VertexId(pub usize);
 #[serde(transparent)]
 pub struct EdgeId(pub usize);
 
+/// The source-authored structural kind of a routable way. This is orthogonal
+/// to terrain and surface: a forest footway is still a footway.
+#[derive(
+    Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum TrailClass {
+    #[default]
+    Unknown,
+    Path,
+    Footway,
+    Track,
+    Service,
+    Pedestrian,
+    Steps,
+    Bridleway,
+    Road,
+}
+
+impl TrailClass {
+    #[must_use]
+    pub fn from_tag(tag: &str) -> Self {
+        match tag.trim().to_ascii_lowercase().as_str() {
+            "path" | "trail" | "singletrack" => Self::Path,
+            "footway" | "sidewalk" => Self::Footway,
+            "track" => Self::Track,
+            "service" | "service-road" => Self::Service,
+            "pedestrian" | "pedestrian-way" => Self::Pedestrian,
+            "steps" | "stairs" => Self::Steps,
+            "bridleway" => Self::Bridleway,
+            "road" | "unclassified" | "residential" | "tertiary" => Self::Road,
+            _ => Self::Unknown,
+        }
+    }
+
+    #[must_use]
+    pub const fn road_like(self) -> bool {
+        matches!(self, Self::Track | Self::Service | Self::Road)
+    }
+
+    #[must_use]
+    pub const fn requires_foot_evidence(self) -> bool {
+        matches!(self, Self::Service | Self::Road)
+    }
+}
+
 #[derive(
     Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize,
 )]
@@ -279,6 +325,8 @@ pub struct EdgeAttr {
     pub sustained_steep_m: f64,
     #[serde(default)]
     pub grade_distribution: GradeDistribution,
+    #[serde(default)]
+    pub trail_class: TrailClass,
     pub terrain: Terrain,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surface: Option<String>,

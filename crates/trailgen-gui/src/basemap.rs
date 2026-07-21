@@ -28,7 +28,7 @@ use std::{
     path::{Path as FsPath, PathBuf},
     sync::Arc,
     thread,
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, SystemTime},
 };
 use trailgen_core::{TrailGraph, source::GeoBounds};
 
@@ -191,39 +191,12 @@ pub struct Mesh<V> {
     pub indices: Arc<[u32]>,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub enum CutSource {
-    #[default]
-    Project,
-    Cache,
-    Network,
-}
-
-impl CutSource {
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Project => "PROJECT",
-            Self::Cache => "ROAM CACHE",
-            Self::Network => "NETWORK",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct CutTiming {
-    pub archive_us: u64,
-    pub decode_us: u64,
-    pub bytes: usize,
-    pub source: CutSource,
-}
-
 #[derive(Clone, Debug)]
 pub struct VectorTile {
     pub key: TileKey,
     pub fills: Mesh<FillPoint>,
     pub strokes: Mesh<StrokePoint>,
     pub labels: Arc<[Label]>,
-    pub timing: CutTiming,
 }
 
 impl VectorTile {
@@ -252,15 +225,8 @@ impl VectorTile {
 
 #[derive(Debug)]
 pub enum Event {
-    Forging {
-        complete: usize,
-        total: usize,
-    },
     Ready {
         source_zoom: u8,
-    },
-    Ranging {
-        total: usize,
     },
     Relinquished(Vec<TileKey>),
     Loaded(Arc<VectorTile>),
@@ -383,7 +349,7 @@ fn armory(
             return;
         }
     };
-    if let Err(err) = materialize_archive(&runtime, ctx, &events, source, online) {
+    if let Err(err) = materialize_archive(&runtime, source, online) {
         send_fault(ctx, &events, None, &err);
         return;
     }
@@ -431,6 +397,7 @@ fn armory(
                 quarry(
                     &worker_ctx,
                     &reader,
+                    source_zoom,
                     &commands,
                     &worker_roaming,
                     &worker_events,
@@ -462,8 +429,6 @@ fn armory(
 
 fn materialize_archive(
     runtime: &tokio::runtime::Runtime,
-    ctx: &Context,
-    events: &Sender<Event>,
     source: &Source,
     online: bool,
 ) -> Result<()> {
@@ -481,14 +446,7 @@ fn materialize_archive(
             source.archive.display()
         )
     })?;
-    forge_archive(
-        runtime,
-        ctx,
-        events,
-        &source.archive,
-        regions,
-        source.forge_zoom,
-    )
+    forge_archive(runtime, &source.archive, regions, source.forge_zoom)
 }
 
 fn spawn_nomad(
@@ -536,8 +494,6 @@ struct RemoteSource {
 
 fn forge_archive(
     runtime: &tokio::runtime::Runtime,
-    ctx: &Context,
-    events: &Sender<Event>,
     target: &FsPath,
     regions: &[GeoBounds],
     zoom: u8,
@@ -564,10 +520,6 @@ fn forge_archive(
         .metadata(&remote.metadata)
         .create(staging.take_file()?)
         .context("raise project basemap writer")?;
-    let total = tiles.len();
-    let mut complete = 0;
-    let _progress = events.try_send(Event::Forging { complete, total });
-    ctx.request_repaint();
     for keys in tiles.chunks(FORGE_BATCH) {
         for (coordinate, bytes) in runtime.block_on(fetch_tiles(&remote.archive, keys))? {
             if let Some(bytes) = bytes {
@@ -575,10 +527,7 @@ fn forge_archive(
                     .add_raw_tile(coordinate, &bytes)
                     .context("write project basemap tile")?;
             }
-            complete += 1;
         }
-        let _progress = events.try_send(Event::Forging { complete, total });
-        ctx.request_repaint();
     }
     writer.finalize().context("seal project basemap")?;
     staging.commit(target)
@@ -717,10 +666,9 @@ fn nomad(ctx: &Context, cache: &FsPath, commands: &Receiver<TileKey>, events: &S
         let mut absent = Vec::new();
         for key in batch {
             let path = roaming_tile_path(cache, key);
-            let begun = Instant::now();
             match fs::read(&path) {
                 Ok(bytes) => {
-                    let event = cut_event(key, &bytes, micros(begun.elapsed()), CutSource::Cache);
+                    let event = cut_event(key, &bytes);
                     if matches!(event, Event::Loaded(_)) {
                         if events.send(event).is_err() {
                             return;
@@ -738,10 +686,6 @@ fn nomad(ctx: &Context, cache: &FsPath, commands: &Receiver<TileKey>, events: &S
         if absent.is_empty() {
             continue;
         }
-        let _ranging = events.try_send(Event::Ranging {
-            total: absent.len(),
-        });
-        ctx.request_repaint();
         if remote.is_none() {
             match runtime.block_on(open_remote()) {
                 Ok(source) => remote = Some(source),
@@ -771,7 +715,7 @@ fn nomad(ctx: &Context, cache: &FsPath, commands: &Receiver<TileKey>, events: &S
                                 });
                         }
                     }
-                    cut_event(cut.key, &bytes, cut.archive_us, CutSource::Network)
+                    cut_event(cut.key, &bytes)
                 }
                 Ok(None) => Event::Missing(cut.key),
                 Err(err) => Event::Fault {
@@ -810,12 +754,10 @@ fn latest_nomad_batch(keys: impl IntoIterator<Item = TileKey>) -> (Vec<TileKey>,
 struct RoamingCut {
     key: TileKey,
     result: Result<Option<Vec<u8>>>,
-    archive_us: u64,
 }
 
 async fn fetch_roaming_tiles(remote: &RemoteArchive, keys: &[TileKey]) -> Vec<RoamingCut> {
     let requests = stream::iter(keys.iter().copied().map(|key| async move {
-        let begun = Instant::now();
         let result = match key.coordinate() {
             Ok(coordinate) => remote
                 .get_tile_decompressed(coordinate)
@@ -825,11 +767,7 @@ async fn fetch_roaming_tiles(remote: &RemoteArchive, keys: &[TileKey]) -> Vec<Ro
                 .map(|bytes| bytes.map(|bytes| bytes.to_vec())),
             Err(err) => Err(err),
         };
-        RoamingCut {
-            key,
-            result,
-            archive_us: micros(begun.elapsed()),
-        }
+        RoamingCut { key, result }
     }))
     .buffered(FORGE_CONCURRENCY);
     futures_util::pin_mut!(requests);
@@ -840,18 +778,9 @@ async fn fetch_roaming_tiles(remote: &RemoteArchive, keys: &[TileKey]) -> Vec<Ro
     cuts
 }
 
-fn cut_event(key: TileKey, bytes: &[u8], archive_us: u64, source: CutSource) -> Event {
-    let decode_begun = Instant::now();
+fn cut_event(key: TileKey, bytes: &[u8]) -> Event {
     match decode_tile(key, bytes) {
-        Ok(mut tile) => {
-            tile.timing = CutTiming {
-                archive_us,
-                decode_us: micros(decode_begun.elapsed()),
-                bytes: bytes.len(),
-                source,
-            };
-            Event::Loaded(Arc::new(tile))
-        }
+        Ok(tile) => Event::Loaded(Arc::new(tile)),
         Err(err) => Event::Fault {
             key: Some(key),
             message: format!("decode vector tile {key:?}: {err:#}"),
@@ -953,6 +882,7 @@ fn valid_build_key(key: &str) -> bool {
 fn quarry(
     ctx: &Context,
     archive: &Arc<Archive>,
+    archive_zoom: u8,
     commands: &Receiver<TileKey>,
     roaming: &Sender<TileKey>,
     events: &Sender<Event>,
@@ -965,7 +895,13 @@ fn quarry(
         }
     };
     while let Ok(key) = commands.recv() {
-        let begun = Instant::now();
+        if !archive_can_answer(archive_zoom, key) {
+            if roaming.send(key).is_err() && events.send(Event::Missing(key)).is_err() {
+                break;
+            }
+            ctx.request_repaint();
+            continue;
+        }
         let bytes = match key.coordinate().and_then(|coordinate| {
             runtime
                 .block_on(archive.get_tile_decompressed(coordinate))
@@ -984,12 +920,16 @@ fn quarry(
                 continue;
             }
         };
-        let event = cut_event(key, &bytes, micros(begun.elapsed()), CutSource::Project);
+        let event = cut_event(key, &bytes);
         if events.send(event).is_err() {
             break;
         }
         ctx.request_repaint();
     }
+}
+
+const fn archive_can_answer(archive_zoom: u8, key: TileKey) -> bool {
+    key.zoom <= archive_zoom
 }
 
 fn send_fault(ctx: &Context, events: &Sender<Event>, key: Option<TileKey>, err: &anyhow::Error) {
@@ -998,10 +938,6 @@ fn send_fault(ctx: &Context, events: &Sender<Event>, key: Option<TileKey>, err: 
         message: format!("{err:#}"),
     });
     ctx.request_repaint();
-}
-
-fn micros(duration: Duration) -> u64 {
-    u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
 
 fn decode_tile(key: TileKey, bytes: &[u8]) -> Result<VectorTile> {
@@ -1321,7 +1257,6 @@ impl Forge {
                 indices: self.strokes.indices.into(),
             },
             labels: self.labels.into(),
-            timing: CutTiming::default(),
         }
     }
 }
@@ -1868,6 +1803,27 @@ mod tests {
         assert_eq!(crown.intent, Intent::Required);
         assert!(crown.keys.iter().all(|tile| tile.zoom == MAX_SOURCE_ZOOM));
         Ok(())
+    }
+
+    #[test]
+    fn project_archive_ceiling_cannot_impersonate_a_deeper_tile() {
+        let archive_zoom = 12;
+        assert!(archive_can_answer(
+            archive_zoom,
+            TileKey {
+                zoom: archive_zoom,
+                x: 1_204,
+                y: 1_532,
+            }
+        ));
+        assert!(!archive_can_answer(
+            archive_zoom,
+            TileKey {
+                zoom: 15,
+                x: 9_632,
+                y: 12_256,
+            }
+        ));
     }
 
     #[test]

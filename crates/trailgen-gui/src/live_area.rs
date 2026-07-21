@@ -70,7 +70,7 @@ impl RegionScribe {
         self.anchor = None;
         self.cursor = None;
         if (anchor.x - cursor.x).abs() < 12.0 || (anchor.y - cursor.y).abs() < 12.0 {
-            return ScribeEvent::Fault("REGION IS TOO SMALL; DRAG A WIDER RECTANGLE");
+            return ScribeEvent::Fault("MAP AREA IS TOO SMALL; DRAG A WIDER RECTANGLE");
         }
         self.active = false;
         let a = map::coord_at(viewport, rect, anchor);

@@ -5,6 +5,19 @@ use std::{path::PathBuf, thread};
 use trailgen_core::source::GeoBounds;
 use trailgen_data::{Event as EngineEvent, Summary, Surveyor};
 
+pub fn progress_status(event: &EngineEvent) -> String {
+    match event {
+        EngineEvent::Locating => "Finding the map area…".to_owned(),
+        EngineEvent::Located(_) => "Map area found.".to_owned(),
+        EngineEvent::Ranging(_) => "Downloading trails…".to_owned(),
+        EngineEvent::Downloaded { .. } => "Trail download complete.".to_owned(),
+        EngineEvent::Indexing => "Preparing trails…".to_owned(),
+        EngineEvent::Ready(summary) => {
+            format!("Trail data ready in {} map area(s).", summary.regions.len())
+        }
+    }
+}
+
 pub enum Mutation {
     Add(GeoBounds),
     Remove(String),

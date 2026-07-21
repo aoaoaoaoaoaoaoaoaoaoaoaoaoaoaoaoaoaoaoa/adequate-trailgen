@@ -1,3 +1,4 @@
+use crate::library::{FamilyId, Library};
 use anyhow::{Context as _, Result, ensure};
 use crossbeam_channel::{Receiver, Sender, bounded};
 use egui::Context;
@@ -9,9 +10,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use trailgen_core::{
-    Coord, LoopConstraints, Route, SearchParams, SolverKind, TrailGraph, VertexId, rank_routes,
-};
+use trailgen_core::{LoopConstraints, Route, SearchParams, SolverKind, TrailGraph, VertexId};
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
@@ -27,26 +26,27 @@ impl Default for WorkbenchConfig {
         Self {
             name: "Untitled trail project".to_owned(),
             constraints: LoopConstraints::default(),
-            search: SearchParams::default(),
+            search: interactive_search(),
             solver: SolverKind::default(),
         }
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct GenerationManifest {
-    requested_start: Coord,
-    snapped_start_vertex: VertexId,
-    effective_config: WorkbenchConfig,
+const fn interactive_search() -> SearchParams {
+    SearchParams {
+        max_hops: 256,
+        max_frontier: 5_000,
+        keep: 12,
+        closure_paths: 1,
+        seed: 2,
+    }
 }
 
 pub struct Project {
     pub root: PathBuf,
     pub graph: Arc<TrailGraph>,
-    pub routes: Vec<Route>,
     pub config: WorkbenchConfig,
-    pub start: VertexId,
-    pub requested_start: Coord,
+    pub library: Library,
 }
 
 impl Project {
@@ -54,259 +54,24 @@ impl Project {
         let root = root
             .canonicalize()
             .with_context(|| format!("open project {}", root.display()))?;
-        let manifest_path = root.join("routes/generated.manifest.json");
-        let manifest = read_optional_json::<GenerationManifest>(&manifest_path)?;
         let config = read_toml(&root.join("trailgen.toml"))?;
         let cached_graph = read_optional_json::<TrailGraph>(&root.join("cache/graph.json"))?;
         let generated_graph =
             read_optional_json::<TrailGraph>(&root.join("routes/generated.graph.json"))?;
-        let saved_compatible = manifest.is_some()
-            && generated_graph.as_ref().is_some_and(|generated| {
-                cached_graph
-                    .as_ref()
-                    .is_none_or(|cached| cached == generated)
-            });
         let graph = Arc::new(
             cached_graph
                 .or(generated_graph)
-                .context("project has no cached trail graph")?,
+                .context("project has no trail data")?,
         );
-        ensure!(!graph.vertices.is_empty(), "project graph has no vertices");
-
-        let saved = manifest.as_ref().filter(|_| saved_compatible);
-        let saved_constraints = saved.map(|manifest| &manifest.effective_config.constraints);
-        let mut routes = if saved_compatible {
-            read_optional_json::<Vec<Route>>(&root.join("routes/generated.routes.json"))?
-                .unwrap_or_default()
-                .into_iter()
-                .map(|route| {
-                    remeasure(
-                        &graph,
-                        route,
-                        saved_constraints.expect("saved generation has constraints"),
-                    )
-                })
-                .collect::<Result<Vec<_>>>()?
-        } else {
-            Vec::new()
-        };
-        if let Some(constraints) = saved_constraints {
-            rank_routes(&mut routes, constraints);
-        }
-
-        let saved_start =
-            saved.filter(|manifest| manifest.snapped_start_vertex.0 < graph.vertices.len());
-        let start = routes.first().map_or_else(
-            || {
-                saved_start.map_or_else(
-                    || central_vertex(&graph),
-                    |manifest| manifest.snapped_start_vertex,
-                )
-            },
-            |route| route.start,
-        );
-        let requested_start = saved_start
-            .filter(|manifest| manifest.snapped_start_vertex == start)
-            .map_or(graph.vertices[start.0].coord, |manifest| {
-                manifest.requested_start
-            });
-
+        ensure!(!graph.vertices.is_empty(), "project has no usable trails");
+        let library = Library::open(&root, &graph)?;
         Ok(Self {
             root,
             graph,
-            routes,
             config,
-            start,
-            requested_start,
+            library,
         })
     }
-}
-
-fn remeasure(graph: &TrailGraph, route: Route, constraints: &LoopConstraints) -> Result<Route> {
-    ensure!(
-        graph.walk_edges(route.start, &route.edges).is_some(),
-        "stored route `{}` is not a legal walk through the generated graph",
-        route.name
-    );
-    Ok(Route::from_edges(
-        route.name,
-        graph,
-        route.start,
-        route.edges,
-        constraints,
-    ))
-}
-
-fn central_vertex(graph: &TrailGraph) -> VertexId {
-    let topology = undirected_topology(graph);
-    let component =
-        dominant_loop_block(graph, &topology).unwrap_or_else(|| largest_component(&topology));
-    let count = component.len() as f64;
-    let center = component.iter().fold(Coord::new(0.0, 0.0), |sum, index| {
-        let coord = graph.vertices[*index].coord;
-        Coord::new(sum.lon + coord.lon, sum.lat + coord.lat)
-    });
-    let center = Coord::new(center.lon / count, center.lat / count);
-    let quiet = component
-        .iter()
-        .copied()
-        .filter(|vertex| topology[*vertex].len() == 2)
-        .collect::<Vec<_>>();
-    let candidates = if quiet.is_empty() { component } else { quiet };
-    candidates
-        .into_iter()
-        .min_by(|left, right| {
-            graph.vertices[*left]
-                .coord
-                .planar_distance2(center)
-                .total_cmp(&graph.vertices[*right].coord.planar_distance2(center))
-                .then_with(|| left.cmp(right))
-        })
-        .map(VertexId)
-        .expect("nonempty graph must have a central component")
-}
-
-#[derive(Clone, Copy)]
-struct Incidence {
-    neighbor: usize,
-    edge: usize,
-}
-
-fn undirected_topology(graph: &TrailGraph) -> Vec<Vec<Incidence>> {
-    let mut topology = vec![Vec::new(); graph.vertices.len()];
-    for (index, edge) in graph.edges.iter().enumerate() {
-        topology[edge.a.0].push(Incidence {
-            neighbor: edge.b.0,
-            edge: index,
-        });
-        topology[edge.b.0].push(Incidence {
-            neighbor: edge.a.0,
-            edge: index,
-        });
-    }
-    topology
-}
-
-#[derive(Clone, Copy)]
-struct DfsFrame {
-    vertex: usize,
-    parent_edge: Option<usize>,
-    cursor: usize,
-}
-
-fn dominant_loop_block(graph: &TrailGraph, topology: &[Vec<Incidence>]) -> Option<Vec<usize>> {
-    let mut discovered = vec![usize::MAX; topology.len()];
-    let mut low = vec![usize::MAX; topology.len()];
-    let mut clock = 0usize;
-    let mut edge_stack = Vec::new();
-    let mut champion = None::<(f64, usize, Vec<usize>)>;
-
-    for root in 0..topology.len() {
-        if discovered[root] != usize::MAX {
-            continue;
-        }
-        discovered[root] = clock;
-        low[root] = clock;
-        clock += 1;
-        let mut frames = vec![DfsFrame {
-            vertex: root,
-            parent_edge: None,
-            cursor: 0,
-        }];
-        while let Some(frame) = frames.last().copied() {
-            if frame.cursor < topology[frame.vertex].len() {
-                let incidence = topology[frame.vertex][frame.cursor];
-                frames.last_mut().expect("active DFS frame").cursor += 1;
-                if frame.parent_edge == Some(incidence.edge) {
-                    continue;
-                }
-                if discovered[incidence.neighbor] == usize::MAX {
-                    edge_stack.push(incidence.edge);
-                    discovered[incidence.neighbor] = clock;
-                    low[incidence.neighbor] = clock;
-                    clock += 1;
-                    frames.push(DfsFrame {
-                        vertex: incidence.neighbor,
-                        parent_edge: Some(incidence.edge),
-                        cursor: 0,
-                    });
-                } else if discovered[incidence.neighbor] < discovered[frame.vertex] {
-                    edge_stack.push(incidence.edge);
-                    low[frame.vertex] = low[frame.vertex].min(discovered[incidence.neighbor]);
-                }
-                continue;
-            }
-
-            let finished = frames.pop().expect("active DFS frame");
-            let Some(parent_edge) = finished.parent_edge else {
-                continue;
-            };
-            let parent = frames.last().expect("child DFS frame has parent").vertex;
-            low[parent] = low[parent].min(low[finished.vertex]);
-            if low[finished.vertex] < discovered[parent] {
-                continue;
-            }
-            let mut block = Vec::new();
-            loop {
-                let edge = edge_stack.pop().expect("tree edge remains on DFS stack");
-                block.push(edge);
-                if edge == parent_edge {
-                    break;
-                }
-            }
-            if block.len() < 2 {
-                continue;
-            }
-            let length_m: f64 = block
-                .iter()
-                .map(|edge| graph.edges[*edge].attr.length_m)
-                .sum();
-            let mut vertices = block
-                .iter()
-                .flat_map(|edge| [graph.edges[*edge].a.0, graph.edges[*edge].b.0])
-                .collect::<Vec<_>>();
-            vertices.sort_unstable();
-            vertices.dedup();
-            let candidate = (length_m, block.len(), vertices);
-            if champion.as_ref().is_none_or(|current| {
-                candidate
-                    .0
-                    .total_cmp(&current.0)
-                    .then_with(|| candidate.1.cmp(&current.1))
-                    .then_with(|| current.2.cmp(&candidate.2))
-                    .is_gt()
-            }) {
-                champion = Some(candidate);
-            }
-        }
-    }
-    champion.map(|(_, _, vertices)| vertices)
-}
-
-fn largest_component(topology: &[Vec<Incidence>]) -> Vec<usize> {
-    let mut seen = vec![false; topology.len()];
-    let mut champion = Vec::new();
-    for root in 0..topology.len() {
-        if seen[root] {
-            continue;
-        }
-        let mut component = Vec::new();
-        let mut frontier = vec![root];
-        seen[root] = true;
-        while let Some(vertex) = frontier.pop() {
-            component.push(vertex);
-            for incidence in &topology[vertex] {
-                if !seen[incidence.neighbor] {
-                    seen[incidence.neighbor] = true;
-                    frontier.push(incidence.neighbor);
-                }
-            }
-        }
-        if component.len() > champion.len() {
-            champion = component;
-        }
-    }
-    champion
 }
 
 fn read_toml<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
@@ -327,6 +92,7 @@ fn read_optional_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Optio
 #[derive(Clone)]
 pub struct SearchRequest {
     pub serial: u64,
+    pub family: FamilyId,
     pub start: VertexId,
     pub constraints: LoopConstraints,
     pub params: SearchParams,
@@ -338,7 +104,7 @@ impl SearchRequest {
     pub fn validate(&self, graph: &TrailGraph) -> Result<()> {
         ensure!(
             self.start.0 < graph.vertices.len(),
-            "trailhead is outside graph"
+            "trailhead is outside downloaded trail data"
         );
         ensure!(
             (1..=32).contains(&self.count),
@@ -357,16 +123,16 @@ impl SearchRequest {
             self.params.closure_paths > 0,
             "closure path count must be positive"
         );
-        let c = &self.constraints;
+        let constraints = &self.constraints;
         for (name, value) in [
-            ("minimum distance", c.min_distance_m),
-            ("maximum distance", c.max_distance_m),
-            ("minimum difficulty", c.min_difficulty),
-            ("maximum difficulty", c.max_difficulty),
-            ("minimum ascent", c.min_ascent_m),
-            ("maximum ascent", c.max_ascent_m),
-            ("minimum descent", c.min_descent_m),
-            ("maximum descent", c.max_descent_m),
+            ("minimum distance", constraints.min_distance_m),
+            ("maximum distance", constraints.max_distance_m),
+            ("minimum difficulty", constraints.min_difficulty),
+            ("maximum difficulty", constraints.max_difficulty),
+            ("minimum ascent", constraints.min_ascent_m),
+            ("maximum ascent", constraints.max_ascent_m),
+            ("minimum descent", constraints.min_descent_m),
+            ("maximum descent", constraints.max_descent_m),
         ] {
             ensure!(
                 value.is_finite() && value >= 0.0,
@@ -374,36 +140,51 @@ impl SearchRequest {
             );
         }
         for (name, low, high) in [
-            ("distance", c.min_distance_m, c.max_distance_m),
-            ("difficulty", c.min_difficulty, c.max_difficulty),
-            ("ascent", c.min_ascent_m, c.max_ascent_m),
-            ("descent", c.min_descent_m, c.max_descent_m),
+            (
+                "distance",
+                constraints.min_distance_m,
+                constraints.max_distance_m,
+            ),
+            (
+                "difficulty",
+                constraints.min_difficulty,
+                constraints.max_difficulty,
+            ),
+            ("ascent", constraints.min_ascent_m, constraints.max_ascent_m),
+            (
+                "descent",
+                constraints.min_descent_m,
+                constraints.max_descent_m,
+            ),
         ] {
             ensure!(low <= high, "{name} minimum exceeds maximum");
         }
         for (name, fraction) in [
-            ("road", c.max_road_fraction),
-            ("low confidence", c.max_low_confidence_fraction),
-            ("restricted access", c.max_restricted_access_fraction),
-            ("repeated edge", c.max_repeated_edge_fraction),
+            ("road", constraints.max_road_fraction),
+            ("low confidence", constraints.max_low_confidence_fraction),
+            (
+                "restricted access",
+                constraints.max_restricted_access_fraction,
+            ),
+            ("repeated edge", constraints.max_repeated_edge_fraction),
         ] {
             ensure!(
                 fraction.is_finite() && (0.0..=1.0).contains(&fraction),
                 "maximum {name} fraction must lie in 0–1"
             );
         }
-        for (terrain, fraction) in &c.min_terrain_fraction {
+        for (terrain, fraction) in &constraints.min_terrain_fraction {
             ensure!(
                 fraction.is_finite() && (0.0..=1.0).contains(fraction),
                 "minimum {terrain:?} fraction must lie in 0–1"
             );
         }
-        for (terrain, maximum) in &c.max_terrain_fraction {
+        for (terrain, maximum) in &constraints.max_terrain_fraction {
             ensure!(
                 maximum.is_finite() && (0.0..=1.0).contains(maximum),
                 "maximum {terrain:?} fraction must lie in 0–1"
             );
-            let minimum = c
+            let minimum = constraints
                 .min_terrain_fraction
                 .get(terrain)
                 .copied()
@@ -414,8 +195,8 @@ impl SearchRequest {
             );
         }
         ensure!(
-            !c.allowed_shapes.is_empty(),
-            "at least one route shape must be allowed"
+            !constraints.allowed_shapes.is_empty(),
+            "choose a route shape"
         );
         Ok(())
     }
@@ -424,9 +205,9 @@ impl SearchRequest {
 pub enum SearchEvent {
     Found {
         serial: u64,
+        family: FamilyId,
         routes: Vec<Route>,
         elapsed: Duration,
-        solver: SolverKind,
     },
 }
 
@@ -443,7 +224,7 @@ impl SearchForge {
         let (events_tx, events) = bounded(2);
         let worker_graph = Arc::clone(&graph);
         let worker = thread::Builder::new()
-            .name("trail-loop-forge".to_owned())
+            .name("trail-search".to_owned())
             .spawn(move || {
                 while let Ok(request) = commands.recv() {
                     let started = Instant::now();
@@ -458,9 +239,9 @@ impl SearchForge {
                     if events_tx
                         .send(SearchEvent::Found {
                             serial: request.serial,
+                            family: request.family,
                             routes,
                             elapsed: started.elapsed(),
-                            solver,
                         })
                         .is_err()
                     {
@@ -469,7 +250,7 @@ impl SearchForge {
                     ctx.request_repaint();
                 }
             })
-            .context("spawn trail-loop forge")?;
+            .context("spawn trail search")?;
         Ok(Self {
             graph,
             command,
@@ -482,17 +263,14 @@ impl SearchForge {
         request.validate(&self.graph)?;
         self.command
             .try_send(request)
-            .map_err(|_| anyhow::anyhow!("trail-loop forge is already occupied"))
+            .map_err(|_| anyhow::anyhow!("trail search is already running"))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use trailgen_core::{
-        GraphBuilder, Terrain,
-        io::{geojson, osm},
-    };
+    use trailgen_core::{GraphBuilder, Terrain, io::geojson};
 
     fn fixture_graph() -> Result<TrailGraph> {
         Ok(
@@ -503,68 +281,11 @@ mod tests {
     }
 
     #[test]
-    fn project_defaults_and_saved_generation_constraints_remain_distinct() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let root = temp.path();
-        fs::create_dir(root.join("cache"))?;
-        fs::create_dir(root.join("routes"))?;
-        fs::write(
-            root.join("trailgen.toml"),
-            "name = 'live defaults'\n[constraints]\nmin_distance_m = 35000\nmax_distance_m = 50000\n",
-        )?;
-        let graph = fixture_graph()?;
-        let saved_constraints = LoopConstraints {
-            min_distance_m: 3_000.0,
-            max_distance_m: 8_000.0,
-            ..LoopConstraints::default()
-        };
-        let routes = SolverKind::Exact.solve(
-            SearchParams::default(),
-            &graph,
-            VertexId(0),
-            &saved_constraints,
-            1,
-        );
-        let route = routes.first().context("fixture must contain a loop")?;
-        fs::write(
-            root.join("cache/graph.json"),
-            serde_json::to_vec_pretty(&graph)?,
-        )?;
-        fs::write(
-            root.join("routes/generated.graph.json"),
-            serde_json::to_vec_pretty(&graph)?,
-        )?;
-        fs::write(
-            root.join("routes/generated.routes.json"),
-            serde_json::to_vec_pretty(&routes)?,
-        )?;
-        fs::write(
-            root.join("routes/generated.manifest.json"),
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "requested_start": graph.vertices[route.start.0].coord,
-                "snapped_start_vertex": route.start,
-                "effective_config": {
-                    "name": "saved generation",
-                    "constraints": saved_constraints,
-                    "search": SearchParams::default(),
-                    "solver": "exact"
-                }
-            }))?,
-        )?;
-
-        let project = Project::open(root)?;
-
-        assert!((project.config.constraints.min_distance_m - 35_000.0).abs() < f64::EPSILON);
-        assert_eq!(project.start, route.start);
-        assert!(!project.routes.is_empty());
-        assert!(project.routes.iter().all(|route| {
-            route
-                .verdict
-                .violations
-                .iter()
-                .all(|violation| !violation.contains("minimum 35.00 km"))
-        }));
-        Ok(())
+    fn gui_defaults_bound_interactive_search_work() {
+        let search = WorkbenchConfig::default().search;
+        assert_eq!(search.max_frontier, 5_000);
+        assert_eq!(search.closure_paths, 1);
+        assert!(search.keep >= 12);
     }
 
     #[test]
@@ -573,8 +294,11 @@ mod tests {
         let mut constraints = LoopConstraints::default();
         let _minimum = constraints.min_terrain_fraction.insert(Terrain::Trail, 0.8);
         let _maximum = constraints.max_terrain_fraction.insert(Terrain::Trail, 0.2);
+        let mut library = Library::default();
+        let family = library.add_family(&constraints);
         let request = SearchRequest {
             serial: 1,
+            family,
             start: VertexId(0),
             constraints,
             params: SearchParams::default(),
@@ -586,83 +310,29 @@ mod tests {
     }
 
     #[test]
-    fn default_trailhead_occupies_the_dominant_loop_block() -> Result<()> {
-        let drafts = osm::network_from_str(
-            r#"<osm version="0.6">
-  <node id="1" lat="40.00" lon="-105.00"/><node id="2" lat="40.00" lon="-104.80"/>
-  <node id="3" lat="40.20" lon="-104.80"/><node id="4" lat="40.20" lon="-105.20"/>
-  <node id="5" lat="40.00" lon="-105.20"/><node id="6" lat="40.07" lon="-105.00"/>
-  <node id="7" lat="40.06" lon="-105.01"/>
-  <way id="10"><nd ref="1"/><nd ref="2"/><tag k="highway" v="path"/></way>
-  <way id="11"><nd ref="2"/><nd ref="3"/><tag k="highway" v="path"/></way>
-  <way id="12"><nd ref="3"/><nd ref="4"/><tag k="highway" v="path"/></way>
-  <way id="13"><nd ref="4"/><nd ref="5"/><tag k="highway" v="path"/></way>
-  <way id="14"><nd ref="5"/><nd ref="1"/><tag k="highway" v="path"/></way>
-  <way id="15"><nd ref="1"/><nd ref="6"/><tag k="highway" v="path"/></way>
-  <way id="16"><nd ref="6"/><nd ref="7"/><tag k="highway" v="path"/></way>
-  <way id="17"><nd ref="7"/><nd ref="1"/><tag k="highway" v="path"/></way>
-</osm>"#,
-        )?;
-        let graph = GraphBuilder::default().build(&drafts)?;
-
-        let start = central_vertex(&graph);
-
-        assert_eq!(graph.adjacency[start.0].len(), 2);
-        assert!(matches!(graph.vertices[start.0].coord.lat, 40.0 | 40.2));
-        Ok(())
-    }
-
-    #[test]
-    fn refreshed_cache_graph_rejects_a_stale_generation_snapshot() -> Result<()> {
-        fn square(latitude: f64) -> Result<TrailGraph> {
-            let raw = format!(
-                r#"<osm version="0.6">
-  <node id="1" lat="{latitude}" lon="-105.01"/>
-  <node id="2" lat="{latitude}" lon="-104.99"/>
-  <node id="3" lat="{}" lon="-104.99"/>
-  <node id="4" lat="{}" lon="-105.01"/>
-  <way id="10"><nd ref="1"/><nd ref="2"/><tag k="highway" v="path"/></way>
-  <way id="11"><nd ref="2"/><nd ref="3"/><tag k="highway" v="path"/></way>
-  <way id="12"><nd ref="3"/><nd ref="4"/><tag k="highway" v="path"/></way>
-  <way id="13"><nd ref="4"/><nd ref="1"/><tag k="highway" v="path"/></way>
-</osm>"#,
-                latitude + 0.02,
-                latitude + 0.02,
-            );
-            Ok(GraphBuilder::default().build(&osm::network_from_str(&raw)?)?)
-        }
-
+    fn refreshed_cache_is_the_project_graph() -> Result<()> {
         let temp = tempfile::tempdir()?;
-        let root = temp.path();
-        fs::create_dir(root.join("cache"))?;
-        fs::create_dir(root.join("routes"))?;
-        fs::write(root.join("trailgen.toml"), "name = 'live project'\n")?;
-        let generated = square(40.0)?;
-        let cached = square(41.0)?;
+        fs::create_dir(temp.path().join("cache"))?;
+        fs::create_dir(temp.path().join("routes"))?;
+        fs::write(temp.path().join("trailgen.toml"), "name = 'live project'\n")?;
+        let cached = fixture_graph()?;
+        let mut generated = cached.clone();
+        generated.vertices[0].coord.lat += 1.0;
         fs::write(
-            root.join("cache/graph.json"),
+            temp.path().join("cache/graph.json"),
             serde_json::to_vec_pretty(&cached)?,
         )?;
         fs::write(
-            root.join("routes/generated.graph.json"),
+            temp.path().join("routes/generated.graph.json"),
             serde_json::to_vec_pretty(&generated)?,
         )?;
-        fs::write(root.join("routes/generated.routes.json"), "[]")?;
-        fs::write(
-            root.join("routes/generated.manifest.json"),
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "requested_start": generated.vertices[0].coord,
-                "snapped_start_vertex": 0,
-                "effective_config": { "name": "stale run" }
-            }))?,
-        )?;
 
-        let project = Project::open(root)?;
+        let project = Project::open(temp.path())?;
 
         assert_eq!(project.config.name, "live project");
         assert_eq!(project.graph.as_ref(), &cached);
-        assert!(project.routes.is_empty());
-        assert!(project.requested_start.lat >= 41.0);
+        assert!(project.library.loose_trails().next().is_none());
+        assert!(temp.path().join("library/index.json").is_file());
         Ok(())
     }
 }

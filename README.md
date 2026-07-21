@@ -1,25 +1,35 @@
-# adequate-trailgen
+# Trailgen
 
-`adequate-trailgen` is a Rust trail-forging workbench for designing long-day-hike loops over normalized trail graphs. Its native Dwemer Poolrooms GUI and deterministic CLI share one provider-neutral core: they split and snap route networks into a routable graph, preserve terrain and access evidence, score difficulty, search for constrained candidates, and render or export auditable routes.
+Trailgen is a native Rust workbench for finding and keeping long-day hiking routes. Its vector map, trail acquisition, route search, and project library share one engine; the CLI is a diagnostic frontend over that engine.
 
-Trail data is a first-class application resource. A project begins as a map: draw one or more fetch rectangles and Trailgen ranges their walkable OpenStreetMap network, hiking-route evidence, and connected road/hydrology context through Overpass. Each rectangle has an independent, content-addressed source receipt under `sources/`; `cache/graph.json` is a deterministic projection of their exact union, with overlapping OSM objects deduplicated and geometry clipped at the live boundary. Reopening verifies and reuses those receipts; adding or excising a rectangle rebuilds one corpus rather than creating a second data path. The internal model remains provider-neutral: official GIS exports, park layers, local GPS files, and user-owned route exports can enrich or replace the default source without contaminating the core graph model.
-
-The CLI is a debug and forensic frontend over the same engine. `trailgen survey PROJECT --place "Harriman State Park, NY"` invokes the canonical acquisition/indexing path. Lower-level commands such as `build`, `assemble`, `acquire-osm`, and `apply-*` remain available for adapter development, explicit source substitution, and provenance audits; they do not constitute a parallel application pipeline.
-
-## Quickstart
-
-Install the unified release binary under `~/.local/bin`, then open the native workbench:
+## Install
 
 ```sh
 ./scripts/install-local.sh
 trailgen
 ```
 
-Bare `trailgen` opens an initialized project in the current directory, resumes the last project explicitly chosen by the user, or presents the project deck. Create a project, pan or zoom to the territory of interest, choose **SELECT REGION**, and drag a rectangle. Bronze frames are live; the map outside their union is shaded. Trailgen acquires and indexes the rectangle automatically, and the same control remains available after the route workbench opens. The deck also browses ordinary project folders and lists projects beneath the operating system's Documents directory under `trailgen/`. On Linux the conventional library honors `XDG_DOCUMENTS_DIR` exactly, including its spelling and case; Trailgen never assumes an uppercase `~/Documents`. The explicit `trailgen gui [PROJECT]` form remains strict and works from anywhere. Press `Ctrl+O` or use **PROJECTS** to switch projects without discarding the current workbench.
+The installer places the unified `trailgen` binary under `~/.local/bin`. Bare `trailgen` resumes the last explicitly chosen project or opens the project deck. New projects conventionally live beneath the operating system’s XDG documents directory in `trailgen/`; Trailgen honors its exact spelling and never invents `~/Documents`.
 
-Trail projects remain ordinary portable directories rooted by `trailgen.toml`. The chosen-project pointer and disposable, per-project workbench slates live under `$XDG_STATE_HOME/trailgen`; each slate restores the viewport, inspector folds and scroll, search draft, saved-candidate visibility, candidate focus and sorting, and map layers. Preferences belong under `$XDG_CONFIG_HOME/trailgen`. Search edits remain a state-backed draft and never silently rewrite `trailgen.toml`; **RESET PROJECT DEFAULTS** discards them. Blank projects use a shared low-zoom US bootstrap under `$XDG_CACHE_HOME/trailgen/protomaps-v4`; missing detail streams from the daily Protomaps archive. A populated project receives a content-addressed, sparse PMTiles cut containing the union of its live rectangles under `cache/`. Small unions reach native z15; large unions automatically recede to the deepest stratum that fits the bounded archive, while finer detail and navigation beyond the cut use the same roaming cache. The left inspector controls live regions, trailhead, distance, ascent/descent, difficulty, route shape, terrain fractions, solver, and search budget. Click the map to snap the trailhead to a real graph vertex, then strike **FIND TRAILS**. The atlas keeps candidate geometry at metric scale; sort the gallery by Pareto rank, distance, ascent, difficulty, or trail fraction, and click a plate for the full vector map and measured elevation/terrain/grade profile. **CLEAR** hides the current candidates without deleting project artifacts, and **RESTORE SAVED** returns the generated routes on disk. Pass `--offline` to suppress network acquisition while retaining cached map and trail artifacts. Set `TRAILGEN_BASEMAP_ARCHIVE` to use a prepared PMTiles archive instead of conventional cuts.
+Projects are ordinary portable directories rooted by `trailgen.toml`. Per-project viewport, inspector, gallery, and sorting state lives under `$XDG_STATE_HOME/trailgen`. Shared map cache belongs under `$XDG_CACHE_HOME/trailgen`; no state is scattered through the project or home directory.
 
-The corresponding debug entrypoint is:
+## Workflow
+
+1. Create a project and pan to its broad territory.
+2. Draw one or more bronze-framed map areas. Trailgen downloads and indexes the union automatically; ground outside that union remains dimmed.
+3. Create flat trail families such as `long`, `climby`, or `easy`.
+4. Select a family, place its trailhead on the map, choose distance, climb, and shape, then press **Find Trails**.
+5. Open any result for a smooth full-map view and elevation profile. Save it into the family to make it durable.
+
+Saved trails form a project-owned library. A trail may belong to several families. Deleting a family preserves its trails in **Unfiled**; deleting a trail removes it deliberately from the whole project. Search results remain transient.
+
+Trail types use high-contrast dual strokes and a map legend. Focused routes add an inner terrain trace. The bronze trailhead pin and restrained water response follow the Dwemer Poolrooms design language.
+
+The default trail source is the US-scoped OpenStreetMap/Overpass path described in [data sources](docs/data-sources.md). Raw rectangle responses are independently sequestered under `sources/osm/`; `cache/graph.json` is the deterministic index of their exact union. The internal model remains provider-neutral so official GIS layers and user-owned traces can be added without creating another application pipeline.
+
+## Debug Frontend
+
+`trailgen --help` exposes acquisition, indexing, verification, generation, import, and export commands for diagnosis and reproducibility. For example:
 
 ```sh
 trailgen init /tmp/harriman --name "Harriman"
@@ -27,7 +37,7 @@ trailgen survey /tmp/harriman --place "Harriman State Park, NY"
 trailgen stats /tmp/harriman
 ```
 
-Both frontends call the same acquisition, indexing, graph-persistence, search, and export machinery. Product behavior is specified by the GUI; the CLI exposes that machinery for diagnosis and reproducibility.
+Product behavior is specified by the GUI. Debug commands use the same core and data machinery.
 
 ## Verification
 
@@ -36,58 +46,10 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-The standing Harriman cases are deterministic generation-and-replay proofs over route-derived graphs. They verify that tight distance, ascent/descent, shape, start, and difficulty constraints recover both real loops without silently mutating their geometry. They do not claim independent rediscovery from public OSM: the current Harriman OSM extract has three genuine unmatched transitions, which seed import reports and rejects rather than bridging fictitious trail.
+The standing Harriman cases replay two user-owned CSV traces through route-derived graphs. They prove deterministic generation, artifact verification, and geometric fidelity. They do not yet prove independent public-source recovery: the current OpenStreetMap comparison has three unmatched transitions. Provider coverage is therefore a separate, explicit acceptance target rather than an embellished claim.
 
-`trailgen assemble <project>` is the manifest-driven rebuild path: after `discover` or `cache-source` has populated `sources/manifest.json`, it verifies source fingerprints, builds from trail-network candidates or seed-route scaffolds, applies DEM, terrain, and road/hydrology candidates, imports seed routes, then applies access/closure candidates. The explicit `build`/`apply-*`/`import-seed` commands remain available when you want manual phase control or are experimenting with one source at a time.
-
-For an exact small-graph search, add `--solver exact`; `--solver auto` uses the exact enumerator on small graphs and the sparse heuristic elsewhere. Use `--max-hops`, `--max-frontier`, and `--keep` to override the search envelope for one run without editing `[search]`. `--seed N` is recorded and also drives deterministic `LoopHunter` branch diversification, so the same source ledger/config/seed reproduces sparse-frontier choices. `trailgen formulate-milp <project> --start lon,lat --output loop.lp` writes a deterministic LP/MILP formulation for a connected simple loop through the snapped trailhead, with degree, flow-connectivity, distance, difficulty, ascent/descent, road, low-confidence, restricted-access, and terrain constraints. After solving that LP externally, `trailgen import-milp-solution <project> --start lon,lat --solution loop.sol` accepts selected `z_e{edge}_v{from}_v{to}` variables and writes the incumbent through the normal generated route, report, manifest, map, GPX, GeoJSON, CSV, KML, and KMZ artifact path. Use `--date YYYY-MM-DD --time HH:MM` to record the planning moment used with dated, seasonal, weekday, or hourly access/closure overlays. `generate --start lon,lat` snaps to the nearest graph vertex only within `max_start_snap_m` and records the snap in the manifest; use `--max-start-snap-m N` only for deliberately coarse trailhead coordinates. For an out-and-back search, run `generate` with `--shape out-and-back --max-repeated-edge-fraction 1`. For a tighter climbing window, add flags such as `--min-ascent-m 500 --max-ascent-m 1800 --max-descent-m 1800`. For terrain steering, use repeated flags such as `--forbid-terrain pavement --min-terrain trail:0.60 --max-terrain talus=0.10`. For a one-run avoid zone, pass repeated `--forbid-area closures.geojson`; each supplied GeoJSON or shapefile polygon/line overlay is forced closed in `routes/generated.graph.json`, fingerprinted in the generation manifest, and leaves the cached graph untouched. `--max-road-fraction` covers explicit road exposure plus terrain tagged `road` or `pavement`. Access restrictions are hard by default: `restricted`, `closed`, and `private` edges violate the route unless `--max-restricted-access-fraction` allows them.
-
-Generated artifacts land in the project directory:
-
-- `sources/location.json`: cached US place resolution used only by the CLI `survey --place` debug frontend
-- `sources/osm/<region-id>.osm`: rectangle-addressed raw OpenStreetMap response
-- `sources/osm/<region-id>.overpassql` and `.json`: exact query plus provider, rectangle, schema, and raw fingerprint
-- `cache/trails.json`: validated corpus receipt binding the live-region set, raw sources, and graph fingerprint
-- `cache/graph.json`: normalized attributed graph
-- `cache/graph.geojson`: edge geometry and attribution as GeoJSON
-- `cache/edges.csv` and `cache/vertices.csv`: deterministic graph tables with WKT geometry plus terrain/access confidence and compact source, terrain, access, elevation, and seed provenance summaries for spreadsheet/GIS inspection
-- `sources/manifest.json`: source adapter registry, AOI-bound acquisition recommendations, and discovered/used source files with byte counts and SHA-256 fingerprints
-- `sources/discovery.md`: human-readable source coverage, acquisition plan, copyable cache command sketches, official/practical source hints, local candidates, and adapter registry
-- `sources/elevation-arc-ascii.json`, `sources/elevation-geotiff.json`, `sources/elevation-vrt.json`, or `sources/elevation-mosaic.json`: applied local DEM sampler metadata
-- `sources/terrain-overlays.json`: applied land-cover, surface, or user terrain overrides from GeoJSON or shapefile layers
-- `sources/access-overlays.json`: composed access/closure overlays from every `apply-access --source`
-- `sources/access-baseline.json`: pre-access graph state used to re-materialize dated overlays without cumulative access drift
-- `sources/context-overlays.json`: applied road/hydrology context overlays from GeoJSON, shapefile, or OSM XML/PBF linework
-- `routes/generated.geojson`: Pareto-ranked generated loops with persisted route scores, constraint penalties, constraint-audit margins, terrain/access fractions, evidence-bearing edge diagnostics, difficulty hotspots, and source provenance summaries
-- `routes/generated.graph.json`: effective graph snapshot used by generated route exports, reports, and maps
-- `routes/generated.manifest.json`: app version, random seed, requested/concrete solver, requested/snapped start, effective config, fingerprinted source manifest plus coverage summary, fingerprinted seed-route ledger state, one-run forbidden-area sources, graph topology/elevation summary, exact route edge sequences, route metrics/verdict/audit snapshots, emitted artifact list, and artifact fingerprints for reproducing a generation run
-- `routes/candidate-*.geojson`: per-route GeoJSON exports with the same diagnostics as `routes/generated.geojson`
-- `routes/candidate-*.gpx`: GPX exports with name, hike type, and compact route diagnostics in the track description
-- `routes/candidate-*.csv`: lon/lat/elevation CSV exports with comment-header route diagnostics
-- `routes/candidate-*.kml`: KML exports with compact route diagnostics in the placemark description
-- `routes/candidate-*.kmz`: KMZ exports containing the same diagnostic KML
-- `routes/loop.lp`: optional LP/MILP loop formulation exported by `formulate-milp`
-- `routes/loop.sol`: optional external solver output consumed by `import-milp-solution`
-- `seeds/imports/`: archived copies of imported seed-route files
-- `seeds/seeds.json`: imported seed routes snapped to the graph, with original source paths and route metadata retained for traceability
-- `reports/generated.md`: route diagnostics, per-route constraint verdicts and margins, source provenance, the generation constraint envelope, and fingerprinted source manifest summary
-- `reports/candidate-*.md`: one-route reports emitted during generation for direct handoff
-- `reports/map.html`: self-contained interactive offline SVG map of graph terrain, edge difficulty, confidence, generated routes, constraint margins, and selected route/edge diagnostics
-
-Use `trailgen export <project> --route candidate-1 --format gpx|geojson|csv|kml|kmz --output file [--report-output file.md]` to re-export a selected generated route after the search run, optionally with the same human-readable report sidecar emitted during generation. GeoJSON route exports carry the same route-level diagnostic fields as `routes/generated.geojson`; GPX, KML/KMZ, and CSV exports carry a compact route summary with score, rank, distance, ascent/descent, sustained steepness, grade distribution, difficulty, exposure fractions, and constraint verdict in standard description/comment fields. Use `trailgen report <project> [--route candidate-1] [--output file.md]` to render either all generated routes or one named route, including the generation ledger, exact edge/vertex route sequence, app version, seed, solver, start snap, and constraint envelope used for that generation run. Use `trailgen map <project> [--output file.html]` to regenerate the interactive offline diagnostic map without rerunning the solver. These commands read `routes/generated.graph.json` when generated routes exist, so later cached-graph rerating or access-date changes do not silently reinterpret an old route. A new generation prunes artifacts recorded by the previous generated manifest when the new run no longer emits them, while preserving manual exports not owned by that manifest.
-
-Use `trailgen rate <project> --route completed.gpx [--output reports/completed.md]` to score a completed hike against the current graph and optionally persist the full diagnostic report. Route-file snapping is bounded by `max_route_snap_m`; use `--max-route-snap-m N` only for deliberately coarse tracks. Use `trailgen calibrate <project> --route completed.gpx --target-difficulty N --family elevation|technical|navigation` to dry-run a difficulty-weight patch from that hike; add `--write` to update `trailgen.toml` and rerate cached edge costs. `trailgen rerate <project>` reapplies hand-edited `[difficulty]` weights to every cached graph surface under `cache/`.
-
-Use `trailgen source-plan <project> [--kind trail-network] [--all]` to print the concrete next acquisition actions from `sources/manifest.json`: missing source classes get exact `cache-source` command skeletons, OSM-backed classes get direct `acquire-osm` fallbacks, and official/practical portal hints stay labeled as source surfaces rather than being mistaken for downloadable bytes. Use `trailgen cache-source <project> --input URL_OR_PATH --output trails.geojson` to copy or download a provider-neutral artifact into `sources/`, record its origin, fingerprint it, and add it to the source manifest. Local loose shapefile caching copies `.shp`, mandatory `.dbf`, optional `.shx`, `.prj`, and `.cpg` sidecars and fingerprints the bundle; local or remote ZIPs can be cached with the requested extracted output name, including shapefile bundles via `--output name.shp` or single-member/explicit-member archives such as `--output trails.geojson`. Add `--kind` and `--adapter` when filenames do not identify the source class and normalizer. `trailgen discover` writes `sources/manifest.json` and `sources/discovery.md`; recommendations include acquisition hints for official/practical source surfaces such as NPS/USFS GIS, USGS TNM/3DEP, MRLC/NLCD, PAD-US, NHD, OSM extracts, and user-supplied route archives, plus cache command sketches with the recommended local output path, kind, and adapter pinned.
-
-For a bbox-scoped OSM fallback, `trailgen acquire-osm <project> --profile all|trails|roads|hydrology` posts an Overpass query for the project AOI, caches OSM XML under `sources/`, writes the exact `.overpassql` sidecar, validates the response against the implemented OSM adapters, fingerprints the cached XML, and registers matching trail-network, road-context, or hydrology-context candidates. Trail profiles fetch walkable ways plus hiking/foot/walking route relations and turn-restriction relations; route membership is preserved as way provenance and confidence evidence, while simple `from`/`via` node/`to` OSM `no_*` and `only_*` restrictions become graph turn bans enforced by route replay and solvers. `--profile all` writes one coherent XML extract and registers every source class the returned ways can satisfy. Use `--print-query` to audit the query before contacting an endpoint, or `--endpoint` to choose another Overpass instance.
-
-Use `trailgen verify-sources <project>` before reproduction-sensitive generation runs; it recomputes source byte counts and SHA-256 hashes from `sources/manifest.json` and fails on missing, unfingerprinted, or drifted inputs. Use `trailgen vet-sources <project> [--level required|recommended] [--require KIND]` as the standalone source-coverage gate: `required` demands trail-network plus elevation coverage, `recommended` also demands terrain, access, closure, road, and hydrology candidates, and repeated `--require` can harden any class such as `seed-route`. For generation itself, pass `generate --source-gate required|recommended` or set `generation_source_gate` in `trailgen.toml`; the effective policy is recorded in `routes/generated.manifest.json`. After generation, `trailgen verify-generation <project>` recomputes every generated artifact fingerprint plus the snapshotted source-manifest fingerprints, verifies run metadata, seed-ledger state, one-run forbidden-area fingerprints and touched-edge counts, replays the source coverage summary, then replays the graph summary and manifest route edge sequences against `routes/generated.routes.json`, `routes/generated.graph.json`, and the recorded effective constraints to verify route metrics including sustained steepness and grade distribution, verdicts, scores, and Pareto ranks. For native `generate` runs, it also reruns the recorded solver pipeline from the effective config, random seed, generated graph, snapped start, and seed-route ledger to catch search-envelope or seed drift. `trailgen stats <project>` audits graph terrain, access, source/provenance, confidence, seed attribution, elevation attribution/provenance, ascent/descent, sampled grade distribution, sustained steepness, road/pavement exposure, directed-travel edges, turn-ban provenance, and crossings. Generated and selected route reports include the same source manifest summary for human review.
-
-Use `trailgen alltrails-status` to print the current manual AllTrails exchange contract. The machine-readable section exposes typed, verification-dated bridge plans for import, manual custom-route upload, manual activity upload, and the intentionally unsupported direct-write API.
-
-See [docs/installation.md](docs/installation.md), [docs/model.md](docs/model.md), [docs/data-sources.md](docs/data-sources.md), [docs/source-adapters.md](docs/source-adapters.md), [docs/difficulty.md](docs/difficulty.md), [docs/optimizer.md](docs/optimizer.md), [docs/alltrails.md](docs/alltrails.md), and [docs/limitations.md](docs/limitations.md).
+See [installation](docs/installation.md), [model](docs/model.md), [configuration](docs/config.md), [source adapters](docs/source-adapters.md), and [known limitations](docs/limitations.md).
 
 ## License
 
-Licensed under either of [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option.
+Licensed under either [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option.

@@ -34,16 +34,16 @@ const WEST: HarrimanCase = HarrimanCase {
 };
 
 #[test]
-fn harriman_south_lows_emerges_from_constraints() {
-    prove(&SOUTH_LOWS);
+fn solver_replays_harriman_south_lows_from_owned_trace() {
+    replay_owned_trace(&SOUTH_LOWS);
 }
 
 #[test]
-fn harriman_west_emerges_from_constraints() {
-    prove(&WEST);
+fn solver_replays_harriman_west_from_owned_trace() {
+    replay_owned_trace(&WEST);
 }
 
-fn prove(case: &HarrimanCase) {
+fn replay_owned_trace(case: &HarrimanCase) {
     let tmp = tempfile::tempdir().unwrap();
     let project = tmp.path();
     let fixture = fixture(case.fixture);

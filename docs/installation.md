@@ -1,28 +1,26 @@
 # Installation
 
-`adequate-trailgen` is a Rust workspace with no mandatory external GIS binary for the CLI, GUI, fixtures, or demo. The core retains the workspace baseline in `Cargo.toml`; the native application declares its newer Poolrooms toolchain floor in the application manifests. Install a compatible toolchain, then install the unified release binary locally:
+Trailgen is a Rust workspace with no mandatory external GIS binary. Install the unified release binary locally:
 
 ```sh
-cargo build --workspace
 ./scripts/install-local.sh
-trailgen --help
 trailgen
 ```
 
-The installer uses `cargo install --locked --force` and writes `trailgen` beneath `${TRAILGEN_INSTALL_ROOT:-$HOME/.local}/bin`. Pass another root as its first argument for an isolated installation, such as `./scripts/install-local.sh /tmp/trailgen-install`. All provenance-sensitive command surfaces remain subcommands of the same binary.
+The installer uses `cargo install --locked --force` and writes `trailgen` beneath `${TRAILGEN_INSTALL_ROOT:-$HOME/.local}/bin`. Pass a different root as the first argument for an isolated installation.
 
-Bare startup first honors an initialized project in the current directory, then the last valid project explicitly chosen by the user. With neither, Trailgen opens its Poolrooms project deck and writes nothing. New projects open directly onto a vector map. **SELECT REGION** turns a drag gesture into a durable fetch rectangle; Overpass acquisition and union indexing begin without a CLI handoff. Existing projects with incomplete receipts open the same map and automatically reconcile their declared regions when online. The library is resolved through `directories::UserDirs`; Linux therefore honors `XDG_DOCUMENTS_DIR` from `user-dirs.dirs` exactly, including its spelling and case. An unavailable Documents location merely requires the user to choose a parent folder. Explicit `trailgen gui PATH` remains strict and portable, while `Ctrl+O` opens the project deck without sacrificing the active workbench.
+Bare startup first honors a project in the current directory, then the last valid project explicitly chosen by the user. With neither, Trailgen opens its project deck. New projects are created beneath the XDG documents directory when available; Linux therefore honors `XDG_DOCUMENTS_DIR` exactly, including spelling and case. If the operating system provides no documents location, the deck asks for a parent folder. `trailgen gui PATH` remains the strict explicit form, and `Ctrl+O` returns to the deck.
 
-The native workbench needs a functioning Vulkan or OpenGL graphics stack and an X11 or Wayland session. Blank projects share a low-zoom US bootstrap PMTiles archive under `$XDG_CACHE_HOME/trailgen/protomaps-v4`. Once regions are live, Trailgen extracts their sparse tile union from the latest Protomaps daily build and writes an atomic, region-set-addressed `cache/basemap-*.pmtiles`; small unions reach z15, while larger unions recede to the deepest level that fits the bounded cut. Later launches memory-map the matching archive, and finer or out-of-cut vectors range into the bounded 512 MiB roaming cache. Each project's viewport, inspector/gallery state, search draft, and saved-candidate visibility are atomically debounced into a path-keyed slate beneath `$XDG_STATE_HOME/trailgen/projects/`. Search edits do not rewrite project configuration and have an explicit **RESET PROJECT DEFAULTS** action; clearing candidates hides them without deleting route artifacts and can be reversed with **RESTORE SAVED**. `--offline` suppresses network acquisition without disabling cached vectors, measured trail geometry, search, candidate inspection, or elevation profiles. `TRAILGEN_BASEMAP_ARCHIVE=/path/to/map.pmtiles` selects an already prepared archive and suppresses automatic extraction.
+New projects open on a low-zoom US vector map. **Add Map Area** turns a drag gesture into a durable fetch rectangle; acquisition and union indexing begin without a CLI handoff. Once trail data is ready, the workbench exposes a flat trail-family library and compact family-owned searches. Search recipes and saved trail geometry live in `library/index.json`. Candidate results are transient.
+
+The native workbench needs a functioning Vulkan or OpenGL graphics stack and an X11 or Wayland session. Shared bootstrap and roaming vectors live beneath `$XDG_CACHE_HOME/trailgen`; content-addressed project cuts live under the project’s `cache/`. Viewport, inspector, active family, gallery, and sorting state are atomically debounced beneath `$XDG_STATE_HOME/trailgen/projects/`. `--offline` suppresses network acquisition while retaining cached maps, trails, search, and profiles. `TRAILGEN_BASEMAP_ARCHIVE=/path/to/map.pmtiles` selects a prepared vector archive.
 
 Useful verification gates:
 
 ```sh
 cargo fmt --all -- --check
 cargo test --workspace
-cargo clippy --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Runtime inputs are ordinary local project files. The shared trail-data engine uses Overpass for rectangle-scoped OSM trail acquisition; Nominatim remains available to the CLI `survey --place` debug frontend. `TRAILGEN_GEOCODER_ENDPOINT` and `TRAILGEN_OVERPASS_ENDPOINT` replace those endpoints for private deployments. `cache-source` and `acquire-osm` expose lower-level debug acquisition. Network access is needed only when acquiring uncached trail data, forging a missing project basemap, or viewing uncached territory outside that cut. GPX, GeoJSON, route JSON, KML, KMZ, CSV, OSM XML/PBF, shapefile vector layers, declared EPSG:3857 Web Mercator or WGS84/NAD83 UTM vector reprojection, Arc/Info ASCII Grid, affine WGS84/NAD83/EPSG:3857/WGS84/NAD83 UTM GeoTIFF DEMs, and simple local GDAL VRT wrappers around those DEMs are implemented in Rust crates; no GDAL install is required for those paths.
-
-Future adapters for arbitrary projected rasters, OSM planet-diff workflows, complex turn-state routing, or agency APIs may introduce optional system dependencies. If that happens, keep them behind an adapter seam or feature flag and document the command that materializes normalized project artifacts under `sources/` or `cache/`. The current OSM XML/PBF way, route-relation, simple turn-restriction, Overpass XML acquisition, and VRT DEM adapters are pure Rust; VRT supports full-raster identity `SimpleSource` wrappers with affine WGS84/NAD83, EPSG:3857, or WGS84/NAD83 UTM `GeoTransform` sampling.
+The shared trail-data engine uses Overpass for rectangle-scoped OSM acquisition. Nominatim remains available only to the CLI `survey --place` debug frontend. `TRAILGEN_GEOCODER_ENDPOINT` and `TRAILGEN_OVERPASS_ENDPOINT` replace those endpoints for private deployments. Network access is needed only for uncached trail acquisition, a missing project basemap, or uncached territory outside its cut.

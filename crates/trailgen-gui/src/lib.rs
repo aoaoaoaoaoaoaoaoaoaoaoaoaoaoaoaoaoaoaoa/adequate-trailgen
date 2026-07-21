@@ -8,8 +8,10 @@
 mod app;
 mod basemap;
 mod boiler;
+mod forge;
 mod gallery;
 mod habitat;
+mod library;
 mod live_area;
 mod map;
 mod profile;

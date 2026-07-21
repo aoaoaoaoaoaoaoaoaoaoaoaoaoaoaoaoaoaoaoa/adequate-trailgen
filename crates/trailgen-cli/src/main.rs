@@ -23,9 +23,9 @@ use trailgen_core::{
     GraphBuilder, JunctionPolicy, LOW_CONFIDENCE_THRESHOLD, LineString, LoopConstraints,
     LoopMilpFormulation, PlanningDate, PlanningMoment, PlanningTime, Provenance, RasterDem, Route,
     RouteMetrics, RouteShape, RouteSnapStats, SearchParams, SeedRoute, SegmentDraft, SolverKind,
-    Terrain, TrailGraph, VertexId, VrtDem, apply_access_overlays, apply_access_overlays_at,
-    apply_context_overlays, apply_terrain_overlays, artifact_key, enrich_graph, rank_routes,
-    route_edges_from_solution,
+    Terrain, TrailClass, TrailGraph, VertexId, VrtDem, apply_access_overlays,
+    apply_access_overlays_at, apply_context_overlays, apply_terrain_overlays, artifact_key,
+    enrich_graph, rank_routes, route_edges_from_solution,
 };
 use trailgen_data::{
     DEFAULT_OVERPASS_ENDPOINT, OsmProfile, Overpass, Surveyor, TrailDataConfig, TrailProvider,
@@ -1187,6 +1187,7 @@ fn route_source_draft_from_line(source: &Path, line: LineString) -> SegmentDraft
         turn_ref: None,
         turn_restrictions: Vec::new(),
         geometry: line,
+        trail_class: TrailClass::default(),
         terrain: Terrain::Unknown,
         terrain_confidence: Some(0.0),
         surface: None,
@@ -7034,6 +7035,7 @@ mod tests {
                     Coord::with_ele(0.01, 0.0, 1_030.0),
                 ])
                 .unwrap(),
+                trail_class: TrailClass::default(),
                 terrain: Terrain::Trail,
                 terrain_confidence: None,
                 surface: None,
@@ -7049,6 +7051,7 @@ mod tests {
                 turn_restrictions: Vec::new(),
                 geometry: LineString::new(vec![Coord::new(0.01, 0.0), Coord::new(0.02, 0.0)])
                     .unwrap(),
+                trail_class: TrailClass::default(),
                 terrain: Terrain::Road,
                 terrain_confidence: None,
                 surface: Some("gravel".to_owned()),

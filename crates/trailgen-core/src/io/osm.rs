@@ -1,6 +1,6 @@
 use crate::builder::{JunctionPolicy, SegmentDraft, TurnRestrictionDraft, TurnRestrictionRule};
 use crate::geo::{Coord, LineString};
-use crate::model::{Access, CrossingKind, EdgeTravel, Provenance, Terrain};
+use crate::model::{Access, CrossingKind, EdgeTravel, Provenance, Terrain, TrailClass};
 use crate::overlay::ContextOverlay;
 use crate::{Result, TrailgenError};
 use osmpbfreader::{
@@ -135,6 +135,7 @@ fn draft_from_xml_way(
         turn_ref: Some(id.clone()),
         turn_restrictions: Vec::new(),
         geometry: LineString::new(points)?,
+        trail_class: walkway.class,
         terrain: walkway.terrain,
         terrain_confidence: Some(walkway.terrain_confidence),
         surface: tags.get("surface").cloned(),
@@ -229,6 +230,7 @@ fn draft_from_pbf_way(
         turn_ref: Some(id),
         turn_restrictions: Vec::new(),
         geometry: LineString::new(points)?,
+        trail_class: walkway.class,
         terrain: walkway.terrain,
         terrain_confidence: Some(walkway.terrain_confidence),
         surface: tags.get("surface").cloned(),
@@ -332,6 +334,7 @@ fn contract_osm_drafts(drafts: Vec<SegmentDraft>) -> Vec<SegmentDraft> {
                     geometry: LineString::unchecked(
                         draft.geometry.points[cut[0]..=cut[1]].to_vec(),
                     ),
+                    trail_class: draft.trail_class,
                     terrain: draft.terrain,
                     terrain_confidence: draft.terrain_confidence,
                     surface: draft.surface.clone(),
@@ -693,6 +696,7 @@ fn osm_road_context(highway: &str) -> bool {
 
 #[derive(Clone, Copy)]
 struct Walkway {
+    class: TrailClass,
     terrain: Terrain,
     terrain_confidence: f64,
     access: Access,
@@ -711,21 +715,23 @@ impl Walkway {
         let explicit_foot = foot
             .is_some_and(|foot| matches!(foot, "yes" | "designated" | "permissive" | "official"));
         let walkable_highway = highway
-            .and_then(WalkwayKind::from_highway)
+            .map(TrailClass::from_tag)
+            .filter(|class| *class != TrailClass::Unknown)
             .filter(|kind| !kind.requires_foot_evidence() || hiking || explicit_foot);
         if walkable_highway.is_none() && !hiking {
             return None;
         }
-        let kind = walkable_highway.unwrap_or(WalkwayKind::Path);
+        let class = walkable_highway.unwrap_or(TrailClass::Path);
         let surface = tags.get("surface");
         let surface_terrain =
             surface.map_or(Terrain::Unknown, |surface| Terrain::from_tag(surface));
         let (terrain, terrain_confidence) =
-            terrain_from_tags(tags, kind, surface_terrain, surface.is_some());
+            terrain_from_tags(tags, class, surface_terrain, surface.is_some());
         let access = access_from_tags(tags, foot);
         let road_exposure =
-            f64::from(kind.road_like() || matches!(terrain, Terrain::Road | Terrain::Pavement));
+            f64::from(class.road_like() || matches!(terrain, Terrain::Road | Terrain::Pavement));
         Some(Self {
+            class,
             terrain,
             terrain_confidence,
             access,
@@ -736,45 +742,9 @@ impl Walkway {
     }
 }
 
-#[derive(Clone, Copy)]
-enum WalkwayKind {
-    Path,
-    Footway,
-    Track,
-    Service,
-    Pedestrian,
-    Steps,
-    Bridleway,
-    Road,
-}
-
-impl WalkwayKind {
-    fn from_highway(highway: &str) -> Option<Self> {
-        Some(match highway {
-            "path" => Self::Path,
-            "footway" => Self::Footway,
-            "track" => Self::Track,
-            "service" => Self::Service,
-            "pedestrian" => Self::Pedestrian,
-            "steps" => Self::Steps,
-            "bridleway" => Self::Bridleway,
-            "unclassified" | "residential" | "tertiary" | "road" => Self::Road,
-            _ => return None,
-        })
-    }
-
-    const fn road_like(self) -> bool {
-        matches!(self, Self::Track | Self::Service | Self::Road)
-    }
-
-    const fn requires_foot_evidence(self) -> bool {
-        matches!(self, Self::Service | Self::Road)
-    }
-}
-
 fn terrain_from_tags(
     tags: &BTreeMap<String, String>,
-    kind: WalkwayKind,
+    class: TrailClass,
     surface_terrain: Terrain,
     has_surface: bool,
 ) -> (Terrain, f64) {
@@ -789,8 +759,8 @@ fn terrain_from_tags(
     }) {
         (Terrain::Scramble, 0.80)
     } else {
-        match kind {
-            WalkwayKind::Track | WalkwayKind::Service | WalkwayKind::Road => (Terrain::Road, 0.62),
+        match class {
+            TrailClass::Track | TrailClass::Service | TrailClass::Road => (Terrain::Road, 0.62),
             _ if has_surface => (Terrain::Trail, 0.68),
             _ => (Terrain::Trail, 0.50),
         }

@@ -1,7 +1,9 @@
+use crate::{forge, library::SavedTrail};
+use dwemer_poolrooms::chrome;
 use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, Vec2, pos2, vec2};
 use serde::{Deserialize, Serialize};
-use std::f64::consts::PI;
-use trailgen_core::{Access, Coord, EdgeId, Route, Terrain, TrailGraph, VertexId};
+use std::{collections::BTreeSet, f64::consts::PI};
+use trailgen_core::{Access, Coord, LineString, Route, Terrain, TrailClass, TrailGraph};
 
 const TILE_EDGE: f64 = 256.0;
 const EARTH_CIRCUMFERENCE_M: f64 = 40_075_016.686;
@@ -44,6 +46,10 @@ impl Viewport {
 
     pub fn fit_route(graph: &TrailGraph, route: &Route, rect: Rect) -> Self {
         fit_coords(route.geometry(graph).points.into_iter(), rect)
+    }
+
+    pub fn fit_saved(trail: &SavedTrail, rect: Rect) -> Self {
+        fit_coords(trail.geometry().points.into_iter(), rect)
     }
 }
 
@@ -136,37 +142,88 @@ pub fn navigate_with(
 
 pub struct Atlas {
     edges: Vec<WorldEdge>,
+    classes: Vec<TrailClass>,
 }
 
 struct WorldEdge {
     points: Vec<[f64; 2]>,
     bounds: [f64; 4],
-    terrain: Terrain,
+    trail_class: TrailClass,
     access: Access,
 }
 
 impl Atlas {
     pub fn forge(graph: &TrailGraph) -> Self {
-        Self {
-            edges: graph
-                .edges
-                .iter()
-                .map(|edge| {
-                    let points = edge
-                        .geometry
-                        .points
-                        .iter()
-                        .copied()
-                        .map(world_from_coord)
-                        .collect::<Vec<_>>();
-                    WorldEdge {
-                        bounds: enclosing_bounds(&points),
-                        points,
-                        terrain: edge.attr.terrain,
-                        access: edge.attr.access,
-                    }
-                })
-                .collect(),
+        let edges = graph
+            .edges
+            .iter()
+            .map(|edge| {
+                let points = edge
+                    .geometry
+                    .points
+                    .iter()
+                    .copied()
+                    .map(world_from_coord)
+                    .collect::<Vec<_>>();
+                WorldEdge {
+                    bounds: enclosing_bounds(&points),
+                    points,
+                    trail_class: edge.attr.trail_class,
+                    access: edge.attr.access,
+                }
+            })
+            .collect::<Vec<_>>();
+        let classes = edges
+            .iter()
+            .map(|edge| edge.trail_class)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        Self { edges, classes }
+    }
+
+    pub fn paint_legend(&self, painter: &Painter, rect: Rect) {
+        if self.classes.is_empty() {
+            return;
+        }
+        let width = 126.0;
+        let row = 16.0;
+        let height = 22.0 + row * self.classes.len() as f32;
+        let plate = Rect::from_min_size(
+            pos2(rect.right() - width - 12.0, rect.top() + 12.0),
+            vec2(width, height),
+        );
+        let _fill = painter.rect_filled(plate, 1.0, chrome::SURFACE.gamma_multiply(0.94));
+        let _edge = painter.rect_stroke(
+            plate,
+            1.0,
+            Stroke::new(1.0_f32, chrome::EDGE_STRONG),
+            egui::StrokeKind::Inside,
+        );
+        painter.text(
+            plate.min + vec2(8.0, 6.0),
+            egui::Align2::LEFT_TOP,
+            "TRAIL TYPES",
+            egui::FontId::monospace(9.5),
+            chrome::MUTED,
+        );
+        for (slot, class) in self.classes.iter().copied().enumerate() {
+            let y = (slot as f32).mul_add(row, plate.top() + 23.0);
+            painter.line_segment(
+                [pos2(plate.left() + 9.0, y), pos2(plate.left() + 27.0, y)],
+                Stroke::new(5.0_f32, Color32::from_black_alpha(215)),
+            );
+            painter.line_segment(
+                [pos2(plate.left() + 9.0, y), pos2(plate.left() + 27.0, y)],
+                Stroke::new(2.7_f32, trail_class_color(class)),
+            );
+            painter.text(
+                pos2(plate.left() + 34.0, y),
+                egui::Align2::LEFT_CENTER,
+                trail_class_label(class),
+                egui::FontId::monospace(9.5),
+                chrome::TEXT,
+            );
         }
     }
 
@@ -181,13 +238,17 @@ impl Atlas {
                 .iter()
                 .copied()
                 .map(|world| screen_at(view, rect, world))
-                .collect();
+                .collect::<Vec<_>>();
             let color = if matches!(edge.access, Access::Closed | Access::Private) {
                 Color32::from_rgb(145, 70, 57)
             } else {
-                terrain_color(edge.terrain).gamma_multiply(0.58)
+                trail_class_color(edge.trail_class)
             };
-            let _shape = painter.add(Shape::line(points, Stroke::new(1.15_f32, color)));
+            let _envelope = painter.add(Shape::line(
+                points.clone(),
+                Stroke::new(4.8_f32, Color32::from_black_alpha(205)),
+            ));
+            let _core = painter.add(Shape::line(points, Stroke::new(2.65_f32, color)));
         }
     }
 }
@@ -215,18 +276,18 @@ pub fn paint_route(
         let _shadow = painter.add(Shape::line(
             points.clone(),
             Stroke::new(
-                if terrain_detail { 7.2_f32 } else { 5.2_f32 },
-                Color32::from_black_alpha(185),
+                if terrain_detail { 9.0_f32 } else { 7.2_f32 },
+                Color32::from_black_alpha(215),
             ),
         ));
         let _route = painter.add(Shape::line(
             points.clone(),
-            Stroke::new(if terrain_detail { 5.0_f32 } else { 3.2_f32 }, color),
+            Stroke::new(if terrain_detail { 6.0_f32 } else { 4.4_f32 }, color),
         ));
         if terrain_detail {
             let _terrain = painter.add(Shape::line(
                 points,
-                Stroke::new(2.1_f32, terrain_color(edge.attr.terrain)),
+                Stroke::new(2.3_f32, terrain_color(edge.attr.terrain)),
             ));
         }
         at = edge
@@ -235,50 +296,63 @@ pub fn paint_route(
     }
 }
 
-pub fn paint_start(
+pub fn paint_saved_trail(
     painter: &Painter,
-    graph: &TrailGraph,
-    start: VertexId,
+    trail: &SavedTrail,
     view: Viewport,
     rect: Rect,
+    color: Color32,
+    terrain_detail: bool,
 ) {
-    let center = screen_at(view, rect, world_from_coord(graph.vertices[start.0].coord));
-    let _halo = painter.circle_filled(center, 8.0, Color32::from_black_alpha(190));
-    let _pin = painter.circle_filled(center, 5.4, ALLTRAILS_GREEN);
-    let _core = painter.circle_filled(center, 1.8, Color32::WHITE);
+    for leg in &trail.legs {
+        paint_line(
+            painter,
+            &leg.geometry,
+            view,
+            rect,
+            color,
+            terrain_detail.then_some(terrain_color(leg.terrain)),
+        );
+    }
 }
 
-pub fn hovered_route_edge(
-    graph: &TrailGraph,
-    route: &Route,
+fn paint_line(
+    painter: &Painter,
+    line: &LineString,
     view: Viewport,
     rect: Rect,
-    pointer: Pos2,
-) -> Option<EdgeId> {
-    let mut at = route.start;
-    let mut best = None;
-    for edge_id in &route.edges {
-        let edge = &graph.edges[edge_id.0];
-        let line = edge.oriented_geometry(at);
-        let distance2 = line
-            .points
-            .windows(2)
-            .map(|pair| {
-                let a = screen_at(view, rect, world_from_coord(pair[0]));
-                let b = screen_at(view, rect, world_from_coord(pair[1]));
-                segment_distance2(pointer, a, b)
-            })
-            .min_by(f32::total_cmp)
-            .unwrap_or(f32::INFINITY);
-        if distance2 < best.map_or(f32::INFINITY, |(_, d)| d) {
-            best = Some((*edge_id, distance2));
-        }
-        at = edge
-            .traverse(at)
-            .expect("validated route edge must be traversable");
+    color: Color32,
+    detail: Option<Color32>,
+) {
+    let points = line
+        .points
+        .iter()
+        .copied()
+        .map(world_from_coord)
+        .map(|world| screen_at(view, rect, world))
+        .collect::<Vec<_>>();
+    if points.len() < 2 {
+        return;
     }
-    best.filter(|(_, distance2)| *distance2 <= 64.0)
-        .map(|(edge, _)| edge)
+    let _envelope = painter.add(Shape::line(
+        points.clone(),
+        Stroke::new(
+            if detail.is_some() { 9.0_f32 } else { 7.2_f32 },
+            Color32::from_black_alpha(215),
+        ),
+    ));
+    let _core = painter.add(Shape::line(
+        points.clone(),
+        Stroke::new(if detail.is_some() { 6.0_f32 } else { 4.4_f32 }, color),
+    ));
+    if let Some(detail) = detail {
+        let _detail = painter.add(Shape::line(points, Stroke::new(2.3_f32, detail)));
+    }
+}
+
+pub fn paint_start(painter: &Painter, trailhead: Coord, view: Viewport, rect: Rect) {
+    let anchor = screen_at(view, rect, world_from_coord(trailhead));
+    forge::pin(painter, anchor, false);
 }
 
 pub fn paint_scale(painter: &Painter, view: Viewport, rect: Rect) {
@@ -334,6 +408,34 @@ pub const fn terrain_label(terrain: Terrain) -> &'static str {
         Terrain::Pavement => "PAVEMENT",
         Terrain::Road => "ROAD",
         Terrain::Water => "WATER",
+    }
+}
+
+pub const fn trail_class_color(class: TrailClass) -> Color32 {
+    match class {
+        TrailClass::Unknown => Color32::from_rgb(239, 229, 207),
+        TrailClass::Path => Color32::from_rgb(247, 193, 72),
+        TrailClass::Footway => Color32::from_rgb(73, 183, 222),
+        TrailClass::Track => Color32::from_rgb(229, 125, 55),
+        TrailClass::Service => Color32::from_rgb(190, 99, 72),
+        TrailClass::Pedestrian => Color32::from_rgb(190, 153, 229),
+        TrailClass::Steps => Color32::from_rgb(238, 91, 89),
+        TrailClass::Bridleway => Color32::from_rgb(234, 137, 184),
+        TrailClass::Road => Color32::from_rgb(211, 207, 196),
+    }
+}
+
+pub const fn trail_class_label(class: TrailClass) -> &'static str {
+    match class {
+        TrailClass::Unknown => "UNCLASSIFIED",
+        TrailClass::Path => "PATH",
+        TrailClass::Footway => "FOOTWAY",
+        TrailClass::Track => "TRACK",
+        TrailClass::Service => "SERVICE",
+        TrailClass::Pedestrian => "PEDESTRIAN",
+        TrailClass::Steps => "STEPS",
+        TrailClass::Bridleway => "BRIDLEWAY",
+        TrailClass::Road => "ROAD",
     }
 }
 
@@ -401,16 +503,6 @@ fn wrapped_delta(x: f64, center: f64) -> f64 {
     }
 }
 
-fn segment_distance2(point: Pos2, a: Pos2, b: Pos2) -> f32 {
-    let ab = b - a;
-    let denominator = ab.length_sq();
-    if denominator <= f32::EPSILON {
-        return point.distance_sq(a);
-    }
-    let t = ((point - a).dot(ab) / denominator).clamp(0.0, 1.0);
-    point.distance_sq(a + ab * t)
-}
-
 fn pleasant_length(target: f64) -> f64 {
     let exponent = target.max(1.0).log10().floor();
     let magnitude = 10_f64.powf(exponent);
@@ -460,7 +552,7 @@ mod tests {
         let edge = WorldEdge {
             points: vec![[0.1, 0.5], [0.9, 0.5]],
             bounds: [0.1, 0.5, 0.9, 0.5],
-            terrain: Terrain::Trail,
+            trail_class: TrailClass::Path,
             access: Access::Open,
         };
         assert!(intersects(&edge, [0.4, 0.4, 0.6, 0.6]));

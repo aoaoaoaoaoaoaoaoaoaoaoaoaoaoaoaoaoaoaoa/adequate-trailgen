@@ -22,7 +22,7 @@ use trailgen_core::{
 use trailgen_core::{
     Coord, DifficultyWeights, EnrichmentConfig, GraphBuilder, JunctionPolicy, LineString,
     LoopConstraints, LoopHunter, OverlayGeometry, PlaneElevation, Provenance, SeedRoute,
-    SegmentDraft, Terrain, TerrainMultipliers, TrailGraph, TurnRestrictionDraft,
+    SegmentDraft, Terrain, TerrainMultipliers, TrailClass, TrailGraph, TurnRestrictionDraft,
     TurnRestrictionRule, apply_access_overlays, apply_access_overlays_at, apply_context_overlays,
     apply_terrain_overlays, enrich_graph, rank_routes, route_edges_from_selected_arcs,
     route_edges_from_solution,
@@ -43,6 +43,7 @@ fn builder_splits_crossing_lines() {
             turn_ref: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![Coord::new(0.0, 0.5), Coord::new(1.0, 0.5)]).unwrap(),
+            trail_class: TrailClass::default(),
             terrain: Terrain::Trail,
             terrain_confidence: None,
             surface: None,
@@ -57,6 +58,7 @@ fn builder_splits_crossing_lines() {
             turn_ref: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![Coord::new(0.5, 0.0), Coord::new(0.5, 1.0)]).unwrap(),
+            trail_class: TrailClass::default(),
             terrain: Terrain::Trail,
             terrain_confidence: None,
             surface: None,
@@ -85,6 +87,7 @@ fn graph_adjacency_respects_one_way_travel() {
             turn_ref: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
+            trail_class: TrailClass::default(),
             terrain: Terrain::Trail,
             terrain_confidence: None,
             surface: None,
@@ -225,6 +228,7 @@ fn directed_turn_ban_graph() -> TrailGraph {
                     },
                 ],
                 geometry: LineString::new(vec![start, via]).unwrap(),
+                trail_class: TrailClass::default(),
                 terrain: Terrain::Trail,
                 terrain_confidence: None,
                 surface: None,
@@ -239,6 +243,7 @@ fn directed_turn_ban_graph() -> TrailGraph {
                 turn_ref: Some("north".to_owned()),
                 turn_restrictions: Vec::new(),
                 geometry: LineString::new(vec![via, crown]).unwrap(),
+                trail_class: TrailClass::default(),
                 terrain: Terrain::Trail,
                 terrain_confidence: None,
                 surface: None,
@@ -253,6 +258,7 @@ fn directed_turn_ban_graph() -> TrailGraph {
                 turn_ref: Some("return".to_owned()),
                 turn_restrictions: Vec::new(),
                 geometry: LineString::new(vec![crown, start]).unwrap(),
+                trail_class: TrailClass::default(),
                 terrain: Terrain::Trail,
                 terrain_confidence: None,
                 surface: None,
@@ -326,6 +332,7 @@ fn near_miss_drafts() -> Vec<SegmentDraft> {
             turn_ref: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(1.0, 0.0)]).unwrap(),
+            trail_class: TrailClass::default(),
             terrain: Terrain::Trail,
             terrain_confidence: None,
             surface: None,
@@ -341,6 +348,7 @@ fn near_miss_drafts() -> Vec<SegmentDraft> {
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![Coord::new(0.5, 0.00005), Coord::new(0.5, 0.01)])
                 .unwrap(),
+            trail_class: TrailClass::default(),
             terrain: Terrain::Trail,
             terrain_confidence: None,
             surface: None,
@@ -360,6 +368,7 @@ fn difficulty_penalizes_rough_uncertain_closed_edges() {
         turn_ref: None,
         turn_restrictions: Vec::new(),
         geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
+        trail_class: TrailClass::default(),
         terrain: Terrain::Trail,
         terrain_confidence: None,
         surface: Some("dirt".to_owned()),
@@ -373,6 +382,7 @@ fn difficulty_penalizes_rough_uncertain_closed_edges() {
         junctions: JunctionPolicy::default(),
         turn_ref: None,
         turn_restrictions: Vec::new(),
+        trail_class: TrailClass::default(),
         terrain: Terrain::Scramble,
         terrain_confidence: None,
         surface: Some("dirt".to_owned()),
@@ -385,6 +395,7 @@ fn difficulty_penalizes_rough_uncertain_closed_edges() {
         junctions: JunctionPolicy::default(),
         turn_ref: None,
         turn_restrictions: Vec::new(),
+        trail_class: TrailClass::default(),
         terrain: Terrain::Unknown,
         terrain_confidence: None,
         surface: Some("dirt".to_owned()),
@@ -424,6 +435,7 @@ fn difficulty_is_invariant_under_edge_subdivision() {
         turn_ref: None,
         turn_restrictions: Vec::new(),
         geometry: LineString::new(points).unwrap(),
+        trail_class: TrailClass::default(),
         terrain: Terrain::Talus,
         terrain_confidence: Some(0.6),
         surface: Some("scree".to_owned()),
@@ -474,6 +486,7 @@ fn terrain_multipliers_are_configurable_and_defaulted() {
         turn_ref: None,
         turn_restrictions: Vec::new(),
         geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
+        trail_class: TrailClass::default(),
         terrain: Terrain::Talus,
         terrain_confidence: None,
         surface: None,
@@ -584,6 +597,7 @@ fn osm_xml_network_normalizes_walkable_ways() {
     .unwrap();
 
     assert_eq!(drafts.len(), 2);
+    assert_eq!(drafts[0].trail_class, TrailClass::Path);
     assert_eq!(drafts[0].terrain, Terrain::Pavement);
     assert_eq!(drafts[0].terrain_confidence, Some(0.86));
     assert_eq!(drafts[0].surface.as_deref(), Some("asphalt"));
@@ -592,12 +606,15 @@ fn osm_xml_network_normalizes_walkable_ways() {
     assert_eq!(drafts[0].provenance.source, "osm-xml");
     assert_eq!(drafts[0].provenance.source_id.as_deref(), Some("10"));
     assert_eq!(drafts[1].terrain, Terrain::Road);
+    assert_eq!(drafts[1].trail_class, TrailClass::Track);
     assert_eq!(drafts[1].terrain_confidence, Some(0.62));
     assert_eq!(drafts[1].access, Access::Private);
     assert!((drafts[1].road_exposure - 1.0).abs() <= f64::EPSILON);
 
     let graph = GraphBuilder::default().build(&drafts).unwrap();
     assert_eq!(graph.edges.len(), 2);
+    assert_eq!(graph.edges[0].attr.trail_class, TrailClass::Path);
+    assert_eq!(graph.edges[1].attr.trail_class, TrailClass::Track);
     assert!(
         graph
             .edges
@@ -821,6 +838,7 @@ fn road_fraction_counts_road_and_pavement_terrain() {
             turn_ref: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
+            trail_class: TrailClass::default(),
             terrain: Terrain::Pavement,
             terrain_confidence: None,
             surface: Some("asphalt".to_owned()),
@@ -967,6 +985,7 @@ fn polygon_overlay_bites_away_from_edge_midpoint() {
             turn_ref: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
+            trail_class: TrailClass::default(),
             terrain: Terrain::Trail,
             terrain_confidence: None,
             surface: None,
@@ -1376,6 +1395,7 @@ fn multiline_access_overlay_hits_each_line_without_flattening() {
                 turn_restrictions: Vec::new(),
                 geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)])
                     .unwrap(),
+                trail_class: TrailClass::default(),
                 terrain: Terrain::Trail,
                 terrain_confidence: None,
                 surface: None,
@@ -1391,6 +1411,7 @@ fn multiline_access_overlay_hits_each_line_without_flattening() {
                 turn_restrictions: Vec::new(),
                 geometry: LineString::new(vec![Coord::new(0.0, 0.01), Coord::new(0.01, 0.01)])
                     .unwrap(),
+                trail_class: TrailClass::default(),
                 terrain: Terrain::Trail,
                 terrain_confidence: None,
                 surface: None,
@@ -1672,6 +1693,7 @@ fn osm_context_overlays_infer_road_and_water_crossings() {
                 Coord::new(-105.005, 40.015),
             ])
             .unwrap(),
+            trail_class: TrailClass::default(),
             terrain: Terrain::Trail,
             terrain_confidence: None,
             surface: None,
@@ -1734,6 +1756,7 @@ fn multiline_context_overlay_does_not_invent_joiner_crossings() {
             turn_ref: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![Coord::new(0.5, 0.4), Coord::new(0.5, 0.6)]).unwrap(),
+            trail_class: TrailClass::default(),
             terrain: Terrain::Trail,
             terrain_confidence: None,
             surface: None,
@@ -2013,6 +2036,7 @@ fn repeated_edge_fraction_is_distance_weighted() {
                 Coord::new(0.021, 0.0),
             ])
             .unwrap(),
+            trail_class: TrailClass::default(),
             terrain: Terrain::Trail,
             terrain_confidence: None,
             surface: None,
@@ -2092,6 +2116,7 @@ fn loop_hunter_rejects_directionally_impossible_out_and_back() {
             turn_ref: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
+            trail_class: TrailClass::default(),
             terrain: Terrain::Trail,
             terrain_confidence: None,
             surface: None,
@@ -2278,6 +2303,7 @@ fn exact_solver_accepts_two_edge_multiedge_loops() {
                 turn_restrictions: Vec::new(),
                 geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)])
                     .unwrap(),
+                trail_class: TrailClass::default(),
                 terrain: Terrain::Trail,
                 terrain_confidence: None,
                 surface: None,
@@ -2293,6 +2319,7 @@ fn exact_solver_accepts_two_edge_multiedge_loops() {
                 turn_restrictions: Vec::new(),
                 geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)])
                     .unwrap(),
+                trail_class: TrailClass::default(),
                 terrain: Terrain::Trail,
                 terrain_confidence: None,
                 surface: None,
@@ -2343,6 +2370,7 @@ fn solvers_collapse_reversed_equivalent_edge_sets() {
                 turn_restrictions: Vec::new(),
                 geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)])
                     .unwrap(),
+                trail_class: TrailClass::default(),
                 terrain: Terrain::Trail,
                 terrain_confidence: None,
                 surface: None,
@@ -2358,6 +2386,7 @@ fn solvers_collapse_reversed_equivalent_edge_sets() {
                 turn_restrictions: Vec::new(),
                 geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)])
                     .unwrap(),
+                trail_class: TrailClass::default(),
                 terrain: Terrain::Trail,
                 terrain_confidence: None,
                 surface: None,
@@ -2407,6 +2436,7 @@ fn directed_travel_diagnostics_are_exported() {
                 turn_restrictions: Vec::new(),
                 geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)])
                     .unwrap(),
+                trail_class: TrailClass::default(),
                 terrain: Terrain::Trail,
                 terrain_confidence: None,
                 surface: None,
@@ -2422,6 +2452,7 @@ fn directed_travel_diagnostics_are_exported() {
                 turn_restrictions: Vec::new(),
                 geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)])
                     .unwrap(),
+                trail_class: TrailClass::default(),
                 terrain: Terrain::Trail,
                 terrain_confidence: None,
                 surface: None,
@@ -2480,6 +2511,7 @@ fn temporal_direction_overlay_constrains_route_generation() {
             turn_ref: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
+            trail_class: TrailClass::default(),
             terrain: Terrain::Trail,
             terrain_confidence: None,
             surface: None,
@@ -2494,6 +2526,7 @@ fn temporal_direction_overlay_constrains_route_generation() {
             turn_ref: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
+            trail_class: TrailClass::default(),
             terrain: Terrain::Trail,
             terrain_confidence: None,
             surface: None,
@@ -2621,6 +2654,7 @@ fn milp_formulation_respects_one_way_arc_feasibility() {
             turn_ref: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
+            trail_class: TrailClass::default(),
             terrain: Terrain::Trail,
             terrain_confidence: None,
             surface: None,
@@ -2694,6 +2728,7 @@ fn milp_incumbent_rejects_disconnected_subtours() {
             turn_ref: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![detached_a, detached_b]).unwrap(),
+            trail_class: TrailClass::default(),
             terrain: Terrain::Trail,
             terrain_confidence: None,
             surface: None,
@@ -2708,6 +2743,7 @@ fn milp_incumbent_rejects_disconnected_subtours() {
             turn_ref: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![detached_b, detached_a]).unwrap(),
+            trail_class: TrailClass::default(),
             terrain: Terrain::Trail,
             terrain_confidence: None,
             surface: None,
@@ -2754,6 +2790,7 @@ fn auto_solver_uses_exact_backend_only_for_small_graphs() {
                 Coord::new(f64::from(i + 1) * 0.01, 0.0),
             ])
             .unwrap(),
+            trail_class: TrailClass::default(),
             terrain: Terrain::Trail,
             terrain_confidence: None,
             surface: None,
@@ -3710,6 +3747,7 @@ fn elevation_enrichment_densifies_rates_and_infers_terrain() {
         turn_ref: None,
         turn_restrictions: Vec::new(),
         geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.0, 0.01)]).unwrap(),
+        trail_class: TrailClass::default(),
         terrain: Terrain::Unknown,
         terrain_confidence: None,
         surface: None,
@@ -3816,6 +3854,7 @@ fn partial_elevation_sampling_does_not_invent_flat_grade() {
         turn_ref: None,
         turn_restrictions: Vec::new(),
         geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.0, 0.01)]).unwrap(),
+        trail_class: TrailClass::default(),
         terrain: Terrain::Unknown,
         terrain_confidence: None,
         surface: None,
@@ -4546,6 +4585,7 @@ fn simple_path_draft() -> SegmentDraft {
             Coord::with_ele(0.02, 0.0, 1_060.0),
         ])
         .unwrap(),
+        trail_class: TrailClass::default(),
         terrain: Terrain::Trail,
         terrain_confidence: None,
         surface: None,
@@ -4574,6 +4614,7 @@ fn square_drafts() -> Vec<SegmentDraft> {
         turn_ref: None,
         turn_restrictions: Vec::new(),
         geometry: LineString::new(vec![from, to]).unwrap(),
+        trail_class: TrailClass::default(),
         terrain: Terrain::Trail,
         terrain_confidence: None,
         surface: None,
@@ -4628,6 +4669,7 @@ fn closure_trap_drafts() -> Vec<SegmentDraft> {
         turn_ref: None,
         turn_restrictions: Vec::new(),
         geometry: LineString::new(vec![from, to]).unwrap(),
+        trail_class: TrailClass::default(),
         terrain,
         terrain_confidence: None,
         surface: None,
@@ -4660,6 +4702,7 @@ fn bowtie_drafts() -> Vec<SegmentDraft> {
         turn_ref: None,
         turn_restrictions: Vec::new(),
         geometry: LineString::new(vec![from, to]).unwrap(),
+        trail_class: TrailClass::default(),
         terrain: Terrain::Trail,
         terrain_confidence: None,
         surface: None,

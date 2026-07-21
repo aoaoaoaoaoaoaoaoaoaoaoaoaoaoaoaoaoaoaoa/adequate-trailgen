@@ -2,8 +2,8 @@ use crate::difficulty::DifficultyWeights;
 use crate::enrich::{EmbeddedElevation, EnrichmentConfig, enrich_graph};
 use crate::geo::{Coord, LineString};
 use crate::model::{
-    Access, Edge, EdgeAttr, EdgeId, EdgeTravel, GradeDistribution, Provenance, Terrain, TrailGraph,
-    TurnBan, Vertex, VertexId,
+    Access, Edge, EdgeAttr, EdgeId, EdgeTravel, GradeDistribution, Provenance, Terrain, TrailClass,
+    TrailGraph, TurnBan, Vertex, VertexId,
 };
 use crate::{Result, TrailgenError};
 use rstar::{AABB, RTree, RTreeObject};
@@ -19,6 +19,8 @@ pub struct SegmentDraft {
     pub turn_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub turn_restrictions: Vec<TurnRestrictionDraft>,
+    #[serde(default)]
+    pub trail_class: TrailClass,
     pub terrain: Terrain,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terrain_confidence: Option<f64>,
@@ -390,6 +392,7 @@ fn edge_attr(
         grade_abs_max: grade_abs_mean,
         sustained_steep_m: 0.0,
         grade_distribution: GradeDistribution::default().add_segment(length_m, grade_abs_mean),
+        trail_class: draft.trail_class,
         terrain: draft.terrain,
         surface: draft.surface.clone(),
         terrain_confidence: draft

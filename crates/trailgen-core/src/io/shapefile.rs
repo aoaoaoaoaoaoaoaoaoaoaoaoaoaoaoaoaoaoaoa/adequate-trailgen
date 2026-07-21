@@ -1,7 +1,7 @@
 use crate::builder::{JunctionPolicy, SegmentDraft};
 use crate::crs::{CoordProjector, CrsVerdict, projector, validate_prj_wkt};
 use crate::geo::{Coord, LineString};
-use crate::model::{Access, CrossingKind, EdgeTravel, Provenance, Terrain};
+use crate::model::{Access, CrossingKind, EdgeTravel, Provenance, Terrain, TrailClass};
 use crate::overlay::{
     AccessOverlay, AccessWindow, ContextOverlay, DailyTimeWindow, MonthDay, OverlayGeometry,
     PlanningDate, PlanningTime, SeasonalWindow, TerrainOverlay, WeekdaySet,
@@ -33,6 +33,10 @@ pub fn network_from_path(path: &Path) -> Result<Vec<SegmentDraft>> {
             terrain_tag.is_some(),
             surface_terrain != Terrain::Unknown,
         );
+        let trail_class = props
+            .str("trail_class")
+            .or_else(|| props.str("highway"))
+            .map_or(TrailClass::Unknown, TrailClass::from_tag);
         let access = props
             .str("access")
             .or_else(|| props.str("status"))
@@ -62,6 +66,7 @@ pub fn network_from_path(path: &Path) -> Result<Vec<SegmentDraft>> {
                 turn_ref: None,
                 turn_restrictions: Vec::new(),
                 geometry: line,
+                trail_class,
                 terrain,
                 terrain_confidence: Some(terrain_confidence),
                 surface: surface.clone(),

@@ -1,70 +1,128 @@
-use crate::map::{ALLTRAILS_GREEN, CANDIDATE_COLORS, terrain_color};
+use crate::{
+    library::SavedTrail,
+    map::{CANDIDATE_COLORS, terrain_color},
+};
 use dwemer_poolrooms::chrome;
 use egui::{Color32, Rect, Response, Sense, Shape, Stroke, Ui, pos2, vec2};
 use serde::{Deserialize, Serialize};
-use trailgen_core::{Route, Terrain, TrailGraph};
+use trailgen_core::{LineString, Route, Terrain, TrailGraph};
 
 pub const TILE_SIZE: egui::Vec2 = egui::Vec2::new(224.0, 146.0);
 const PLATE_PAD: f32 = 4.0;
 const TILE_RADIUS: u8 = 2;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub enum CandidateSort {
+#[serde(rename_all = "kebab-case")]
+pub enum TrailSort {
     #[default]
-    Rank,
+    Best,
     Distance,
-    Ascent,
-    Difficulty,
-    Trail,
+    Climb,
 }
 
-impl CandidateSort {
-    pub const ALL: [Self; 5] = [
-        Self::Rank,
-        Self::Distance,
-        Self::Ascent,
-        Self::Difficulty,
-        Self::Trail,
-    ];
+impl TrailSort {
+    pub const ALL: [Self; 3] = [Self::Best, Self::Distance, Self::Climb];
 
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Rank => "RANK ↑",
+            Self::Best => "BEST",
             Self::Distance => "DISTANCE ↓",
-            Self::Ascent => "ASCENT ↓",
-            Self::Difficulty => "DIFFICULTY ↑",
-            Self::Trail => "TRAIL % ↓",
+            Self::Climb => "CLIMB ↓",
         }
     }
 }
 
-pub fn order(routes: &[Route], sort: CandidateSort) -> Vec<usize> {
+pub fn order_candidates(routes: &[Route], sort: TrailSort) -> Vec<usize> {
     let mut slots = (0..routes.len()).collect::<Vec<_>>();
-    slots.sort_by(|&a, &b| {
-        let (a, b) = (&routes[a], &routes[b]);
+    slots.sort_by(|&left, &right| {
+        let (left, right) = (&routes[left], &routes[right]);
         match sort {
-            CandidateSort::Rank => a
+            TrailSort::Best => left
                 .pareto_rank
-                .cmp(&b.pareto_rank)
-                .then_with(|| a.score.total_cmp(&b.score)),
-            CandidateSort::Distance => b.metrics.distance_m.total_cmp(&a.metrics.distance_m),
-            CandidateSort::Ascent => b.metrics.ascent_m.total_cmp(&a.metrics.ascent_m),
-            CandidateSort::Difficulty => a.metrics.difficulty.total_cmp(&b.metrics.difficulty),
-            CandidateSort::Trail => {
-                terrain_fraction(b, Terrain::Trail).total_cmp(&terrain_fraction(a, Terrain::Trail))
-            }
+                .cmp(&right.pareto_rank)
+                .then_with(|| left.score.total_cmp(&right.score)),
+            TrailSort::Distance => right.metrics.distance_m.total_cmp(&left.metrics.distance_m),
+            TrailSort::Climb => right.metrics.ascent_m.total_cmp(&left.metrics.ascent_m),
         }
-        .then_with(|| a.name.cmp(&b.name))
+        .then_with(|| left.name.cmp(&right.name))
     });
     slots
 }
 
-pub fn tile(
+pub fn order_saved(trails: &[&SavedTrail], sort: TrailSort) -> Vec<usize> {
+    let mut slots = (0..trails.len()).collect::<Vec<_>>();
+    slots.sort_by(|&left, &right| {
+        let (left, right) = (trails[left], trails[right]);
+        match sort {
+            TrailSort::Best => left.name.cmp(&right.name),
+            TrailSort::Distance => right.metrics.distance_m.total_cmp(&left.metrics.distance_m),
+            TrailSort::Climb => right.metrics.ascent_m.total_cmp(&left.metrics.ascent_m),
+        }
+        .then_with(|| left.name.cmp(&right.name))
+    });
+    slots
+}
+
+pub fn candidate_tile(
     ui: &mut Ui,
     graph: &TrailGraph,
     route: &Route,
     ordinal: usize,
     active: bool,
+) -> Response {
+    let geometry = route.geometry(graph);
+    tile_shell(
+        ui,
+        route.name.as_str(),
+        &route.metrics,
+        active,
+        |ui, rect| {
+            paint_miniature(
+                ui,
+                rect,
+                &geometry,
+                CANDIDATE_COLORS[ordinal % CANDIDATE_COLORS.len()],
+            );
+            let mut at = route.start;
+            for edge_id in &route.edges {
+                let edge = &graph.edges[edge_id.0];
+                paint_miniature_leg(
+                    ui,
+                    rect,
+                    &geometry,
+                    &edge.oriented_geometry(at),
+                    edge.attr.terrain,
+                );
+                at = edge
+                    .traverse(at)
+                    .expect("candidate edge must remain traversable");
+            }
+        },
+    )
+}
+
+pub fn saved_tile(ui: &mut Ui, trail: &SavedTrail, active: bool) -> Response {
+    let geometry = trail.geometry();
+    tile_shell(
+        ui,
+        trail.name.as_str(),
+        &trail.metrics,
+        active,
+        |ui, rect| {
+            paint_miniature(ui, rect, &geometry, crate::map::ALLTRAILS_GREEN);
+            for leg in &trail.legs {
+                paint_miniature_leg(ui, rect, &geometry, &leg.geometry, leg.terrain);
+            }
+        },
+    )
+}
+
+fn tile_shell(
+    ui: &mut Ui,
+    name: &str,
+    metrics: &trailgen_core::RouteMetrics,
+    active: bool,
+    paint: impl FnOnce(&Ui, Rect),
 ) -> Response {
     let (rect, response) = ui.allocate_exact_size(TILE_SIZE, Sense::click());
     let plate = Plate::flat(rect);
@@ -75,13 +133,7 @@ pub fn tile(
         .painter()
         .rect_filled(preview, 0.0, Color32::from_rgb(8, 9, 8));
     paint_grid(ui, preview);
-    paint_miniature(
-        ui,
-        graph,
-        route,
-        preview.shrink2(vec2(12.0, 9.0)),
-        CANDIDATE_COLORS[ordinal % CANDIDATE_COLORS.len()],
-    );
+    paint(ui, preview.shrink2(vec2(12.0, 9.0)));
 
     let title = Rect::from_min_max(
         pos2(well.left() + 7.0, preview.bottom() + 6.0),
@@ -90,7 +142,7 @@ pub fn tile(
     ui.painter().text(
         title.left_top(),
         egui::Align2::LEFT_TOP,
-        route.name.to_ascii_uppercase(),
+        name.to_ascii_uppercase(),
         egui::FontId::monospace(12.0),
         if active { chrome::HOT } else { chrome::TEXT },
     );
@@ -98,25 +150,12 @@ pub fn tile(
         pos2(title.left(), title.bottom()),
         egui::Align2::LEFT_BOTTOM,
         format!(
-            "{:.1} KM   ↗ {:.0} M   ◇ {:.1}",
-            route.metrics.distance_m / 1_000.0,
-            route.metrics.ascent_m,
-            route.metrics.difficulty
+            "{:.1} KM   ↗ {:.0} M",
+            metrics.distance_m / 1_000.0,
+            metrics.ascent_m,
         ),
         egui::FontId::monospace(10.5),
         chrome::MUTED,
-    );
-    let verdict = if route.verdict.satisfied {
-        ("FIT", ALLTRAILS_GREEN)
-    } else {
-        ("OUTSIDE", Color32::from_rgb(208, 116, 72))
-    };
-    ui.painter().text(
-        title.right_top(),
-        egui::Align2::RIGHT_TOP,
-        verdict.0,
-        egui::FontId::monospace(10.5),
-        verdict.1,
     );
     response
 }
@@ -170,17 +209,41 @@ fn paint_grid(ui: &Ui, rect: Rect) {
     }
 }
 
-fn paint_miniature(ui: &Ui, graph: &TrailGraph, route: &Route, rect: Rect, color: Color32) {
-    let geometry = route.geometry(graph);
-    let mean_lat = geometry.points.iter().map(|point| point.lat).sum::<f64>()
-        / geometry.points.len().max(1) as f64;
+fn paint_miniature(ui: &Ui, rect: Rect, geometry: &LineString, color: Color32) {
+    let points = miniature_points(rect, geometry, geometry);
+    if points.len() < 2 {
+        return;
+    }
+    let _envelope = ui.painter().add(Shape::line(
+        points.clone(),
+        Stroke::new(5.4_f32, Color32::from_black_alpha(210)),
+    ));
+    let _path = ui
+        .painter()
+        .add(Shape::line(points, Stroke::new(3.2_f32, color)));
+}
+
+fn paint_miniature_leg(
+    ui: &Ui,
+    rect: Rect,
+    route: &LineString,
+    leg: &LineString,
+    terrain: Terrain,
+) {
+    let points = miniature_points(rect, route, leg);
+    if points.len() >= 2 {
+        let _terrain = ui.painter().add(Shape::line(
+            points,
+            Stroke::new(1.25_f32, terrain_color(terrain)),
+        ));
+    }
+}
+
+fn miniature_points(rect: Rect, route: &LineString, line: &LineString) -> Vec<egui::Pos2> {
+    let mean_lat =
+        route.points.iter().map(|point| point.lat).sum::<f64>() / route.points.len().max(1) as f64;
     let cos_lat = mean_lat.to_radians().cos();
-    let xy = geometry
-        .points
-        .iter()
-        .map(|point| [point.lon * cos_lat, point.lat])
-        .collect::<Vec<_>>();
-    let bounds = xy.iter().fold(
+    let bounds = route.points.iter().fold(
         [
             f64::INFINITY,
             f64::INFINITY,
@@ -188,60 +251,31 @@ fn paint_miniature(ui: &Ui, graph: &TrailGraph, route: &Route, rect: Rect, color
             f64::NEG_INFINITY,
         ],
         |mut bounds, point| {
-            bounds[0] = bounds[0].min(point[0]);
-            bounds[1] = bounds[1].min(point[1]);
-            bounds[2] = bounds[2].max(point[0]);
-            bounds[3] = bounds[3].max(point[1]);
+            let x = point.lon * cos_lat;
+            bounds[0] = bounds[0].min(x);
+            bounds[1] = bounds[1].min(point.lat);
+            bounds[2] = bounds[2].max(x);
+            bounds[3] = bounds[3].max(point.lat);
             bounds
         },
     );
+    if !bounds.into_iter().all(f64::is_finite) {
+        return Vec::new();
+    }
     let width = (bounds[2] - bounds[0]).max(1.0e-12);
     let height = (bounds[3] - bounds[1]).max(1.0e-12);
     let scale = (f64::from(rect.width()) / width).min(f64::from(rect.height()) / height);
     let center = [(bounds[0] + bounds[2]) * 0.5, (bounds[1] + bounds[3]) * 0.5];
-    let screen = |point: [f64; 2]| {
-        rect.center()
-            + vec2(
-                ((point[0] - center[0]) * scale) as f32,
-                (-(point[1] - center[1]) * scale) as f32,
-            )
-    };
-    let points = xy.into_iter().map(screen).collect::<Vec<_>>();
-    let _shadow = ui.painter().add(Shape::line(
-        points.clone(),
-        Stroke::new(4.8_f32, Color32::from_black_alpha(190)),
-    ));
-    let _path = ui
-        .painter()
-        .add(Shape::line(points, Stroke::new(2.7_f32, color)));
-
-    let mut at = route.start;
-    for edge_id in &route.edges {
-        let edge = &graph.edges[edge_id.0];
-        let line = edge.oriented_geometry(at);
-        let points = line
-            .points
-            .iter()
-            .map(|point| screen([point.lon * cos_lat, point.lat]))
-            .collect();
-        let _terrain = ui.painter().add(Shape::line(
-            points,
-            Stroke::new(1.0_f32, terrain_color(edge.attr.terrain)),
-        ));
-        at = edge
-            .traverse(at)
-            .expect("validated route edge must be traversable");
-    }
-}
-
-fn terrain_fraction(route: &Route, terrain: Terrain) -> f64 {
-    route
-        .metrics
-        .terrain_m
-        .get(&terrain)
-        .copied()
-        .unwrap_or_default()
-        / route.metrics.distance_m.max(1.0)
+    line.points
+        .iter()
+        .map(|point| {
+            rect.center()
+                + vec2(
+                    (point.lon.mul_add(cos_lat, -center[0]) * scale) as f32,
+                    (-(point.lat - center[1]) * scale) as f32,
+                )
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -277,6 +311,9 @@ mod tests {
             route("a", 1_000.0, 3.0),
             route("c", 2_000.0, 1.0),
         ];
-        assert_eq!(order(&routes, CandidateSort::Distance), vec![2, 1, 0]);
+        assert_eq!(
+            order_candidates(&routes, TrailSort::Distance),
+            vec![2, 1, 0]
+        );
     }
 }

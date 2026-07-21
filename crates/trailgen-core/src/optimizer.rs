@@ -392,6 +392,11 @@ fn shortest_return_paths(
         return Vec::new();
     }
     let keep = keep.max(1);
+    if keep == 1 {
+        return shortest_return_path(graph, from, target, previous, banned_edges, max_distance_m)
+            .into_iter()
+            .collect();
+    }
     let expansion_cap = keep
         .saturating_mul(graph.edges.len().max(1))
         .saturating_mul(8)
@@ -445,6 +450,76 @@ fn shortest_return_paths(
         }
     }
     paths
+}
+
+fn shortest_return_path(
+    graph: &TrailGraph,
+    from: VertexId,
+    target: VertexId,
+    previous: Option<EdgeId>,
+    banned_edges: &BTreeSet<EdgeId>,
+    max_distance_m: f64,
+) -> Option<Vec<EdgeId>> {
+    let origin = ReturnWalk { at: from, previous };
+    let mut frontier = BinaryHeap::from([ReturnFrontier {
+        cost_m: 0.0,
+        walk: origin,
+    }]);
+    let mut distance = BTreeMap::from([(origin, 0.0)]);
+    let mut predecessor = BTreeMap::<ReturnWalk, (ReturnWalk, EdgeId)>::new();
+
+    while let Some(ReturnFrontier { cost_m, walk }) = frontier.pop() {
+        if cost_m > max_distance_m
+            || distance
+                .get(&walk)
+                .is_some_and(|best| cost_m > *best + f64::EPSILON)
+        {
+            continue;
+        }
+        if walk.at == target {
+            let mut path = Vec::new();
+            let mut cursor = walk;
+            while cursor != origin {
+                let (prior, edge) = predecessor.get(&cursor).copied()?;
+                path.push(edge);
+                cursor = prior;
+            }
+            path.reverse();
+            let mut seen = BTreeSet::new();
+            if path.iter().all(|edge| seen.insert(*edge)) {
+                return Some(path);
+            }
+            continue;
+        }
+        for edge_id in graph.adjacency[walk.at.0].iter().copied() {
+            if banned_edges.contains(&edge_id)
+                || !graph.turn_allowed(walk.previous, walk.at, edge_id)
+            {
+                continue;
+            }
+            let edge = &graph.edges[edge_id.0];
+            let Some(at) = edge.traverse(walk.at) else {
+                continue;
+            };
+            let next_cost_m = cost_m + edge.attr.length_m;
+            if next_cost_m > max_distance_m {
+                continue;
+            }
+            let next = ReturnWalk {
+                at,
+                previous: Some(edge_id),
+            };
+            if distance.get(&next).is_none_or(|best| next_cost_m < *best) {
+                distance.insert(next, next_cost_m);
+                predecessor.insert(next, (walk, edge_id));
+                frontier.push(ReturnFrontier {
+                    cost_m: next_cost_m,
+                    walk: next,
+                });
+            }
+        }
+    }
+    None
 }
 
 fn sort_heuristic_fanout(
@@ -502,6 +577,34 @@ impl Ord for ReturnPathState {
 }
 
 impl PartialOrd for ReturnPathState {
+    fn partial_cmp(&self, rhs: &Self) -> Option<Ordering> {
+        Some(self.cmp(rhs))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct ReturnWalk {
+    at: VertexId,
+    previous: Option<EdgeId>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ReturnFrontier {
+    cost_m: f64,
+    walk: ReturnWalk,
+}
+
+impl Eq for ReturnFrontier {}
+
+impl Ord for ReturnFrontier {
+    fn cmp(&self, rhs: &Self) -> Ordering {
+        rhs.cost_m
+            .total_cmp(&self.cost_m)
+            .then_with(|| rhs.walk.cmp(&self.walk))
+    }
+}
+
+impl PartialOrd for ReturnFrontier {
     fn partial_cmp(&self, rhs: &Self) -> Option<Ordering> {
         Some(self.cmp(rhs))
     }
