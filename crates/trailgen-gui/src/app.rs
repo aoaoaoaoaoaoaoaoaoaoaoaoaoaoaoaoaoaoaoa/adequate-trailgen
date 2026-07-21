@@ -1131,13 +1131,7 @@ impl TrailApp {
             }
             None => {
                 for trail in self.visible_saved_trails() {
-                    map::paint_saved_trail(
-                        painter,
-                        trail,
-                        self.viewport,
-                        rect,
-                        ALLTRAILS_GREEN.gamma_multiply(0.92),
-                    );
+                    map::paint_saved_trail(painter, trail, self.viewport, rect, ALLTRAILS_GREEN);
                 }
             }
         }

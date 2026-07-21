@@ -14,17 +14,43 @@ const FIT_PADDING: f32 = 44.0;
 pub const MAP_GROUND_SRGB: [u8; 3] = [196, 194, 176];
 pub const MAP_GROUND: Color32 =
     Color32::from_rgb(MAP_GROUND_SRGB[0], MAP_GROUND_SRGB[1], MAP_GROUND_SRGB[2]);
-pub const ALLTRAILS_GREEN: Color32 = Color32::from_rgb(104, 171, 64);
+pub const ALLTRAILS_GREEN: Color32 = Color32::from_rgb(82, 190, 43);
 pub const CANDIDATE_COLORS: [Color32; 8] = [
-    Color32::from_rgb(104, 171, 64),
-    Color32::from_rgb(46, 164, 154),
-    Color32::from_rgb(223, 154, 68),
-    Color32::from_rgb(92, 145, 201),
-    Color32::from_rgb(180, 113, 185),
-    Color32::from_rgb(202, 93, 75),
-    Color32::from_rgb(187, 181, 81),
-    Color32::from_rgb(105, 169, 192),
+    ALLTRAILS_GREEN,
+    Color32::from_rgb(28, 190, 174),
+    Color32::from_rgb(245, 150, 38),
+    Color32::from_rgb(61, 151, 238),
+    Color32::from_rgb(190, 91, 214),
+    Color32::from_rgb(239, 80, 59),
+    Color32::from_rgb(216, 194, 39),
+    Color32::from_rgb(50, 177, 218),
 ];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TrailSalience {
+    Context,
+    Selected,
+}
+
+impl TrailSalience {
+    const fn width(self) -> f32 {
+        match self {
+            Self::Context => 4.6,
+            Self::Selected => 9.2,
+        }
+    }
+
+    const fn access_color(self, color: Color32, access: Access) -> Color32 {
+        if matches!(access, Access::Closed | Access::Private) {
+            match self {
+                Self::Context => Color32::from_rgb(188, 112, 101),
+                Self::Selected => Color32::from_rgb(234, 72, 53),
+            }
+        } else {
+            color
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Viewport {
@@ -294,8 +320,9 @@ impl Atlas {
             paint_trail_tube(
                 painter,
                 &points,
-                5.4,
-                accessible_tube(trail_class_color(edge.trail_class), edge.access),
+                TrailSalience::Context.width(),
+                TrailSalience::Context
+                    .access_color(trail_class_color(edge.trail_class), edge.access),
                 edge.mark,
             );
         }
@@ -324,8 +351,8 @@ pub fn paint_route(
         paint_trail_tube(
             painter,
             &points,
-            7.2,
-            accessible_tube(color, edge.attr.access),
+            TrailSalience::Selected.width(),
+            TrailSalience::Selected.access_color(color, edge.attr.access),
             trail_mark(
                 edge.attr.trail_class,
                 edge.attr.standing,
@@ -352,7 +379,7 @@ pub fn paint_saved_trail(
             &leg.geometry,
             view,
             rect,
-            accessible_tube(color, leg.access),
+            TrailSalience::Selected.access_color(color, leg.access),
             trail_mark(
                 leg.trail_class,
                 leg.standing,
@@ -381,7 +408,13 @@ fn paint_line(
     if points.len() < 2 {
         return;
     }
-    paint_trail_tube(painter, &points, 7.2, color, mark);
+    paint_trail_tube(
+        painter,
+        &points,
+        TrailSalience::Selected.width(),
+        color,
+        mark,
+    );
 }
 
 pub fn paint_trail_tube(
@@ -496,14 +529,6 @@ fn surface_has_any(surface: Option<&str>, needles: &[&str]) -> bool {
     })
 }
 
-const fn accessible_tube(color: Color32, access: Access) -> Color32 {
-    if matches!(access, Access::Closed | Access::Private) {
-        Color32::from_rgb(184, 70, 58)
-    } else {
-        color
-    }
-}
-
 pub fn paint_start(painter: &Painter, trailhead: Coord, view: Viewport, rect: Rect) {
     let anchor = screen_at(view, rect, world_from_coord(trailhead));
     forge::pin(painter, anchor, false);
@@ -567,16 +592,16 @@ pub const fn terrain_label(terrain: Terrain) -> &'static str {
 
 pub const fn trail_class_color(class: TrailClass) -> Color32 {
     match class {
-        TrailClass::Unknown => Color32::from_rgb(239, 229, 207),
-        TrailClass::Path => Color32::from_rgb(247, 193, 72),
-        TrailClass::Footway => Color32::from_rgb(73, 183, 222),
-        TrailClass::Track => Color32::from_rgb(229, 125, 55),
-        TrailClass::Service => Color32::from_rgb(190, 99, 72),
-        TrailClass::Pedestrian => Color32::from_rgb(190, 153, 229),
-        TrailClass::Steps => Color32::from_rgb(238, 91, 89),
-        TrailClass::Bridleway => Color32::from_rgb(234, 137, 184),
-        TrailClass::Bushwhack => Color32::from_rgb(241, 110, 213),
-        TrailClass::Road => Color32::from_rgb(211, 207, 196),
+        TrailClass::Unknown => Color32::from_rgb(207, 199, 184),
+        TrailClass::Path => Color32::from_rgb(213, 180, 104),
+        TrailClass::Footway => Color32::from_rgb(111, 171, 190),
+        TrailClass::Track => Color32::from_rgb(198, 137, 91),
+        TrailClass::Service => Color32::from_rgb(181, 122, 104),
+        TrailClass::Pedestrian => Color32::from_rgb(176, 151, 198),
+        TrailClass::Steps => Color32::from_rgb(204, 112, 108),
+        TrailClass::Bridleway => Color32::from_rgb(205, 145, 173),
+        TrailClass::Bushwhack => Color32::from_rgb(205, 133, 190),
+        TrailClass::Road => Color32::from_rgb(187, 185, 176),
     }
 }
 
@@ -763,6 +788,42 @@ mod tests {
         assert_ne!(
             trail_class_color(TrailClass::Bushwhack),
             trail_class_color(TrailClass::Path)
+        );
+    }
+
+    #[test]
+    fn selected_trails_dominate_by_width_and_chroma() {
+        const CLASSES: [TrailClass; 10] = [
+            TrailClass::Unknown,
+            TrailClass::Path,
+            TrailClass::Footway,
+            TrailClass::Track,
+            TrailClass::Service,
+            TrailClass::Pedestrian,
+            TrailClass::Steps,
+            TrailClass::Bridleway,
+            TrailClass::Bushwhack,
+            TrailClass::Road,
+        ];
+        let chroma = |color: Color32| {
+            color.r().max(color.g()).max(color.b()) - color.r().min(color.g()).min(color.b())
+        };
+
+        assert!(TrailSalience::Selected.width() >= TrailSalience::Context.width() * 2.0);
+        assert!(
+            CANDIDATE_COLORS
+                .into_iter()
+                .all(|color| chroma(color) >= 120)
+        );
+        assert!(
+            CLASSES
+                .into_iter()
+                .map(trail_class_color)
+                .all(|color| chroma(color) <= 110)
+        );
+        assert!(
+            chroma(TrailSalience::Selected.access_color(ALLTRAILS_GREEN, Access::Closed))
+                > chroma(TrailSalience::Context.access_color(ALLTRAILS_GREEN, Access::Closed))
         );
     }
 
