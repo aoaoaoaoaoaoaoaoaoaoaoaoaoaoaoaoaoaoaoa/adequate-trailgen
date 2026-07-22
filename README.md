@@ -17,11 +17,11 @@ Projects are ordinary portable directories rooted by `trailgen.toml`. Per-projec
 
 1. Create a project and pan to its broad territory.
 2. Draw one or more bronze-framed map areas. Trailgen downloads and indexes the union automatically; ground outside that union remains dimmed.
-3. Press **Draw a Trail** to build one directly from draggable support points, with no search or family required.
-4. For discovery, create a flat family such as `long`, `climby`, or `easy`; place its trailhead, choose distance, climb, target difficulty, and shape, then press **Find Trails**.
+3. Press **Draw a Trail** to build one directly from draggable support points, with no search required.
+4. For discovery, place the project trailhead, choose distance, climb, target difficulty, and shape, then press **Find Trails**.
 5. Open any result for a smooth full-map view and elevation profile. Save it, or edit any candidate whose exact walk admits a support-point design.
 
-Saved trails form a project-owned library. A trail may belong to several families. Deleting a family preserves its trails in **Unfiled**; deleting a trail removes it deliberately from the whole project. Search results remain transient.
+Saved trails belong directly to the project library. Deleting a trail removes it deliberately from the project; search results remain transient until saved.
 
 Trail types use high-contrast dual strokes and a map legend. Focused routes add an inner terrain trace. The bronze trailhead pin and restrained water response follow the Dwemer Poolrooms design language.
 

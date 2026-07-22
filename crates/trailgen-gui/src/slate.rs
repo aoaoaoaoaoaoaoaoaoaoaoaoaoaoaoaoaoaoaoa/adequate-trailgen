@@ -1,4 +1,4 @@
-use crate::{gallery::TrailSort, library::FamilyId, map::Viewport};
+use crate::{gallery::TrailSort, map::Viewport};
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -16,14 +16,13 @@ pub enum GalleryDeck {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct Slate {
     pub project: PathBuf,
     pub viewport: Option<Viewport>,
     pub shutters: BTreeMap<String, bool>,
     pub inspector_scroll: f32,
     pub sort: TrailSort,
-    pub active_family: Option<FamilyId>,
     pub gallery: GalleryDeck,
 }
 
@@ -35,7 +34,6 @@ impl Default for Slate {
             shutters: BTreeMap::new(),
             inspector_scroll: 0.0,
             sort: TrailSort::default(),
-            active_family: None,
             gallery: GalleryDeck::default(),
         }
     }
@@ -59,6 +57,9 @@ impl Slate {
             slate.inspector_scroll = 0.0;
         }
         slate.inspector_scroll = slate.inspector_scroll.max(0.0);
+        slate
+            .shutters
+            .retain(|section, _| matches!(section.as_str(), "search" | "areas"));
         slate
     }
 
@@ -89,22 +90,17 @@ impl Slate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use trailgen_core::LoopConstraints;
-
     #[test]
     fn slate_round_trips_and_repels_other_projects() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let path = temp.path().join("slate.toml");
         let alpha = temp.path().join("alpha");
         let beta = temp.path().join("beta");
-        let mut library = crate::library::Library::default();
-        let family = library.add_family(&LoopConstraints::default());
         let mut slate = Slate::load(&path, &alpha);
         slate.viewport = Some(Viewport {
             center: [0.29, 0.37],
             zoom: 15.5,
         });
-        slate.active_family = Some(family);
         slate.gallery = GalleryDeck::Results;
         slate.shutters.insert("areas".to_owned(), true);
         slate.save(&path)?;
@@ -113,7 +109,27 @@ mod tests {
         assert_eq!(foreign.project, beta);
         assert!(foreign.viewport.is_none());
         assert!(foreign.shutters.is_empty());
-        assert!(foreign.active_family.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn obsolete_organizer_state_evaporates_on_load() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("slate.toml");
+        let project = temp.path().join("alpha");
+        std::fs::write(
+            &path,
+            format!(
+                "project = {:?}\nactive_family = 7\n[shutters]\nlibrary = true\nsearch = false\n",
+                project.to_string_lossy()
+            ),
+        )?;
+
+        let slate = Slate::load(&path, &project);
+        assert_eq!(slate.shutters.len(), 1);
+        assert_eq!(slate.shutters.get("search"), Some(&false));
+        slate.save(&path)?;
+        assert!(!std::fs::read_to_string(path)?.contains("family"));
         Ok(())
     }
 }

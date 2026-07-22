@@ -1,4 +1,4 @@
-use crate::library::{FamilyId, Library};
+use crate::library::Library;
 use anyhow::{Context as _, Result, ensure};
 use crossbeam_channel::{Receiver, Sender, bounded};
 use egui::Context;
@@ -55,7 +55,7 @@ impl Project {
         let root = root
             .canonicalize()
             .with_context(|| format!("open project {}", root.display()))?;
-        let config = read_toml(&root.join("trailgen.toml"))?;
+        let config: WorkbenchConfig = read_toml(&root.join("trailgen.toml"))?;
         let graph = Arc::new(
             match read_optional_json::<TrailGraph>(&root.join("cache/graph.json"))? {
                 Some(graph) => graph,
@@ -66,7 +66,7 @@ impl Project {
             },
         );
         ensure!(!graph.vertices.is_empty(), "project has no usable trails");
-        let library = Library::open(&root, &graph)?;
+        let library = Library::open(&root, &graph, &config.constraints)?;
         Ok(Self {
             root,
             graph,
@@ -94,7 +94,6 @@ fn read_optional_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Optio
 #[derive(Clone)]
 pub struct SearchRequest {
     pub serial: u64,
-    pub family: FamilyId,
     pub start: VertexId,
     pub constraints: LoopConstraints,
     pub params: SearchParams,
@@ -217,7 +216,6 @@ fn validate_constraints(constraints: &LoopConstraints) -> Result<()> {
 pub enum SearchEvent {
     Found {
         serial: u64,
-        family: FamilyId,
         routes: Vec<Route>,
         elapsed: Duration,
     },
@@ -251,7 +249,6 @@ impl SearchForge {
                     if events_tx
                         .send(SearchEvent::Found {
                             serial: request.serial,
-                            family: request.family,
                             routes,
                             elapsed: started.elapsed(),
                         })
@@ -313,11 +310,8 @@ mod tests {
         let mut constraints = LoopConstraints::default();
         let _minimum = constraints.min_terrain_fraction.insert(Terrain::Trail, 0.8);
         let _maximum = constraints.max_terrain_fraction.insert(Terrain::Trail, 0.2);
-        let mut library = Library::default();
-        let family = library.add_family(&constraints);
         let request = SearchRequest {
             serial: 1,
-            family,
             start: VertexId(0),
             constraints,
             params: SearchParams::default(),
@@ -373,7 +367,7 @@ mod tests {
 
         assert_eq!(project.config.name, "live project");
         assert_eq!(project.graph.as_ref(), &cached);
-        assert!(project.library.loose_trails().next().is_none());
+        assert!(project.library.trails().is_empty());
         assert!(temp.path().join("library/index.json").is_file());
         Ok(())
     }

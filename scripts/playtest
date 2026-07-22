@@ -224,7 +224,7 @@ if [ "${TRAILGEN_GUI_CARTOGRAPHY:-0}" = 1 ]; then
 fi
 
 if [ "${TRAILGEN_GUI_EDITOR_FLOW:-0}" = 1 ]; then
-    xdotool mousemove --sync --window "$window" 140 325 click 1
+    xdotool mousemove --sync --window "$window" 140 132 click 1
     sleep 0.5
     import -window "$window" "$out/editor-empty.png"
     xdotool mousemove --sync --window "$window" 781 396 click 1
@@ -253,18 +253,13 @@ if [ "${TRAILGEN_GUI_EDITOR_FLOW:-0}" = 1 ]; then
     exit 0
 fi
 
-if [ "${TRAILGEN_GUI_FAMILY_FLOW:-0}" != 1 ]; then
+if [ "${TRAILGEN_GUI_SEARCH_FLOW:-0}" != 1 ]; then
     exit 0
 fi
 
-# Create the only durable search scope exposed by the workbench.
-xdotool mousemove --sync --window "$window" 138 131 click 1
-sleep 1
-import -window "$window" "$out/family.png"
-
 # Place a trailhead through the map contract, then exercise the common search
 # engine through its keyboard accelerator.
-xdotool mousemove --sync --window "$window" 108 347 click 1
+xdotool mousemove --sync --window "$window" 108 194 click 1
 sleep 0.4
 xdotool mousemove --sync --window "$window" 756 423 click 1
 sleep 1

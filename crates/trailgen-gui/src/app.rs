@@ -2,7 +2,7 @@ use crate::{
     annotation,
     basemap::Source as BasemapSource,
     gallery::{self, TrailSort},
-    library::{FamilyId, Library, SavedTrail, SearchRecipe, TrailId, Trailhead},
+    library::{Library, SavedTrail, SearchRecipe, TrailId, Trailhead},
     live_area::{self, RegionScribe, ScribeEvent},
     map::{self, Atlas, SELECTED_TRAIL_COLOR, Viewport},
     profile::ElevationProfile,
@@ -57,9 +57,7 @@ pub struct TrailApp {
     library: Library,
     committed_library: Library,
     library_dirty: Option<Instant>,
-    active_family: Option<FamilyId>,
-    family_name: String,
-    candidates: BTreeMap<FamilyId, CandidateRun>,
+    candidates: Option<CandidateRun>,
     focus: Option<Focus>,
     sort: TrailSort,
     gallery: GalleryDeck,
@@ -186,14 +184,14 @@ impl TrailEditor {
 
 #[derive(Clone)]
 enum EditorOrigin {
-    New(Option<FamilyId>),
-    Candidate(FamilyId),
+    New,
+    Candidate,
     Saved(TrailId),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Focus {
-    Candidate { family: FamilyId, slot: usize },
+    Candidate { slot: usize },
     Saved(TrailId),
 }
 
@@ -228,10 +226,7 @@ impl FocusFrame {
 enum Fit {
     #[default]
     Graph,
-    Candidate {
-        family: FamilyId,
-        slot: usize,
-    },
+    Candidate(usize),
     Saved(TrailId),
     None,
 }
@@ -242,7 +237,6 @@ enum ForgePhase {
     Idle,
     Striking {
         serial: u64,
-        family: FamilyId,
     },
 }
 
@@ -312,13 +306,6 @@ impl TrailApp {
             library,
         } = Project::open(root)?;
         let slate = Slate::load(&slate_path, &root);
-        let active_family = slate
-            .active_family
-            .filter(|id| library.family(*id).is_some())
-            .or_else(|| library.families().first().map(|family| family.id));
-        let family_name = active_family
-            .and_then(|id| library.family(id))
-            .map_or_else(String::new, |family| family.name.to_string());
         let corpus = LoadedCorpus::raise(ctx, &root, offline, trail_data, indexed)?;
         let vector = spawn_vector_field(ctx, &root, Arc::clone(&graph), &corpus.regions, offline)?;
         let relief = Relief::raise(ctx, &root)?;
@@ -329,24 +316,13 @@ impl TrailApp {
         });
         let forge = SearchForge::spawn(ctx.clone(), Arc::clone(&graph))?;
         let atlas = Atlas::forge(&graph);
-        let status = if library.families().is_empty() {
-            "Create a trail family to begin."
-        } else if active_family
-            .and_then(|id| library.family(id))
-            .and_then(|family| family.search.trailhead)
-            .is_some()
-        {
+        let status = if library.search().trailhead.is_some() {
             "Choose Find trails to search from this trailhead."
         } else {
             "Place a trailhead on the map, then find trails."
         }
         .to_owned();
         let committed_library = library.clone();
-        let gallery = if active_family.is_none() {
-            GalleryDeck::Library
-        } else {
-            slate.gallery
-        };
         let mut app = Self {
             root,
             name: config.name,
@@ -359,12 +335,10 @@ impl TrailApp {
             library,
             committed_library,
             library_dirty: None,
-            active_family,
-            family_name,
-            candidates: BTreeMap::new(),
+            candidates: None,
             focus: None,
             sort: slate.sort,
-            gallery,
+            gallery: slate.gallery,
             viewport,
             focus_frame: FocusFrame::default(),
             fit: if restored_viewport.is_some() {
@@ -455,16 +429,6 @@ impl TrailApp {
             self.water.click(projects.rect);
         }
         ui.add_space(3.0);
-        self.section(ui, "library", "trail library", true, Self::library_panel);
-        if matches!(self.focus, Some(Focus::Saved(_))) {
-            self.section(
-                ui,
-                "memberships",
-                "trail families",
-                true,
-                Self::membership_panel,
-            );
-        }
         let search_title = if self.editor.is_some() {
             "trail editor"
         } else {
@@ -492,133 +456,6 @@ impl TrailApp {
         self.water.fold(wake);
     }
 
-    fn library_panel(&mut self, ui: &mut egui::Ui) {
-        if self.editor.is_some() {
-            let _help = chrome::note(ui, "FINISH OR CANCEL THE MANUAL TRAIL TO CHANGE FAMILIES");
-            return;
-        }
-        let create = ui.add(
-            chrome::glyph_button("NEW FAMILY", false).min_size(vec2(ui.available_width(), 27.0)),
-        );
-        chrome::tension(ui, &create);
-        if create.clicked() {
-            self.commit_family_name();
-            let id = self.library.add_family(&self.defaults);
-            self.select_family(Some(id));
-            self.flush_library();
-            self.water.click(create.rect);
-        }
-        ui.add_space(4.0);
-
-        let loose = self.library.loose_trails().count();
-        let unfiled = ui.add_sized(
-            [ui.available_width(), 25.0],
-            chrome::glyph_button(
-                format!("UNFILED                                      {loose}"),
-                self.active_family.is_none(),
-            ),
-        );
-        chrome::tension(ui, &unfiled);
-        if unfiled.clicked() {
-            self.commit_family_name();
-            self.select_family(None);
-            self.gallery = GalleryDeck::Library;
-            self.water.select(unfiled.rect);
-        }
-
-        let families = self
-            .library
-            .families()
-            .iter()
-            .map(|family| (family.id, family.name.to_string(), family.trails.len()))
-            .collect::<Vec<_>>();
-        let mut select = None;
-        let mut remove = None;
-        for (id, name, count) in families {
-            let _row = ui.horizontal(|ui| {
-                let width = (ui.available_width() - 58.0).max(30.0);
-                let family = ui.add_sized(
-                    [width, 25.0],
-                    chrome::glyph_button(
-                        format!("{}    {count}", name.to_ascii_uppercase()),
-                        self.active_family == Some(id),
-                    ),
-                );
-                chrome::tension(ui, &family);
-                if family.clicked() {
-                    select = Some((id, family.rect));
-                }
-                let excise = ui
-                    .add(chrome::glyph_button("DELETE", false).min_size(vec2(54.0, 23.0)))
-                    .on_hover_text("Delete this family. Its trails remain in Unfiled.");
-                if excise.clicked() {
-                    remove = Some((id, excise.rect));
-                }
-            });
-        }
-        if let Some((id, rect)) = select {
-            self.commit_family_name();
-            self.select_family(Some(id));
-            self.water.select(rect);
-        }
-        if let Some((id, rect)) = remove
-            && self.library.remove_family(id)
-        {
-            self.candidates.remove(&id);
-            if self.active_family == Some(id) {
-                self.select_family(self.library.families().first().map(|family| family.id));
-            }
-            if matches!(self.focus, Some(Focus::Candidate { family, .. }) if family == id) {
-                self.leave_focus();
-            }
-            self.flush_library();
-            "Family deleted. Its trails are now Unfiled.".clone_into(&mut self.status);
-            self.water.click(rect);
-        }
-
-        if self.active_family.is_some() {
-            ui.add_space(5.0);
-            let rename = ui.add(
-                egui::TextEdit::singleline(&mut self.family_name)
-                    .hint_text("family name")
-                    .desired_width(ui.available_width()),
-            );
-            chrome::tension(ui, &rename);
-            if rename.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
-                self.commit_family_name();
-            }
-        }
-    }
-
-    fn membership_panel(&mut self, ui: &mut egui::Ui) {
-        let Some(Focus::Saved(id)) = self.focus.clone() else {
-            return;
-        };
-        let memberships = self
-            .library
-            .families()
-            .iter()
-            .map(|family| {
-                (
-                    family.id,
-                    family.name.to_string(),
-                    self.library.contains(family.id, &id),
-                )
-            })
-            .collect::<Vec<_>>();
-        for (family, name, member) in memberships {
-            let response = ui.add(
-                chrome::glyph_button(name.to_ascii_uppercase(), member)
-                    .min_size(vec2(ui.available_width(), 25.0)),
-            );
-            chrome::tension(ui, &response);
-            if response.clicked() && self.library.toggle_membership(family, &id) {
-                self.flush_library();
-                self.water.select(response.rect);
-            }
-        }
-    }
-
     fn search_panel(&mut self, ui: &mut egui::Ui) {
         if self.editor.is_some() {
             self.editor_panel(ui);
@@ -629,37 +466,25 @@ impl TrailApp {
         );
         chrome::tension(ui, &manual);
         if manual.clicked() {
-            self.begin_editor(EditorOrigin::New(self.active_family), None);
+            self.begin_editor(EditorOrigin::New, None);
             self.water.click(manual.rect);
             return;
         }
         ui.add_space(6.0);
-        let Some(family_id) = self.active_family else {
-            let _note = chrome::note(ui, "CREATE OR SELECT A FAMILY TO SEARCH");
-            return;
-        };
-        let Some(mut recipe) = self
-            .library
-            .family(family_id)
-            .map(|family| family.search.clone())
-        else {
-            return;
-        };
+        let mut recipe = self.library.search().clone();
         let original = recipe.clone();
 
         self.trailhead_editor(ui, &mut recipe);
         let recipe_changed = self.search_recipe_editor(ui, &mut recipe);
 
-        if (recipe_changed || recipe != original)
-            && let Some(family) = self.library.family_mut(family_id)
-        {
-            family.search = recipe;
+        if recipe_changed || recipe != original {
+            *self.library.search_mut() = recipe;
             self.mark_library_dirty();
         }
 
         ui.add_space(6.0);
         let validation = self
-            .search_request(family_id, self.serial.saturating_add(1))
+            .search_request(self.serial.saturating_add(1))
             .and_then(|request| request.validate(&self.graph))
             .err()
             .map(|err| err.to_string());
@@ -682,7 +507,7 @@ impl TrailApp {
         };
         chrome::tension(ui, &find);
         if find.clicked() {
-            self.strike(family_id);
+            self.strike();
             self.water.thwack(find.rect, 0.7);
         }
     }
@@ -960,9 +785,7 @@ impl TrailApp {
                     "Click to add support points; drag any bronze pin to reshape the trail."
                 }
             } else if self.placing_trailhead {
-                "Click a trail on the map to place this family's trailhead. Esc cancels."
-            } else if self.library.families().is_empty() {
-                "Create a trail family to begin."
+                "Click a trail on the map to place the trailhead. Esc cancels."
             } else if self.active_trailhead().is_none() {
                 "Place a trailhead on the map, then choose Find trails."
             } else {
@@ -1010,8 +833,8 @@ impl TrailApp {
             }
             if self.gallery == GalleryDeck::Results
                 && self
-                    .active_family
-                    .and_then(|family| self.candidates.get(&family))
+                    .candidates
+                    .as_ref()
                     .is_some_and(|run| !run.routes.is_empty())
             {
                 let response = chrome::glyph(ui, "CLEAR RESULTS", false);
@@ -1029,9 +852,7 @@ impl TrailApp {
             self.water.select(rect);
         }
         if let Some(rect) = clear {
-            if let Some(family) = self.active_family {
-                self.candidates.remove(&family);
-            }
+            self.candidates = None;
             "Search results cleared. Saved trails are untouched.".clone_into(&mut self.status);
             self.water.click(rect);
         }
@@ -1166,13 +987,9 @@ impl TrailApp {
     }
 
     fn library_gallery(&mut self, ui: &mut egui::Ui) {
-        let trails = self
-            .visible_saved_trails()
-            .into_iter()
-            .cloned()
-            .collect::<Vec<_>>();
+        let trails = self.library.trails().to_vec();
         if trails.is_empty() {
-            gallery_empty(ui, "NO SAVED TRAILS IN THIS FAMILY");
+            gallery_empty(ui, "NO SAVED TRAILS");
             self.water.hide_loading();
             return;
         }
@@ -1208,22 +1025,16 @@ impl TrailApp {
     }
 
     fn results_gallery(&mut self, ui: &mut egui::Ui) {
-        let Some(family) = self.active_family else {
-            gallery_empty(ui, "SELECT A FAMILY TO SEE ITS RESULTS");
-            return;
-        };
-        let Some(run) = self.candidates.get(&family) else {
+        let Some(run) = self.candidates.as_ref() else {
             gallery_empty(
                 ui,
-                if matches!(self.forge_phase, ForgePhase::Striking { family: active, .. } if active == family)
-                {
+                if matches!(self.forge_phase, ForgePhase::Striking { .. }) {
                     "FINDING TRAILS…"
                 } else {
                     "NO RESULTS YET"
                 },
             );
-            if matches!(self.forge_phase, ForgePhase::Striking { family: active, .. } if active == family)
-            {
+            if matches!(self.forge_phase, ForgePhase::Striking { .. }) {
                 self.water
                     .show_loading(ui.ctx(), ui.available_rect_before_wrap());
             }
@@ -1248,7 +1059,7 @@ impl TrailApp {
                         let active = self
                             .focus
                             .as_ref()
-                            .is_some_and(|focus| *focus == Focus::Candidate { family, slot });
+                            .is_some_and(|focus| *focus == Focus::Candidate { slot });
                         let response = gallery::candidate_tile(
                             ui,
                             &self.graph,
@@ -1268,7 +1079,7 @@ impl TrailApp {
             });
         self.water.heave(ui.ctx(), scroll.state.offset.x);
         if let Some((slot, rect)) = opened {
-            self.enter_focus(Focus::Candidate { family, slot });
+            self.enter_focus(Focus::Candidate { slot });
             self.water.click(rect);
         }
     }
@@ -1287,9 +1098,9 @@ impl TrailApp {
             editor.profile.as_ref()
         } else {
             match &self.focus {
-                Some(Focus::Candidate { family, slot }) => self
+                Some(Focus::Candidate { slot }) => self
                     .candidates
-                    .get(family)
+                    .as_ref()
                     .and_then(|run| run.profiles.get(*slot))
                     .and_then(Option::as_ref),
                 Some(Focus::Saved(_)) => saved_profile.as_ref(),
@@ -1442,10 +1253,10 @@ impl TrailApp {
             return;
         }
         match &self.focus {
-            Some(Focus::Candidate { family, slot }) => {
+            Some(Focus::Candidate { slot }) => {
                 if let Some(route) = self
                     .candidates
-                    .get(family)
+                    .as_ref()
                     .and_then(|run| run.routes.get(*slot))
                 {
                     map::paint_route(
@@ -1470,10 +1281,7 @@ impl TrailApp {
                 }
             }
             None if self.gallery == GalleryDeck::Results => {
-                if let Some(run) = self
-                    .active_family
-                    .and_then(|family| self.candidates.get(&family))
-                {
+                if let Some(run) = &self.candidates {
                     for (ordinal, slot) in gallery::order_candidates(&run.routes, self.sort)
                         .into_iter()
                         .enumerate()
@@ -1490,7 +1298,7 @@ impl TrailApp {
                 }
             }
             None => {
-                for trail in self.visible_saved_trails() {
+                for trail in self.library.trails() {
                     map::paint_saved_trail(
                         painter,
                         trail,
@@ -1601,10 +1409,6 @@ impl TrailApp {
     }
 
     fn place_trailhead(&mut self, requested: Coord, pointer: egui::Pos2) {
-        let Some(family_id) = self.active_family else {
-            "Select a trail family first.".clone_into(&mut self.status);
-            return;
-        };
         let Some((vertex, distance_m)) = self.graph.nearest_vertex_with_distance(requested) else {
             "No downloaded trail is near that point.".clone_into(&mut self.status);
             return;
@@ -1618,9 +1422,7 @@ impl TrailApp {
             "That trailhead cannot be used.".clone_into(&mut self.status);
             return;
         };
-        if let Some(family) = self.library.family_mut(family_id) {
-            family.search.trailhead = Some(trailhead);
-        }
+        self.library.search_mut().trailhead = Some(trailhead);
         self.placing_trailhead = false;
         self.flush_library();
         self.status = if distance_m < 20.0 {
@@ -1726,16 +1528,15 @@ impl TrailApp {
         }
     }
 
-    fn strike(&mut self, family: FamilyId) {
+    fn strike(&mut self) {
         self.serial = self.serial.saturating_add(1);
         match self
-            .search_request(family, self.serial)
+            .search_request(self.serial)
             .and_then(|request| self.forge.strike(request))
         {
             Ok(()) => {
                 self.forge_phase = ForgePhase::Striking {
                     serial: self.serial,
-                    family,
                 };
                 self.gallery = GalleryDeck::Results;
                 "Finding trails…".clone_into(&mut self.status);
@@ -1744,15 +1545,9 @@ impl TrailApp {
         }
     }
 
-    fn search_request(&self, family: FamilyId, serial: u64) -> Result<SearchRequest> {
-        let family = self
-            .library
-            .family(family)
-            .context("select a trail family")?;
-        let trailhead = family
-            .search
-            .trailhead
-            .context("place a trailhead on the map")?;
+    fn search_request(&self, serial: u64) -> Result<SearchRequest> {
+        let recipe = self.library.search();
+        let trailhead = recipe.trailhead.context("place a trailhead on the map")?;
         let (start, _) = self
             .graph
             .nearest_vertex_with_distance(trailhead.coord())
@@ -1761,9 +1556,8 @@ impl TrailApp {
         params.keep = params.keep.max(CANDIDATE_COUNT);
         Ok(SearchRequest {
             serial,
-            family: family.id,
             start,
-            constraints: family.search.constraints(&self.defaults)?,
+            constraints: recipe.constraints(&self.defaults)?,
             params,
             solver: self.solver,
             count: CANDIDATE_COUNT,
@@ -1775,10 +1569,9 @@ impl TrailApp {
             match event {
                 SearchEvent::Found {
                     serial,
-                    family,
                     routes,
                     elapsed,
-                } if self.forge_phase == ForgePhase::Striking { serial, family } => {
+                } if self.forge_phase == ForgePhase::Striking { serial } => {
                     self.forge_phase = ForgePhase::Idle;
                     let count = routes.len();
                     let designs = routes
@@ -1789,14 +1582,11 @@ impl TrailApp {
                         .iter()
                         .map(|route| ElevationProfile::forge(&self.graph, route))
                         .collect();
-                    self.candidates.insert(
-                        family,
-                        CandidateRun {
-                            routes,
-                            designs,
-                            profiles,
-                        },
-                    );
+                    self.candidates = Some(CandidateRun {
+                        routes,
+                        designs,
+                        profiles,
+                    });
                     self.status = if count == 0 {
                         format!("No trails matched in {}.", duration(elapsed))
                     } else {
@@ -1862,13 +1652,6 @@ impl TrailApp {
         }
     }
 
-    fn visible_saved_trails(&self) -> Vec<&SavedTrail> {
-        self.active_family.map_or_else(
-            || self.library.loose_trails().collect(),
-            |family| self.library.family_trails(family).collect(),
-        )
-    }
-
     fn design_for_candidate(&self, route: &Route) -> Option<Trail> {
         let trail = Trail::infer(&self.graph, route, self.params.routing)?;
         let realized = trail
@@ -1882,55 +1665,17 @@ impl TrailApp {
         (realized.route.edges == route.edges).then_some(trail)
     }
 
-    fn active_trailhead(&self) -> Option<Trailhead> {
-        self.active_family
-            .and_then(|id| self.library.family(id))
-            .and_then(|family| family.search.trailhead)
-    }
-
-    fn select_family(&mut self, family: Option<FamilyId>) {
-        self.active_family = family.filter(|id| self.library.family(*id).is_some());
-        self.family_name = self
-            .active_family
-            .and_then(|id| self.library.family(id))
-            .map_or_else(String::new, |family| family.name.to_string());
-        self.placing_trailhead = false;
-        self.leave_focus();
-    }
-
-    fn commit_family_name(&mut self) {
-        let Some(id) = self.active_family else {
-            return;
-        };
-        let old = self
-            .library
-            .family(id)
-            .map(|family| family.name.to_string());
-        if old.as_deref() == Some(self.family_name.trim()) {
-            return;
-        }
-        if self.library.rename_family(id, &self.family_name) {
-            self.family_name = self
-                .library
-                .family(id)
-                .expect("renamed family remains present")
-                .name
-                .to_string();
-            self.flush_library();
-        } else if let Some(old) = old {
-            self.family_name = old;
-            "Family names must be distinct and contain 1–64 characters."
-                .clone_into(&mut self.status);
-        }
+    const fn active_trailhead(&self) -> Option<Trailhead> {
+        self.library.search().trailhead
     }
 
     fn save_focused_candidate(&mut self) {
-        let Some(Focus::Candidate { family, slot }) = self.focus.clone() else {
+        let Some(Focus::Candidate { slot }) = self.focus.clone() else {
             return;
         };
         let Some(route) = self
             .candidates
-            .get(&family)
+            .as_ref()
             .and_then(|run| run.routes.get(slot))
             .cloned()
         else {
@@ -1938,7 +1683,7 @@ impl TrailApp {
         };
         let design = self
             .candidates
-            .get(&family)
+            .as_ref()
             .and_then(|run| run.designs.get(slot))
             .and_then(Clone::clone);
         let result = if let Some(design) = design {
@@ -1951,19 +1696,16 @@ impl TrailApp {
                     TRAILHEAD_SNAP_M,
                 )
                 .map_err(anyhow::Error::from)
-                .and_then(|realization| {
-                    self.library
-                        .promote_realization(Some(family), &self.graph, &realization)
-                })
+                .and_then(|realization| self.library.promote_realization(&self.graph, &realization))
         } else {
-            self.library.promote(family, &self.graph, &route)
+            self.library.promote(&self.graph, &route)
         };
         match result {
             Ok(id) => {
                 self.enter_focus(Focus::Saved(id));
                 self.gallery = GalleryDeck::Library;
                 self.flush_library();
-                "Trail saved to its family.".clone_into(&mut self.status);
+                "Trail saved to the project.".clone_into(&mut self.status);
             }
             Err(err) => self.status = format!("Could not save this trail: {err:#}"),
         }
@@ -1971,9 +1713,9 @@ impl TrailApp {
 
     fn focus_design(&self) -> Option<Trail> {
         match &self.focus {
-            Some(Focus::Candidate { family, slot }) => self
+            Some(Focus::Candidate { slot }) => self
                 .candidates
-                .get(family)
+                .as_ref()
                 .and_then(|run| run.designs.get(*slot))
                 .and_then(Clone::clone),
             Some(Focus::Saved(id)) => self.library.trail(id).and_then(SavedTrail::design),
@@ -1990,7 +1732,7 @@ impl TrailApp {
             return;
         };
         let origin = match self.focus.as_ref() {
-            Some(Focus::Candidate { family, .. }) => EditorOrigin::Candidate(*family),
+            Some(Focus::Candidate { .. }) => EditorOrigin::Candidate,
             Some(Focus::Saved(id)) => EditorOrigin::Saved(id.clone()),
             None => return,
         };
@@ -2000,13 +1742,7 @@ impl TrailApp {
     fn begin_editor(&mut self, origin: EditorOrigin, seed: Option<(String, Trail)>) {
         let return_focus = self.focus.take();
         let (name, shape, support_points) = seed.map_or_else(
-            || {
-                let shape = self
-                    .active_family
-                    .and_then(|family| self.library.family(family))
-                    .map_or(RouteShape::Open, |family| family.search.shape);
-                ("manual trail".to_owned(), shape, Vec::new())
-            },
+            || ("manual trail".to_owned(), RouteShape::Open, Vec::new()),
             |(name, trail)| (name, trail.shape, trail.support_points),
         );
         self.scribe.disarm();
@@ -2101,13 +1837,8 @@ impl TrailApp {
         let origin = editor.origin.clone();
         let had_focus = editor.return_focus.is_some();
         let result = match &origin {
-            EditorOrigin::New(family) => {
-                self.library
-                    .promote_realization(*family, &self.graph, &realization)
-            }
-            EditorOrigin::Candidate(family) => {
-                self.library
-                    .promote_realization(Some(*family), &self.graph, &realization)
+            EditorOrigin::New | EditorOrigin::Candidate => {
+                self.library.promote_realization(&self.graph, &realization)
             }
             EditorOrigin::Saved(id) => {
                 self.library
@@ -2152,9 +1883,9 @@ impl TrailApp {
 
     fn focus_summary(&self) -> Option<(String, RouteMetrics)> {
         match &self.focus {
-            Some(Focus::Candidate { family, slot }) => self
+            Some(Focus::Candidate { slot }) => self
                 .candidates
-                .get(family)
+                .as_ref()
                 .and_then(|run| run.routes.get(*slot))
                 .map(|route| (route.name.clone(), route.metrics.clone())),
             Some(Focus::Saved(id)) => self
@@ -2167,9 +1898,9 @@ impl TrailApp {
 
     fn focus_standing(&self) -> Option<TrailStanding> {
         match &self.focus {
-            Some(Focus::Candidate { family, slot }) => self
+            Some(Focus::Candidate { slot }) => self
                 .candidates
-                .get(family)
+                .as_ref()
                 .and_then(|run| run.routes.get(*slot))
                 .and_then(|route| {
                     map::frailest_standing(
@@ -2188,20 +1919,19 @@ impl TrailApp {
 
     fn focus_count(&self) -> usize {
         match &self.focus {
-            Some(Focus::Candidate { family, .. }) => self
-                .candidates
-                .get(family)
-                .map_or(0, |run| run.routes.len()),
-            Some(Focus::Saved(_)) => self.visible_saved_trails().len(),
+            Some(Focus::Candidate { .. }) => {
+                self.candidates.as_ref().map_or(0, |run| run.routes.len())
+            }
+            Some(Focus::Saved(_)) => self.library.trails().len(),
             None => 0,
         }
     }
 
     fn has_profile(&self) -> bool {
         match &self.focus {
-            Some(Focus::Candidate { family, slot }) => self
+            Some(Focus::Candidate { slot }) => self
                 .candidates
-                .get(family)
+                .as_ref()
                 .and_then(|run| run.profiles.get(*slot))
                 .is_some_and(Option::is_some),
             Some(Focus::Saved(id)) => self
@@ -2215,18 +1945,18 @@ impl TrailApp {
 
     fn step_focus(&mut self, delta: isize) {
         let next = match self.focus.clone() {
-            Some(Focus::Candidate { family, slot }) => {
-                let Some(run) = self.candidates.get(&family) else {
+            Some(Focus::Candidate { slot }) => {
+                let Some(run) = &self.candidates else {
                     return;
                 };
                 let order = gallery::order_candidates(&run.routes, self.sort);
                 let Some(next) = cyclic_step(&order, slot, delta) else {
                     return;
                 };
-                Focus::Candidate { family, slot: next }
+                Focus::Candidate { slot: next }
             }
             Some(Focus::Saved(id)) => {
-                let trails = self.visible_saved_trails();
+                let trails = self.library.trails().iter().collect::<Vec<_>>();
                 let order = gallery::order_saved(&trails, self.sort);
                 let ids = order
                     .into_iter()
@@ -2243,10 +1973,7 @@ impl TrailApp {
             None => return,
         };
         self.fit = match &next {
-            Focus::Candidate { family, slot } => Fit::Candidate {
-                family: *family,
-                slot: *slot,
-            },
+            Focus::Candidate { slot } => Fit::Candidate(*slot),
             Focus::Saved(id) => Fit::Saved(id.clone()),
         };
         self.focus = Some(next);
@@ -2255,10 +1982,7 @@ impl TrailApp {
     fn enter_focus(&mut self, focus: Focus) {
         self.focus_frame.push(self.viewport);
         self.fit = match &focus {
-            Focus::Candidate { family, slot } => Fit::Candidate {
-                family: *family,
-                slot: *slot,
-            },
+            Focus::Candidate { slot } => Fit::Candidate(*slot),
             Focus::Saved(id) => Fit::Saved(id.clone()),
         };
         self.focus = Some(focus);
@@ -2275,9 +1999,9 @@ impl TrailApp {
     fn apply_fit(&mut self, rect: egui::Rect) {
         let viewport = match &self.fit {
             Fit::Graph => Some(Viewport::fit_graph(&self.graph, rect)),
-            Fit::Candidate { family, slot } => self
+            Fit::Candidate(slot) => self
                 .candidates
-                .get(family)
+                .as_ref()
                 .and_then(|run| run.routes.get(*slot))
                 .map(|route| Viewport::fit_route(&self.graph, route, rect)),
             Fit::Saved(id) => self
@@ -2324,11 +2048,8 @@ impl TrailApp {
             return;
         }
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Enter)) {
-            if self.editor.is_none()
-                && let Some(family) = self.active_family
-                && matches!(self.forge_phase, ForgePhase::Idle)
-            {
-                self.strike(family);
+            if self.editor.is_none() && matches!(self.forge_phase, ForgePhase::Idle) {
+                self.strike();
             }
             return;
         }
@@ -2398,7 +2119,6 @@ impl TrailApp {
             shutters: self.shutters.clone(),
             inspector_scroll: self.inspector_scroll,
             sort: self.sort,
-            active_family: self.active_family,
             gallery: self.gallery,
         }
     }
@@ -2617,7 +2337,7 @@ mod tests {
         let second = SupportPoint::forge(Coord::new(-73.99, 41.01)).expect("valid support");
         let mut editor = TrailEditor {
             name: "test".to_owned(),
-            origin: EditorOrigin::New(None),
+            origin: EditorOrigin::New,
             return_focus: None,
             shape: RouteShape::OutAndBack,
             support_points: vec![first],

@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::{
     collections::HashSet,
-    fmt::{Display, Formatter},
     fs,
     io::Write as _,
     path::{Path, PathBuf},
@@ -13,51 +12,12 @@ use trailgen_core::{
     SupportPoint, Terrain, Trail, TrailClass, TrailGraph, TrailRealization, TrailStanding,
 };
 
-const SCHEMA: u32 = 2;
+const SCHEMA: u32 = 3;
 const INDEX: &str = "library/index.json";
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(transparent)]
-pub struct FamilyId(u64);
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct TrailId(String);
-
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct FamilyName(String);
-
-impl FamilyName {
-    pub fn forge(raw: &str) -> Option<Self> {
-        let name = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-        (!name.is_empty() && name.chars().count() <= 64).then_some(Self(name))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl Display for FamilyName {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl TryFrom<String> for FamilyName {
-    type Error = &'static str;
-
-    fn try_from(raw: String) -> Result<Self, Self::Error> {
-        Self::forge(&raw).ok_or("family name must contain 1–64 non-whitespace characters")
-    }
-}
-
-impl From<FamilyName> for String {
-    fn from(name: FamilyName) -> Self {
-        name.0
-    }
-}
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(transparent)]
@@ -275,45 +235,76 @@ impl SavedTrail {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct Family {
-    pub id: FamilyId,
-    pub name: FamilyName,
-    pub search: SearchRecipe,
-    pub trails: Vec<TrailId>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct Library {
     schema: u32,
-    next_family: u64,
     trails: Vec<SavedTrail>,
-    families: Vec<Family>,
+    search: SearchRecipe,
 }
 
 impl Default for Library {
     fn default() -> Self {
-        Self {
-            schema: SCHEMA,
-            next_family: 1,
-            trails: Vec::new(),
-            families: Vec::new(),
-        }
+        Self::forge(&LoopConstraints::default())
     }
 }
 
+#[derive(Deserialize)]
+struct LegacyLibrary {
+    trails: Vec<SavedTrail>,
+    #[serde(rename = "families")]
+    searches: Vec<LegacySearch>,
+}
+
+#[derive(Deserialize)]
+struct LegacySearch {
+    search: SearchRecipe,
+}
+
+#[derive(Deserialize)]
+struct LibrarySchema {
+    schema: u32,
+}
+
 impl Library {
-    pub fn open(project: &Path, graph: &TrailGraph) -> Result<Self> {
+    fn forge(defaults: &LoopConstraints) -> Self {
+        Self {
+            schema: SCHEMA,
+            trails: Vec::new(),
+            search: SearchRecipe::from_defaults(defaults),
+        }
+    }
+
+    pub fn open(project: &Path, graph: &TrailGraph, defaults: &LoopConstraints) -> Result<Self> {
         let path = index_path(project);
         match fs::read(&path) {
             Ok(bytes) => {
-                let mut library = serde_json::from_slice::<Self>(&bytes)
-                    .with_context(|| format!("parse {}", path.display()))?;
-                let legacy = library.schema == 1;
-                if legacy {
-                    library.schema = SCHEMA;
-                }
-                let repaired = library.recover_metrics(legacy) || legacy;
+                let schema = serde_json::from_slice::<LibrarySchema>(&bytes)
+                    .with_context(|| format!("parse {}", path.display()))?
+                    .schema;
+                let (mut library, migrated) = if schema == SCHEMA {
+                    (
+                        serde_json::from_slice::<Self>(&bytes)
+                            .with_context(|| format!("parse {}", path.display()))?,
+                        false,
+                    )
+                } else if (1..SCHEMA).contains(&schema) {
+                    let legacy = serde_json::from_slice::<LegacyLibrary>(&bytes)
+                        .with_context(|| format!("parse {}", path.display()))?;
+                    let search = legacy.searches.into_iter().next().map_or_else(
+                        || SearchRecipe::from_defaults(defaults),
+                        |scope| scope.search,
+                    );
+                    (
+                        Self {
+                            schema: SCHEMA,
+                            trails: legacy.trails,
+                            search,
+                        },
+                        true,
+                    )
+                } else {
+                    anyhow::bail!("unsupported trail library schema {schema}");
+                };
+                let repaired = library.recover_metrics(schema == 1) || migrated;
                 library.validate()?;
                 if repaired {
                     library.save(project)?;
@@ -321,7 +312,7 @@ impl Library {
                 Ok(library)
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                let library = Self::migrate_legacy(project, graph)?;
+                let library = Self::migrate_legacy(project, graph, defaults)?;
                 library.save(project)?;
                 Ok(library)
             }
@@ -347,72 +338,20 @@ impl Library {
             .with_context(|| format!("replace {} with {}", temporary.display(), path.display()))
     }
 
-    pub fn families(&self) -> &[Family] {
-        &self.families
-    }
-
-    pub fn family(&self, id: FamilyId) -> Option<&Family> {
-        self.families.iter().find(|family| family.id == id)
-    }
-
-    pub fn family_mut(&mut self, id: FamilyId) -> Option<&mut Family> {
-        self.families.iter_mut().find(|family| family.id == id)
+    pub fn trails(&self) -> &[SavedTrail] {
+        &self.trails
     }
 
     pub fn trail(&self, id: &TrailId) -> Option<&SavedTrail> {
         self.trails.iter().find(|trail| &trail.id == id)
     }
 
-    pub fn family_trails(&self, id: FamilyId) -> impl Iterator<Item = &SavedTrail> {
-        self.family(id)
-            .into_iter()
-            .flat_map(|family| family.trails.iter())
-            .filter_map(|id| self.trail(id))
+    pub const fn search(&self) -> &SearchRecipe {
+        &self.search
     }
 
-    pub fn loose_trails(&self) -> impl Iterator<Item = &SavedTrail> {
-        self.trails.iter().filter(|trail| {
-            self.families
-                .iter()
-                .all(|family| !family.trails.contains(&trail.id))
-        })
-    }
-
-    pub fn add_family(&mut self, defaults: &LoopConstraints) -> FamilyId {
-        let id = FamilyId(self.next_family);
-        self.next_family = self.next_family.saturating_add(1);
-        let name = self.spare_family_name();
-        self.families.push(Family {
-            id,
-            name,
-            search: SearchRecipe::from_defaults(defaults),
-            trails: Vec::new(),
-        });
-        id
-    }
-
-    pub fn rename_family(&mut self, id: FamilyId, raw: &str) -> bool {
-        let Some(name) = FamilyName::forge(raw) else {
-            return false;
-        };
-        if self
-            .families
-            .iter()
-            .any(|family| family.id != id && family.name == name)
-        {
-            return false;
-        }
-        let Some(family) = self.family_mut(id) else {
-            return false;
-        };
-        family.name = name;
-        true
-    }
-
-    pub fn remove_family(&mut self, id: FamilyId) -> bool {
-        let before = self.families.len();
-        self.families.retain(|family| family.id != id);
-        self.families.len() != before
+    pub const fn search_mut(&mut self) -> &mut SearchRecipe {
+        &mut self.search
     }
 
     pub fn remove_trail(&mut self, id: &TrailId) -> bool {
@@ -421,49 +360,23 @@ impl Library {
         if self.trails.len() == before {
             return false;
         }
-        for family in &mut self.families {
-            family.trails.retain(|trail| trail != id);
-        }
         true
     }
 
-    pub fn promote(
-        &mut self,
-        family: FamilyId,
-        graph: &TrailGraph,
-        route: &Route,
-    ) -> Result<TrailId> {
-        ensure!(
-            self.family(family).is_some(),
-            "trail family no longer exists"
-        );
+    pub fn promote(&mut self, graph: &TrailGraph, route: &Route) -> Result<TrailId> {
         let trail = SavedTrail::capture(graph, route)?;
         let id = trail.id.clone();
         if self.trail(&id).is_none() {
             self.trails.push(trail);
-        }
-        let members = &mut self
-            .family_mut(family)
-            .expect("family existence checked")
-            .trails;
-        if !members.contains(&id) {
-            members.push(id.clone());
         }
         Ok(id)
     }
 
     pub fn promote_realization(
         &mut self,
-        family: Option<FamilyId>,
         graph: &TrailGraph,
         realization: &TrailRealization,
     ) -> Result<TrailId> {
-        if let Some(family) = family {
-            ensure!(
-                self.family(family).is_some(),
-                "trail family no longer exists"
-            );
-        }
         let trail = SavedTrail::capture_design(
             realization.graph(graph),
             &realization.route,
@@ -472,15 +385,6 @@ impl Library {
         let id = trail.id.clone();
         if self.trail(&id).is_none() {
             self.trails.push(trail);
-        }
-        if let Some(family) = family {
-            let members = &mut self
-                .family_mut(family)
-                .expect("family existence checked")
-                .trails;
-            if !members.contains(&id) {
-                members.push(id.clone());
-            }
         }
         Ok(id)
     }
@@ -492,12 +396,6 @@ impl Library {
         realization: &TrailRealization,
     ) -> Result<TrailId> {
         ensure!(self.trail(old).is_some(), "trail no longer exists");
-        let memberships = self
-            .families
-            .iter()
-            .filter(|family| family.trails.contains(old))
-            .map(|family| family.id)
-            .collect::<Vec<_>>();
         let replacement = SavedTrail::capture_design(
             realization.graph(graph),
             &realization.route,
@@ -509,42 +407,14 @@ impl Library {
             if self.trail(&id).is_none() {
                 self.trails.push(replacement);
             }
-            for family in &mut self.families {
-                family.trails.retain(|trail| trail != old);
-                if memberships.contains(&family.id) && !family.trails.contains(&id) {
-                    family.trails.push(id.clone());
-                }
-            }
         } else if let Some(stored) = self.trails.iter_mut().find(|trail| &trail.id == old) {
             *stored = replacement;
         }
         Ok(id)
     }
 
-    pub fn toggle_membership(&mut self, family: FamilyId, trail: &TrailId) -> bool {
-        if self.trail(trail).is_none() {
-            return false;
-        }
-        let Some(family) = self.family_mut(family) else {
-            return false;
-        };
-        if let Some(slot) = family.trails.iter().position(|known| known == trail) {
-            let _removed = family.trails.remove(slot);
-        } else {
-            family.trails.push(trail.clone());
-        }
-        true
-    }
-
-    pub fn contains(&self, family: FamilyId, trail: &TrailId) -> bool {
-        self.family(family)
-            .is_some_and(|family| family.trails.contains(trail))
-    }
-
     fn validate(&self) -> Result<()> {
         ensure!(self.schema == SCHEMA, "unsupported trail library schema");
-        let mut family_ids = HashSet::new();
-        let mut family_names = HashSet::new();
         let mut trail_ids = HashSet::new();
         for trail in &self.trails {
             ensure!(
@@ -584,33 +454,7 @@ impl Library {
                 .map_err(anyhow::Error::from)?;
             }
         }
-        for family in &self.families {
-            ensure!(family_ids.insert(family.id), "duplicate family identity");
-            ensure!(
-                family_names.insert(family.name.clone()),
-                "duplicate family name"
-            );
-            family.search.validate()?;
-            let mut members = HashSet::new();
-            for trail in &family.trails {
-                ensure!(
-                    trail_ids.contains(trail),
-                    "family references a missing trail"
-                );
-                ensure!(members.insert(trail), "family contains a trail twice");
-            }
-        }
-        let next = self
-            .families
-            .iter()
-            .map(|family| family.id.0)
-            .max()
-            .unwrap_or(0)
-            .saturating_add(1);
-        ensure!(
-            self.next_family >= next,
-            "family identity counter regressed"
-        );
+        self.search.validate()?;
         Ok(())
     }
 
@@ -658,29 +502,19 @@ impl Library {
         changed
     }
 
-    fn spare_family_name(&self) -> FamilyName {
-        let mut raw = "new family".to_owned();
-        let mut suffix = 2_u64;
-        while self
-            .families
-            .iter()
-            .any(|family| family.name.as_str() == raw)
-        {
-            raw = format!("new family {suffix}");
-            suffix = suffix.saturating_add(1);
-        }
-        FamilyName::forge(&raw).expect("compiled family name is valid")
-    }
-
-    fn migrate_legacy(project: &Path, graph: &TrailGraph) -> Result<Self> {
+    fn migrate_legacy(
+        project: &Path,
+        graph: &TrailGraph,
+        defaults: &LoopConstraints,
+    ) -> Result<Self> {
         let generated_graph =
             read_optional::<TrailGraph>(&project.join("routes/generated.graph.json"))?;
         if generated_graph.as_ref() != Some(graph) {
-            return Ok(Self::default());
+            return Ok(Self::forge(defaults));
         }
         let routes = read_optional::<Vec<Route>>(&project.join("routes/generated.routes.json"))?
             .unwrap_or_default();
-        let mut library = Self::default();
+        let mut library = Self::forge(defaults);
         for route in routes {
             let trail = SavedTrail::capture(graph, &route)?;
             if library.trail(&trail.id).is_none() {
@@ -749,18 +583,47 @@ mod tests {
     }
 
     #[test]
-    fn families_are_flat_membership_sets_and_deletion_spills() -> Result<()> {
+    fn trails_belong_directly_to_the_project() -> Result<()> {
         let (graph, route) = fixture()?;
         let mut library = Library::default();
-        let a = library.add_family(&LoopConstraints::default());
-        let b = library.add_family(&LoopConstraints::default());
-        let trail = library.promote(a, &graph, &route)?;
-        assert!(library.toggle_membership(b, &trail));
-        assert!(library.contains(a, &trail) && library.contains(b, &trail));
-        assert!(library.remove_family(a));
-        assert_eq!(library.loose_trails().count(), 0);
-        assert!(library.remove_family(b));
-        assert_eq!(library.loose_trails().count(), 1);
+        let trail = library.promote(&graph, &route)?;
+        assert_eq!(library.trails().len(), 1);
+        assert_eq!(library.trails()[0].id, trail);
+        assert!(library.remove_trail(&trail));
+        assert!(library.trails().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn schema_two_organizers_collapse_without_losing_trails() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let (graph, route) = fixture()?;
+        let saved = SavedTrail::capture(&graph, &route)?;
+        let id = saved.id.clone();
+        let mut first = SearchRecipe::from_defaults(&LoopConstraints::default());
+        first.difficulty = 73.0;
+        let second = SearchRecipe::from_defaults(&LoopConstraints::default());
+        let path = index_path(temp.path());
+        fs::create_dir_all(path.parent().context("index parent")?)?;
+        fs::write(
+            &path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema": 2,
+                "next_family": 3,
+                "trails": [saved],
+                "families": [
+                    {"id": 1, "name": "long", "search": first, "trails": [id]},
+                    {"id": 2, "name": "climby", "search": second, "trails": []}
+                ]
+            }))?,
+        )?;
+
+        let library = Library::open(temp.path(), &graph, &LoopConstraints::default())?;
+        assert_eq!(library.trails().len(), 1);
+        assert!((library.search().difficulty - 73.0).abs() < f64::EPSILON);
+        let stored: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
+        assert_eq!(stored["schema"], SCHEMA);
+        assert!(stored.get("families").is_none());
         Ok(())
     }
 
@@ -777,11 +640,15 @@ mod tests {
             temp.path().join("routes/generated.routes.json"),
             serde_json::to_vec_pretty(&vec![route])?,
         )?;
-        let mut library = Library::open(temp.path(), &graph)?;
+        let mut library = Library::open(temp.path(), &graph, &LoopConstraints::default())?;
         assert_eq!(library.trails.len(), 1);
         library.trails.clear();
         library.save(temp.path())?;
-        assert!(Library::open(temp.path(), &graph)?.trails.is_empty());
+        assert!(
+            Library::open(temp.path(), &graph, &LoopConstraints::default())?
+                .trails
+                .is_empty()
+        );
         Ok(())
     }
 
@@ -834,11 +701,10 @@ mod tests {
         };
 
         let mut library = Library::default();
-        let family = library.add_family(&LoopConstraints::default());
-        let original = library.promote_realization(Some(family), &graph, &realize(2)?)?;
+        let original = library.promote_realization(&graph, &realize(2)?)?;
         library.save(temp.path())?;
 
-        let mut reopened = Library::open(temp.path(), &graph)?;
+        let mut reopened = Library::open(temp.path(), &graph, &LoopConstraints::default())?;
         assert!(
             reopened
                 .trail(&original)
@@ -846,7 +712,6 @@ mod tests {
                 .is_some()
         );
         let replacement = reopened.replace_realization(&original, &graph, &realize(1)?)?;
-        assert!(reopened.contains(family, &replacement));
         assert!(
             reopened
                 .trail(&replacement)
