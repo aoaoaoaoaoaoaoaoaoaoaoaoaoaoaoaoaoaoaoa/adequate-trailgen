@@ -126,13 +126,19 @@ not fetch history by default merely to increase line count.
 
 ## Harriman Evidence
 
-The standing owned fixtures are `harriman-south-lows.csv` and `harriman-west.csv`. They remain full
-end-to-end generation tests. A 2026-07-21 public-source probe additionally matched every source
-segment of both traces to the current OSM graph within 40 m and found no disconnected transition;
-maximum geometric separation was 2.74 m for South Lows and 5.23 m for West. USGS enriched the wider
-Harriman corpus but did not improve either owned trace. The decisive South Lows repair was retaining
-a bounded street bridge between genuine trail junctions and cautiously joining provider-fragment
-endpoints, not admitting the surrounding street mesh or inventing missing trail geometry.
+The owned fixtures `harriman-south-lows.csv` and `harriman-west.csv` are deterministic end-to-end
+solver replays over route-derived graphs. A 2026-07-21 public-source probe additionally matched every
+source segment of both traces to the current OSM graph within 40 m and found no disconnected
+transition; maximum geometric separation was 2.74 m for South Lows and 5.23 m for West. USGS
+enriched the wider Harriman corpus but did not improve either owned trace. Reproduction from the
+dense public graph remains a separate support-point test obligation; scalar search constraints do
+not identify either custom route.
+
+The [Harriman source audit](harriman-source-audit.md) identifies every anonymous interval and traces
+the important near-bushwhack lines to OSM history, official NYS unmarked-trail data, and independent
+field descriptions. Its central finding is semantic, not geometric: the model cannot yet preserve
+the authoritative marked-versus-unmarked distinction independently of standing, maintenance, and
+access.
 
 See the [USGS access guide](https://www.usgs.gov/national-digital-trails/how-access-or-view-usgs-trails-dataset),
 [USGS dataset Q&A](https://www.usgs.gov/national-digital-trails/qas-about-usgs-trail-data),

@@ -32,6 +32,7 @@ const WGS84_PRJ: &str = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",63
 const WEB_MERCATOR_PRJ: &str = r#"PROJCS["WGS 84 / Pseudo-Mercator",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PROJECTION["Mercator_1SP"],UNIT["metre",1],AUTHORITY["EPSG","3857"]]"#;
 const UTM_PRJ: &str = r#"PROJCS["WGS 84 / UTM zone 13N",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PROJECTION["Transverse_Mercator"],UNIT["metre",1],AUTHORITY["EPSG","32613"]]"#;
 const NAD83_UTM_PRJ: &str = r#"PROJCS["NAD83 / UTM zone 13N",GEOGCS["NAD83",DATUM["North_American_Datum_1983",SPHEROID["GRS 1980",6378137,298.257222101]],PROJECTION["Transverse_Mercator"],UNIT["metre",1],AUTHORITY["EPSG","26913"]]"#;
+const ESRI_NAD83_UTM_PRJ: &str = r#"PROJCS["NAD_1983_UTM_Zone_13N",GEOGCS["GCS_North_American_1983",DATUM["D_North_American_1983",SPHEROID["GRS_1980",6378137,298.257222101]],PROJECTION["Transverse_Mercator"],UNIT["Meter",1]]"#;
 const NAD83_LAMBERT_PRJ: &str = r#"PROJCS["NAD83 / Colorado Central",GEOGCS["NAD83",DATUM["North_American_Datum_1983",SPHEROID["GRS 1980",6378137,298.257222101]],PROJECTION["Lambert_Conformal_Conic"],UNIT["metre",1],AUTHORITY["EPSG","32154"]]"#;
 const WEB_MERCATOR_0_01_LON_M: f64 = 1_113.194_907_932_735_8;
 
@@ -3817,10 +3818,7 @@ fn vector_adapters_reproject_declared_projected_crs_and_reject_unsupported_proje
         utm_start.0, utm_start.1, utm_end.0, utm_end.1
     );
     let drafts = geojson::network_from_str(&utm_geojson).unwrap();
-    assert!((drafts[0].geometry.points[0].lon + 104.995).abs() < 1.0e-7);
-    assert!((drafts[0].geometry.points[0].lat - 40.005).abs() < 1.0e-7);
-    assert!((drafts[0].geometry.points[1].lon + 104.985).abs() < 1.0e-7);
-    assert!((drafts[0].geometry.points[1].lat - 40.005).abs() < 1.0e-7);
+    assert_colorado_segment(&drafts);
 
     let nad83_utm = trailgen_core::crs::UtmCrs::from_epsg(26913).unwrap();
     let nad83_utm_start =
@@ -3840,10 +3838,7 @@ fn vector_adapters_reproject_declared_projected_crs_and_reject_unsupported_proje
         nad83_utm_start.0, nad83_utm_start.1, nad83_utm_end.0, nad83_utm_end.1
     );
     let drafts = geojson::network_from_str(&nad83_utm_geojson).unwrap();
-    assert!((drafts[0].geometry.points[0].lon + 104.995).abs() < 1.0e-7);
-    assert!((drafts[0].geometry.points[0].lat - 40.005).abs() < 1.0e-7);
-    assert!((drafts[0].geometry.points[1].lon + 104.985).abs() < 1.0e-7);
-    assert!((drafts[0].geometry.points[1].lat - 40.005).abs() < 1.0e-7);
+    assert_colorado_segment(&drafts);
 
     let unsupported_geojson = r#"{
       "type": "FeatureCollection",
@@ -3872,10 +3867,7 @@ fn vector_adapters_reproject_declared_projected_crs_and_reject_unsupported_proje
     );
     std::fs::write(utm.with_extension("prj"), UTM_PRJ).unwrap();
     let drafts = shp_io::network_from_path(&utm).unwrap();
-    assert!((drafts[0].geometry.points[0].lon + 104.995).abs() < 1.0e-7);
-    assert!((drafts[0].geometry.points[0].lat - 40.005).abs() < 1.0e-7);
-    assert!((drafts[0].geometry.points[1].lon + 104.985).abs() < 1.0e-7);
-    assert!((drafts[0].geometry.points[1].lat - 40.005).abs() < 1.0e-7);
+    assert_colorado_segment(&drafts);
 
     let nad83_utm = tmp.path().join("nad83-utm-trails.shp");
     write_network_shapefile_points(
@@ -3885,16 +3877,24 @@ fn vector_adapters_reproject_declared_projected_crs_and_reject_unsupported_proje
     );
     std::fs::write(nad83_utm.with_extension("prj"), NAD83_UTM_PRJ).unwrap();
     let drafts = shp_io::network_from_path(&nad83_utm).unwrap();
-    assert!((drafts[0].geometry.points[0].lon + 104.995).abs() < 1.0e-7);
-    assert!((drafts[0].geometry.points[0].lat - 40.005).abs() < 1.0e-7);
-    assert!((drafts[0].geometry.points[1].lon + 104.985).abs() < 1.0e-7);
-    assert!((drafts[0].geometry.points[1].lat - 40.005).abs() < 1.0e-7);
+    assert_colorado_segment(&drafts);
+
+    std::fs::write(nad83_utm.with_extension("prj"), ESRI_NAD83_UTM_PRJ).unwrap();
+    let drafts = shp_io::network_from_path(&nad83_utm).unwrap();
+    assert_colorado_segment(&drafts);
 
     let unsupported = tmp.path().join("nad83-lambert-trails.shp");
     write_network_shapefile(&unsupported);
     std::fs::write(unsupported.with_extension("prj"), NAD83_LAMBERT_PRJ).unwrap();
     let error = shp_io::network_from_path(&unsupported).unwrap_err();
     assert!(format!("{error}").contains("unsupported projected CRS"));
+}
+
+fn assert_colorado_segment(drafts: &[SegmentDraft]) {
+    assert!((drafts[0].geometry.points[0].lon + 104.995).abs() < 1.0e-7);
+    assert!((drafts[0].geometry.points[0].lat - 40.005).abs() < 1.0e-7);
+    assert!((drafts[0].geometry.points[1].lon + 104.985).abs() < 1.0e-7);
+    assert!((drafts[0].geometry.points[1].lat - 40.005).abs() < 1.0e-7);
 }
 
 #[test]

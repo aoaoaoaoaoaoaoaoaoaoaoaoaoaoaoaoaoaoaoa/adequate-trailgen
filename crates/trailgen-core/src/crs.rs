@@ -144,6 +144,10 @@ impl UtmCrs {
                     format!("NAD83UTMZONE{zone}N"),
                     Self::from_parts(GeodeticDatum::Nad83, zone_u8, UtmHemisphere::North)?,
                 ),
+                (
+                    format!("NAD1983UTMZONE{zone}N"),
+                    Self::from_parts(GeodeticDatum::Nad83, zone_u8, UtmHemisphere::North)?,
+                ),
             ]
             .into_iter()
             .find_map(|(needle, crs)| normalized.contains(&needle).then_some(crs))
