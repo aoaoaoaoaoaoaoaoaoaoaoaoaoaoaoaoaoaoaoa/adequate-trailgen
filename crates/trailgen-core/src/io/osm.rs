@@ -1,7 +1,7 @@
 use crate::builder::{JunctionPolicy, SegmentDraft, TurnRestrictionDraft, TurnRestrictionRule};
 use crate::geo::{Coord, LineString};
 use crate::model::{
-    Access, CrossingKind, EdgeTravel, Provenance, Terrain, TrailClass, TrailStanding,
+    Access, CrossingKind, EdgeTravel, Provenance, Terrain, TrailClass, TrailMarking, TrailStanding,
 };
 use crate::overlay::ContextOverlay;
 use crate::{Result, TrailgenError};
@@ -139,6 +139,7 @@ fn draft_from_xml_way(
         geometry: LineString::new(points)?,
         trail_class: walkway.class,
         standing: walkway.standing,
+        marking: walkway.marking,
         terrain: walkway.terrain,
         terrain_confidence: Some(walkway.terrain_confidence),
         surface: tags.get("surface").cloned(),
@@ -235,6 +236,7 @@ fn draft_from_pbf_way(
         geometry: LineString::new(points)?,
         trail_class: walkway.class,
         standing: walkway.standing,
+        marking: walkway.marking,
         terrain: walkway.terrain,
         terrain_confidence: Some(walkway.terrain_confidence),
         surface: tags.get("surface").cloned(),
@@ -348,6 +350,7 @@ fn contract_osm_drafts(drafts: Vec<SegmentDraft>) -> Vec<SegmentDraft> {
                     ),
                     trail_class: draft.trail_class,
                     standing: draft.standing,
+                    marking: draft.marking,
                     terrain: draft.terrain,
                     terrain_confidence: draft.terrain_confidence,
                     surface: draft.surface.clone(),
@@ -726,6 +729,7 @@ fn source_junction_policy(tags: &BTreeMap<String, String>) -> JunctionPolicy {
 struct Walkway {
     class: TrailClass,
     standing: TrailStanding,
+    marking: TrailMarking,
     terrain: Terrain,
     terrain_confidence: f64,
     access: Access,
@@ -759,6 +763,7 @@ impl Walkway {
         Some(Self {
             class,
             standing,
+            marking: marking_from_tags(tags, hiking),
             terrain,
             terrain_confidence,
             access,
@@ -767,6 +772,21 @@ impl Walkway {
             confidence: 0.74,
         })
     }
+}
+
+fn marking_from_tags(tags: &BTreeMap<String, String>, hiking_relation: bool) -> TrailMarking {
+    tags.get("trailblazed")
+        .or_else(|| tags.get("marked"))
+        .map_or_else(
+            || {
+                if hiking_relation || tags.contains_key("trailblazed:visibility") {
+                    TrailMarking::Marked
+                } else {
+                    TrailMarking::Unknown
+                }
+            },
+            |tag| TrailMarking::from_tag(tag),
+        )
 }
 
 fn standing_from_tags(tags: &BTreeMap<String, String>) -> (Option<&str>, TrailStanding) {

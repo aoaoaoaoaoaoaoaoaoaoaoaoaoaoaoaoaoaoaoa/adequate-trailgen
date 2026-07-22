@@ -284,6 +284,9 @@ fn corroborate(preferred: &mut SegmentDraft, suppressed: &SegmentDraft) {
     if preferred.standing == crate::TrailStanding::Unknown {
         preferred.standing = suppressed.standing;
     }
+    if preferred.marking == crate::TrailMarking::Unknown {
+        preferred.marking = suppressed.marking;
+    }
     if preferred.terrain == Terrain::Unknown {
         preferred.terrain = suppressed.terrain;
         preferred.terrain_confidence = suppressed.terrain_confidence;
@@ -303,7 +306,7 @@ const fn same_location(left: Coord, right: Coord) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EdgeTravel, TrailStanding};
+    use crate::{EdgeTravel, TrailMarking, TrailStanding};
 
     fn draft(name: &str, latitude: f64, standing: TrailStanding) -> SegmentDraft {
         SegmentDraft {
@@ -316,6 +319,7 @@ mod tests {
             turn_restrictions: Vec::new(),
             trail_class: TrailClass::Path,
             standing,
+            marking: TrailMarking::Unknown,
             terrain: Terrain::Trail,
             terrain_confidence: Some(0.8),
             surface: None,
@@ -330,7 +334,8 @@ mod tests {
     #[test]
     fn higher_strata_suppress_parallel_duplicates_and_keep_provenance() {
         let primary = draft("osm", 41.2, TrailStanding::Informal);
-        let secondary = draft("usgs", 41.200_03, TrailStanding::Established);
+        let mut secondary = draft("usgs", 41.200_03, TrailStanding::Established);
+        secondary.marking = TrailMarking::Marked;
         let network = conflate(
             vec![
                 NetworkStratum {
@@ -346,6 +351,7 @@ mod tests {
         );
         assert_eq!(network.drafts.len(), 1);
         assert_eq!(network.drafts[0].standing, TrailStanding::Informal);
+        assert_eq!(network.drafts[0].marking, TrailMarking::Marked);
         assert_eq!(network.drafts[0].provenance.len(), 2);
         assert_eq!(network.report.suppressed_parallel_segments, 1);
     }

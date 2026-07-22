@@ -27,7 +27,7 @@ use std::{
 use trailgen_core::{
     Access, ContextOverlay, Coord, CrossingKind, DEFAULT_SNAP_TOLERANCE_M, DifficultyWeights, Edge,
     EdgeTravel, EnrichmentConfig, GraphBuilder, LineString, Provenance, SegmentDraft, Terrain,
-    TrailClass, TrailGraph, TrailStanding, apply_context_overlays,
+    TrailClass, TrailGraph, TrailMarking, TrailStanding, apply_context_overlays,
     io::{geojson, osm},
     model::TerrainEvidence,
     source::{
@@ -45,7 +45,7 @@ pub const FALLBACK_OVERPASS_ENDPOINT: &str = "https://overpass.private.coffee/ap
 pub const MAX_REGION_DEG2: f64 = 4.0;
 pub(crate) const MAX_SOURCE_BYTES: u64 = 256 * 1024 * 1024;
 const AUTOMATIC_OSM_PROFILE: OsmProfile = OsmProfile::All;
-const INDEX_SCHEMA: u8 = 11;
+const INDEX_SCHEMA: u8 = 12;
 const RAW_SCHEMA: u8 = 4;
 const MAX_OSM_CONNECTOR_M: f64 = 1_000.0;
 const LOCATION_CACHE: &str = "sources/location.json";
@@ -722,7 +722,7 @@ impl NetworkProvider for Overpass {
         ProviderDescriptor {
             id: ProviderId::new("osm").expect("static provider id is valid"),
             label: "OpenStreetMap",
-            adapter_revision: 4,
+            adapter_revision: 5,
             precedence: 0,
             extension: "osm",
             request_extension: "overpassql",
@@ -2039,13 +2039,13 @@ fn graph_vertices_csv(graph: &TrailGraph) -> String {
 
 fn graph_edges_csv(graph: &TrailGraph) -> String {
     let mut out = String::from(
-        "edge_id,from_vertex,to_vertex,travel,length_m,ascent_m,descent_m,grade_abs_mean,grade_abs_max,sustained_steep_m,trail_class,trail_standing,terrain,surface,terrain_confidence,terrain_evidence,access,access_confidence,access_provenance,road_exposure,confidence,difficulty,seed_count,seed_provenance,elevation_provenance,road_crossings,water_crossings,provenance,wkt\n",
+        "edge_id,from_vertex,to_vertex,travel,length_m,ascent_m,descent_m,grade_abs_mean,grade_abs_max,sustained_steep_m,trail_class,trail_standing,trail_marking,terrain,surface,terrain_confidence,terrain_evidence,access,access_confidence,access_provenance,road_exposure,confidence,difficulty,seed_count,seed_provenance,elevation_provenance,road_crossings,water_crossings,provenance,wkt\n",
     );
     for edge in &graph.edges {
         let (roads, water) = edge_crossing_counts(edge);
         writeln!(
             out,
-            "{},{},{},{},{:.3},{:.3},{:.3},{:.6},{:.6},{:.3},{},{},{},{},{:.6},{},{},{:.6},{},{:.6},{:.6},{:.6},{},{},{},{},{},{},{}",
+            "{},{},{},{},{:.3},{:.3},{:.3},{:.6},{:.6},{:.3},{},{},{},{},{},{:.6},{},{},{:.6},{},{:.6},{:.6},{:.6},{},{},{},{},{},{},{}",
             edge.id.0,
             edge.a.0,
             edge.b.0,
@@ -2058,6 +2058,7 @@ fn graph_edges_csv(graph: &TrailGraph) -> String {
             edge.attr.sustained_steep_m,
             trail_class_tag(edge.attr.trail_class),
             trail_standing_tag(edge.attr.standing),
+            trail_marking_tag(edge.attr.marking),
             terrain_tag(edge.attr.terrain),
             csv_cell(edge.attr.surface.as_deref().unwrap_or("")),
             edge.attr.terrain_confidence,
@@ -2187,6 +2188,14 @@ const fn trail_standing_tag(standing: TrailStanding) -> &'static str {
         TrailStanding::Unmaintained => "unmaintained",
         TrailStanding::Informal => "informal",
         TrailStanding::Historical => "historical",
+    }
+}
+
+const fn trail_marking_tag(marking: TrailMarking) -> &'static str {
+    match marking {
+        TrailMarking::Unknown => "unknown",
+        TrailMarking::Marked => "marked",
+        TrailMarking::Unmarked => "unmarked",
     }
 }
 

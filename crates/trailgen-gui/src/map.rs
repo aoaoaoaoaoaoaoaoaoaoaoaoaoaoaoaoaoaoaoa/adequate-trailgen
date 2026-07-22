@@ -4,7 +4,7 @@ use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, Vec2, pos2, vec2};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, f64::consts::PI};
 use trailgen_core::{
-    Access, Coord, LineString, Route, Terrain, TrailClass, TrailGraph, TrailStanding,
+    Access, Coord, LineString, Route, Terrain, TrailClass, TrailGraph, TrailMarking, TrailStanding,
 };
 
 const TILE_EDGE: f64 = 256.0;
@@ -195,16 +195,18 @@ pub enum TrailMark {
     Solid,
     Dashed,
     Dotted,
+    Unmarked,
 }
 
 impl TrailMark {
-    const ALL: [Self; 3] = [Self::Solid, Self::Dashed, Self::Dotted];
+    const ALL: [Self; 4] = [Self::Solid, Self::Dashed, Self::Dotted, Self::Unmarked];
 
     const fn label(self) -> &'static str {
         match self {
             Self::Solid => "EASY / GRAVEL",
             Self::Dashed => "ROUGHER",
             Self::Dotted => "SEVERE / FADED",
+            Self::Unmarked => "UNMARKED / NAVIGATION",
         }
     }
 }
@@ -229,6 +231,7 @@ impl Atlas {
                     mark: trail_mark(
                         edge.attr.trail_class,
                         edge.attr.standing,
+                        edge.attr.marking,
                         edge.attr.terrain,
                         edge.attr.surface.as_deref(),
                     ),
@@ -291,7 +294,7 @@ impl Atlas {
         painter.text(
             pos2(plate.left() + 8.0, heading_y),
             egui::Align2::LEFT_TOP,
-            "SURFACE / CONDITION",
+            "SURFACE / WAYFINDING",
             egui::FontId::monospace(13.0),
             chrome::MUTED,
         );
@@ -365,6 +368,7 @@ pub fn paint_route(
             trail_mark(
                 edge.attr.trail_class,
                 edge.attr.standing,
+                edge.attr.marking,
                 edge.attr.terrain,
                 edge.attr.surface.as_deref(),
             ),
@@ -392,6 +396,7 @@ pub fn paint_saved_trail(
             trail_mark(
                 leg.trail_class,
                 leg.standing,
+                leg.marking,
                 leg.terrain,
                 leg.surface.as_deref(),
             ),
@@ -453,15 +458,27 @@ pub fn paint_trail_tube(
                 core.width * 0.55,
             ));
         }
+        TrailMark::Unmarked => {
+            painter.extend(Shape::dotted_line(
+                points,
+                core.color,
+                width * 2.05,
+                core.width * 0.48,
+            ));
+        }
     }
 }
 
 pub fn trail_mark(
     class: TrailClass,
     standing: TrailStanding,
+    marking: TrailMarking,
     terrain: Terrain,
     surface: Option<&str>,
 ) -> TrailMark {
+    if marking == TrailMarking::Unmarked {
+        return TrailMark::Unmarked;
+    }
     if class.pathless()
         || matches!(
             standing,
@@ -842,6 +859,7 @@ mod tests {
             trail_mark(
                 TrailClass::Path,
                 TrailStanding::Established,
+                TrailMarking::Unknown,
                 Terrain::Trail,
                 Some("gravel")
             ),
@@ -851,6 +869,7 @@ mod tests {
             trail_mark(
                 TrailClass::Path,
                 TrailStanding::Established,
+                TrailMarking::Unknown,
                 Terrain::Trail,
                 Some("dirt")
             ),
@@ -860,6 +879,7 @@ mod tests {
             trail_mark(
                 TrailClass::Path,
                 TrailStanding::Established,
+                TrailMarking::Unknown,
                 Terrain::Scramble,
                 Some("gravel")
             ),
@@ -869,6 +889,7 @@ mod tests {
             trail_mark(
                 TrailClass::Path,
                 TrailStanding::Unmaintained,
+                TrailMarking::Unknown,
                 Terrain::Trail,
                 Some("gravel")
             ),
@@ -878,10 +899,21 @@ mod tests {
             trail_mark(
                 TrailClass::Bushwhack,
                 TrailStanding::Unknown,
+                TrailMarking::Unknown,
                 Terrain::Forest,
                 None
             ),
             TrailMark::Dotted
+        );
+        assert_eq!(
+            trail_mark(
+                TrailClass::Path,
+                TrailStanding::Established,
+                TrailMarking::Unmarked,
+                Terrain::Trail,
+                Some("gravel")
+            ),
+            TrailMark::Unmarked
         );
     }
 }

@@ -4,7 +4,7 @@ use crate::geo::{Coord, LineString};
 use crate::io::route_file::{RouteFile, RouteFileMetadata};
 use crate::model::{
     Access, CrossingKind, Edge, EdgeTravel, Provenance, Terrain, TrailClass, TrailGraph,
-    TrailStanding,
+    TrailMarking, TrailStanding,
 };
 use crate::overlay::{
     AccessOverlay, AccessWindow, ContextOverlay, DailyTimeWindow, MonthDay, OverlayGeometry,
@@ -52,6 +52,11 @@ pub fn network_from_str(s: &str) -> Result<Vec<SegmentDraft>> {
         let standing = prop_str(&properties, "trail_standing")
             .or_else(|| prop_str(&properties, "standing"))
             .map_or(TrailStanding::Unknown, TrailStanding::from_tag);
+        let marking = prop_str(&properties, "trail_marking")
+            .or_else(|| prop_str(&properties, "marking"))
+            .or_else(|| prop_str(&properties, "trailblazed"))
+            .or_else(|| prop_str(&properties, "asset"))
+            .map_or(TrailMarking::Unknown, TrailMarking::from_tag);
         let access = prop_str(&properties, "access").map_or(Access::Unknown, Access::from_tag);
         let travel = travel_from_properties(&properties);
         let confidence = prop_f64(&properties, "confidence").unwrap_or(0.75);
@@ -82,6 +87,7 @@ pub fn network_from_str(s: &str) -> Result<Vec<SegmentDraft>> {
                 geometry: line,
                 trail_class,
                 standing,
+                marking,
                 terrain,
                 terrain_confidence: Some(terrain_confidence),
                 surface: surface.clone(),
@@ -236,6 +242,7 @@ pub fn graph_to_geojson(graph: &TrailGraph) -> Value {
                 ("grade_distribution".to_owned(), json!(edge.attr.grade_distribution)),
                 ("trail_class".to_owned(), json!(edge.attr.trail_class)),
                 ("trail_standing".to_owned(), json!(edge.attr.standing)),
+                ("trail_marking".to_owned(), json!(edge.attr.marking)),
                 ("difficulty".to_owned(), json!(edge.attr.difficulty)),
                 ("difficulty_breakdown".to_owned(), json!(edge.attr.difficulty_breakdown)),
                 ("terrain".to_owned(), json!(edge.attr.terrain)),

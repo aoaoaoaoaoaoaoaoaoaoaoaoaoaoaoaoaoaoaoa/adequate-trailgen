@@ -8,9 +8,9 @@ Audited 2026-07-22 against the owned `harriman-south-lows.csv` and
 No route interval is geometrically absent from the current public corpus. Every South Lows trace
 segment lies within 2.74 m of the current OSM graph and every West segment within 5.23 m; neither
 route contains a disconnected transition. The apparent holes are instead unnamed paths without
-route relations, marking evidence, or useful condition tags. Trailgen currently calls every current
-OSM `highway` established, which may be a sound existence claim but cannot express the marked versus
-unmarked distinction recovered here.
+route relations, marking evidence, or useful condition tags. OSM alone therefore leaves their
+wayfinding unknown. Trailgen now represents marked versus unmarked independently of standing and
+can accept the recovered state classification without turning it into a current access warranty.
 
 The present Harriman integration tests are deterministic solver replays over graphs derived from
 the owned traces. They are not discovery tests over the public Harriman graph. A heuristic search
@@ -74,8 +74,8 @@ they cannot silently join Trailgen's redistributable default corpus without a co
 
 These loops do not justify a bushwhack router. Their geometry is routable today. They justify:
 
-1. separating wayfinding (`marked`, `unmarked`, `unknown`) from physical standing, maintenance, and
-   access, then allowing corroborating sources to refine those dimensions independently;
+1. preserving the new separation of wayfinding (`marked`, `unmarked`, `unknown`) from physical
+   standing, maintenance, and access as additional providers are admitted;
 2. a public-corpus Harriman test whose ordered support points force the intended route and whose
    oracle verifies geometry, topology, wayfinding, and standing independently; and
 3. treating the vanished current-state record for the South pipeline as temporal uncertainty, not

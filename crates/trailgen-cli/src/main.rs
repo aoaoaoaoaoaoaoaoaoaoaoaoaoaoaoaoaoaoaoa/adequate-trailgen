@@ -23,8 +23,8 @@ use trailgen_core::{
     GradeDistribution, GraphBuilder, JunctionPolicy, LOW_CONFIDENCE_THRESHOLD, LineString,
     LoopConstraints, LoopMilpFormulation, PlanningDate, PlanningMoment, PlanningTime, Provenance,
     RasterDem, Route, RouteMetrics, RouteShape, RouteSnapStats, SearchParams, SeedRoute,
-    SegmentDraft, SolverKind, Terrain, TrailClass, TrailGraph, TrailStanding, VertexId, VrtDem,
-    apply_access_overlays, apply_access_overlays_at, apply_context_overlays,
+    SegmentDraft, SolverKind, Terrain, TrailClass, TrailGraph, TrailMarking, TrailStanding,
+    VertexId, VrtDem, apply_access_overlays, apply_access_overlays_at, apply_context_overlays,
     apply_terrain_overlays, artifact_key, enrich_graph, rank_routes, route_edges_from_solution,
 };
 use trailgen_data::{
@@ -1210,6 +1210,7 @@ fn route_source_draft_from_line(source: &Path, line: LineString) -> SegmentDraft
         geometry: line,
         trail_class: TrailClass::default(),
         standing: TrailStanding::Unknown,
+        marking: TrailMarking::default(),
         terrain: Terrain::Unknown,
         terrain_confidence: Some(0.0),
         surface: None,
@@ -1286,6 +1287,7 @@ fn stats_text(graph: &TrailGraph) -> String {
     let mut text = String::new();
     let mut terrain_m = BTreeMap::<Terrain, f64>::new();
     let mut standing_m = BTreeMap::<TrailStanding, f64>::new();
+    let mut marking_m = BTreeMap::<TrailMarking, f64>::new();
     let mut access_m = BTreeMap::<Access, f64>::new();
     let mut source_m = BTreeMap::<String, f64>::new();
     let mut confidence_m = BTreeMap::<ConfidenceBand, f64>::new();
@@ -1299,6 +1301,7 @@ fn stats_text(graph: &TrailGraph) -> String {
         let a = &edge.attr;
         *terrain_m.entry(a.terrain).or_default() += a.length_m;
         *standing_m.entry(a.standing).or_default() += a.length_m;
+        *marking_m.entry(a.marking).or_default() += a.length_m;
         *access_m.entry(a.access).or_default() += a.length_m;
         *source_m.entry(primary_source_label(a)).or_default() += a.length_m;
         *confidence_m
@@ -1368,6 +1371,7 @@ fn stats_text(graph: &TrailGraph) -> String {
     );
     write_meter_mix(&mut text, "Terrain mix", &terrain_m, total_m);
     write_meter_mix(&mut text, "Trail standing", &standing_m, total_m);
+    write_meter_mix(&mut text, "Trail marking", &marking_m, total_m);
     write_meter_mix(&mut text, "Access mix", &access_m, total_m);
     write_labeled_meter_mix(&mut text, "Source mix", &source_m, total_m);
     write_labeled_meter_mix(&mut text, "Confidence mix", &confidence_m, total_m);
@@ -7097,6 +7101,7 @@ mod tests {
                 .unwrap(),
                 trail_class: TrailClass::default(),
                 standing: TrailStanding::Unknown,
+                marking: TrailMarking::default(),
                 terrain: Terrain::Trail,
                 terrain_confidence: None,
                 surface: None,
@@ -7114,6 +7119,7 @@ mod tests {
                     .unwrap(),
                 trail_class: TrailClass::default(),
                 standing: TrailStanding::Unknown,
+                marking: TrailMarking::default(),
                 terrain: Terrain::Road,
                 terrain_confidence: None,
                 surface: Some("gravel".to_owned()),

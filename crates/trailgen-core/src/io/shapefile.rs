@@ -2,7 +2,7 @@ use crate::builder::{JunctionPolicy, SegmentDraft};
 use crate::crs::{CoordProjector, CrsVerdict, projector, validate_prj_wkt};
 use crate::geo::{Coord, LineString};
 use crate::model::{
-    Access, CrossingKind, EdgeTravel, Provenance, Terrain, TrailClass, TrailStanding,
+    Access, CrossingKind, EdgeTravel, Provenance, Terrain, TrailClass, TrailMarking, TrailStanding,
 };
 use crate::overlay::{
     AccessOverlay, AccessWindow, ContextOverlay, DailyTimeWindow, MonthDay, OverlayGeometry,
@@ -43,6 +43,12 @@ pub fn network_from_path(path: &Path) -> Result<Vec<SegmentDraft>> {
             .str("trail_standing")
             .or_else(|| props.str("standing"))
             .map_or(TrailStanding::Unknown, TrailStanding::from_tag);
+        let marking = props
+            .str("trail_marking")
+            .or_else(|| props.str("marking"))
+            .or_else(|| props.str("trailblazed"))
+            .or_else(|| props.str("asset"))
+            .map_or(TrailMarking::Unknown, TrailMarking::from_tag);
         let access = props
             .str("access")
             .or_else(|| props.str("status"))
@@ -74,6 +80,7 @@ pub fn network_from_path(path: &Path) -> Result<Vec<SegmentDraft>> {
                 geometry: line,
                 trail_class,
                 standing,
+                marking,
                 terrain,
                 terrain_confidence: Some(terrain_confidence),
                 surface: surface.clone(),

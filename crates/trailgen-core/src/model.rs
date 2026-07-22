@@ -53,6 +53,32 @@ pub enum TrailStanding {
     Historical,
 }
 
+/// Whether the path supplies deliberate wayfinding marks. This is independent
+/// of physical condition, institutional standing, and permission to travel.
+#[derive(
+    Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum TrailMarking {
+    #[default]
+    Unknown,
+    Marked,
+    Unmarked,
+}
+
+impl TrailMarking {
+    #[must_use]
+    pub fn from_tag(tag: &str) -> Self {
+        match tag.trim().to_ascii_lowercase().as_str() {
+            "marked" | "marked trail" | "blazed" | "yes" | "symbols" | "poles" | "cairns" => {
+                Self::Marked
+            }
+            "unmarked" | "unmarked trail" | "unblazed" | "no" | "none" => Self::Unmarked,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 impl TrailStanding {
     #[must_use]
     pub fn from_tag(tag: &str) -> Self {
@@ -366,6 +392,8 @@ pub struct EdgeAttr {
     pub trail_class: TrailClass,
     #[serde(default)]
     pub standing: TrailStanding,
+    #[serde(default)]
+    pub marking: TrailMarking,
     pub terrain: Terrain,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surface: Option<String>,

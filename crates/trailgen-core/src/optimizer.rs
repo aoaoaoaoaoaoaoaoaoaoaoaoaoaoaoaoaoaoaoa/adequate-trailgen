@@ -780,6 +780,7 @@ mod tests {
             turn_restrictions: Vec::new(),
             trail_class: TrailClass::Path,
             standing: TrailStanding::Established,
+            marking: crate::TrailMarking::default(),
             terrain: Terrain::Trail,
             terrain_confidence: Some(1.0),
             surface: None,

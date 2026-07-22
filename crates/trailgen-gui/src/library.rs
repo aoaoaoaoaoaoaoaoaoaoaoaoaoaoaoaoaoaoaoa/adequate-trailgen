@@ -9,7 +9,8 @@ use std::{
 };
 use trailgen_core::{
     Access, Coord, LineString, LoopConstraints, Route, RouteMetrics, RouteShape, RoutingLaw,
-    SupportPoint, Terrain, Trail, TrailClass, TrailGraph, TrailRealization, TrailStanding,
+    SupportPoint, Terrain, Trail, TrailClass, TrailGraph, TrailMarking, TrailRealization,
+    TrailStanding,
 };
 
 const SCHEMA: u32 = 3;
@@ -149,6 +150,8 @@ pub struct TrailLeg {
     pub trail_class: TrailClass,
     #[serde(default)]
     pub standing: TrailStanding,
+    #[serde(default)]
+    pub marking: TrailMarking,
     pub terrain: Terrain,
     pub surface: Option<String>,
     pub access: Access,
@@ -188,6 +191,7 @@ impl SavedTrail {
                     geometry: edge.oriented_geometry(at),
                     trail_class: edge.attr.trail_class,
                     standing: edge.attr.standing,
+                    marking: edge.attr.marking,
                     terrain: edge.attr.terrain,
                     surface: edge.attr.surface.clone(),
                     access: edge.attr.access,

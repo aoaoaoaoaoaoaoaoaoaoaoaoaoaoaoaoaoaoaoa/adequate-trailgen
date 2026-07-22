@@ -43,10 +43,11 @@ evidence. A street is never a trail merely because walking is legal there: servi
 road segments survive only when they form the nearest bridge of at most 1 km between two genuine
 trail junctions. The unpruned road layer remains sequestered as context for crossings and exposure.
 Hiking, foot, and walking route relations raise evidence; simple node-via foot turn restrictions
-become graph turn bans. `foot`/`access`, direction, surface, trail visibility, maintenance,
-`informal`, `disused`, and `abandoned` tags remain semantic input rather than display trivia.
+become graph turn bans. `foot`/`access`, direction, surface, trail visibility, wayfinding marks,
+maintenance, `informal`, `disused`, and `abandoned` tags remain semantic input rather than display
+trivia.
 
-## Standing And Access
+## Standing, Marking, And Access
 
 `TrailStanding` and `Access` answer different questions. Standing describes what sort of path the
 source claims exists:
@@ -61,6 +62,11 @@ Access separately records `open`, `restricted`, `closed`, `private`, or `unknown
 dual stroke so terrain/class remains legible while standing and access remain visible. Search may
 surface informal or unmaintained geometry; it never silently promotes that standing to an access
 claim.
+
+`TrailMarking` independently records `marked`, `unmarked`, or `unknown`. OSM `trailblazed` evidence
+and hiking-route membership establish marking; authoritative fields such as NYS `Asset = Unmarked
+Trail` survive GeoJSON and shapefile ingestion. Unmarked lines use a deliberately sparse dotted core
+and add navigation pressure without being mislabeled informal, unmaintained, closed, or pathless.
 
 ## Provider Contract
 
@@ -136,9 +142,13 @@ not identify either custom route.
 
 The [Harriman source audit](harriman-source-audit.md) identifies every anonymous interval and traces
 the important near-bushwhack lines to OSM history, official NYS unmarked-trail data, and independent
-field descriptions. Its central finding is semantic, not geometric: the model cannot yet preserve
-the authoritative marked-versus-unmarked distinction independently of standing, maintenance, and
-access.
+field descriptions. Its central semantic finding is now encoded directly: wayfinding marking is
+independent of standing, maintenance, and access.
+
+The [US public trail source census](../notes/us-public-trail-source-census.md) catalogs all state
+authorities and the principal federal land managers. Catalog presence is intentionally separate from
+automatic-provider admission: licensing, lifecycle filtering, field semantics, and coverage evidence
+must be proved first.
 
 See the [USGS access guide](https://www.usgs.gov/national-digital-trails/how-access-or-view-usgs-trails-dataset),
 [USGS dataset Q&A](https://www.usgs.gov/national-digital-trails/qas-about-usgs-trail-data),

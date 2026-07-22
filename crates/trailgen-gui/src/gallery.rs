@@ -99,6 +99,7 @@ pub fn candidate_tile(
                     trail_mark(
                         edge.attr.trail_class,
                         edge.attr.standing,
+                        edge.attr.marking,
                         edge.attr.terrain,
                         edge.attr.surface.as_deref(),
                     ),
@@ -130,6 +131,7 @@ pub fn saved_tile(ui: &mut Ui, trail: &SavedTrail, active: bool) -> Response {
                     trail_mark(
                         leg.trail_class,
                         leg.standing,
+                        leg.marking,
                         leg.terrain,
                         leg.surface.as_deref(),
                     ),

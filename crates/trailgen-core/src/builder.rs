@@ -3,7 +3,7 @@ use crate::enrich::{EmbeddedElevation, EnrichmentConfig, enrich_graph};
 use crate::geo::{Coord, LineString};
 use crate::model::{
     Access, Edge, EdgeAttr, EdgeId, EdgeTravel, GradeDistribution, Provenance, Terrain, TrailClass,
-    TrailGraph, TrailStanding, TurnBan, Vertex, VertexId,
+    TrailGraph, TrailMarking, TrailStanding, TurnBan, Vertex, VertexId,
 };
 use crate::{Result, TrailgenError};
 use rstar::{AABB, RTree, RTreeObject};
@@ -25,6 +25,8 @@ pub struct SegmentDraft {
     pub trail_class: TrailClass,
     #[serde(default)]
     pub standing: TrailStanding,
+    #[serde(default)]
+    pub marking: TrailMarking,
     pub terrain: Terrain,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terrain_confidence: Option<f64>,
@@ -523,6 +525,7 @@ fn edge_attr(
         grade_distribution: GradeDistribution::default().add_segment(length_m, grade_abs_mean),
         trail_class: draft.trail_class,
         standing: draft.standing,
+        marking: draft.marking,
         terrain: draft.terrain,
         surface: draft.surface.clone(),
         terrain_confidence: draft

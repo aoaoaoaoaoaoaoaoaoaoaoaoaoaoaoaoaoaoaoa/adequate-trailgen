@@ -1,4 +1,4 @@
-use crate::model::{Access, Edge, Terrain};
+use crate::model::{Access, Edge, Terrain, TrailMarking};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::ops::AddAssign;
@@ -347,6 +347,7 @@ fn technical_pressure(edge: &Edge) -> f64 {
 }
 
 fn navigation_pressure(edge: &Edge) -> f64 {
+    let unmarked = f64::from(edge.attr.marking == TrailMarking::Unmarked);
     let unknown = f64::from(edge.attr.terrain == Terrain::Unknown) * 0.80;
     let weak_terrain_evidence = (1.0 - edge.attr.terrain_confidence.clamp(0.0, 1.0)) * 0.40;
     let crossing_complexity = edge
@@ -359,5 +360,5 @@ fn navigation_pressure(edge: &Edge) -> f64 {
         })
         .sum::<f64>()
         .min(1.0);
-    unknown + weak_terrain_evidence + crossing_complexity
+    unmarked + unknown + weak_terrain_evidence + crossing_complexity
 }

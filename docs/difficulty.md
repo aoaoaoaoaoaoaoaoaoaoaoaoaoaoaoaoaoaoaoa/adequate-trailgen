@@ -9,7 +9,7 @@ Difficulty is additive per edge. `DifficultyWeights` rates each edge into a pers
 - `terrain`: edge length in km × (`terrain_multiplier - 1`), using `[difficulty.terrain_multipliers]`
 - `road`: road-exposure fraction × `road_effort_penalty` × edge length in km; this explicit effort override defaults to zero
 - `technical`: rough-terrain and steep-grade pressure × `technical_penalty` × edge length in km
-- `navigation`: weak terrain evidence, unknown terrain, and crossing complexity × `navigation_penalty` × edge length in km
+- `navigation`: unmarked wayfinding, weak terrain evidence, unknown terrain, and crossing complexity × `navigation_penalty` × edge length in km
 - `bushwhack`: pathless-route indicator × `bushwhack_penalty` × edge length in km
 - `confidence`: `(1 - confidence)` × `low_confidence_penalty` × edge length in km
 - `access`: closed/private or restricted pressure × `closed_access_penalty` × edge length in km
