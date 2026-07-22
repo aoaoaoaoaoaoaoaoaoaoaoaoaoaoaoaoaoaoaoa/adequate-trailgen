@@ -2,8 +2,8 @@
 
 Assessed 2026-07-22. This is an acquisition ledger, not a claim that Trailgen currently consumes
 every source below. The runtime automatic corpus remains OSM plus USGS National Digital Trails.
-Of the 50 state authorities, 32 expose a machine-readable candidate, three are blocked by access or
-reuse restrictions, and 15 require heavier extraction.
+Of the 50 state authorities, 33 expose a machine-readable candidate, two are blocked by reuse
+restrictions, and 15 require heavier extraction.
 
 ## Status Language
 
@@ -66,7 +66,7 @@ with existing trails.
 | South Carolina | Extract | State Parks [Maps and Brochures](https://southcarolinaparks.com/maps-and-brochures) | Medium-low. Many vector-like trail PDFs exist, some with GPS provenance, but no statewide line service was found and some maps explicitly omit closed trails. |
 | South Dakota | Extract | GFP park trail pages, PDFs, and interactive maps | Medium-low. The agency has a Parks GIS program and mapped products, but no stable public statewide line endpoint surfaced. |
 | Tennessee | Machine | State Parks [Trails 2024](https://services5.arcgis.com/bPacKTm9cauMXVfn/arcgis/rest/services/Tennessee_State_Park_Trails_2024_(View_Only)/FeatureServer) | High for state parks. "View only" requires terms review, though the service is publicly queryable. |
-| Texas | Restricted | TPWD Interactive Trails feature service | Unknown. The discovered service now returns `Token Required`, its catalog item is unavailable, and ownership provenance is ambiguous. Do not automate until TPWD exposes or licenses a stable feed. |
+| Texas | Machine | TPWD [Texas State Parks Trails](https://tpwd.texas.gov/arcgis/rest/services/Parks/TexasStateParksTrails/MapServer/0) and [statewide KMZ](https://tpwd.texas.gov/state-parks/park-information/maps/use-the-trails-maps-anytime-anywhere) | High for official state-park trails. The anonymous authority service supports paginated GeoJSON/PBF queries and park-vetted official/use fields; record attribution and the general TPWD data disclaimer in its adapter. |
 | Utah | Machine | Utah [Recreational Trails and Pathways Network](https://services3.arcgis.com/17F7m6SrhCakwCcI/arcgis/rest/services/Utah_Recreational_Trails_and_Pathways_Network/FeatureServer) | Medium. Broad statewide network, but master-plan/proposed lines must be excluded from current routing. |
 | Vermont | Machine | ANR [Tourism Trails](https://anrmaps.vermont.gov/arcgis/rest/services/Open_Data/OPENDATA_ANR_TOURISM_SP_NOCACHE_v2/MapServer/160) | Medium-high for ANR lands. |
 | Virginia | Extract | Virginia State Parks GIS-team Avenza/PDF maps | Medium-low. The maps are georeferenced and likely derive from a coherent internal corpus, but no statewide public line service surfaced. |
@@ -106,9 +106,10 @@ vectors or georeferenced Avenza layers, then OCR/legend classification, and only
 geometry. Preserve the originating document, page, publication date, extraction method, and geometric
 error estimate as a raw provider receipt.
 
-The legally difficult queue is **California, New York, and Texas**. California and New York publish
-excellent geometry under reuse terms unsuitable for an unattended general-purpose product. Texas's
-service now demands a token. These are permission/provenance problems, not parsing problems.
+The legally difficult queue is **California and New York**. Both publish excellent geometry under
+reuse terms unsuitable for an unattended general-purpose product. These are permission problems, not
+parsing problems. Texas was initially misclassified from a dead ArcGIS catalog path; TPWD's own public
+server and statewide GIS download establish a stable machine source.
 
 Even among machine sources, assume incompleteness in **Iowa, Missouri, Oregon, Utah, and Wisconsin**:
 their best statewide services are transport-oriented, manager-specific, mixed-source, proposal-bearing,
