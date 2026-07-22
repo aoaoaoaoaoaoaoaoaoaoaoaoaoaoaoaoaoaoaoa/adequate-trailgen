@@ -595,7 +595,7 @@ fn raise_tiles(isohypses: &[Isohypse]) -> Arc<[Arc<VectorTile>]> {
         };
         let indexed = isohypse.elevation_m % INDEX_INTERVAL_M == 0;
         let (color, radius_points, onset_zoom) = if indexed {
-            ([80, 67, 48, 92], 0.56, 10.5)
+            ([80, 67, 48, 92], map::INDEX_ISOHYPSE_RADIUS_POINTS, 10.5)
         } else {
             ([84, 73, 57, 31], 0.31, 11.75)
         };

@@ -1433,21 +1433,19 @@ fn road_style(
     source_zoom: u8,
 ) -> Option<StrokeStyle> {
     let (color, radius, fallback_onset) = match (kind, detail) {
-        (Some("highway"), Some("motorway")) => ([94, 83, 65, 215], 0.82, 4.0),
-        (Some("highway"), Some("motorway_link")) => ([102, 91, 72, 190], 0.58, 7.0),
-        (Some("major_road"), Some("trunk" | "trunk_link")) => ([98, 87, 69, 205], 0.72, 5.0),
-        (Some("major_road"), Some("primary" | "primary_link")) => ([104, 93, 74, 190], 0.62, 7.0),
+        (Some("highway"), Some("motorway")) => ([84, 73, 57, 235], 1.40, 4.0),
+        (Some("highway"), Some("motorway_link")) => ([91, 80, 63, 220], 1.05, 7.0),
+        (Some("major_road"), Some("trunk" | "trunk_link")) => ([87, 76, 60, 230], 1.25, 5.0),
+        (Some("major_road"), Some("primary" | "primary_link")) => ([90, 80, 64, 220], 1.15, 7.0),
         (Some("major_road"), Some("secondary" | "secondary_link")) => {
-            ([109, 99, 82, 172], 0.52, 8.0)
+            ([92, 83, 68, 215], 1.05, 8.0)
         }
-        (Some("major_road"), Some("tertiary" | "tertiary_link")) => {
-            ([115, 106, 90, 150], 0.42, 9.0)
-        }
+        (Some("major_road"), Some("tertiary" | "tertiary_link")) => ([94, 85, 70, 210], 0.96, 9.0),
         (Some("minor_road"), Some("residential" | "unclassified" | "road")) => {
-            ([124, 115, 99, 112], 0.31, 10.5)
+            ([108, 100, 85, 170], 0.72, 10.5)
         }
         (Some("minor_road"), Some("service" | "alley" | "parking_aisle" | "driveway")) => {
-            ([132, 123, 107, 82], 0.23, 11.5)
+            ([119, 111, 95, 132], 0.50, 11.5)
         }
         (Some("path"), Some("pedestrian" | "cycleway" | "track" | "path" | "footway")) => {
             ([130, 126, 110, 42], 0.10, 11.5)
@@ -1456,9 +1454,9 @@ fn road_style(
             ([104, 101, 94, 62], 0.15, 9.0)
         }
         (Some("ferry" | "ferryway"), _) => ([74, 129, 150, 60], 0.14, 8.0),
-        (Some("highway"), _) => ([96, 85, 67, 205], 0.74, 5.0),
-        (Some("major_road"), _) => ([108, 97, 80, 170], 0.52, 8.0),
-        (Some("minor_road"), _) => ([125, 116, 100, 108], 0.30, 10.5),
+        (Some("highway"), _) => ([86, 75, 59, 230], 1.25, 5.0),
+        (Some("major_road"), _) => ([92, 82, 67, 215], 1.05, 8.0),
+        (Some("minor_road"), _) => ([109, 101, 86, 165], 0.70, 10.5),
         (Some("path"), _) => ([130, 126, 110, 38], 0.10, 11.5),
         _ => return None,
     };
@@ -2084,8 +2082,17 @@ mod tests {
     fn even_local_roads_hold_cartographic_authority() -> Result<()> {
         let style = road_style(Some("minor_road"), Some("residential"), None, 15)
             .context("residential road style")?;
-        assert!(style.radius_points >= 0.30);
-        assert!(style.color[3] >= 100);
+        assert!(style.radius_points > map::INDEX_ISOHYPSE_RADIUS_POINTS);
+        assert!(style.color[3] >= 160);
+        Ok(())
+    }
+
+    #[test]
+    fn tertiary_roads_decisively_overprint_index_isohypses() -> Result<()> {
+        let style = road_style(Some("major_road"), Some("tertiary"), None, 15)
+            .context("tertiary road style")?;
+        assert!(style.radius_points >= map::INDEX_ISOHYPSE_RADIUS_POINTS * 1.7);
+        assert!(style.color[3] >= 200);
         Ok(())
     }
 

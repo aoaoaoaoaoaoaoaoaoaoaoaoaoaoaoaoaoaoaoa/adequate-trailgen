@@ -14,6 +14,7 @@ const FIT_PADDING: f32 = 44.0;
 pub const MAP_GROUND_SRGB: [u8; 3] = [196, 194, 176];
 pub const MAP_GROUND: Color32 =
     Color32::from_rgb(MAP_GROUND_SRGB[0], MAP_GROUND_SRGB[1], MAP_GROUND_SRGB[2]);
+pub const INDEX_ISOHYPSE_RADIUS_POINTS: f32 = 0.56;
 pub const SELECTED_TRAIL_COLOR: Color32 = Color32::from_rgb(244, 91, 55);
 pub const CANDIDATE_COLORS: [Color32; 8] = [
     SELECTED_TRAIL_COLOR,
