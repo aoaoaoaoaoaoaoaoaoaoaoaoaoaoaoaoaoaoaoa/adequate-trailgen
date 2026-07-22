@@ -4,7 +4,10 @@ use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor, wgpu};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     ops::Range,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Instant,
 };
 use wgpu::util::DeviceExt as _;
@@ -12,15 +15,46 @@ use wgpu::util::DeviceExt as _;
 const GPU_CEILING: usize = 384 * 1_048_576;
 const MAX_WRAP_RADIUS: u32 = 2;
 const MAX_WRAP_INSTANCES: usize = (MAX_WRAP_RADIUS * 2 + 1) as usize;
+static NEXT_CORPUS: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct VectorCorpus(u64);
+
+impl VectorCorpus {
+    #[must_use]
+    pub fn mint() -> Self {
+        Self(NEXT_CORPUS.fetch_add(1, Ordering::Relaxed))
+    }
+}
 
 #[derive(Clone)]
 pub struct VectorPaint {
+    pub layer: VectorLayer,
+    pub corpus: VectorCorpus,
     pub tiles: Arc<[Arc<VectorTile>]>,
     pub center_world: [f64; 2],
     pub world_points: f32,
     pub viewport_points: [f32; 2],
     pub view_zoom: f32,
     pub apparition_span: f32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum VectorLayer {
+    Basemap,
+    Relief,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct GpuKey {
+    layer: VectorLayer,
+    corpus: VectorCorpus,
+    tile: TileKey,
+}
+
+struct ActiveCorpus {
+    corpus: VectorCorpus,
+    tiles: Vec<TileKey>,
 }
 
 impl CallbackTrait for VectorPaint {
@@ -49,17 +83,23 @@ impl CallbackTrait for VectorPaint {
         };
         pass.set_bind_group(0, &gpu.bind, &[]);
         pass.set_pipeline(&gpu.fill_pipeline);
-        for key in &gpu.active {
-            if let Some(tile) = gpu.tiles.get(key)
-                && let Some(draw) = &tile.fills
+        for tile in self.tiles.iter() {
+            if let Some(tile) = gpu.tiles.get(&GpuKey {
+                layer: self.layer,
+                corpus: self.corpus,
+                tile: tile.key,
+            }) && let Some(draw) = &tile.fills
             {
                 draw.paint(pass, &tile.buffer, &tile.transform, gpu.instances);
             }
         }
         pass.set_pipeline(&gpu.stroke_pipeline);
-        for key in &gpu.active {
-            if let Some(tile) = gpu.tiles.get(key)
-                && let Some(draw) = &tile.strokes
+        for tile in self.tiles.iter() {
+            if let Some(tile) = gpu.tiles.get(&GpuKey {
+                layer: self.layer,
+                corpus: self.corpus,
+                tile: tile.key,
+            }) && let Some(draw) = &tile.strokes
             {
                 draw.paint(pass, &tile.buffer, &tile.transform, gpu.instances);
             }
@@ -72,10 +112,10 @@ pub struct VectorMapGpu {
     stroke_pipeline: wgpu::RenderPipeline,
     uniform: wgpu::Buffer,
     bind: wgpu::BindGroup,
-    tiles: HashMap<TileKey, GpuTile>,
-    active: Vec<TileKey>,
-    active_set: HashSet<TileKey>,
-    order: VecDeque<(TileKey, u64)>,
+    tiles: HashMap<GpuKey, GpuTile>,
+    active: HashMap<VectorLayer, ActiveCorpus>,
+    active_set: HashSet<GpuKey>,
+    order: VecDeque<(GpuKey, u64)>,
     epoch: u64,
     bytes: usize,
     instances: u32,
@@ -150,7 +190,7 @@ impl VectorMapGpu {
             uniform,
             bind,
             tiles: HashMap::new(),
-            active: Vec::new(),
+            active: HashMap::new(),
             active_set: HashSet::new(),
             order: VecDeque::new(),
             epoch: 0,
@@ -163,29 +203,54 @@ impl VectorMapGpu {
     fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, paint: &VectorPaint) {
         let begun = Instant::now();
         let incoming = paint.tiles.iter().map(|tile| tile.key).collect::<Vec<_>>();
-        let changed = incoming != self.active;
+        let changed = self
+            .active
+            .get(&paint.layer)
+            .is_none_or(|active| active.corpus != paint.corpus || active.tiles != incoming);
         if changed {
             self.epoch = self.epoch.saturating_add(1);
-            incoming.clone_into(&mut self.active);
+            self.active.insert(
+                paint.layer,
+                ActiveCorpus {
+                    corpus: paint.corpus,
+                    tiles: incoming.clone(),
+                },
+            );
             self.active_set.clear();
-            self.active_set.extend(incoming.iter().copied());
-            for key in &incoming {
-                if let Some(resident) = self.tiles.get_mut(key) {
+            self.active_set
+                .extend(self.active.iter().flat_map(|(layer, active)| {
+                    active.tiles.iter().map(|tile| GpuKey {
+                        layer: *layer,
+                        corpus: active.corpus,
+                        tile: *tile,
+                    })
+                }));
+            for key in incoming.iter().map(|tile| GpuKey {
+                layer: paint.layer,
+                corpus: paint.corpus,
+                tile: *tile,
+            }) {
+                if let Some(resident) = self.tiles.get_mut(&key) {
                     resident.touched = self.epoch;
-                    self.order.push_back((*key, self.epoch));
+                    self.order.push_back((key, self.epoch));
                 }
             }
         }
         let mut uploaded = 0_usize;
         for tile in paint.tiles.iter() {
-            if self.tiles.contains_key(&tile.key) {
+            let key = GpuKey {
+                layer: paint.layer,
+                corpus: paint.corpus,
+                tile: tile.key,
+            };
+            if self.tiles.contains_key(&key) {
                 continue;
             }
             let resident = GpuTile::raise(device, tile, self.epoch);
             uploaded = uploaded.saturating_add(resident.bytes);
             self.bytes = self.bytes.saturating_add(resident.bytes);
-            self.order.push_back((tile.key, self.epoch));
-            let _prior = self.tiles.insert(tile.key, resident);
+            self.order.push_back((key, self.epoch));
+            let _prior = self.tiles.insert(key, resident);
         }
         let uniform = Uniform::forge(paint);
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniform));
@@ -195,7 +260,7 @@ impl VectorMapGpu {
             eprintln!(
                 "vector-gpu prepare_us={} upload_bytes={uploaded} active_tiles={} changed={changed}",
                 begun.elapsed().as_micros(),
-                self.active.len()
+                incoming.len()
             );
         }
     }
@@ -622,6 +687,49 @@ fn fragment_linear(in: VertexOut) -> @location(0) vec4f {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relief_and_basemap_tiles_cannot_alias_gpu_residency() {
+        let key = TileKey {
+            zoom: 12,
+            x: 1_204,
+            y: 1_532,
+        };
+        let mut resident = HashSet::new();
+        let corpus = VectorCorpus::mint();
+        assert!(resident.insert(GpuKey {
+            layer: VectorLayer::Basemap,
+            corpus,
+            tile: key,
+        }));
+        assert!(resident.insert(GpuKey {
+            layer: VectorLayer::Relief,
+            corpus,
+            tile: key,
+        }));
+        assert_eq!(resident.len(), 2);
+    }
+
+    #[test]
+    fn project_corpora_cannot_alias_gpu_residency() {
+        let tile = TileKey {
+            zoom: 12,
+            x: 1_204,
+            y: 1_532,
+        };
+        let mut resident = HashSet::new();
+        assert!(resident.insert(GpuKey {
+            layer: VectorLayer::Relief,
+            corpus: VectorCorpus::mint(),
+            tile,
+        }));
+        assert!(resident.insert(GpuKey {
+            layer: VectorLayer::Relief,
+            corpus: VectorCorpus::mint(),
+            tile,
+        }));
+        assert_eq!(resident.len(), 2);
+    }
 
     #[test]
     fn framebuffer_transfer_function_matches_egui() {

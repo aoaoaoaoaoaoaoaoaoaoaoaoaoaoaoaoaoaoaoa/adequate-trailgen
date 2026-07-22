@@ -203,6 +203,22 @@ pub struct Label {
     pub onset_zoom: f32,
 }
 
+#[derive(Clone, Debug)]
+pub struct LineLabel {
+    pub path: Arc<[[f64; 2]]>,
+    pub text: Arc<str>,
+    pub rank: u16,
+    pub size: f32,
+    pub onset_zoom: f32,
+}
+
+#[derive(Clone, Debug)]
+pub struct Parking {
+    pub world: [f64; 2],
+    pub name: Option<Arc<str>>,
+    pub onset_zoom: f32,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Mesh<V> {
     pub vertices: Arc<[V]>,
@@ -215,6 +231,8 @@ pub struct VectorTile {
     pub fills: Mesh<FillPoint>,
     pub strokes: Mesh<StrokePoint>,
     pub labels: Arc<[Label]>,
+    pub line_labels: Arc<[LineLabel]>,
+    pub parking: Arc<[Parking]>,
 }
 
 impl VectorTile {
@@ -236,6 +254,31 @@ impl VectorTile {
                 self.labels
                     .iter()
                     .map(|label| label.text.len())
+                    .sum::<usize>(),
+            )
+            .saturating_add(
+                self.line_labels
+                    .len()
+                    .saturating_mul(size_of::<LineLabel>()),
+            )
+            .saturating_add(
+                self.line_labels
+                    .iter()
+                    .map(|label| {
+                        label
+                            .path
+                            .len()
+                            .saturating_mul(size_of::<[f64; 2]>())
+                            .saturating_add(label.text.len())
+                    })
+                    .sum::<usize>(),
+            )
+            .saturating_add(self.parking.len().saturating_mul(size_of::<Parking>()))
+            .saturating_add(
+                self.parking
+                    .iter()
+                    .filter_map(|parking| parking.name.as_ref())
+                    .map(|name| name.len())
                     .sum::<usize>(),
             )
     }
@@ -984,9 +1027,10 @@ fn decode_tile(key: TileKey, bytes: &[u8]) -> Result<VectorTile> {
             "landcover" => forge.fill_layer(layer, FillKind::Landcover)?,
             "landuse" => forge.fill_layer(layer, FillKind::Landuse)?,
             "water" => forge.water_layer(layer)?,
-            "boundaries" => forge.stroke_layer(layer, StrokeKind::Boundary)?,
-            "roads" => forge.stroke_layer(layer, StrokeKind::Road)?,
+            "boundaries" => forge.boundary_layer(layer)?,
+            "roads" => forge.road_layer(layer)?,
             "places" => forge.label_layer(layer)?,
+            "pois" => forge.parking_layer(layer)?,
             _ => {}
         }
     }
@@ -1036,12 +1080,6 @@ impl FillKind {
 }
 
 #[derive(Clone, Copy)]
-enum StrokeKind {
-    Boundary,
-    Road,
-}
-
-#[derive(Clone, Copy)]
 struct StrokeStyle {
     color: [u8; 4],
     radius_points: f32,
@@ -1060,6 +1098,8 @@ struct Forge {
     fills: VertexBuffers<FillPoint, u32>,
     strokes: VertexBuffers<StrokePoint, u32>,
     labels: Vec<Label>,
+    line_labels: Vec<LineLabel>,
+    parking: Vec<Parking>,
     tessellator: FillTessellator,
 }
 
@@ -1070,6 +1110,8 @@ impl Forge {
             fills: VertexBuffers::new(),
             strokes: VertexBuffers::new(),
             labels: Vec::new(),
+            line_labels: Vec::new(),
+            parking: Vec::new(),
             tessellator: FillTessellator::new(),
         }
     }
@@ -1117,23 +1159,95 @@ impl Forge {
         Ok(())
     }
 
-    fn stroke_layer(&mut self, layer: fast_mvt::MvtLayerRef<'_>, stroke: StrokeKind) -> Result<()> {
+    fn boundary_layer(&mut self, layer: fast_mvt::MvtLayerRef<'_>) -> Result<()> {
         let extent = layer.extent();
         for feature in layer.features() {
-            let style = match stroke {
-                StrokeKind::Boundary => Some(boundary_style(
-                    integer_property(feature, "kind_detail")?,
-                    numeric_property(feature, "min_zoom")?,
-                )),
-                StrokeKind::Road => {
-                    let tags = FeatureTags::read(feature)?;
-                    road_style(tags.kind, tags.detail, tags.min_zoom, self.key.zoom)
-                }
-            };
-            let Some(style) = style else {
+            let style = boundary_style(
+                integer_property(feature, "kind_detail")?,
+                numeric_property(feature, "min_zoom")?,
+            );
+            self.stroke_geometry(&feature.geometry()?, extent, style);
+        }
+        Ok(())
+    }
+
+    fn road_layer(&mut self, layer: fast_mvt::MvtLayerRef<'_>) -> Result<()> {
+        let extent = layer.extent();
+        for feature in layer.features() {
+            let tags = FeatureTags::read(feature)?;
+            let geometry = feature.geometry()?;
+            if let Some(style) = road_style(tags.kind, tags.detail, tags.min_zoom, self.key.zoom) {
+                self.stroke_geometry(&geometry, extent, style);
+            }
+            let Some(name) = tags.name else { continue };
+            let Some(style) = road_label_style(tags.kind, tags.detail, tags.min_zoom) else {
                 continue;
             };
-            self.stroke_geometry(&feature.geometry()?, extent, style);
+            match geometry {
+                MvtGeometry::LineString(line) => {
+                    self.push_line_label(&line, extent, name, style);
+                }
+                MvtGeometry::MultiLineString(lines) => {
+                    for line in lines {
+                        self.push_line_label(&line, extent, name, style);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn push_line_label(
+        &mut self,
+        line: &LineString<i32>,
+        extent: u32,
+        text: &str,
+        style: LabelStyle,
+    ) {
+        let path = line
+            .0
+            .iter()
+            .copied()
+            .map(|point| world64(self.key, extent, point))
+            .collect::<Vec<_>>();
+        if path.len() >= 2 {
+            self.line_labels.push(LineLabel {
+                path: path.into(),
+                text: Arc::from(text),
+                rank: style.rank,
+                size: style.size,
+                onset_zoom: style.onset_zoom,
+            });
+        }
+    }
+
+    fn parking_layer(&mut self, layer: fast_mvt::MvtLayerRef<'_>) -> Result<()> {
+        let extent = layer.extent();
+        for feature in layer.features() {
+            let tags = FeatureTags::read(feature)?;
+            if tags.kind != Some("parking") || !public_access(tags.access) {
+                continue;
+            }
+            let name = tags.name.map(Arc::from);
+            let onset_zoom = tags.min_zoom.unwrap_or(14.5) as f32;
+            match feature.geometry()? {
+                MvtGeometry::Point(point) => self.parking.push(Parking {
+                    world: world64(self.key, extent, point.0),
+                    name,
+                    onset_zoom,
+                }),
+                MvtGeometry::MultiPoint(points) => {
+                    for point in points {
+                        self.parking.push(Parking {
+                            world: world64(self.key, extent, point.0),
+                            name: name.clone(),
+                            onset_zoom,
+                        });
+                    }
+                }
+                _ => {}
+            }
         }
         Ok(())
     }
@@ -1292,6 +1406,8 @@ impl Forge {
                 indices: self.strokes.indices.into(),
             },
             labels: self.labels.into(),
+            line_labels: self.line_labels.into(),
+            parking: self.parking.into(),
         }
     }
 }
@@ -1354,6 +1470,37 @@ fn road_style(
     })
 }
 
+fn road_label_style(
+    kind: Option<&str>,
+    detail: Option<&str>,
+    min_zoom: Option<f64>,
+) -> Option<LabelStyle> {
+    let (rank, size, fallback_onset) = match (kind, detail) {
+        (Some("highway"), Some("motorway")) => (760, 10.8, 7.0),
+        (Some("major_road"), Some("trunk" | "trunk_link")) => (780, 10.6, 8.0),
+        (Some("major_road"), Some("primary" | "primary_link")) => (800, 10.4, 9.0),
+        (Some("major_road"), Some("secondary" | "secondary_link")) => (820, 10.2, 10.0),
+        (Some("major_road"), Some("tertiary" | "tertiary_link")) => (840, 10.0, 11.0),
+        (Some("minor_road"), Some("residential" | "unclassified" | "road")) => (900, 9.6, 13.0),
+        (Some("minor_road"), Some("service")) => (960, 9.2, 14.0),
+        (Some("highway" | "major_road"), _) => (850, 10.0, 10.0),
+        (Some("minor_road"), _) => (980, 9.2, 14.0),
+        _ => return None,
+    };
+    Some(LabelStyle {
+        rank,
+        size,
+        onset_zoom: min_zoom.unwrap_or(fallback_onset).max(fallback_onset - 1.0) as f32,
+    })
+}
+
+fn public_access(access: Option<&str>) -> bool {
+    !matches!(
+        access,
+        Some("private" | "no" | "customers" | "permit" | "destination")
+    )
+}
+
 #[derive(Clone, Copy)]
 struct LabelStyle {
     rank: u16,
@@ -1412,6 +1559,7 @@ struct FeatureTags<'a> {
     name: Option<&'a str>,
     population_rank: Option<f64>,
     min_zoom: Option<f64>,
+    access: Option<&'a str>,
 }
 
 impl<'a> FeatureTags<'a> {
@@ -1428,6 +1576,7 @@ impl<'a> FeatureTags<'a> {
                 }
                 ("population_rank", value) => tags.population_rank = numeric(value),
                 ("min_zoom", value) => tags.min_zoom = numeric(value),
+                ("access", MvtValueRef::String(value)) => tags.access = Some(value),
                 _ => {}
             }
         }
@@ -1504,7 +1653,7 @@ fn world64(key: TileKey, extent: u32, coordinate: Coord<i32>) -> [f64; 2] {
     ]
 }
 
-fn join_normal(points: &[[f32; 2]], slot: usize) -> [f32; 2] {
+pub fn join_normal(points: &[[f32; 2]], slot: usize) -> [f32; 2] {
     let prior = slot.saturating_sub(1);
     let next = (slot + 1).min(points.len() - 1);
     let incoming = direction(points[prior], points[slot]);
@@ -1542,7 +1691,7 @@ fn direction(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
     }
 }
 
-fn same_point(left: [f32; 2], right: [f32; 2]) -> bool {
+pub fn same_point(left: [f32; 2], right: [f32; 2]) -> bool {
     left.map(f32::to_bits) == right.map(f32::to_bits)
 }
 
@@ -1929,6 +2078,28 @@ mod tests {
             .context("residential road style")?;
         assert!((style.onset_zoom - 11.25).abs() < f32::EPSILON);
         Ok(())
+    }
+
+    #[test]
+    fn road_names_follow_transport_hierarchy_and_source_onset() -> Result<()> {
+        let arterial = road_label_style(Some("major_road"), Some("secondary"), Some(10.0))
+            .context("secondary-road label style")?;
+        let local = road_label_style(Some("minor_road"), Some("residential"), Some(13.0))
+            .context("residential-road label style")?;
+        assert!(arterial.rank < local.rank);
+        assert!(arterial.size > local.size);
+        assert!(arterial.onset_zoom < local.onset_zoom);
+        assert!(road_label_style(Some("path"), Some("footway"), Some(14.0)).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn parking_defaults_public_but_explicit_restrictions_prevail() {
+        assert!(public_access(None));
+        assert!(public_access(Some("yes")));
+        for restriction in ["private", "no", "customers", "permit", "destination"] {
+            assert!(!public_access(Some(restriction)));
+        }
     }
 
     #[test]

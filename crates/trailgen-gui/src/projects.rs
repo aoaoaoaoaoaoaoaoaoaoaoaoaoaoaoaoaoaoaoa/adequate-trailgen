@@ -285,7 +285,7 @@ impl SurveyWorkbench {
             center: map::world_from_coord(Coord::new(-98.5, 39.5)),
             zoom: 4.2,
         });
-        let vector = VectorField::raise(ctx, BasemapSource::bootstrap()?, offline)?;
+        let vector = VectorField::raise(ctx, BasemapSource::bootstrap()?, offline, None)?;
         let mut project = Self {
             root: place.root,
             name: place.name,

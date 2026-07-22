@@ -198,6 +198,25 @@ if [ "${TRAILGEN_GUI_ROAM_RESUME:-0}" = 1 ]; then
     exit 0
 fi
 
+if [ "${TRAILGEN_GUI_CARTOGRAPHY:-0}" = 1 ]; then
+    # Cross from the project fit into street/topographic scale around Harriman.
+    xdotool mousemove --window "$window" 756 423
+    xdotool click --repeat 8 --delay 70 4
+    attempts=0
+    while ! test -s "$project/cache/isohypses-v2.bin"; do
+        attempts=$((attempts + 1))
+        if [ "$attempts" -ge 240 ]; then
+            import -window "$window" "$out/cartography-timeout.png"
+            printf 'timed out forging topographic contours\n' >&2
+            exit 1
+        fi
+        sleep 0.25
+    done
+    sleep 1
+    import -window "$window" "$out/cartography.png"
+    exit 0
+fi
+
 if [ "${TRAILGEN_GUI_EDITOR_FLOW:-0}" = 1 ]; then
     xdotool mousemove --sync --window "$window" 140 325 click 1
     sleep 0.5

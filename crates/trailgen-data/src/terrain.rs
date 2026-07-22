@@ -6,6 +6,7 @@ use std::{
     env, fs,
     io::Cursor,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 use trailgen_core::{
@@ -55,6 +56,49 @@ pub struct TerrainReceipt {
 pub struct TerrainSource {
     pub receipt: TerrainReceipt,
     bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TopographicTile {
+    pub id: TerrainTileId,
+    pub width: u32,
+    pub height: u32,
+    elevations_m: Arc<[f32]>,
+}
+
+impl TopographicTile {
+    #[must_use]
+    pub fn elevation(&self, x: u32, y: u32) -> Option<f32> {
+        (x < self.width && y < self.height)
+            .then(|| self.elevations_m[(y as usize * self.width as usize) + x as usize])
+    }
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "sub-centimeter DEM precision is immaterial to ten-meter isohypses"
+)]
+pub fn topographic_tile(project: &Path, receipt: &TerrainReceipt) -> Result<TopographicTile> {
+    let path = project.join(&receipt.raw_path);
+    let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    ensure!(
+        fingerprint(&bytes) == receipt.raw,
+        "topographic tile {} does not match its index receipt",
+        path.display()
+    );
+    let tile = Tile::decode(&bytes).with_context(|| format!("decode {}", path.display()))?;
+    let mut elevations_m = Vec::with_capacity(tile.width as usize * tile.height as usize);
+    for y in 0..tile.height {
+        for x in 0..tile.width {
+            elevations_m.push(tile.elevation(x, y) as f32);
+        }
+    }
+    Ok(TopographicTile {
+        id: receipt.tile,
+        width: tile.width,
+        height: tile.height,
+        elevations_m: elevations_m.into(),
+    })
 }
 
 pub fn acquire(

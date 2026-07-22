@@ -5,6 +5,7 @@
     reason = "screen, tile, and GPU coordinates are deliberately narrowed after viewport bounds"
 )]
 
+mod annotation;
 mod app;
 mod basemap;
 mod boiler;
@@ -17,6 +18,7 @@ mod map;
 mod profile;
 mod project;
 mod projects;
+mod relief;
 mod slate;
 mod trail_data;
 mod vector_field;

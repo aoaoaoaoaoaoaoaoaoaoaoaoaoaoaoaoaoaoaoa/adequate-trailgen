@@ -52,6 +52,30 @@ pub fn pin(painter: &Painter, anchor: Pos2, seized: bool) {
     let _rim = painter.circle_stroke(bulb, BULB_RADIUS, Stroke::new(1.1_f32, bronze(0.16)));
 }
 
+/// The universally legible parking sigil, reserved here for trail-access lots.
+pub fn parking(painter: &Painter, anchor: Pos2, maturity: f32) {
+    let body = Rect::from_center_size(anchor, Vec2::splat(16.0));
+    let _shadow = painter.rect_filled(
+        body.translate(Vec2::splat(1.0)),
+        2.5,
+        Color32::from_black_alpha((80.0 * maturity) as u8),
+    );
+    let _body = painter.rect_filled(body, 2.5, bronze(0.50).gamma_multiply(maturity));
+    let _rim = painter.rect_stroke(
+        body,
+        2.5,
+        Stroke::new(1.0_f32, bronze(0.95).gamma_multiply(maturity)),
+        egui::StrokeKind::Inside,
+    );
+    let _p = painter.text(
+        anchor,
+        egui::Align2::CENTER_CENTER,
+        "P",
+        egui::FontId::monospace(11.0),
+        Color32::from_rgb(244, 235, 211).gamma_multiply(maturity),
+    );
+}
+
 fn stamp(
     painter: &Painter,
     silhouette: Vec<Pos2>,

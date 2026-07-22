@@ -7,6 +7,7 @@ pub use providers::{
     DEFAULT_USGS_TRAILS_ENDPOINT, NetworkProvider, NormalizedNetwork, ProviderDescriptor,
     ProviderId, ProviderPayload, RawShard, UsgsNationalTrails,
 };
+pub use terrain::{TerrainTileId, TopographicTile};
 
 use anyhow::{Context as _, Result, ensure};
 use reqwest::blocking::Response;
@@ -165,6 +166,58 @@ pub struct Summary {
     pub raw_paths: Vec<PathBuf>,
     pub conflation: trailgen_core::ConflationStats,
     pub reused: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct Topography {
+    pub identity: String,
+    pub tiles: Vec<TopographicTile>,
+}
+
+/// The content address of the indexed elevation field, without decoding its rasters.
+pub fn indexed_topography_identity(project: &Path) -> Result<Option<String>> {
+    Ok(topographic_index(project)?.map(|index| topographic_identity(&index)))
+}
+
+/// Read the indexed elevation field used to enrich this project's trail graph.
+pub fn indexed_topography(project: &Path) -> Result<Option<Topography>> {
+    let Some(index) = topographic_index(project)? else {
+        return Ok(None);
+    };
+    let identity = topographic_identity(&index);
+    let tiles = index
+        .elevation
+        .iter()
+        .map(|receipt| terrain::topographic_tile(project, receipt))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Some(Topography { identity, tiles }))
+}
+
+fn topographic_index(project: &Path) -> Result<Option<TrailIndex>> {
+    let path = project.join(TRAIL_INDEX);
+    let raw = match fs::read(&path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
+    };
+    let index: TrailIndex =
+        serde_json::from_slice(&raw).with_context(|| format!("parse {}", path.display()))?;
+    ensure!(
+        index.schema == INDEX_SCHEMA,
+        "trail index schema is obsolete"
+    );
+    Ok((!index.elevation.is_empty()).then_some(index))
+}
+
+fn topographic_identity(index: &TrailIndex) -> String {
+    let mut identity = Sha256::new();
+    for receipt in &index.elevation {
+        identity.update(receipt.tile.z.to_le_bytes());
+        identity.update(receipt.tile.x.to_le_bytes());
+        identity.update(receipt.tile.y.to_le_bytes());
+        identity.update(receipt.raw.sha256.as_bytes());
+    }
+    format!("{:x}", identity.finalize())
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -1,22 +1,26 @@
 use crate::{
+    annotation,
     basemap::{self, Basemap, Source, TileKey, VectorTile},
     map::{self, Viewport},
-    vector_map::VectorPaint,
+    vector_map::{VectorCorpus, VectorLayer, VectorPaint},
 };
 use anyhow::Result;
-use egui::{Color32, Painter, Rect, vec2};
+use egui::{Color32, Painter, Rect};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
     time::{Duration, Instant},
 };
+use trailgen_core::TrailGraph;
 
 const VECTOR_CEILING: usize = 512 * 1_048_576;
 const RETRY_FLOOR: Duration = Duration::from_millis(250);
 const RETRY_CEILING: Duration = Duration::from_secs(30);
+const TRAILHEAD_PARKING_REACH_M: f64 = 160.0;
 
 /// The reusable, streaming vector-map plane beneath every trail workbench.
 pub struct VectorField {
+    corpus: VectorCorpus,
     armory: Option<Basemap>,
     tiles: VectorBank,
     presented: Arc<[Arc<VectorTile>]>,
@@ -24,6 +28,8 @@ pub struct VectorField {
     missing: HashSet<TileKey>,
     retries: HashMap<TileKey, Retry>,
     archive_zoom: Option<u8>,
+    trails: Option<Arc<TrailGraph>>,
+    trailhead_parking: HashMap<TileKey, Arc<[basemap::Parking]>>,
 }
 
 struct Retry {
@@ -44,8 +50,14 @@ impl Retry {
 }
 
 impl VectorField {
-    pub fn raise(ctx: &egui::Context, source: Source, offline: bool) -> Result<Self> {
+    pub fn raise(
+        ctx: &egui::Context,
+        source: Source,
+        offline: bool,
+        trails: Option<Arc<TrailGraph>>,
+    ) -> Result<Self> {
         Ok(Self {
+            corpus: VectorCorpus::mint(),
             armory: Some(Basemap::spawn(ctx.clone(), source, !offline)?),
             tiles: VectorBank::new(VECTOR_CEILING),
             presented: Arc::from([]),
@@ -53,6 +65,8 @@ impl VectorField {
             missing: HashSet::new(),
             retries: HashMap::new(),
             archive_zoom: None,
+            trails,
+            trailhead_parking: HashMap::new(),
         })
     }
 
@@ -62,10 +76,14 @@ impl VectorField {
     }
 
     pub fn absorb(&mut self) {
-        let Some(armory) = &self.armory else {
+        if self.armory.is_none() {
             return;
-        };
-        while let Ok(event) = armory.events.try_recv() {
+        }
+        while let Some(event) = self
+            .armory
+            .as_ref()
+            .and_then(|armory| armory.events.try_recv().ok())
+        {
             match event {
                 basemap::Event::Ready { source_zoom } => {
                     self.archive_zoom = Some(source_zoom);
@@ -79,6 +97,7 @@ impl VectorField {
                     let key = tile.key;
                     self.inflight.remove(&key);
                     self.retries.remove(&key);
+                    self.index_parking(&tile);
                     self.tiles.insert(tile);
                 }
                 basemap::Event::Missing(key) => {
@@ -96,9 +115,16 @@ impl VectorField {
                 }
             }
         }
+        self.trailhead_parking
+            .retain(|key, _| self.tiles.contains(*key));
     }
 
     pub fn paint(&mut self, painter: &Painter, viewport: Viewport, rect: Rect) {
+        self.paint_base(painter, viewport, rect);
+        self.paint_annotations(painter, viewport, rect, std::iter::empty());
+    }
+
+    pub fn paint_base(&mut self, painter: &Painter, viewport: Viewport, rect: Rect) {
         if self.armory.is_none() {
             return;
         }
@@ -138,6 +164,8 @@ impl VectorField {
             painter.add(egui_wgpu::Callback::new_paint_callback(
                 rect,
                 VectorPaint {
+                    layer: VectorLayer::Basemap,
+                    corpus: self.corpus,
                     tiles: Arc::clone(&self.presented),
                     center_world: viewport.center,
                     world_points: map::world_pixels(viewport) as f32,
@@ -147,59 +175,72 @@ impl VectorField {
                 },
             ));
         }
-        self.paint_labels(painter, viewport, rect);
     }
 
-    fn paint_labels(&self, painter: &Painter, viewport: Viewport, rect: Rect) {
-        let mut candidates = self
+    pub fn paint_annotations<'a>(
+        &'a self,
+        painter: &Painter,
+        viewport: Viewport,
+        rect: Rect,
+        relief: impl IntoIterator<Item = annotation::LineLabel<'a>>,
+    ) {
+        let points = self
             .presented
             .iter()
             .flat_map(|tile| tile.labels.iter())
-            .collect::<Vec<_>>();
-        candidates.sort_unstable_by_key(|label| label.rank);
-        let mut occupied = Vec::<Rect>::new();
-        for label in candidates {
-            let maturity = basemap::apparition(viewport.zoom as f32, label.onset_zoom);
-            if maturity <= 0.01 {
-                continue;
-            }
-            let anchor = map::screen_at(viewport, rect, label.world);
-            let size = label.size * 0.12_f32.mul_add(maturity, 0.88);
-            let width = label.text.chars().count() as f32 * size * 0.58;
-            let footprint =
-                Rect::from_center_size(anchor, vec2(width.max(size), size * 1.25)).expand(2.0);
-            if !rect.contains_rect(footprint)
-                || occupied.iter().any(|prior| prior.intersects(footprint))
-            {
-                continue;
-            }
-            occupied.push(footprint);
-            if occupied.len() >= 180 {
-                break;
-            }
-            let font = egui::FontId::proportional(size);
-            let halo = Color32::from_white_alpha((75.0 * maturity) as u8);
-            for offset in [
-                vec2(-1.0, 0.0),
-                vec2(1.0, 0.0),
-                vec2(0.0, -1.0),
-                vec2(0.0, 1.0),
-            ] {
-                painter.text(
-                    anchor + offset,
-                    egui::Align2::CENTER_CENTER,
-                    label.text.as_ref(),
-                    font.clone(),
-                    halo,
-                );
-            }
-            painter.text(
-                anchor,
-                egui::Align2::CENTER_CENTER,
-                label.text.as_ref(),
-                font,
-                Color32::from_black_alpha((225.0 * maturity) as u8),
-            );
+            .map(|label| annotation::PointLabel {
+                world: label.world,
+                text: label.text.as_ref(),
+                rank: label.rank,
+                size: label.size,
+                onset_zoom: label.onset_zoom,
+            });
+        let roads = self
+            .presented
+            .iter()
+            .flat_map(|tile| tile.line_labels.iter())
+            .map(|label| annotation::LineLabel {
+                path: &label.path,
+                text: label.text.as_ref(),
+                rank: label.rank,
+                size: label.size,
+                onset_zoom: label.onset_zoom,
+                ink: Color32::from_rgb(52, 47, 39),
+                halo: Color32::from_white_alpha(180),
+                repeatable: true,
+            });
+        let parking = self
+            .presented
+            .iter()
+            .filter_map(|tile| self.trailhead_parking.get(&tile.key))
+            .flat_map(|parking| parking.iter())
+            .map(|parking| annotation::Parking {
+                world: parking.world,
+                name: parking.name.as_deref(),
+                onset_zoom: parking.onset_zoom,
+            });
+        annotation::paint(
+            painter,
+            viewport,
+            rect,
+            points,
+            roads.chain(relief),
+            parking,
+        );
+    }
+
+    fn index_parking(&mut self, tile: &VectorTile) {
+        let Some(trails) = &self.trails else { return };
+        let parking = tile
+            .parking
+            .iter()
+            .filter(|parking| abuts_trail(trails, parking))
+            .cloned()
+            .collect::<Arc<[_]>>();
+        if parking.is_empty() {
+            self.trailhead_parking.remove(&tile.key);
+        } else {
+            self.trailhead_parking.insert(tile.key, parking);
         }
     }
 
@@ -227,6 +268,12 @@ impl VectorField {
             self.inflight.insert(key);
         }
     }
+}
+
+fn abuts_trail(trails: &TrailGraph, parking: &basemap::Parking) -> bool {
+    trails
+        .nearest_edge_with_distance(map::world_to_coord(parking.world))
+        .is_some_and(|(_, distance_m)| distance_m <= TRAILHEAD_PARKING_REACH_M)
 }
 
 fn for_each_demand(cover: &basemap::Cover, mut demand: impl FnMut(TileKey)) {
@@ -330,6 +377,8 @@ impl VectorBank {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Result;
+    use trailgen_core::{GraphBuilder, io::geojson};
 
     #[test]
     fn transient_vector_faults_back_off_monotonically_and_cap() {
@@ -370,5 +419,24 @@ mod tests {
             },
             [7, 10, 9, 8, 11]
         );
+    }
+
+    #[test]
+    fn parking_becomes_a_trailhead_mark_only_when_it_abuts_the_graph() -> Result<()> {
+        let graph = GraphBuilder::default().build(&geojson::network_from_str(include_str!(
+            "../../trailgen-core/tests/fixtures/mini_network.geojson"
+        ))?)?;
+        let beside = basemap::Parking {
+            world: map::world_from_coord(graph.edges[0].geometry.points[0]),
+            name: None,
+            onset_zoom: 15.0,
+        };
+        let remote = basemap::Parking {
+            world: map::world_from_coord(trailgen_core::Coord::new(-120.0, 30.0)),
+            ..beside.clone()
+        };
+        assert!(abuts_trail(&graph, &beside));
+        assert!(!abuts_trail(&graph, &remote));
+        Ok(())
     }
 }

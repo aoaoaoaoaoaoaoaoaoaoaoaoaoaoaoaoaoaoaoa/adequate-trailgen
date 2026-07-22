@@ -6,6 +6,7 @@ use crate::{
     map::{self, Atlas, SELECTED_TRAIL_COLOR, Viewport},
     profile::ElevationProfile,
     project::{Project, SearchEvent, SearchForge, SearchRequest},
+    relief::Relief,
     slate::{GalleryDeck, Slate},
     trail_data::{
         Event as TrailDataEvent, Mutation as TrailDataMutation, TrailData, progress_status,
@@ -69,6 +70,7 @@ pub struct TrailApp {
     placing_trailhead: bool,
     editor: Option<TrailEditor>,
     vector: VectorField,
+    relief: Relief,
     regions: Vec<SurveyRegion>,
     corpus: Option<TrailData>,
     scribe: RegionScribe,
@@ -317,7 +319,8 @@ impl TrailApp {
             .and_then(|id| library.family(id))
             .map_or_else(String::new, |family| family.name.to_string());
         let corpus = LoadedCorpus::raise(ctx, &root, offline, trail_data, indexed)?;
-        let vector = spawn_vector_field(ctx, &root, &graph, &corpus.regions, offline)?;
+        let vector = spawn_vector_field(ctx, &root, Arc::clone(&graph), &corpus.regions, offline)?;
+        let relief = Relief::raise(ctx, &root)?;
         let restored_viewport = slate.viewport;
         let viewport = restored_viewport.unwrap_or(Viewport {
             center: [0.5, 0.5],
@@ -373,6 +376,7 @@ impl TrailApp {
             placing_trailhead: false,
             editor: None,
             vector,
+            relief,
             regions: corpus.regions,
             corpus: corpus.task,
             scribe: RegionScribe::default(),
@@ -1337,7 +1341,7 @@ impl TrailApp {
         let scribe_event = self.scribe.interact(self.viewport, ui, &response, rect);
         let canvas = ui.painter_at(rect);
         let _ground = canvas.rect_filled(rect, 0.0, map::MAP_GROUND);
-        self.vector.paint(&canvas, self.viewport, rect);
+        self.paint_basemap(&canvas, rect);
         self.atlas.paint_network(&canvas, self.viewport, rect);
         if !self.regions.is_empty() || self.scribe.active() {
             live_area::paint(
@@ -1397,6 +1401,17 @@ impl TrailApp {
             ui.ctx().request_repaint();
         }
         self.handle_scribe(ui.ctx(), &scribe_event);
+    }
+
+    fn paint_basemap(&mut self, painter: &egui::Painter, rect: egui::Rect) {
+        self.vector.paint_base(painter, self.viewport, rect);
+        self.relief.paint(painter, self.viewport, rect);
+        self.vector.paint_annotations(
+            painter,
+            self.viewport,
+            rect,
+            self.relief.annotations(self.viewport, rect),
+        );
     }
 
     fn paint_trails(&self, painter: &egui::Painter, rect: egui::Rect) {
@@ -1785,6 +1800,7 @@ impl TrailApp {
             }
         }
         self.vector.absorb();
+        self.relief.absorb();
     }
 
     fn strike_corpus(&mut self, ctx: &egui::Context, mutation: TrailDataMutation) -> Result<()> {
@@ -2508,7 +2524,7 @@ fn duration(duration: Duration) -> String {
 fn spawn_vector_field(
     ctx: &egui::Context,
     root: &Path,
-    graph: &TrailGraph,
+    graph: Arc<TrailGraph>,
     regions: &[SurveyRegion],
     offline: bool,
 ) -> Result<VectorField> {
@@ -2516,8 +2532,8 @@ fn spawn_vector_field(
         .iter()
         .map(|region| region.bounds)
         .collect::<Vec<_>>();
-    let source = BasemapSource::project(root, graph, &bounds)?;
-    VectorField::raise(ctx, source, offline)
+    let source = BasemapSource::project(root, &graph, &bounds)?;
+    VectorField::raise(ctx, source, offline, Some(graph))
 }
 
 impl Drop for TrailApp {
