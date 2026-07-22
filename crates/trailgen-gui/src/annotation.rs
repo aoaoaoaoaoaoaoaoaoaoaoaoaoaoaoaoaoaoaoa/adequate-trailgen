@@ -1,10 +1,12 @@
 use crate::{basemap, forge, map, vector_map::VectorGap};
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Vec2, epaint::TextShape, vec2};
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 const LABEL_CEILING: usize = 180;
 const REPEAT_SEPARATION: f32 = 480.0;
-const CONTINUITY_TTL: u64 = 120;
 
 pub struct PointLabel<'a> {
     pub world: [f64; 2],
@@ -40,15 +42,30 @@ pub struct Parking<'a> {
 
 #[derive(Default)]
 pub struct Compositor {
-    epoch: u64,
-    memory: HashMap<String, Memory>,
+    incumbents: Vec<Incumbent>,
 }
 
-#[derive(Clone, Copy)]
-struct Memory {
+#[derive(Clone)]
+struct Incumbent {
+    // Closed lower zoom bound: once admitted, this coordinate is never
+    // re-anchored or evicted by anything born at a finer scale.
+    inscription: Inscription,
+    admitted_zoom: u8,
+}
+
+#[derive(Clone)]
+struct Inscription {
+    text: String,
+    rank: u16,
     world: [f64; 2],
     angle: f32,
-    touched: u64,
+    size: f32,
+    size_floor: f32,
+    onset_zoom: f32,
+    ink: Color32,
+    halo: Option<Halo>,
+    repeatable: bool,
+    break_line: bool,
 }
 
 impl Compositor {
@@ -61,107 +78,93 @@ impl Compositor {
         lines: impl IntoIterator<Item = LineLabel<'a>>,
         parking: impl IntoIterator<Item = Parking<'a>>,
     ) -> Composition {
-        self.epoch = self.epoch.saturating_add(1);
-        let mut occupied = Vec::new();
         let mut prepared = Vec::new();
         let mut parking_marks = Vec::new();
+        prepare_incumbents(painter, viewport, rect, &self.incumbents, &mut prepared);
         prepare_parking(
             painter,
             viewport,
             rect,
             parking,
-            &mut occupied,
             &mut prepared,
             &mut parking_marks,
         );
         prepare_points(painter, viewport, rect, points, &mut prepared);
-        prepare_lines(painter, viewport, rect, lines, &self.memory, &mut prepared);
-        prepared.sort_unstable_by(|left, right| {
-            left.rank
+        prepare_lines(painter, viewport, rect, lines, &mut prepared);
+        prepared.sort_unstable_by(|left, right| match (left.incumbent, right.incumbent) {
+            (Some(left), Some(right)) => left.cmp(&right),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => left
+                .rank
                 .cmp(&right.rank)
                 .then_with(|| left.score.total_cmp(&right.score))
-                .then_with(|| left.unique.cmp(&right.unique))
+                .then_with(|| left.text.cmp(&right.text)),
         });
 
-        let mut accepted = HashMap::<String, Vec<Pos2>>::new();
-        let mut selected = Vec::new();
-        for (slot, label) in prepared.iter().enumerate() {
-            if accepted.contains_key(&label.unique)
-                || occupied
-                    .iter()
-                    .any(|prior: &Rect| prior.intersects(label.footprint))
-            {
-                continue;
-            }
-            occupied.push(label.footprint);
-            accepted
-                .entry(label.unique.clone())
-                .or_default()
-                .push(label.anchor);
-            selected.push(slot);
-            self.remember(label);
-            if occupied.len() >= LABEL_CEILING {
-                break;
-            }
+        let reserved = self
+            .incumbents
+            .iter()
+            .filter(|incumbent| incumbent.admitted_zoom > (viewport.zoom.floor() as u8))
+            .filter(|incumbent| {
+                rect.contains(map::screen_at(viewport, rect, incumbent.inscription.world))
+            })
+            .map(|incumbent| incumbent.inscription.text.as_str())
+            .collect::<HashSet<_>>();
+        // Incumbents precede every newly born obstruction. Because screen
+        // separation grows with zoom, this makes admission upward-closed.
+        let mut ledger = Ledger::new(&prepared, &reserved);
+        ledger.admit(Admission::Incumbent, Repetition::Primary, &[]);
+        if viewport.zoom >= 15.0 {
+            ledger.admit(Admission::Incumbent, Repetition::Repeat, &[]);
         }
+        let live_parking = ledger.admit_parking(&parking_marks);
+        ledger.admit(Admission::Fresh, Repetition::Primary, &live_parking);
+        if viewport.zoom >= 15.0 {
+            ledger.admit(Admission::Fresh, Repetition::Repeat, &live_parking);
+        }
+        let selected = ledger.finish();
 
-        if viewport.zoom >= 15.0 && occupied.len() < LABEL_CEILING {
-            for (slot, label) in prepared.iter().enumerate() {
-                if !label.repeatable
-                    || accepted.get(&label.unique).is_none_or(|anchors| {
-                        anchors
-                            .iter()
-                            .any(|anchor| anchor.distance(label.anchor) < REPEAT_SEPARATION)
-                    })
-                    || occupied
-                        .iter()
-                        .any(|prior| prior.intersects(label.footprint))
-                {
-                    continue;
-                }
-                occupied.push(label.footprint);
-                accepted
-                    .entry(label.unique.clone())
-                    .or_default()
-                    .push(label.anchor);
-                selected.push(slot);
-                if occupied.len() >= LABEL_CEILING {
-                    break;
-                }
-            }
+        for &slot in &selected {
+            self.remember(&prepared[slot], viewport.zoom);
         }
-        let epoch = self.epoch;
-        self.memory
-            .retain(|_, memory| epoch.saturating_sub(memory.touched) <= CONTINUITY_TTL);
         Composition {
             labels: selected
                 .into_iter()
                 .map(|slot| prepared[slot].clone())
                 .collect(),
-            parking: parking_marks,
+            parking: parking_marks
+                .into_iter()
+                .zip(live_parking)
+                .filter_map(|(mark, live)| live.then_some(mark))
+                .collect(),
         }
     }
 
-    fn remember(&mut self, label: &Prepared) {
-        let Some(world) = label.world_anchor else {
-            return;
-        };
-        if self
-            .memory
-            .get(&label.unique)
-            .is_some_and(|memory| memory.touched == self.epoch)
-        {
+    fn remember(&mut self, label: &Prepared, zoom: f64) {
+        if label.incumbent.is_some() {
             return;
         }
-        self.memory.insert(
-            label.unique.clone(),
-            Memory {
-                world,
-                angle: label.angle,
-                touched: self.epoch,
-            },
-        );
+        let Some(inscription) = label.inscription.clone() else {
+            return;
+        };
+        self.incumbents.push(Incumbent {
+            inscription,
+            admitted_zoom: zoom.floor() as u8,
+        });
     }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Admission {
+    Incumbent,
+    Fresh,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Repetition {
+    Primary,
+    Repeat,
 }
 
 pub struct Composition {
@@ -199,11 +202,12 @@ impl Composition {
 struct ParkingMark {
     anchor: Pos2,
     maturity: f32,
+    footprint: Rect,
 }
 
 #[derive(Clone)]
 struct Prepared {
-    unique: String,
+    text: String,
     rank: u16,
     score: f32,
     anchor: Pos2,
@@ -213,8 +217,151 @@ struct Prepared {
     ink: Color32,
     halo: Option<Halo>,
     repeatable: bool,
-    world_anchor: Option<[f64; 2]>,
     break_line: bool,
+    inscription: Option<Inscription>,
+    incumbent: Option<usize>,
+    patron: Option<usize>,
+}
+
+struct Ledger<'a> {
+    prepared: &'a [Prepared],
+    reserved: &'a HashSet<&'a str>,
+    occupied: Vec<Rect>,
+    accepted: HashMap<String, Vec<Pos2>>,
+    selected: Vec<usize>,
+}
+
+impl<'a> Ledger<'a> {
+    fn new(prepared: &'a [Prepared], reserved: &'a HashSet<&'a str>) -> Self {
+        Self {
+            prepared,
+            reserved,
+            occupied: Vec::new(),
+            accepted: HashMap::new(),
+            selected: Vec::new(),
+        }
+    }
+
+    fn admit(&mut self, admission: Admission, repetition: Repetition, live_parking: &[bool]) {
+        for (slot, label) in self.prepared.iter().enumerate() {
+            if label.incumbent.is_some() != (admission == Admission::Incumbent)
+                || admission == Admission::Fresh && self.reserved.contains(label.text.as_str())
+                || label
+                    .patron
+                    .is_some_and(|patron| !live_parking.get(patron).copied().unwrap_or(false))
+            {
+                continue;
+            }
+            match repetition {
+                Repetition::Primary if self.accepted.contains_key(&label.text) => continue,
+                Repetition::Repeat
+                    if !label.repeatable
+                        || self.accepted.get(&label.text).is_none_or(|anchors| {
+                            anchors
+                                .iter()
+                                .any(|anchor| anchor.distance(label.anchor) < REPEAT_SEPARATION)
+                        }) =>
+                {
+                    continue;
+                }
+                _ => {}
+            }
+            if self
+                .occupied
+                .iter()
+                .any(|prior| prior.intersects(label.footprint))
+            {
+                continue;
+            }
+            self.occupied.push(label.footprint);
+            self.accepted
+                .entry(label.text.clone())
+                .or_default()
+                .push(label.anchor);
+            self.selected.push(slot);
+            if self.occupied.len() >= LABEL_CEILING {
+                return;
+            }
+        }
+    }
+
+    fn admit_parking(&mut self, marks: &[ParkingMark]) -> Vec<bool> {
+        marks
+            .iter()
+            .map(|mark| {
+                let free = self
+                    .occupied
+                    .iter()
+                    .all(|prior| !prior.intersects(mark.footprint));
+                if free {
+                    self.occupied.push(mark.footprint);
+                }
+                free
+            })
+            .collect()
+    }
+
+    fn finish(self) -> Vec<usize> {
+        self.selected
+    }
+}
+
+fn prepare_incumbents(
+    painter: &Painter,
+    viewport: map::Viewport,
+    rect: Rect,
+    incumbents: &[Incumbent],
+    prepared: &mut Vec<Prepared>,
+) {
+    for (slot, incumbent) in incumbents.iter().enumerate() {
+        if (viewport.zoom.floor() as u8) < incumbent.admitted_zoom {
+            continue;
+        }
+        let inscription = &incumbent.inscription;
+        let maturity = basemap::apparition(viewport.zoom as f32, inscription.onset_zoom);
+        if maturity <= 0.01 {
+            continue;
+        }
+        let anchor = map::screen_at(viewport, rect, inscription.world);
+        if !rect.contains(anchor) {
+            continue;
+        }
+        let size = inscription.size
+            * (1.0 - inscription.size_floor).mul_add(maturity, inscription.size_floor);
+        let galley = painter.layout_no_wrap(
+            inscription.text.clone(),
+            FontId::proportional(size),
+            Color32::PLACEHOLDER,
+        );
+        let shape = text_shape(
+            anchor,
+            inscription.angle,
+            Arc::clone(&galley),
+            inscription.ink,
+        );
+        let footprint = shape.visual_bounding_rect().expand(3.0);
+        if rect.contains_rect(footprint) {
+            prepared.push(Prepared {
+                text: inscription.text.clone(),
+                rank: inscription.rank,
+                score: 0.0,
+                anchor,
+                angle: inscription.angle,
+                footprint,
+                galley,
+                ink: inscription.ink.gamma_multiply(maturity),
+                halo: inscription.halo.map(|halo| Halo {
+                    color: halo.color.gamma_multiply(maturity),
+                    ..halo
+                }),
+                repeatable: inscription.repeatable,
+                break_line: inscription.break_line,
+                inscription: Some(inscription.clone()),
+                incumbent: Some(slot),
+                patron: None,
+            });
+        }
+    }
 }
 
 fn prepare_parking<'a>(
@@ -222,7 +369,6 @@ fn prepare_parking<'a>(
     viewport: map::Viewport,
     rect: Rect,
     parking: impl IntoIterator<Item = Parking<'a>>,
-    occupied: &mut Vec<Rect>,
     prepared: &mut Vec<Prepared>,
     marks: &mut Vec<ParkingMark>,
 ) {
@@ -240,8 +386,12 @@ fn prepare_parking<'a>(
             continue;
         }
         anchors.push(anchor);
-        occupied.push(footprint);
-        marks.push(ParkingMark { anchor, maturity });
+        let patron = marks.len();
+        marks.push(ParkingMark {
+            anchor,
+            maturity,
+            footprint,
+        });
         let Some(name) = mark.name else { continue };
         let label_maturity = basemap::apparition(viewport.zoom as f32, mark.onset_zoom + 0.45);
         if label_maturity <= 0.01 {
@@ -256,7 +406,7 @@ fn prepare_parking<'a>(
         let footprint = Rect::from_center_size(center, galley.size()).expand(3.0);
         if rect.contains_rect(footprint) {
             prepared.push(Prepared {
-                unique: name.to_owned(),
+                text: name.to_owned(),
                 rank: 720,
                 score: center.distance(rect.center()),
                 anchor: center,
@@ -269,8 +419,10 @@ fn prepare_parking<'a>(
                     width: 1.0,
                 }),
                 repeatable: false,
-                world_anchor: None,
                 break_line: false,
+                inscription: None,
+                incumbent: None,
+                patron: Some(patron),
             });
         }
     }
@@ -298,7 +450,7 @@ fn prepare_points<'a>(
         let footprint = Rect::from_center_size(anchor, galley.size()).expand(3.0);
         if rect.contains_rect(footprint) {
             prepared.push(Prepared {
-                unique: label.text.to_owned(),
+                text: label.text.to_owned(),
                 rank: label.rank,
                 score: anchor.distance(rect.center()),
                 anchor,
@@ -311,8 +463,25 @@ fn prepare_points<'a>(
                     width: 1.0,
                 }),
                 repeatable: false,
-                world_anchor: None,
                 break_line: false,
+                inscription: Some(Inscription {
+                    text: label.text.to_owned(),
+                    rank: label.rank,
+                    world: label.world,
+                    angle: 0.0,
+                    size: label.size,
+                    size_floor: 0.88,
+                    onset_zoom: label.onset_zoom,
+                    ink: Color32::from_black_alpha(225),
+                    halo: Some(Halo {
+                        color: Color32::from_white_alpha(92),
+                        width: 1.0,
+                    }),
+                    repeatable: false,
+                    break_line: false,
+                }),
+                incumbent: None,
+                patron: None,
             });
         }
     }
@@ -323,7 +492,6 @@ fn prepare_lines<'a>(
     viewport: map::Viewport,
     rect: Rect,
     lines: impl IntoIterator<Item = LineLabel<'a>>,
-    memory: &HashMap<String, Memory>,
     prepared: &mut Vec<Prepared>,
 ) {
     for label in lines {
@@ -343,11 +511,7 @@ fn prepare_lines<'a>(
             .copied()
             .map(|world| map::screen_at(viewport, rect, world))
             .collect::<Vec<_>>();
-        let preference = memory.get(label.text).map(|memory| Preference {
-            anchor: map::screen_at(viewport, rect, memory.world),
-            angle: memory.angle,
-        });
-        let Some(placement) = line_placement(&path, galley.size(), rect, preference) else {
+        let Some(placement) = line_placement(&path, galley.size(), rect) else {
             continue;
         };
         let shape = text_shape(
@@ -357,7 +521,7 @@ fn prepare_lines<'a>(
             label.ink,
         );
         prepared.push(Prepared {
-            unique: label.text.to_owned(),
+            text: label.text.to_owned(),
             rank: label.rank,
             score: placement.score,
             anchor: placement.anchor,
@@ -370,8 +534,22 @@ fn prepare_lines<'a>(
                 ..halo
             }),
             repeatable: label.repeatable,
-            world_anchor: Some(map::world_at(viewport, rect, placement.anchor)),
             break_line: label.break_line,
+            inscription: Some(Inscription {
+                text: label.text.to_owned(),
+                rank: label.rank,
+                world: map::world_at(viewport, rect, placement.anchor),
+                angle: placement.angle,
+                size: label.size,
+                size_floor: 0.92,
+                onset_zoom: label.onset_zoom,
+                ink: label.ink,
+                halo: label.halo,
+                repeatable: label.repeatable,
+                break_line: label.break_line,
+            }),
+            incumbent: None,
+            patron: None,
         });
     }
 }
@@ -417,18 +595,7 @@ struct Placement {
     score: f32,
 }
 
-#[derive(Clone, Copy)]
-struct Preference {
-    anchor: Pos2,
-    angle: f32,
-}
-
-fn line_placement(
-    path: &[Pos2],
-    label: Vec2,
-    viewport: Rect,
-    preference: Option<Preference>,
-) -> Option<Placement> {
+fn line_placement(path: &[Pos2], label: Vec2, viewport: Rect) -> Option<Placement> {
     let path = path
         .iter()
         .copied()
@@ -471,17 +638,7 @@ fn line_placement(
             viewport.contains_rect(footprint).then_some(Placement {
                 anchor,
                 angle,
-                score: preference.map_or_else(
-                    || bend.mul_add(1_000.0, anchor.distance(viewport.center())),
-                    |preference| {
-                        let angular_travel =
-                            unsigned_angle(Vec2::angled(angle), Vec2::angled(preference.angle));
-                        bend.mul_add(
-                            180.0,
-                            angular_travel.mul_add(90.0, anchor.distance(preference.anchor)),
-                        )
-                    },
-                ),
+                score: bend.mul_add(1_000.0, anchor.distance(viewport.center())),
             })
         })
         .min_by(|left, right| left.score.total_cmp(&right.score))
@@ -556,7 +713,6 @@ mod tests {
             &[egui::pos2(700.0, 300.0), egui::pos2(100.0, 300.0)],
             vec2(100.0, 12.0),
             VIEW,
-            None,
         )
         .expect("long road has a placement");
         assert!(placement.angle.abs() < f32::EPSILON);
@@ -570,7 +726,6 @@ mod tests {
                 &[egui::pos2(100.0, 100.0), egui::pos2(140.0, 100.0)],
                 vec2(80.0, 12.0),
                 VIEW,
-                None,
             )
             .is_none()
         );
@@ -583,29 +738,125 @@ mod tests {
                 ],
                 vec2(150.0, 12.0),
                 VIEW,
-                None,
             )
             .is_none()
         );
     }
 
     #[test]
-    fn line_label_continuity_dominates_viewport_recentering() {
-        let path = [egui::pos2(100.0, 300.0), egui::pos2(700.0, 300.0)];
-        let label = vec2(80.0, 12.0);
-        let centered = line_placement(&path, label, VIEW, None).expect("long road has a label");
-        let remembered = line_placement(
-            &path,
-            label,
-            VIEW,
-            Some(Preference {
-                anchor: egui::pos2(250.0, 300.0),
-                angle: 0.0,
-            }),
-        )
-        .expect("remembered road has a label");
-        assert!(centered.anchor.distance(VIEW.center()) < 1.0);
-        assert!(remembered.anchor.distance(egui::pos2(250.0, 300.0)) < 1.0);
+    fn finer_zoom_cannot_displace_an_admitted_world_label() {
+        let context = egui::Context::default();
+        let mut compositor = Compositor::default();
+        let _output = context.run_ui(egui::RawInput::default(), |ui| {
+            let painter = ui.painter().clone();
+            let coarse = map::Viewport {
+                center: [0.5, 0.5],
+                zoom: 10.0,
+            };
+            let path = [
+                map::world_at(coarse, VIEW, egui::pos2(100.0, 300.0)),
+                map::world_at(coarse, VIEW, egui::pos2(700.0, 300.0)),
+            ];
+            let old = LineLabel {
+                path: &path,
+                text: "OLD",
+                rank: 900,
+                size: 12.0,
+                onset_zoom: 0.0,
+                ink: Color32::BLACK,
+                halo: None,
+                repeatable: true,
+                break_line: true,
+            };
+            let first = compositor.compose(
+                &painter,
+                coarse,
+                VIEW,
+                std::iter::empty(),
+                [old],
+                std::iter::empty(),
+            );
+            assert_eq!(first.labels.len(), 1);
+            assert_eq!(first.labels[0].text, "OLD");
+
+            let fine = map::Viewport {
+                zoom: coarse.zoom + 1.0,
+                ..coarse
+            };
+            let second = compositor.compose(
+                &painter,
+                fine,
+                VIEW,
+                [PointLabel {
+                    world: fine.center,
+                    text: "NEW BUT STRONGER",
+                    rank: 1,
+                    size: 12.0,
+                    onset_zoom: 11.0,
+                }],
+                std::iter::empty(),
+                std::iter::empty(),
+            );
+            assert_eq!(second.labels.len(), 1);
+            assert_eq!(second.labels[0].text, "OLD");
+            assert_eq!(second.labels[0].anchor, first.labels[0].anchor);
+        });
+    }
+
+    #[test]
+    fn coarser_zoom_may_hide_but_cannot_reanchor_an_inscription() {
+        let context = egui::Context::default();
+        let mut compositor = Compositor::default();
+        let _output = context.run_ui(egui::RawInput::default(), |ui| {
+            let painter = ui.painter().clone();
+            let fine = map::Viewport {
+                center: [0.5, 0.5],
+                zoom: 11.0,
+            };
+            let first = compositor.compose(
+                &painter,
+                fine,
+                VIEW,
+                [PointLabel {
+                    world: fine.center,
+                    text: "FIXED",
+                    rank: 500,
+                    size: 12.0,
+                    onset_zoom: 0.0,
+                }],
+                std::iter::empty(),
+                std::iter::empty(),
+            );
+            assert_eq!(first.labels.len(), 1);
+
+            let coarse = map::Viewport { zoom: 10.0, ..fine };
+            let retreat = compositor.compose(
+                &painter,
+                coarse,
+                VIEW,
+                [PointLabel {
+                    world: map::world_at(coarse, VIEW, egui::pos2(500.0, 300.0)),
+                    text: "FIXED",
+                    rank: 1,
+                    size: 12.0,
+                    onset_zoom: 0.0,
+                }],
+                std::iter::empty(),
+                std::iter::empty(),
+            );
+            assert!(retreat.labels.is_empty());
+
+            let restored = compositor.compose(
+                &painter,
+                fine,
+                VIEW,
+                std::iter::empty(),
+                std::iter::empty(),
+                std::iter::empty(),
+            );
+            assert_eq!(restored.labels.len(), 1);
+            assert_eq!(restored.labels[0].anchor, first.labels[0].anchor);
+        });
     }
 
     #[test]
