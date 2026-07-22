@@ -4,6 +4,7 @@ use std::{collections::HashMap, sync::Arc};
 
 const LABEL_CEILING: usize = 180;
 const REPEAT_SEPARATION: f32 = 480.0;
+const CONTINUITY_TTL: u64 = 120;
 
 pub struct PointLabel<'a> {
     pub world: [f64; 2],
@@ -21,6 +22,7 @@ pub struct LineLabel<'a> {
     pub onset_zoom: f32,
     pub ink: Color32,
     pub halo: Color32,
+    pub halo_width: f32,
     pub repeatable: bool,
 }
 
@@ -30,71 +32,113 @@ pub struct Parking<'a> {
     pub onset_zoom: f32,
 }
 
-pub fn paint<'a>(
-    painter: &Painter,
-    viewport: map::Viewport,
-    rect: Rect,
-    points: impl IntoIterator<Item = PointLabel<'a>>,
-    lines: impl IntoIterator<Item = LineLabel<'a>>,
-    parking: impl IntoIterator<Item = Parking<'a>>,
-) {
-    let mut occupied = Vec::new();
-    let mut prepared = Vec::new();
-    prepare_parking(
-        painter,
-        viewport,
-        rect,
-        parking,
-        &mut occupied,
-        &mut prepared,
-    );
-    prepare_points(painter, viewport, rect, points, &mut prepared);
-    prepare_lines(painter, viewport, rect, lines, &mut prepared);
-    prepared.sort_unstable_by(|left, right| {
-        left.rank
-            .cmp(&right.rank)
-            .then_with(|| left.score.total_cmp(&right.score))
-    });
+#[derive(Default)]
+pub struct Compositor {
+    epoch: u64,
+    memory: HashMap<String, Memory>,
+}
 
-    let mut accepted = HashMap::<&str, Vec<Pos2>>::new();
-    for label in &prepared {
-        if accepted.contains_key(label.unique)
-            || occupied
-                .iter()
-                .any(|prior: &Rect| prior.intersects(label.footprint))
-        {
-            continue;
-        }
-        stamp(painter, label);
-        occupied.push(label.footprint);
-        accepted.entry(label.unique).or_default().push(label.anchor);
-        if occupied.len() >= LABEL_CEILING {
-            return;
-        }
-    }
+#[derive(Clone, Copy)]
+struct Memory {
+    world: [f64; 2],
+    angle: f32,
+    touched: u64,
+}
 
-    if viewport.zoom < 15.0 {
-        return;
-    }
-    for label in &prepared {
-        if !label.repeatable
-            || accepted.get(label.unique).is_none_or(|anchors| {
-                anchors
+impl Compositor {
+    pub fn paint<'a>(
+        &mut self,
+        painter: &Painter,
+        viewport: map::Viewport,
+        rect: Rect,
+        points: impl IntoIterator<Item = PointLabel<'a>>,
+        lines: impl IntoIterator<Item = LineLabel<'a>>,
+        parking: impl IntoIterator<Item = Parking<'a>>,
+    ) {
+        self.epoch = self.epoch.saturating_add(1);
+        let mut occupied = Vec::new();
+        let mut prepared = Vec::new();
+        prepare_parking(
+            painter,
+            viewport,
+            rect,
+            parking,
+            &mut occupied,
+            &mut prepared,
+        );
+        prepare_points(painter, viewport, rect, points, &mut prepared);
+        prepare_lines(painter, viewport, rect, lines, &self.memory, &mut prepared);
+        prepared.sort_unstable_by(|left, right| {
+            left.rank
+                .cmp(&right.rank)
+                .then_with(|| left.score.total_cmp(&right.score))
+                .then_with(|| left.unique.cmp(right.unique))
+        });
+
+        let mut accepted = HashMap::<&str, Vec<Pos2>>::new();
+        for label in &prepared {
+            if accepted.contains_key(label.unique)
+                || occupied
                     .iter()
-                    .any(|anchor| anchor.distance(label.anchor) < REPEAT_SEPARATION)
-            })
-            || occupied
-                .iter()
-                .any(|prior| prior.intersects(label.footprint))
-        {
-            continue;
+                    .any(|prior: &Rect| prior.intersects(label.footprint))
+            {
+                continue;
+            }
+            stamp(painter, label);
+            occupied.push(label.footprint);
+            accepted.entry(label.unique).or_default().push(label.anchor);
+            self.remember(label);
+            if occupied.len() >= LABEL_CEILING {
+                break;
+            }
         }
-        stamp(painter, label);
-        occupied.push(label.footprint);
-        accepted.entry(label.unique).or_default().push(label.anchor);
-        if occupied.len() >= LABEL_CEILING {
+
+        if viewport.zoom >= 15.0 && occupied.len() < LABEL_CEILING {
+            for label in &prepared {
+                if !label.repeatable
+                    || accepted.get(label.unique).is_none_or(|anchors| {
+                        anchors
+                            .iter()
+                            .any(|anchor| anchor.distance(label.anchor) < REPEAT_SEPARATION)
+                    })
+                    || occupied
+                        .iter()
+                        .any(|prior| prior.intersects(label.footprint))
+                {
+                    continue;
+                }
+                stamp(painter, label);
+                occupied.push(label.footprint);
+                accepted.entry(label.unique).or_default().push(label.anchor);
+                if occupied.len() >= LABEL_CEILING {
+                    break;
+                }
+            }
+        }
+        let epoch = self.epoch;
+        self.memory
+            .retain(|_, memory| epoch.saturating_sub(memory.touched) <= CONTINUITY_TTL);
+    }
+
+    fn remember(&mut self, label: &Prepared<'_>) {
+        let Some(world) = label.world_anchor else {
+            return;
+        };
+        if self
+            .memory
+            .get(label.unique)
+            .is_some_and(|memory| memory.touched == self.epoch)
+        {
             return;
         }
+        self.memory.insert(
+            label.unique.to_owned(),
+            Memory {
+                world,
+                angle: label.angle,
+                touched: self.epoch,
+            },
+        );
     }
 }
 
@@ -108,7 +152,9 @@ struct Prepared<'a> {
     galley: Arc<egui::Galley>,
     ink: Color32,
     halo: Color32,
+    halo_width: f32,
     repeatable: bool,
+    world_anchor: Option<[f64; 2]>,
 }
 
 fn prepare_parking<'a>(
@@ -158,7 +204,9 @@ fn prepare_parking<'a>(
                 galley,
                 ink: Color32::from_rgb(47, 39, 28).gamma_multiply(label_maturity),
                 halo: Color32::from_white_alpha(185).gamma_multiply(label_maturity),
+                halo_width: 1.0,
                 repeatable: false,
+                world_anchor: None,
             });
         }
     }
@@ -195,7 +243,9 @@ fn prepare_points<'a>(
                 galley,
                 ink: Color32::from_black_alpha((225.0 * maturity) as u8),
                 halo: Color32::from_white_alpha((92.0 * maturity) as u8),
+                halo_width: 1.0,
                 repeatable: false,
+                world_anchor: None,
             });
         }
     }
@@ -206,6 +256,7 @@ fn prepare_lines<'a>(
     viewport: map::Viewport,
     rect: Rect,
     lines: impl IntoIterator<Item = LineLabel<'a>>,
+    memory: &HashMap<String, Memory>,
     prepared: &mut Vec<Prepared<'a>>,
 ) {
     for label in lines {
@@ -225,7 +276,11 @@ fn prepare_lines<'a>(
             .copied()
             .map(|world| map::screen_at(viewport, rect, world))
             .collect::<Vec<_>>();
-        let Some(placement) = line_placement(&path, galley.size(), rect) else {
+        let preference = memory.get(label.text).map(|memory| Preference {
+            anchor: map::screen_at(viewport, rect, memory.world),
+            angle: memory.angle,
+        });
+        let Some(placement) = line_placement(&path, galley.size(), rect, preference) else {
             continue;
         };
         let shape = text_shape(
@@ -244,21 +299,24 @@ fn prepare_lines<'a>(
             galley,
             ink: label.ink.gamma_multiply(maturity),
             halo: label.halo.gamma_multiply(maturity),
+            halo_width: label.halo_width,
             repeatable: label.repeatable,
+            world_anchor: Some(map::world_at(viewport, rect, placement.anchor)),
         });
     }
 }
 
 fn stamp(painter: &Painter, label: &Prepared<'_>) {
+    let diagonal = label.halo_width * std::f32::consts::FRAC_1_SQRT_2;
     for offset in [
-        vec2(-1.25, 0.0),
-        vec2(1.25, 0.0),
-        vec2(0.0, -1.25),
-        vec2(0.0, 1.25),
-        vec2(-0.9, -0.9),
-        vec2(0.9, -0.9),
-        vec2(-0.9, 0.9),
-        vec2(0.9, 0.9),
+        vec2(-label.halo_width, 0.0),
+        vec2(label.halo_width, 0.0),
+        vec2(0.0, -label.halo_width),
+        vec2(0.0, label.halo_width),
+        vec2(-diagonal, -diagonal),
+        vec2(diagonal, -diagonal),
+        vec2(-diagonal, diagonal),
+        vec2(diagonal, diagonal),
     ] {
         let _halo = painter.add(text_shape(
             label.anchor + offset,
@@ -287,7 +345,18 @@ struct Placement {
     score: f32,
 }
 
-fn line_placement(path: &[Pos2], label: Vec2, viewport: Rect) -> Option<Placement> {
+#[derive(Clone, Copy)]
+struct Preference {
+    anchor: Pos2,
+    angle: f32,
+}
+
+fn line_placement(
+    path: &[Pos2],
+    label: Vec2,
+    viewport: Rect,
+    preference: Option<Preference>,
+) -> Option<Placement> {
     let path = path
         .iter()
         .copied()
@@ -336,7 +405,17 @@ fn line_placement(path: &[Pos2], label: Vec2, viewport: Rect) -> Option<Placemen
             viewport.contains_rect(footprint).then_some(Placement {
                 anchor,
                 angle,
-                score: bend.mul_add(1_000.0, anchor.distance(viewport.center())),
+                score: preference.map_or_else(
+                    || bend.mul_add(1_000.0, anchor.distance(viewport.center())),
+                    |preference| {
+                        let angular_travel =
+                            unsigned_angle(Vec2::angled(angle), Vec2::angled(preference.angle));
+                        bend.mul_add(
+                            180.0,
+                            angular_travel.mul_add(90.0, anchor.distance(preference.anchor)),
+                        )
+                    },
+                ),
             })
         })
         .min_by(|left, right| left.score.total_cmp(&right.score))
@@ -397,6 +476,7 @@ mod tests {
             &[egui::pos2(700.0, 300.0), egui::pos2(100.0, 300.0)],
             vec2(100.0, 12.0),
             VIEW,
+            None,
         )
         .expect("long road has a placement");
         assert!(placement.angle.abs() < f32::EPSILON);
@@ -410,6 +490,7 @@ mod tests {
                 &[egui::pos2(100.0, 100.0), egui::pos2(140.0, 100.0)],
                 vec2(80.0, 12.0),
                 VIEW,
+                None,
             )
             .is_none()
         );
@@ -422,8 +503,28 @@ mod tests {
                 ],
                 vec2(150.0, 12.0),
                 VIEW,
+                None,
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn line_label_continuity_dominates_viewport_recentering() {
+        let path = [egui::pos2(100.0, 300.0), egui::pos2(700.0, 300.0)];
+        let label = vec2(80.0, 12.0);
+        let centered = line_placement(&path, label, VIEW, None).expect("long road has a label");
+        let remembered = line_placement(
+            &path,
+            label,
+            VIEW,
+            Some(Preference {
+                anchor: egui::pos2(150.0, 300.0),
+                angle: 0.0,
+            }),
+        )
+        .expect("remembered road has a label");
+        assert!(centered.anchor.distance(VIEW.center()) < 1.0);
+        assert!(remembered.anchor.distance(egui::pos2(150.0, 300.0)) < 2.0);
     }
 }

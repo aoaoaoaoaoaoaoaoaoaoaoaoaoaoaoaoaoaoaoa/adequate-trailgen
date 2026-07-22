@@ -2,7 +2,7 @@ use crate::{
     annotation,
     basemap::{self, Basemap, Source, TileKey, VectorTile},
     map::{self, Viewport},
-    vector_map::{VectorCorpus, VectorLayer, VectorPaint},
+    vector_map::{GeometryPass, VectorCorpus, VectorLayer, VectorPaint},
 };
 use anyhow::Result;
 use egui::{Color32, Painter, Rect};
@@ -20,6 +20,7 @@ const TRAILHEAD_PARKING_REACH_M: f64 = 160.0;
 
 /// The reusable, streaming vector-map plane beneath every trail workbench.
 pub struct VectorField {
+    annotations: annotation::Compositor,
     corpus: VectorCorpus,
     armory: Option<Basemap>,
     tiles: VectorBank,
@@ -57,6 +58,7 @@ impl VectorField {
         trails: Option<Arc<TrailGraph>>,
     ) -> Result<Self> {
         Ok(Self {
+            annotations: annotation::Compositor::default(),
             corpus: VectorCorpus::mint(),
             armory: Some(Basemap::spawn(ctx.clone(), source, !offline)?),
             tiles: VectorBank::new(VECTOR_CEILING),
@@ -119,17 +121,26 @@ impl VectorField {
             .retain(|key, _| self.tiles.contains(*key));
     }
 
-    pub fn paint(&mut self, painter: &Painter, viewport: Viewport, rect: Rect) {
-        self.paint_base(painter, viewport, rect);
-        self.paint_annotations(painter, viewport, rect, std::iter::empty());
+    pub fn paint_base(&mut self, painter: &Painter, viewport: Viewport, rect: Rect) {
+        self.resolve(viewport, rect, painter.ctx());
+        self.submit(painter, viewport, rect, GeometryPass::Both);
     }
 
-    pub fn paint_base(&mut self, painter: &Painter, viewport: Viewport, rect: Rect) {
+    pub fn paint_fills(&mut self, painter: &Painter, viewport: Viewport, rect: Rect) {
+        self.resolve(viewport, rect, painter.ctx());
+        self.submit(painter, viewport, rect, GeometryPass::Fills);
+    }
+
+    pub fn paint_strokes(&self, painter: &Painter, viewport: Viewport, rect: Rect) {
+        self.submit(painter, viewport, rect, GeometryPass::Strokes);
+    }
+
+    fn resolve(&mut self, viewport: Viewport, rect: Rect, ctx: &egui::Context) {
         if self.armory.is_none() {
             return;
         }
         let cover = basemap::cover(viewport, rect, self.archive_zoom);
-        self.demand_cover(&cover, painter.ctx());
+        self.demand_cover(&cover, ctx);
         let coherent = cover
             .finest_resolved(|key| {
                 if self.tiles.contains(key) {
@@ -160,12 +171,16 @@ impl VectorField {
                 .filter_map(|key| self.tiles.get(key).cloned())
                 .collect();
         }
+    }
+
+    fn submit(&self, painter: &Painter, viewport: Viewport, rect: Rect, geometry: GeometryPass) {
         if !self.presented.is_empty() {
             painter.add(egui_wgpu::Callback::new_paint_callback(
                 rect,
                 VectorPaint {
                     layer: VectorLayer::Basemap,
                     corpus: self.corpus,
+                    geometry,
                     tiles: Arc::clone(&self.presented),
                     center_world: viewport.center,
                     world_points: map::world_pixels(viewport) as f32,
@@ -178,7 +193,7 @@ impl VectorField {
     }
 
     pub fn paint_annotations<'a>(
-        &'a self,
+        &'a mut self,
         painter: &Painter,
         viewport: Viewport,
         rect: Rect,
@@ -206,7 +221,8 @@ impl VectorField {
                 size: label.size,
                 onset_zoom: label.onset_zoom,
                 ink: Color32::from_rgb(52, 47, 39),
-                halo: Color32::from_white_alpha(180),
+                halo: Color32::from_rgba_unmultiplied(205, 203, 187, 210),
+                halo_width: 0.72,
                 repeatable: true,
             });
         let parking = self
@@ -219,7 +235,7 @@ impl VectorField {
                 name: parking.name.as_deref(),
                 onset_zoom: parking.onset_zoom,
             });
-        annotation::paint(
+        self.annotations.paint(
             painter,
             viewport,
             rect,

@@ -1341,7 +1341,7 @@ impl TrailApp {
         let scribe_event = self.scribe.interact(self.viewport, ui, &response, rect);
         let canvas = ui.painter_at(rect);
         let _ground = canvas.rect_filled(rect, 0.0, map::MAP_GROUND);
-        self.paint_basemap(&canvas, rect);
+        self.paint_basemap_geometry(&canvas, rect);
         self.atlas.paint_network(&canvas, self.viewport, rect);
         if !self.regions.is_empty() || self.scribe.active() {
             live_area::paint(
@@ -1353,6 +1353,7 @@ impl TrailApp {
             );
         }
         self.paint_trails(&canvas, rect);
+        self.paint_map_annotations(&canvas, rect);
         if self.editor.is_some() {
             self.paint_support_points(&canvas, rect);
         } else if let Some(trailhead) = self.active_trailhead() {
@@ -1403,9 +1404,13 @@ impl TrailApp {
         self.handle_scribe(ui.ctx(), &scribe_event);
     }
 
-    fn paint_basemap(&mut self, painter: &egui::Painter, rect: egui::Rect) {
-        self.vector.paint_base(painter, self.viewport, rect);
+    fn paint_basemap_geometry(&mut self, painter: &egui::Painter, rect: egui::Rect) {
+        self.vector.paint_fills(painter, self.viewport, rect);
         self.relief.paint(painter, self.viewport, rect);
+        self.vector.paint_strokes(painter, self.viewport, rect);
+    }
+
+    fn paint_map_annotations(&mut self, painter: &egui::Painter, rect: egui::Rect) {
         self.vector.paint_annotations(
             painter,
             self.viewport,

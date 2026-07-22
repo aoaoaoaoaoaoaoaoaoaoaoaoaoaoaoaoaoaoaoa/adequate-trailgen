@@ -31,6 +31,7 @@ impl VectorCorpus {
 pub struct VectorPaint {
     pub layer: VectorLayer,
     pub corpus: VectorCorpus,
+    pub geometry: GeometryPass,
     pub tiles: Arc<[Arc<VectorTile>]>,
     pub center_world: [f64; 2],
     pub world_points: f32,
@@ -43,6 +44,13 @@ pub struct VectorPaint {
 pub enum VectorLayer {
     Basemap,
     Relief,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GeometryPass {
+    Fills,
+    Strokes,
+    Both,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -82,26 +90,30 @@ impl CallbackTrait for VectorPaint {
             return;
         };
         pass.set_bind_group(0, &gpu.bind, &[]);
-        pass.set_pipeline(&gpu.fill_pipeline);
-        for tile in self.tiles.iter() {
-            if let Some(tile) = gpu.tiles.get(&GpuKey {
-                layer: self.layer,
-                corpus: self.corpus,
-                tile: tile.key,
-            }) && let Some(draw) = &tile.fills
-            {
-                draw.paint(pass, &tile.buffer, &tile.transform, gpu.instances);
+        if self.geometry != GeometryPass::Strokes {
+            pass.set_pipeline(&gpu.fill_pipeline);
+            for tile in self.tiles.iter() {
+                if let Some(tile) = gpu.tiles.get(&GpuKey {
+                    layer: self.layer,
+                    corpus: self.corpus,
+                    tile: tile.key,
+                }) && let Some(draw) = &tile.fills
+                {
+                    draw.paint(pass, &tile.buffer, &tile.transform, gpu.instances);
+                }
             }
         }
-        pass.set_pipeline(&gpu.stroke_pipeline);
-        for tile in self.tiles.iter() {
-            if let Some(tile) = gpu.tiles.get(&GpuKey {
-                layer: self.layer,
-                corpus: self.corpus,
-                tile: tile.key,
-            }) && let Some(draw) = &tile.strokes
-            {
-                draw.paint(pass, &tile.buffer, &tile.transform, gpu.instances);
+        if self.geometry != GeometryPass::Fills {
+            pass.set_pipeline(&gpu.stroke_pipeline);
+            for tile in self.tiles.iter() {
+                if let Some(tile) = gpu.tiles.get(&GpuKey {
+                    layer: self.layer,
+                    corpus: self.corpus,
+                    tile: tile.key,
+                }) && let Some(draw) = &tile.strokes
+                {
+                    draw.paint(pass, &tile.buffer, &tile.transform, gpu.instances);
+                }
             }
         }
     }

@@ -2,7 +2,7 @@ use crate::{
     annotation,
     basemap::{self, Mesh, StrokePoint, TileKey, VectorTile},
     map,
-    vector_map::{VectorCorpus, VectorLayer, VectorPaint},
+    vector_map::{GeometryPass, VectorCorpus, VectorLayer, VectorPaint},
 };
 use anyhow::{Context as _, Result, ensure};
 use crossbeam_channel::{Receiver, bounded};
@@ -17,8 +17,8 @@ use std::{
 };
 use trailgen_data::{TopographicTile, Topography};
 
-const CACHE: &str = "cache/isohypses-v2.bin";
-const MAGIC: &[u8; 8] = b"TRLISO02";
+const CACHE: &str = "cache/isohypses-v3.bin";
+const MAGIC: &[u8; 8] = b"TRLISO03";
 const INTERVAL_M: i32 = 10;
 const INDEX_INTERVAL_M: i32 = 50;
 const CHUNK_POINTS: usize = 96;
@@ -95,6 +95,7 @@ impl Relief {
             VectorPaint {
                 layer: VectorLayer::Relief,
                 corpus: self.corpus,
+                geometry: GeometryPass::Strokes,
                 tiles: Arc::clone(&self.field.tiles),
                 center_world: viewport.center,
                 world_points: map::world_pixels(viewport) as f32,
@@ -124,10 +125,11 @@ impl Relief {
                     path: &isohypse.points,
                     text: label,
                     rank: 1_100,
-                    size: 8.8,
+                    size: 10.4,
                     onset_zoom: 12.25,
-                    ink: Color32::from_rgba_unmultiplied(65, 53, 37, 175),
-                    halo: Color32::from_white_alpha(145),
+                    ink: Color32::from_rgba_unmultiplied(61, 49, 34, 225),
+                    halo: Color32::from_rgba_unmultiplied(205, 203, 187, 195),
+                    halo_width: 0.68,
                     repeatable: true,
                 })
             })
@@ -275,7 +277,8 @@ fn reap_strata(
     isohypses: &mut Vec<Isohypse>,
 ) {
     for (elevation_m, segments) in strata {
-        for chain in stitch(&segments) {
+        for mut chain in stitch(&segments) {
+            smooth(&mut chain);
             let mut start = 0;
             while start + 1 < chain.len() {
                 let end = (start + CHUNK_POINTS).min(chain.len());
@@ -452,6 +455,32 @@ fn stitch(segments: &[Segment]) -> Vec<Vec<GridPoint>> {
     chains
 }
 
+fn smooth(chain: &mut [GridPoint]) {
+    let Some(last) = chain.len().checked_sub(1) else {
+        return;
+    };
+    let closed = chain.len() >= 4 && knot(chain[0]) == knot(chain[last]);
+    let unique = chain.len() - usize::from(closed);
+    if unique < 3 {
+        return;
+    }
+    let source = chain.to_vec();
+    for slot in 0..unique {
+        if !closed && (slot == 0 || slot + 1 == unique) {
+            continue;
+        }
+        let prior = if slot == 0 { unique - 1 } else { slot - 1 };
+        let next = (slot + 1) % unique;
+        chain[slot] = GridPoint {
+            x: (source[prior].x + source[next].x).mul_add(0.18, source[slot].x * 0.64),
+            y: (source[prior].y + source[next].y).mul_add(0.18, source[slot].y * 0.64),
+        };
+    }
+    if closed {
+        chain[last] = chain[0];
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 struct Incidence {
     slots: [usize; 4],
@@ -566,9 +595,9 @@ fn raise_tiles(isohypses: &[Isohypse]) -> Arc<[Arc<VectorTile>]> {
         };
         let indexed = isohypse.elevation_m % INDEX_INTERVAL_M == 0;
         let (color, radius_points, onset_zoom) = if indexed {
-            ([80, 67, 48, 88], 0.41, 10.5)
+            ([80, 67, 48, 92], 0.56, 10.5)
         } else {
-            ([84, 73, 57, 28], 0.21, 11.75)
+            ([84, 73, 57, 31], 0.31, 11.75)
         };
         for (slot, point) in points.iter().copied().enumerate() {
             let extrusion = basemap::join_normal(&points, slot);
@@ -763,6 +792,19 @@ mod tests {
         ]);
         assert_eq!(chains.len(), 1);
         assert_eq!(chains[0].len(), 3);
+    }
+
+    #[test]
+    fn smoothing_preserves_open_boundaries_and_tempers_corners() {
+        let mut chain = [
+            GridPoint { x: 0.0, y: 0.0 },
+            GridPoint { x: 1.0, y: 0.0 },
+            GridPoint { x: 1.0, y: 1.0 },
+        ];
+        smooth(&mut chain);
+        assert_eq!(knot(chain[0]), knot(GridPoint { x: 0.0, y: 0.0 }));
+        assert_eq!(knot(chain[2]), knot(GridPoint { x: 1.0, y: 1.0 }));
+        assert!(chain[1].x < 1.0 && chain[1].y > 0.0);
     }
 
     #[test]
