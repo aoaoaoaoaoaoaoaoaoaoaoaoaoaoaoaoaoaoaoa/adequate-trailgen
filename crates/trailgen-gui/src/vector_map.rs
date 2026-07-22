@@ -15,6 +15,7 @@ use wgpu::util::DeviceExt as _;
 const GPU_CEILING: usize = 384 * 1_048_576;
 const MAX_WRAP_RADIUS: u32 = 2;
 const MAX_WRAP_INSTANCES: usize = (MAX_WRAP_RADIUS * 2 + 1) as usize;
+const MAX_GAPS: usize = 32;
 static NEXT_CORPUS: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -32,6 +33,7 @@ pub struct VectorPaint {
     pub layer: VectorLayer,
     pub corpus: VectorCorpus,
     pub geometry: GeometryPass,
+    pub gaps: Arc<[VectorGap]>,
     pub tiles: Arc<[Arc<VectorTile>]>,
     pub center_world: [f64; 2],
     pub world_points: f32,
@@ -51,6 +53,27 @@ pub enum GeometryPass {
     Fills,
     Strokes,
     Both,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct VectorGap {
+    center: [f32; 2],
+    axis: [f32; 2],
+    half_extent: [f32; 2],
+    _pad: [f32; 2],
+}
+
+impl VectorGap {
+    #[must_use]
+    pub fn screen(center: egui::Pos2, axis: egui::Vec2, half_extent: egui::Vec2) -> Self {
+        Self {
+            center: center.to_vec2().into(),
+            axis: axis.into(),
+            half_extent: half_extent.into(),
+            _pad: [0.0; 2],
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -104,7 +127,11 @@ impl CallbackTrait for VectorPaint {
             }
         }
         if self.geometry != GeometryPass::Fills {
-            pass.set_pipeline(&gpu.stroke_pipeline);
+            pass.set_pipeline(if self.layer == VectorLayer::Relief {
+                &gpu.relief_stroke_pipeline
+            } else {
+                &gpu.stroke_pipeline
+            });
             for tile in self.tiles.iter() {
                 if let Some(tile) = gpu.tiles.get(&GpuKey {
                     layer: self.layer,
@@ -122,6 +149,7 @@ impl CallbackTrait for VectorPaint {
 pub struct VectorMapGpu {
     fill_pipeline: wgpu::RenderPipeline,
     stroke_pipeline: wgpu::RenderPipeline,
+    relief_stroke_pipeline: wgpu::RenderPipeline,
     uniform: wgpu::Buffer,
     bind: wgpu::BindGroup,
     tiles: HashMap<GpuKey, GpuTile>,
@@ -146,7 +174,7 @@ impl VectorMapGpu {
             label: Some("vector-map"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -196,9 +224,22 @@ impl VectorMapGpu {
                 vertex: stroke_layout(),
             },
         );
+        let relief_stroke_pipeline = pipeline(
+            device,
+            format,
+            &pipeline_layout,
+            &shader,
+            PipelineLaw {
+                label: "relief-stroke",
+                vertex_entry: "stroke_vertex",
+                fragment_entry: relief_fragment_entry(format),
+                vertex: stroke_layout(),
+            },
+        );
         Self {
             fill_pipeline,
             stroke_pipeline,
+            relief_stroke_pipeline,
             uniform,
             bind,
             tiles: HashMap::new(),
@@ -357,6 +398,14 @@ fn fragment_entry(format: wgpu::TextureFormat) -> &'static str {
     }
 }
 
+fn relief_fragment_entry(format: wgpu::TextureFormat) -> &'static str {
+    if format.is_srgb() {
+        "fragment_linear_relief"
+    } else {
+        "fragment_gamma_relief"
+    }
+}
+
 const fn fill_layout() -> wgpu::VertexBufferLayout<'static> {
     const ATTRIBUTES: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![
         0 => Float32x2,
@@ -490,7 +539,9 @@ struct Uniform {
     wrap_radius: u32,
     view_zoom: f32,
     apparition_span: f32,
-    _pad: [f32; 2],
+    gap_count: u32,
+    _pad: u32,
+    gaps: [VectorGap; MAX_GAPS],
 }
 
 impl Uniform {
@@ -509,7 +560,15 @@ impl Uniform {
             wrap_radius,
             view_zoom: paint.view_zoom,
             apparition_span: paint.apparition_span,
-            _pad: [0.0; 2],
+            gap_count: paint.gaps.len().min(MAX_GAPS) as u32,
+            _pad: 0,
+            gaps: std::array::from_fn(|slot| {
+                paint
+                    .gaps
+                    .get(slot)
+                    .copied()
+                    .unwrap_or_else(VectorGap::zeroed)
+            }),
         }
     }
 }
@@ -550,6 +609,13 @@ fn wrap_radius(world_width: f32, center_x: f32) -> u32 {
 }
 
 const WGSL: &str = r"
+struct Gap {
+    center: vec2f,
+    axis: vec2f,
+    half_extent: vec2f,
+    pad: vec2f,
+};
+
 struct Uniform {
     center_high: vec2f,
     center_low: vec2f,
@@ -558,8 +624,9 @@ struct Uniform {
     wrap_radius: u32,
     view_zoom: f32,
     apparition_span: f32,
-    pad_a: f32,
-    pad_b: f32,
+    gap_count: u32,
+    pad: u32,
+    gaps: array<Gap, 32>,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniform;
@@ -570,6 +637,7 @@ struct VertexOut {
     @location(1) edge_distance: f32,
     @location(2) solid_radius: f32,
     @location(3) tile_local: vec2f,
+    @location(4) map_point: vec2f,
 };
 
 fn apparition(onset_zoom: f32) -> f32 {
@@ -610,16 +678,14 @@ fn fill_vertex(
     @builtin(instance_index) instance: u32,
 ) -> VertexOut {
     var out: VertexOut;
-    out.position = vec4f(
-        clip_at(local, origin_high, origin_low, tile_span, instance),
-        0.0,
-        1.0,
-    );
+    let clip = clip_at(local, origin_high, origin_low, tile_span, instance);
+    out.position = vec4f(clip, 0.0, 1.0);
     let maturity = apparition(onset_zoom);
     out.color = vec4f(color.rgb, color.a * maturity);
     out.edge_distance = 0.0;
     out.solid_radius = -1.0;
     out.tile_local = local;
+    out.map_point = (clip * vec2f(0.5, -0.5) + vec2f(0.5)) * u.viewport;
     return out;
 }
 
@@ -642,24 +708,38 @@ fn stroke_vertex(
     let visible_radius = radius * mix(0.12, 1.0, maturity);
     let expanded_radius = visible_radius + 0.8;
     let offset = extrusion * expanded_radius * 2.0 / u.viewport;
-    out.position = vec4f(
-        clip_at(local, origin_high, origin_low, tile_span, instance)
-            + vec2f(offset.x, -offset.y),
-        0.0,
-        1.0,
-    );
+    let clip = clip_at(local, origin_high, origin_low, tile_span, instance)
+        + vec2f(offset.x, -offset.y);
+    out.position = vec4f(clip, 0.0, 1.0);
     out.color = vec4f(color.rgb, color.a * mix(0.16, 1.0, maturity));
     out.edge_distance = side * expanded_radius;
     out.solid_radius = visible_radius;
     out.tile_local = local
         + extrusion * expanded_radius / (u.world_points * tile_span);
+    out.map_point = (clip * vec2f(0.5, -0.5) + vec2f(0.5)) * u.viewport;
     return out;
 }
 
-fn painted(in: VertexOut) -> vec4f {
+fn inside_gap(point: vec2f) -> bool {
+    for (var slot = 0u; slot < min(u.gap_count, 32u); slot += 1u) {
+        let gap = u.gaps[slot];
+        let delta = point - gap.center;
+        let normal = vec2f(-gap.axis.y, gap.axis.x);
+        if abs(dot(delta, gap.axis)) <= gap.half_extent.x
+            && abs(dot(delta, normal)) <= gap.half_extent.y {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn painted(in: VertexOut, break_contours: bool) -> vec4f {
     // MVTs overlap their neighbors; half-open ownership prevents translucent
     // skirts from double-blending into visible tile seams.
     if any(in.tile_local < vec2f(0.0)) || any(in.tile_local >= vec2f(1.0)) {
+        discard;
+    }
+    if break_contours && inside_gap(in.map_point) {
         discard;
     }
     var coverage = 1.0;
@@ -676,7 +756,12 @@ fn painted(in: VertexOut) -> vec4f {
 
 @fragment
 fn fragment_gamma(in: VertexOut) -> @location(0) vec4f {
-    return painted(in);
+    return painted(in, false);
+}
+
+@fragment
+fn fragment_gamma_relief(in: VertexOut) -> @location(0) vec4f {
+    return painted(in, true);
 }
 
 fn linear_channel(encoded: f32) -> f32 {
@@ -686,7 +771,18 @@ fn linear_channel(encoded: f32) -> f32 {
 
 @fragment
 fn fragment_linear(in: VertexOut) -> @location(0) vec4f {
-    let color = painted(in);
+    let color = painted(in, false);
+    return vec4f(
+        linear_channel(color.r),
+        linear_channel(color.g),
+        linear_channel(color.b),
+        color.a,
+    );
+}
+
+@fragment
+fn fragment_linear_relief(in: VertexOut) -> @location(0) vec4f {
+    let color = painted(in, true);
     return vec4f(
         linear_channel(color.r),
         linear_channel(color.g),
@@ -753,6 +849,15 @@ mod tests {
             fragment_entry(wgpu::TextureFormat::Bgra8UnormSrgb),
             "fragment_linear"
         );
+        assert_eq!(
+            relief_fragment_entry(wgpu::TextureFormat::Bgra8Unorm),
+            "fragment_gamma_relief"
+        );
+        assert_eq!(
+            relief_fragment_entry(wgpu::TextureFormat::Bgra8UnormSrgb),
+            "fragment_linear_relief"
+        );
+        assert_eq!(size_of::<VectorGap>(), 8 * size_of::<f32>());
     }
 
     #[test]

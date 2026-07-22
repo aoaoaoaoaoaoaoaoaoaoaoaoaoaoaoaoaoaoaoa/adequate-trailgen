@@ -123,16 +123,22 @@ impl VectorField {
 
     pub fn paint_base(&mut self, painter: &Painter, viewport: Viewport, rect: Rect) {
         self.resolve(viewport, rect, painter.ctx());
-        self.submit(painter, viewport, rect, GeometryPass::Both);
+        self.submit(painter, viewport, rect, GeometryPass::Both, Arc::from([]));
     }
 
     pub fn paint_fills(&mut self, painter: &Painter, viewport: Viewport, rect: Rect) {
         self.resolve(viewport, rect, painter.ctx());
-        self.submit(painter, viewport, rect, GeometryPass::Fills);
+        self.submit(painter, viewport, rect, GeometryPass::Fills, Arc::from([]));
     }
 
-    pub fn paint_strokes(&self, painter: &Painter, viewport: Viewport, rect: Rect) {
-        self.submit(painter, viewport, rect, GeometryPass::Strokes);
+    pub fn paint_strokes(
+        &self,
+        painter: &Painter,
+        viewport: Viewport,
+        rect: Rect,
+        gaps: Arc<[crate::vector_map::VectorGap]>,
+    ) {
+        self.submit(painter, viewport, rect, GeometryPass::Strokes, gaps);
     }
 
     fn resolve(&mut self, viewport: Viewport, rect: Rect, ctx: &egui::Context) {
@@ -173,7 +179,14 @@ impl VectorField {
         }
     }
 
-    fn submit(&self, painter: &Painter, viewport: Viewport, rect: Rect, geometry: GeometryPass) {
+    fn submit(
+        &self,
+        painter: &Painter,
+        viewport: Viewport,
+        rect: Rect,
+        geometry: GeometryPass,
+        gaps: Arc<[crate::vector_map::VectorGap]>,
+    ) {
         if !self.presented.is_empty() {
             painter.add(egui_wgpu::Callback::new_paint_callback(
                 rect,
@@ -181,6 +194,7 @@ impl VectorField {
                     layer: VectorLayer::Basemap,
                     corpus: self.corpus,
                     geometry,
+                    gaps,
                     tiles: Arc::clone(&self.presented),
                     center_world: viewport.center,
                     world_points: map::world_pixels(viewport) as f32,
@@ -199,6 +213,17 @@ impl VectorField {
         rect: Rect,
         relief: impl IntoIterator<Item = annotation::LineLabel<'a>>,
     ) {
+        self.compose_annotations(painter, viewport, rect, relief)
+            .paint(painter);
+    }
+
+    pub fn compose_annotations<'a>(
+        &'a mut self,
+        painter: &Painter,
+        viewport: Viewport,
+        rect: Rect,
+        relief: impl IntoIterator<Item = annotation::LineLabel<'a>>,
+    ) -> annotation::Composition {
         let points = self
             .presented
             .iter()
@@ -218,12 +243,12 @@ impl VectorField {
                 path: &label.path,
                 text: label.text.as_ref(),
                 rank: label.rank,
-                size: label.size,
+                size: label.size + 1.0,
                 onset_zoom: label.onset_zoom,
-                ink: Color32::from_rgb(52, 47, 39),
-                halo: Color32::from_rgba_unmultiplied(205, 203, 187, 210),
-                halo_width: 0.72,
+                ink: Color32::BLACK,
+                halo: None,
                 repeatable: true,
+                break_line: false,
             });
         let parking = self
             .presented
@@ -235,14 +260,14 @@ impl VectorField {
                 name: parking.name.as_deref(),
                 onset_zoom: parking.onset_zoom,
             });
-        self.annotations.paint(
+        self.annotations.compose(
             painter,
             viewport,
             rect,
             points,
             roads.chain(relief),
             parking,
-        );
+        )
     }
 
     fn index_parking(&mut self, tile: &VectorTile) {

@@ -1,4 +1,5 @@
 use crate::{
+    annotation,
     basemap::Source as BasemapSource,
     gallery::{self, TrailSort},
     library::{FamilyId, Library, SavedTrail, SearchRecipe, TrailId, Trailhead},
@@ -1341,7 +1342,7 @@ impl TrailApp {
         let scribe_event = self.scribe.interact(self.viewport, ui, &response, rect);
         let canvas = ui.painter_at(rect);
         let _ground = canvas.rect_filled(rect, 0.0, map::MAP_GROUND);
-        self.paint_basemap_geometry(&canvas, rect);
+        let annotations = self.forge_cartography(&canvas, rect);
         self.atlas.paint_network(&canvas, self.viewport, rect);
         if !self.regions.is_empty() || self.scribe.active() {
             live_area::paint(
@@ -1353,7 +1354,7 @@ impl TrailApp {
             );
         }
         self.paint_trails(&canvas, rect);
-        self.paint_map_annotations(&canvas, rect);
+        annotations.paint(&canvas);
         if self.editor.is_some() {
             self.paint_support_points(&canvas, rect);
         } else if let Some(trailhead) = self.active_trailhead() {
@@ -1404,19 +1405,24 @@ impl TrailApp {
         self.handle_scribe(ui.ctx(), &scribe_event);
     }
 
-    fn paint_basemap_geometry(&mut self, painter: &egui::Painter, rect: egui::Rect) {
+    fn forge_cartography(
+        &mut self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+    ) -> annotation::Composition {
         self.vector.paint_fills(painter, self.viewport, rect);
-        self.relief.paint(painter, self.viewport, rect);
-        self.vector.paint_strokes(painter, self.viewport, rect);
-    }
-
-    fn paint_map_annotations(&mut self, painter: &egui::Painter, rect: egui::Rect) {
-        self.vector.paint_annotations(
+        let annotations = self.vector.compose_annotations(
             painter,
             self.viewport,
             rect,
             self.relief.annotations(self.viewport, rect),
         );
+        let gaps = annotations.contour_gaps(rect);
+        self.relief
+            .paint(painter, self.viewport, rect, Arc::clone(&gaps));
+        self.vector
+            .paint_strokes(painter, self.viewport, rect, gaps);
+        annotations
     }
 
     fn paint_trails(&self, painter: &egui::Painter, rect: egui::Rect) {

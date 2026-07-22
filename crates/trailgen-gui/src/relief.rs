@@ -2,7 +2,7 @@ use crate::{
     annotation,
     basemap::{self, Mesh, StrokePoint, TileKey, VectorTile},
     map,
-    vector_map::{GeometryPass, VectorCorpus, VectorLayer, VectorPaint},
+    vector_map::{GeometryPass, VectorCorpus, VectorGap, VectorLayer, VectorPaint},
 };
 use anyhow::{Context as _, Result, ensure};
 use crossbeam_channel::{Receiver, bounded};
@@ -86,7 +86,13 @@ impl Relief {
         }
     }
 
-    pub fn paint(&self, painter: &Painter, viewport: map::Viewport, rect: Rect) {
+    pub fn paint(
+        &self,
+        painter: &Painter,
+        viewport: map::Viewport,
+        rect: Rect,
+        gaps: Arc<[VectorGap]>,
+    ) {
         if viewport.zoom < 10.5 || self.field.tiles.is_empty() {
             return;
         }
@@ -96,6 +102,7 @@ impl Relief {
                 layer: VectorLayer::Relief,
                 corpus: self.corpus,
                 geometry: GeometryPass::Strokes,
+                gaps,
                 tiles: Arc::clone(&self.field.tiles),
                 center_world: viewport.center,
                 world_points: map::world_pixels(viewport) as f32,
@@ -125,12 +132,12 @@ impl Relief {
                     path: &isohypse.points,
                     text: label,
                     rank: 1_100,
-                    size: 10.4,
+                    size: 11.4,
                     onset_zoom: 12.25,
-                    ink: Color32::from_rgba_unmultiplied(61, 49, 34, 225),
-                    halo: Color32::from_rgba_unmultiplied(205, 203, 187, 195),
-                    halo_width: 0.68,
+                    ink: Color32::BLACK,
+                    halo: None,
                     repeatable: true,
+                    break_line: true,
                 })
             })
             .collect()
