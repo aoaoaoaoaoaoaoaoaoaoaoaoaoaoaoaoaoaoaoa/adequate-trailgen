@@ -8,20 +8,28 @@ default US provider batch is:
 
 | Provider ID | Source | Role | License |
 | --- | --- | --- | --- |
-| `osm` | OpenStreetMap through bounded Overpass queries | Primary geometry, trail standing, access, route relations, road connectors, and nearby road/water context | ODbL 1.0 |
+| `ny-state-parks` | NYS OPRHP State Parks Trails | Public, current, foot-permitted state-park routes with authoritative marked/unmarked, surface, lifecycle, and access fields | Informational, non-commercial; OPRHP attribution required |
+| `texas-state-parks` | TPWD Texas State Parks Trails | Park-vetted official hiking geometry and use classification | TPWD informational public data; TPWD attribution |
+| `osm` | OpenStreetMap through bounded Overpass queries | Broad geometry, trail standing, access, route relations, road connectors, and nearby road/water context | ODbL 1.0 |
 | `usgs-national-trails` | USGS National Digital Trails | Official-agency trail geometry and source-originator evidence | USGS public domain |
 
 Each region-provider pair has its own immutable raw shard, exact request sidecar, and fingerprinted
 receipt beneath `sources/<provider>/`. A damaged derived index rebuilds from those shards. A missing,
 drifted, or obsolete provider receipt refetches only that provider and rectangle. `cache/graph.json`
-is written last and is the GUI readiness marker.
+is written last and is the GUI readiness marker. State providers carry explicit geographic coverage;
+an irrelevant rectangle receives a deterministic empty receipt without a network request.
 
-Both providers normalize through `NetworkProvider` into `SegmentDraft` and `ContextOverlay`; no
+All providers normalize through `NetworkProvider` into `SegmentDraft` and `ContextOverlay`; no
 provider owns a second graph-building path. Normalized lines are clipped to the rectangle union,
 then conflated explicitly. Lower numeric precedence wins duplicate geometry, while corroborating
 provenance and useful missing attributes survive. Residual nonparallel geometry from a lower-priority
 provider remains routable. `cache/conflation.json` records every bounded suppression decision;
 `cache/trails.json` keeps only compact counts.
+
+State authority geometry has precedence 0, OSM precedence 10, and USGS precedence 20. An authority's
+unknown attribute is still filled by a corroborating lower stratum, so TPWD geometry can inherit an
+OSM closure or blaze without surrendering its identity. OPRHP's explicit lifecycle and access values
+remain authoritative.
 
 Elevation follows the same acquisition law without pretending to be a trail-network provider. The
 GUI downloads the rectangle union's Mapzen Terrarium PNGs from the AWS Open Data terrain bucket at
@@ -37,6 +45,17 @@ The USGS adapter queries the Transportation service's National Digital Trails la
 hiker/pedestrian trails. It preserves permanent or source feature identity, source originator,
 dataset identity, surface, and public-domain provenance. USGS inclusion does not prove public access,
 so its edges deliberately carry `access = unknown`.
+
+The OPRHP adapter queries only public, foot-permitted, non-proposed lines. Its native subtype law is
+explicit: 0 unmarked trail, 1 marked trail, 2 unpaved road, 3 paved road, and 4 sidewalk. Closed
+geometry is retained as established but non-routable evidence. Provider IDs, facility and region,
+surface, access, and the current OPRHP use terms survive in provenance. This provider is enabled for
+the repository's unpublished non-commercial dogfooding; publication needs the planned terms and
+attribution surface.
+
+The TPWD adapter queries only `Official = Yes` lines whose use includes hiking. TPWD does not publish
+a live closure field in this layer, so access remains unknown and may be filled by corroborating
+evidence rather than fabricated as open. Provider IDs, park identity, and TPWD attribution survive.
 
 The OSM adapter accepts path, non-sidewalk footway, track, steps, and bridleway geometry as trail
 evidence. A street is never a trail merely because walking is legal there: service, pedestrian, and
@@ -75,14 +94,17 @@ A new automatic source implements one boundary:
 ```rust
 pub trait NetworkProvider {
     fn descriptor(&self) -> ProviderDescriptor;
+    fn covers(&self, bounds: GeoBounds) -> bool;
     fn acquire(&self, bounds: GeoBounds) -> anyhow::Result<ProviderPayload>;
     fn normalize(&self, shards: &[RawShard<'_>]) -> anyhow::Result<NormalizedNetwork>;
 }
 ```
 
-The descriptor owns a path-safe ID, adapter revision, precedence, extensions, and label. Acquisition
-must be bounded and return raw bytes, the exact request, and an origin. Normalization must preserve
-provider identity and licensing in provenance. Provider-native types stop at this boundary;
+The descriptor owns a path-safe ID, adapter revision, precedence, extensions, and label. `covers`
+defaults to nationwide applicability and lets regional authorities reject foreign rectangles without
+contacting their servers. Acquisition must be bounded and return raw bytes, the exact request, and an
+origin. Normalization must preserve provider identity and licensing in provenance. Provider-native
+types stop at this boundary;
 `TrailGraph`, routing, the library, and the GUI remain provider-neutral. Adapter revision changes
 invalidate only that provider's receipts.
 

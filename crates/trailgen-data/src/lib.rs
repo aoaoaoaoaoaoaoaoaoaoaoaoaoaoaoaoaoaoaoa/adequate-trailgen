@@ -4,6 +4,7 @@ mod providers;
 mod terrain;
 
 pub use providers::{
+    AuthorityTrailProvider, DEFAULT_NY_STATE_PARKS_ENDPOINT, DEFAULT_TEXAS_STATE_PARKS_ENDPOINT,
     DEFAULT_USGS_TRAILS_ENDPOINT, NetworkProvider, NormalizedNetwork, ProviderDescriptor,
     ProviderId, ProviderPayload, RawShard, UsgsNationalTrails,
 };
@@ -45,7 +46,7 @@ pub const FALLBACK_OVERPASS_ENDPOINT: &str = "https://overpass.private.coffee/ap
 pub const MAX_REGION_DEG2: f64 = 4.0;
 pub(crate) const MAX_SOURCE_BYTES: u64 = 256 * 1024 * 1024;
 const AUTOMATIC_OSM_PROFILE: OsmProfile = OsmProfile::All;
-const INDEX_SCHEMA: u8 = 12;
+const INDEX_SCHEMA: u8 = 14;
 const RAW_SCHEMA: u8 = 4;
 const MAX_OSM_CONNECTOR_M: f64 = 1_000.0;
 const LOCATION_CACHE: &str = "sources/location.json";
@@ -241,6 +242,18 @@ impl Default for TrailDataConfig {
 }
 
 fn automatic_provider_ids() -> Vec<ProviderId> {
+    [
+        "ny-state-parks",
+        "osm",
+        "texas-state-parks",
+        "usgs-national-trails",
+    ]
+    .map(|id| ProviderId::new(id).expect("static provider id is valid"))
+    .into_iter()
+    .collect()
+}
+
+fn legacy_automatic_provider_ids() -> Vec<ProviderId> {
     ["osm", "usgs-national-trails"]
         .map(|id| ProviderId::new(id).expect("static provider id is valid"))
         .into_iter()
@@ -466,7 +479,9 @@ impl Default for Surveyor {
         Self {
             locator: Nominatim::default(),
             providers: vec![
+                Box::new(AuthorityTrailProvider::new_york()),
                 Box::new(Overpass::default()),
+                Box::new(AuthorityTrailProvider::texas()),
                 Box::new(UsgsNationalTrails::default()),
             ],
             fixed_providers: false,
@@ -640,10 +655,13 @@ where
                         descriptor.label,
                         region.id
                     );
-                    emit(Event::Ranging {
-                        provider: descriptor.id.clone(),
-                        region: region.clone(),
-                    });
+                    let covered = provider.covers(region.bounds);
+                    if covered {
+                        emit(Event::Ranging {
+                            provider: descriptor.id.clone(),
+                            region: region.clone(),
+                        });
+                    }
                     let payload = provider.acquire(region.bounds)?;
                     let artifact = ProviderArtifact {
                         schema: RAW_SCHEMA,
@@ -658,10 +676,12 @@ where
                     write_json_atomic(&artifact_path, &artifact)?;
                     // Raw bytes are the provider receipt's commit marker.
                     write_atomic(&raw_path, &payload.bytes)?;
-                    emit(Event::Downloaded {
-                        provider: descriptor.id.clone(),
-                        bytes: payload.bytes.len() as u64,
-                    });
+                    if covered {
+                        emit(Event::Downloaded {
+                            provider: descriptor.id.clone(),
+                            bytes: payload.bytes.len() as u64,
+                        });
+                    }
                     (payload.bytes, payload.origin)
                 };
                 sources.push(ProviderSource {
@@ -723,7 +743,7 @@ impl NetworkProvider for Overpass {
             id: ProviderId::new("osm").expect("static provider id is valid"),
             label: "OpenStreetMap",
             adapter_revision: 5,
-            precedence: 0,
+            precedence: 10,
             extension: "osm",
             request_extension: "overpassql",
         }
@@ -1700,6 +1720,9 @@ pub fn project_config(project: &Path) -> Result<TrailDataConfig> {
     let parsed = toml::from_str::<ProjectConfig>(&raw)
         .with_context(|| format!("parse {}", path.display()))?;
     let mut config = parsed.trail_data;
+    if config.providers == legacy_automatic_provider_ids() {
+        config.providers = automatic_provider_ids();
+    }
     for region in &mut config.regions {
         validate_region(region.bounds)?;
         region.id = region_key(region.bounds);
@@ -2457,6 +2480,30 @@ mod tests {
 
         assert_eq!(config.regions[0].id, region_key(config.regions[0].bounds));
         assert_ne!(config.regions[0].id, "legacy-osm-receipt");
+        Ok(())
+    }
+
+    #[test]
+    fn project_read_migrates_the_old_automatic_provider_batch() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        fs::write(
+            temp.path().join("trailgen.toml"),
+            "[trail_data]\nmanaged = true\nproviders = ['osm', 'usgs-national-trails']\n",
+        )?;
+
+        let config = project_config(temp.path())?;
+
+        assert_eq!(config.providers, automatic_provider_ids());
+        assert!(
+            config
+                .providers
+                .contains(&ProviderId::new("ny-state-parks")?)
+        );
+        assert!(
+            config
+                .providers
+                .contains(&ProviderId::new("texas-state-parks")?)
+        );
         Ok(())
     }
 

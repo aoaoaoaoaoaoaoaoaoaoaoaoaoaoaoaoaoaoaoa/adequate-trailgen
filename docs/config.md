@@ -5,7 +5,12 @@
 ```toml
 [trail_data]
 managed = true
-providers = ["osm", "usgs-national-trails"]
+providers = [
+  "ny-state-parks",
+  "osm",
+  "texas-state-parks",
+  "usgs-national-trails",
+]
 
 [[trail_data.regions]]
 id = "8cd28c863327f323e563b851"
@@ -17,7 +22,12 @@ east = -74.00
 north = 41.35
 ```
 
-Region IDs are content-derived spatial receipts, not provider IDs or labels; do not hand-edit them. Add and excise rectangles in the workbench so source sequestration, the union graph, and its index receipt change together. Each rectangle is currently limited to four square degrees to keep provider requests bounded. `providers` names the automatic acquisition batch; the default US batch is `osm` plus `usgs-national-trails`, while the normalized graph remains provider-neutral.
+Region IDs are content-derived spatial receipts, not provider IDs or labels; do not hand-edit them.
+Add and excise rectangles in the workbench so source sequestration, the union graph, and its index
+receipt change together. Each rectangle is currently limited to four square degrees to keep provider
+requests bounded. `providers` names the automatic acquisition batch; the default US batch is OSM,
+USGS, and the spatially applicable New York and Texas state authorities, while the normalized graph
+remains provider-neutral. Projects carrying the former two-provider default migrate automatically.
 
 `managed = true` records that the live-region corpus owns the project graph. It remains true after the last rectangle is excised, preventing an obsolete generated-route snapshot from masquerading as the current graph. Manual CLI-built projects leave it false.
 

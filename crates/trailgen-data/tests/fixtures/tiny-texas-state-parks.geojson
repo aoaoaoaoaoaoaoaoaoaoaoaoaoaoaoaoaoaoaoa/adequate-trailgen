@@ -1,0 +1,51 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [[-98.49, 29.55], [-98.48, 29.56]]
+      },
+      "properties": {
+        "OBJECTID": 1,
+        "ParkName": "Government Canyon",
+        "Official": "Yes",
+        "Name1": "Joe Johnston Route",
+        "TrailUse": "Hiking/Biking",
+        "LengthMI": 1.2,
+        "GlobalID": "tx-hiking"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [[-98.48, 29.56], [-98.47, 29.57]]
+      },
+      "properties": {
+        "OBJECTID": 2,
+        "ParkName": "Government Canyon",
+        "Official": "Yes",
+        "Name1": "Bike Only",
+        "TrailUse": "Biking",
+        "GlobalID": "tx-bike"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [[-98.47, 29.57], [-98.46, 29.58]]
+      },
+      "properties": {
+        "OBJECTID": 3,
+        "ParkName": "Government Canyon",
+        "Official": "No",
+        "Name1": "Unofficial Footpath",
+        "TrailUse": "Hiking",
+        "GlobalID": "tx-unofficial"
+      }
+    }
+  ]
+}

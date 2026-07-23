@@ -272,11 +272,11 @@ fn draft_order(left: &SegmentDraft, right: &SegmentDraft) -> std::cmp::Ordering 
 }
 
 fn corroborate(preferred: &mut SegmentDraft, suppressed: &SegmentDraft) {
-    preferred
-        .provenance
-        .extend(suppressed.provenance.iter().cloned());
-    preferred.provenance.sort();
-    preferred.provenance.dedup();
+    for provenance in &suppressed.provenance {
+        if !preferred.provenance.contains(provenance) {
+            preferred.provenance.push(provenance.clone());
+        }
+    }
     preferred.confidence = preferred.confidence.max(suppressed.confidence);
     if preferred.trail_class == TrailClass::Unknown {
         preferred.trail_class = suppressed.trail_class;
@@ -333,8 +333,10 @@ mod tests {
 
     #[test]
     fn higher_strata_suppress_parallel_duplicates_and_keep_provenance() {
-        let primary = draft("osm", 41.2, TrailStanding::Informal);
+        let mut primary = draft("osm", 41.2, TrailStanding::Informal);
+        primary.provenance[0].source = "z-authority".to_owned();
         let mut secondary = draft("usgs", 41.200_03, TrailStanding::Established);
+        secondary.provenance[0].source = "a-corroborator".to_owned();
         secondary.marking = TrailMarking::Marked;
         let network = conflate(
             vec![
@@ -353,6 +355,8 @@ mod tests {
         assert_eq!(network.drafts[0].standing, TrailStanding::Informal);
         assert_eq!(network.drafts[0].marking, TrailMarking::Marked);
         assert_eq!(network.drafts[0].provenance.len(), 2);
+        assert_eq!(network.drafts[0].provenance[0].source, "z-authority");
+        assert_eq!(network.drafts[0].provenance[1].source, "a-corroborator");
         assert_eq!(network.report.suppressed_parallel_segments, 1);
     }
 

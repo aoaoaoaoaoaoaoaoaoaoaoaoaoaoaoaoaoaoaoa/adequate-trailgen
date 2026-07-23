@@ -25,7 +25,13 @@ Saved trails belong directly to the project library. Deleting a trail removes it
 
 Trail types use high-contrast dual strokes and a map legend. Focused routes add an inner terrain trace. The bronze trailhead pin and restrained water response follow the Dwemer Poolrooms design language.
 
-The default US corpus combines OpenStreetMap/Overpass with USGS National Digital Trails and cached Mapzen terrain tiles. Every rectangle-provider response is independently sequestered beneath `sources/`, fingerprinted, and rebuilt through one graph path before `cache/graph.json` becomes ready. Informal, unmaintained, historical, and unmarked paths remain searchable and visually distinct; standing, wayfinding, and legal access never masquerade as one another. See [data sources](docs/data-sources.md).
+The default US corpus combines OpenStreetMap/Overpass, USGS National Digital Trails, spatially
+applicable state-park authorities, and cached Mapzen terrain tiles. New York and Texas are the first
+admitted state providers. Every rectangle-provider response is independently sequestered beneath
+`sources/`, fingerprinted, and rebuilt through one graph path before `cache/graph.json` becomes ready.
+Informal, unmaintained, historical, and unmarked paths remain searchable and visually distinct;
+standing, wayfinding, and legal access never masquerade as one another. See
+[data sources](docs/data-sources.md).
 
 ## Debug Frontend
 

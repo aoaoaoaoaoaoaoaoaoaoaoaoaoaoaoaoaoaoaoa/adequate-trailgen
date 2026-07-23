@@ -1,7 +1,8 @@
 # US Public Trail Source Census
 
 Assessed 2026-07-22. This is an acquisition ledger, not a claim that Trailgen currently consumes
-every source below. The runtime automatic corpus remains OSM plus USGS National Digital Trails.
+every source below. The runtime automatic corpus is OSM, USGS National Digital Trails, and the first
+admitted state authorities: NYS OPRHP for current unpublished non-commercial dogfooding and TPWD.
 Of the 50 state authorities, 33 expose a machine-readable candidate, two are blocked by reuse
 restrictions, and 15 require heavier extraction.
 
@@ -55,7 +56,7 @@ with existing trails.
 | New Hampshire | Machine | NH GRANIT [Recreational Trails](https://nhgeodata.unh.edu/hosting/rest/services/Hosted/CSD_RecreationResources/FeatureServer/2) | Medium-high. Official statewide clearinghouse; audit age and managing authority. |
 | New Jersey | Machine | NJDEP [Statewide Trails](https://services1.arcgis.com/QWdNfRs7lkPq4g4Q/arcgis/rest/services/Statewide_Trails_in_New_Jersey/FeatureServer); [State Park Service Trails](https://mapsdep.nj.gov/arcgis/rest/services/Features/Land/MapServer/63) | High. Prefer the park layer as authority and the statewide layer as corroborating geometry. |
 | New Mexico | Extract | EMNRD SCORP `NM_State_Park_Trails` inventory; NMDOT [Trails](https://services.arcgis.com/hOpd7wfnKm16p9D9/arcgis/rest/services/Trails/FeatureServer) | Low-medium. The SCORP proves a state-park line layer exists, but no stable public download was found; NMDOT is not a complete substitute. |
-| New York | Restricted | OPRHP [NY State Parks Trails](https://services.arcgis.com/1xFZPtKn1wKC6POA/arcgis/rest/services/NY_State_Parks_Trails/FeatureServer) | High geometry and attributes, including marked/unmarked, but current item terms limit use to informational/non-commercial purposes. Keep catalogued, not automatic. |
+| New York | Restricted | OPRHP [NY State Parks Trails](https://services.arcgis.com/1xFZPtKn1wKC6POA/arcgis/rest/services/NY_State_Parks_Trails/FeatureServer) | High geometry and attributes, including marked/unmarked. Current item terms limit use to informational/non-commercial purposes; automatic use is presently confined to unpublished non-commercial dogfooding and needs a terms/attribution gate before release. |
 | North Carolina | Extract | Division of Parks and Recreation per-park maps; NC OneMap coastal paddle trails | Low. The public state service found is for paddle trails, not the terrestrial park network. |
 | North Dakota | Machine | Parks and Recreation [Statewide Trails](https://services3.arcgis.com/G9FKQ0xH9VagrUos/arcgis/rest/services/North_Dakota_Statewide_Trails/FeatureServer) | Medium-high. Verify OuterSpatial-derived attributes and update cadence. |
 | Ohio | Extract | ODNR park maps and internal statewide trail GIS | Medium-low. ODNR reports that it mapped its trail system, but no stable public trail line endpoint surfaced. A web-application extraction pass is warranted. |

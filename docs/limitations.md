@@ -2,13 +2,20 @@
 
 The app is useful today as a local-first route generator over normalized project data, but several seams are intentionally incomplete.
 
-- The automatic US corpus currently combines OSM/Overpass with USGS National Digital Trails. Discovery can recommend and cache other official layers, but the GUI does not yet crawl every regional GIS portal or elevate one-off agency feeds into automatic providers.
+- The automatic US corpus currently combines OSM/Overpass, USGS National Digital Trails, and admitted
+  New York and Texas state-park authorities. The nationwide census is not yet a nationwide adapter
+  roster: every additional authority still needs provider-native lifecycle, walking-use, access, and
+  licensing tests before admission.
 - Arbitrary projected GeoTIFF DEMs remain a planned seam. Current elevation sampling supports Arc/Info ASCII Grid, affine WGS84/NAD83, EPSG:3857, or WGS84/NAD83 UTM (EPSG:326xx/327xx/269xx) single-band GeoTIFF DEMs including rotated/sheared `ModelTransformationTag` rasters, and full-raster identity GDAL VRT wrappers around those GeoTIFF DEMs with affine `GeoTransform` sampling. Shapefile vector support exists for trail-network polylines, terrain overlays, access/closure overlays, and road/hydrology context linework.
 - OSM XML/PBF ingestion normalizes trails; the automatic provider then reduces walkable streets to nearest bridges of at most 1 km between genuine trail junctions. It preserves hiking/foot/walking route relations, marks informal/unmaintained/historical standing, and enforces simple `from` way / `via` node / `to` way foot turn restrictions. More complex `via`-way or conditional restrictions and planet-diff workflows are not consumed. Historical OSM is a manual forensic source, not an automatic provider.
 - Input vector geometries normalize to geographic lon/lat decimal degrees inside the adapters. Native WGS84/NAD83/CRS84, declared EPSG:3857 Web Mercator, and WGS84/NAD83 UTM (EPSG:326xx/327xx/269xx) are supported; other projected CRS inputs are rejected instead of silently ingested.
 - Dated, recurring seasonal, recurring weekday, and daily hourly access/closure overlays are represented with `active_from`/`active_to`, `seasonal_from`/`seasonal_to`, `weekdays`/`day_of_week`, `time_from`/`time_to`, optional temporal `travel`/`direction`, and a project planning moment. Permit or timed-entry reservation flags can mark active edges as restricted, but live quota inventory and booking availability are not represented. Edges are bidirectional by default, with one-way travel preserved when source attributes or active overlays prove it.
 - The exact generation backend is a bounded edge-simple enumerator for small graphs. `formulate-milp` can export a connected simple-loop LP/MILP formulation and `import-milp-solution` can ingest selected directed-arc incumbents from an external solver, but the CLI does not yet invoke MILP/CP-SAT solving itself. Large graphs use the deterministic k-shortest-closure `LoopHunter` heuristic, not a stochastic annealer.
-- The native workbench acquires and conflates the default rectangle-scoped OSM, USGS, and terrain corpus, searches it, and persists graph-independent support-point trail designs. Its manual editor reshapes routes through support points; it does not edit the underlying provider topology. Route export and generation manifests remain debug CLI contracts. The separate `trailgen map` artifact remains a self-contained offline SVG/HTML diagnostic.
+- The native workbench acquires and conflates the default rectangle-scoped authority, OSM, USGS, and
+  terrain corpus, searches it, and persists graph-independent support-point trail designs. Its manual
+  editor reshapes routes through support points; it does not edit the underlying provider topology.
+  Route export and generation manifests remain debug CLI contracts. The separate `trailgen map`
+  artifact remains a self-contained offline SVG/HTML diagnostic.
 - Automatic elevation is bare-earth Mapzen terrain sampled at a bounded tile zoom. Raster void or bathymetric outliers are rejected, but bridge decks and other structures may inherit the ground or water elevation beneath them until a structure-aware source is added.
 - AllTrails write-back uses only manual-compatible exports. The core deliberately avoids brittle private APIs.
 - Terrain inference is transparent but coarse. Explicit tags, overlays, road context, slope, and confidence are preserved; they do not replace field judgment.
