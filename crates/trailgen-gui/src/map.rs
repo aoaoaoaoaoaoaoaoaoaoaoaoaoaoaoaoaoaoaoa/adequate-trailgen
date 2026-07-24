@@ -443,29 +443,32 @@ pub fn paint_trail_tube(
     }
     let _tube = painter.add(Shape::line(points.to_vec(), Stroke::new(width, color)));
     let core = Stroke::new((width * 0.30).max(1.2), Color32::from_rgb(20, 19, 17));
+    if mark == TrailMark::Solid {
+        let _core = painter.add(Shape::line(points.to_vec(), core));
+    } else {
+        painter.extend(patterned_trail_core(points, width, core, mark));
+    }
+}
+
+fn patterned_trail_core(points: &[Pos2], width: f32, core: Stroke, mark: TrailMark) -> Vec<Shape> {
     match mark {
-        TrailMark::Solid => {
-            let _core = painter.add(Shape::line(points.to_vec(), core));
-        }
+        TrailMark::Solid => unreachable!("solid trail cores bypass cadence tessellation"),
         TrailMark::Dashed => {
-            painter.extend(Shape::dashed_line(points, core, width * 1.35, width * 0.82));
+            let gap = width * 0.82;
+            Shape::dashed_line_with_offset(points, core, &[width * 1.35], &[gap], gap)
         }
         TrailMark::DashDot => {
-            painter.extend(Shape::dashed_line_with_offset(
+            let gap = width * 0.72;
+            Shape::dashed_line_with_offset(
                 points,
                 core,
                 &[width * 1.35, core.width * 0.18],
-                &[width * 0.72; 2],
-                0.0,
-            ));
+                &[gap; 2],
+                gap,
+            )
         }
         TrailMark::Unmarked => {
-            painter.extend(Shape::dotted_line(
-                points,
-                core.color,
-                width * 2.05,
-                core.width * 0.48,
-            ));
+            Shape::dotted_line(points, core.color, width * 2.05, core.width * 0.48)
         }
     }
 }
@@ -916,5 +919,18 @@ mod tests {
             ),
             TrailMark::Unmarked
         );
+    }
+
+    #[test]
+    fn patterned_cores_cede_subpattern_fragments_to_the_colored_tube() {
+        let width = TrailSalience::Context.width();
+        let core = Stroke::new(width * 0.30, Color32::BLACK);
+        let fragment = [Pos2::ZERO, pos2(width * 0.70, 0.0)];
+        let legible = [Pos2::ZERO, pos2(width * 3.0, 0.0)];
+
+        assert!(patterned_trail_core(&fragment, width, core, TrailMark::Dashed).is_empty());
+        assert!(patterned_trail_core(&fragment, width, core, TrailMark::DashDot).is_empty());
+        assert!(!patterned_trail_core(&legible, width, core, TrailMark::Dashed).is_empty());
+        assert!(!patterned_trail_core(&legible, width, core, TrailMark::DashDot).is_empty());
     }
 }
