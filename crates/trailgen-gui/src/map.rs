@@ -194,18 +194,18 @@ struct WorldEdge {
 pub enum TrailMark {
     Solid,
     Dashed,
-    Dotted,
+    DashDot,
     Unmarked,
 }
 
 impl TrailMark {
-    const ALL: [Self; 4] = [Self::Solid, Self::Dashed, Self::Dotted, Self::Unmarked];
+    const ALL: [Self; 4] = [Self::Solid, Self::Dashed, Self::DashDot, Self::Unmarked];
 
     const fn label(self) -> &'static str {
         match self {
             Self::Solid => "EASY / GRAVEL",
             Self::Dashed => "ROUGHER",
-            Self::Dotted => "SEVERE / FADED",
+            Self::DashDot => "SEVERE / FADED",
             Self::Unmarked => "UNMARKED / NAVIGATION",
         }
     }
@@ -450,12 +450,13 @@ pub fn paint_trail_tube(
         TrailMark::Dashed => {
             painter.extend(Shape::dashed_line(points, core, width * 1.35, width * 0.82));
         }
-        TrailMark::Dotted => {
-            painter.extend(Shape::dotted_line(
+        TrailMark::DashDot => {
+            painter.extend(Shape::dashed_line_with_offset(
                 points,
-                core.color,
-                width * 1.15,
-                core.width * 0.55,
+                core,
+                &[width * 1.35, core.width * 0.18],
+                &[width * 0.72; 2],
+                0.0,
             ));
         }
         TrailMark::Unmarked => {
@@ -492,7 +493,7 @@ pub fn trail_mark(
             ],
         )
     {
-        return TrailMark::Dotted;
+        return TrailMark::DashDot;
     }
     if surface_has_any(
         surface,
@@ -883,7 +884,7 @@ mod tests {
                 Terrain::Scramble,
                 Some("gravel")
             ),
-            TrailMark::Dotted
+            TrailMark::DashDot
         );
         assert_eq!(
             trail_mark(
@@ -893,7 +894,7 @@ mod tests {
                 Terrain::Trail,
                 Some("gravel")
             ),
-            TrailMark::Dotted
+            TrailMark::DashDot
         );
         assert_eq!(
             trail_mark(
@@ -903,7 +904,7 @@ mod tests {
                 Terrain::Forest,
                 None
             ),
-            TrailMark::Dotted
+            TrailMark::DashDot
         );
         assert_eq!(
             trail_mark(
