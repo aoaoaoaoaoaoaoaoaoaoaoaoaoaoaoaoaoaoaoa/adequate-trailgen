@@ -96,6 +96,7 @@ impl Relief {
         if viewport.zoom < 10.5 || self.field.tiles.is_empty() {
             return;
         }
+        let tiles = visible_tiles(&self.field.tiles, viewport, rect);
         painter.add(egui_wgpu::Callback::new_paint_callback(
             rect,
             VectorPaint {
@@ -103,7 +104,7 @@ impl Relief {
                 corpus: self.corpus,
                 geometry: GeometryPass::Strokes,
                 gaps,
-                tiles: Arc::clone(&self.field.tiles),
+                tiles,
                 center_world: viewport.center,
                 world_points: map::world_pixels(viewport) as f32,
                 viewport_points: [rect.width(), rect.height()],
@@ -142,6 +143,30 @@ impl Relief {
             })
             .collect()
     }
+}
+
+fn visible_tiles(
+    tiles: &[Arc<VectorTile>],
+    viewport: map::Viewport,
+    rect: Rect,
+) -> Arc<[Arc<VectorTile>]> {
+    let bounds = map::world_bounds(viewport, rect.expand(2.0));
+    tiles
+        .iter()
+        .filter(|tile| tile_intersects(bounds, tile.key))
+        .cloned()
+        .collect()
+}
+
+fn tile_intersects(bounds: [f64; 4], key: TileKey) -> bool {
+    let scale = f64::from(1_u32 << key.zoom);
+    let west = f64::from(key.x) / scale;
+    let east = f64::from(key.x + 1) / scale;
+    let north = f64::from(key.y) / scale;
+    let south = f64::from(key.y + 1) / scale;
+    [-1.0, 0.0, 1.0]
+        .into_iter()
+        .any(|shift| intersects(bounds, [west + shift, north, east + shift, south]))
 }
 
 fn load_or_forge(root: &Path) -> Result<Field> {
@@ -832,5 +857,56 @@ mod tests {
         assert_eq!(decoded.isohypses[0].elevation_m, 250);
         assert_eq!(decoded.isohypses[0].label.as_deref(), Some("250 m"));
         Ok(())
+    }
+
+    #[test]
+    fn fine_view_submits_only_intersecting_relief_tiles() {
+        let tile = |x| {
+            Arc::new(VectorTile {
+                key: TileKey {
+                    zoom: 12,
+                    x,
+                    y: 1_532,
+                },
+                fills: Mesh {
+                    vertices: Arc::from([]),
+                    indices: Arc::from([]),
+                },
+                strokes: Mesh {
+                    vertices: Arc::from([]),
+                    indices: Arc::from([]),
+                },
+                labels: Arc::from([]),
+                line_labels: Arc::from([]),
+                parking: Arc::from([]),
+            })
+        };
+        let tiles = [tile(1_203), tile(1_204), tile(1_205)];
+        let viewport = map::Viewport {
+            center: [(1_204.5) / 4_096.0, (1_532.5) / 4_096.0],
+            zoom: 18.0,
+        };
+        let visible = visible_tiles(
+            &tiles,
+            viewport,
+            Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1_120.0, 610.0)),
+        );
+        assert_eq!(
+            visible.iter().map(|tile| tile.key.x).collect::<Vec<_>>(),
+            [1_204]
+        );
+
+        let seam = visible_tiles(
+            &tiles,
+            map::Viewport {
+                center: [1_205.0 / 4_096.0, viewport.center[1]],
+                ..viewport
+            },
+            Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1_120.0, 610.0)),
+        );
+        assert_eq!(
+            seam.iter().map(|tile| tile.key.x).collect::<Vec<_>>(),
+            [1_204, 1_205]
+        );
     }
 }
