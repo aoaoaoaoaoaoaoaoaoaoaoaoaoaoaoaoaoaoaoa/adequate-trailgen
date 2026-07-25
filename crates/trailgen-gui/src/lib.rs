@@ -9,6 +9,7 @@ mod annotation;
 mod app;
 mod basemap;
 mod boiler;
+mod cadence;
 mod forge;
 mod gallery;
 mod habitat;

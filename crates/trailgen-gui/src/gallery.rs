@@ -1,7 +1,7 @@
 use crate::{
     library::SavedTrail,
     map::{
-        candidate_color, frailest_standing, paint_trail_tube, trail_mark, trail_standing_badge,
+        candidate_color, frailest_standing, paint_trail_tube_at, trail_mark, trail_standing_badge,
         trail_standing_color,
     },
 };
@@ -88,9 +88,10 @@ pub fn candidate_tile(
         |ui, rect| {
             let color = candidate_color(ordinal, active);
             let mut at = route.start;
+            let mut datum = 0.0;
             for edge_id in &route.edges {
                 let edge = &graph.edges[edge_id.0];
-                paint_miniature_leg(
+                datum += paint_miniature_leg(
                     ui,
                     rect,
                     &geometry,
@@ -103,6 +104,7 @@ pub fn candidate_tile(
                         edge.attr.terrain,
                         edge.attr.surface.as_deref(),
                     ),
+                    datum,
                 );
                 at = edge
                     .traverse(at)
@@ -121,8 +123,9 @@ pub fn saved_tile(ui: &mut Ui, trail: &SavedTrail, active: bool) -> Response {
         frailest_standing(trail.legs.iter().map(|leg| leg.standing)),
         active,
         |ui, rect| {
+            let mut datum = 0.0;
             for leg in &trail.legs {
-                paint_miniature_leg(
+                datum += paint_miniature_leg(
                     ui,
                     rect,
                     &geometry,
@@ -135,6 +138,7 @@ pub fn saved_tile(ui: &mut Ui, trail: &SavedTrail, active: bool) -> Response {
                         leg.terrain,
                         leg.surface.as_deref(),
                     ),
+                    datum,
                 );
             }
         },
@@ -263,9 +267,10 @@ fn paint_miniature_leg(
     leg: &LineString,
     color: Color32,
     mark: crate::map::TrailMark,
-) {
+    datum: f32,
+) -> f32 {
     let points = miniature_points(rect, route, leg);
-    paint_trail_tube(ui.painter(), &points, 5.4, color, mark);
+    paint_trail_tube_at(ui.painter(), &points, 5.4, color, mark, datum)
 }
 
 fn miniature_points(rect: Rect, route: &LineString, line: &LineString) -> Vec<egui::Pos2> {

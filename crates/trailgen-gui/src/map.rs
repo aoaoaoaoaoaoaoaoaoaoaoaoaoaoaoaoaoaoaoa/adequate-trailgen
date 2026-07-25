@@ -1,4 +1,4 @@
-use crate::{forge, library::SavedTrail};
+use crate::{cadence, forge, library::SavedTrail};
 use dwemer_poolrooms::chrome;
 use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, Vec2, pos2, vec2};
 use serde::{Deserialize, Serialize};
@@ -183,11 +183,22 @@ pub struct Atlas {
 }
 
 struct WorldEdge {
+    endpoints: [usize; 2],
     points: Vec<[f64; 2]>,
     bounds: [f64; 4],
+    length_world: f64,
+    lineage: Option<CadenceLineage>,
     trail_class: TrailClass,
     mark: TrailMark,
     access: Access,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum CadenceLineage {
+    Stem { datum_world: f64, reverse: bool },
+    // Arbitrary cycle lengths cannot close a fixed screen-space period. A chord
+    // inherits both endpoint phases and confines the reset to one interior splice.
+    Chord { endpoint_datums_world: [f64; 2] },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -201,6 +212,10 @@ pub enum TrailMark {
 impl TrailMark {
     const ALL: [Self; 4] = [Self::Solid, Self::Dashed, Self::DashDot, Self::Unmarked];
 
+    const fn patterned(self) -> bool {
+        !matches!(self, Self::Solid)
+    }
+
     const fn label(self) -> &'static str {
         match self {
             Self::Solid => "EASY / GRAVEL",
@@ -213,7 +228,7 @@ impl TrailMark {
 
 impl Atlas {
     pub fn forge(graph: &TrailGraph) -> Self {
-        let edges = graph
+        let mut edges = graph
             .edges
             .iter()
             .map(|edge| {
@@ -225,8 +240,11 @@ impl Atlas {
                     .map(world_from_coord)
                     .collect::<Vec<_>>();
                 WorldEdge {
+                    endpoints: [edge.a.0, edge.b.0],
                     bounds: enclosing_bounds(&points),
+                    length_world: world_polyline_length(&points),
                     points,
+                    lineage: None,
                     trail_class: edge.attr.trail_class,
                     mark: trail_mark(
                         edge.attr.trail_class,
@@ -239,6 +257,7 @@ impl Atlas {
                 }
             })
             .collect::<Vec<_>>();
+        weave_cadence(graph.vertices.len(), &mut edges);
         let classes = edges
             .iter()
             .map(|edge| edge.trail_class)
@@ -319,6 +338,8 @@ impl Atlas {
 
     pub fn paint_network(&self, painter: &Painter, view: Viewport, rect: Rect) {
         let bounds = world_bounds(view, rect);
+        let width = TrailSalience::Context.width();
+        let mut cores = Vec::new();
         for edge in &self.edges {
             if !intersects(edge, bounds) {
                 continue;
@@ -329,14 +350,83 @@ impl Atlas {
                 .copied()
                 .map(|world| screen_at(view, rect, world))
                 .collect::<Vec<_>>();
-            paint_trail_tube(
-                painter,
+            let _tube = painter.add(Shape::line(
+                points.clone(),
+                Stroke::new(
+                    width,
+                    TrailSalience::Context
+                        .access_color(trail_class_color(edge.trail_class), edge.access),
+                ),
+            ));
+            forge_network_core(
                 &points,
-                TrailSalience::Context.width(),
-                TrailSalience::Context
-                    .access_color(trail_class_color(edge.trail_class), edge.access),
+                width,
                 edge.mark,
+                edge.lineage,
+                world_pixels(view),
+                rect.expand(width),
+                &mut cores,
             );
+        }
+        painter.extend(cores);
+    }
+}
+
+fn weave_cadence(vertex_count: usize, edges: &mut [WorldEdge]) {
+    let mut adjacency = vec![Vec::new(); vertex_count];
+    for (edge_id, edge) in edges
+        .iter()
+        .enumerate()
+        .filter(|(_, edge)| edge.mark.patterned())
+    {
+        for endpoint in edge.endpoints {
+            adjacency[endpoint].push(edge_id);
+        }
+    }
+
+    for mark in [TrailMark::Dashed, TrailMark::DashDot, TrailMark::Unmarked] {
+        let mut datums = vec![None; vertex_count];
+        for root in 0..vertex_count {
+            if datums[root].is_some()
+                || !adjacency[root]
+                    .iter()
+                    .any(|edge_id| edges[*edge_id].mark == mark)
+            {
+                continue;
+            }
+            datums[root] = Some(0.0);
+            let mut frontier = vec![root];
+            while let Some(vertex) = frontier.pop() {
+                let datum = datums[vertex].expect("frontier vertices own cadence datums");
+                for edge_id in adjacency[vertex].iter().copied() {
+                    if edges[edge_id].mark != mark || edges[edge_id].lineage.is_some() {
+                        continue;
+                    }
+                    let edge = &edges[edge_id];
+                    let [a, b] = edge.endpoints;
+                    let other = if vertex == a {
+                        b
+                    } else {
+                        assert_eq!(vertex, b, "cadence adjacency must remain incident");
+                        a
+                    };
+                    if datums[other].is_none() {
+                        datums[other] = Some(datum + edge.length_world);
+                        edges[edge_id].lineage = Some(CadenceLineage::Stem {
+                            datum_world: datum,
+                            reverse: vertex == b,
+                        });
+                        frontier.push(other);
+                    } else {
+                        edges[edge_id].lineage = Some(CadenceLineage::Chord {
+                            endpoint_datums_world: [
+                                datums[a].expect("chord endpoint a owns a cadence datum"),
+                                datums[b].expect("chord endpoint b owns a cadence datum"),
+                            ],
+                        });
+                    }
+                }
+            }
         }
     }
 }
@@ -350,6 +440,7 @@ pub fn paint_route(
     color: Color32,
 ) {
     let mut at = route.start;
+    let mut datum = 0.0;
     for edge_id in &route.edges {
         let edge = &graph.edges[edge_id.0];
         let line = edge.oriented_geometry(at);
@@ -360,7 +451,7 @@ pub fn paint_route(
             .map(world_from_coord)
             .map(|world| screen_at(view, rect, world))
             .collect::<Vec<_>>();
-        paint_trail_tube(
+        datum += paint_trail_tube_at(
             painter,
             &points,
             TrailSalience::Selected.width(),
@@ -372,6 +463,7 @@ pub fn paint_route(
                 edge.attr.terrain,
                 edge.attr.surface.as_deref(),
             ),
+            datum,
         );
         at = edge
             .traverse(at)
@@ -386,8 +478,9 @@ pub fn paint_saved_trail(
     rect: Rect,
     color: Color32,
 ) {
+    let mut datum = 0.0;
     for leg in &trail.legs {
-        paint_line(
+        datum += paint_line(
             painter,
             &leg.geometry,
             view,
@@ -400,6 +493,7 @@ pub fn paint_saved_trail(
                 leg.terrain,
                 leg.surface.as_deref(),
             ),
+            datum,
         );
     }
 }
@@ -411,7 +505,8 @@ fn paint_line(
     rect: Rect,
     color: Color32,
     mark: TrailMark,
-) {
+    datum: f32,
+) -> f32 {
     let points = line
         .points
         .iter()
@@ -420,15 +515,16 @@ fn paint_line(
         .map(|world| screen_at(view, rect, world))
         .collect::<Vec<_>>();
     if points.len() < 2 {
-        return;
+        return 0.0;
     }
-    paint_trail_tube(
+    paint_trail_tube_at(
         painter,
         &points,
         TrailSalience::Selected.width(),
         color,
         mark,
-    );
+        datum,
+    )
 }
 
 pub fn paint_trail_tube(
@@ -438,39 +534,127 @@ pub fn paint_trail_tube(
     color: Color32,
     mark: TrailMark,
 ) {
+    paint_trail_tube_at(painter, points, width, color, mark, 0.0);
+}
+
+pub fn paint_trail_tube_at(
+    painter: &Painter,
+    points: &[Pos2],
+    width: f32,
+    color: Color32,
+    mark: TrailMark,
+    datum: f32,
+) -> f32 {
+    if points.len() < 2 {
+        return 0.0;
+    }
+    let length = cadence::polyline_length(points);
+    let _tube = painter.add(Shape::line(points.to_vec(), Stroke::new(width, color)));
+    let core = trail_core(width);
+    if let Some(pattern) = trail_pattern(mark, width, core.width) {
+        let mut shapes = Vec::new();
+        pattern.tessellate(
+            points.iter().copied(),
+            core,
+            datum,
+            f32::INFINITY,
+            &mut shapes,
+        );
+        painter.extend(shapes);
+    } else {
+        let _core = painter.add(Shape::line(points.to_vec(), core));
+    }
+    length
+}
+
+fn forge_network_core(
+    points: &[Pos2],
+    width: f32,
+    mark: TrailMark,
+    lineage: Option<CadenceLineage>,
+    world_points: f64,
+    clip: Rect,
+    shapes: &mut Vec<Shape>,
+) {
     if points.len() < 2 {
         return;
     }
-    let _tube = painter.add(Shape::line(points.to_vec(), Stroke::new(width, color)));
-    let core = Stroke::new((width * 0.30).max(1.2), Color32::from_rgb(20, 19, 17));
-    if mark == TrailMark::Solid {
-        let _core = painter.add(Shape::line(points.to_vec(), core));
-    } else {
-        painter.extend(patterned_trail_core(points, width, core, mark));
+    let core = trail_core(width);
+    let Some(pattern) = trail_pattern(mark, width, core.width) else {
+        shapes.push(Shape::line(points.to_vec(), core));
+        return;
+    };
+    match lineage.expect("patterned network edges own cadence lineage") {
+        CadenceLineage::Stem {
+            datum_world,
+            reverse,
+        } => {
+            let phase = screen_phase(datum_world, world_points, pattern.period());
+            if reverse {
+                pattern.tessellate_clipped(
+                    points.iter().rev().copied(),
+                    core,
+                    phase,
+                    f32::INFINITY,
+                    clip,
+                    shapes,
+                );
+            } else {
+                pattern.tessellate_clipped(
+                    points.iter().copied(),
+                    core,
+                    phase,
+                    f32::INFINITY,
+                    clip,
+                    shapes,
+                );
+            }
+        }
+        CadenceLineage::Chord {
+            endpoint_datums_world: [a, b],
+        } => {
+            let length = cadence::polyline_length(points);
+            let a_phase = screen_phase(a, world_points, pattern.period());
+            let b_phase = screen_phase(b, world_points, pattern.period());
+            let splice = pattern.splice(a_phase, b_phase, length);
+            pattern.tessellate_clipped(points.iter().copied(), core, a_phase, splice, clip, shapes);
+            pattern.tessellate_clipped(
+                points.iter().rev().copied(),
+                core,
+                b_phase,
+                length - splice,
+                clip,
+                shapes,
+            );
+        }
     }
 }
 
-fn patterned_trail_core(points: &[Pos2], width: f32, core: Stroke, mark: TrailMark) -> Vec<Shape> {
+fn trail_core(width: f32) -> Stroke {
+    Stroke::new((width * 0.30).max(1.2), Color32::from_rgb(20, 19, 17))
+}
+
+fn trail_pattern(mark: TrailMark, width: f32, core_width: f32) -> Option<cadence::Pattern> {
     match mark {
-        TrailMark::Solid => unreachable!("solid trail cores bypass cadence tessellation"),
-        TrailMark::Dashed => {
-            let gap = width * 0.82;
-            Shape::dashed_line_with_offset(points, core, &[width * 1.35], &[gap], gap)
-        }
-        TrailMark::DashDot => {
-            let gap = width * 0.72;
-            Shape::dashed_line_with_offset(
-                points,
-                core,
-                &[width * 1.35, core.width * 0.18],
-                &[gap; 2],
-                gap,
-            )
-        }
-        TrailMark::Unmarked => {
-            Shape::dotted_line(points, core.color, width * 2.05, core.width * 0.48)
-        }
+        TrailMark::Solid => None,
+        TrailMark::Dashed => Some(cadence::Pattern::Dash {
+            dash: width * 1.35,
+            gap: width * 0.82,
+        }),
+        TrailMark::DashDot => Some(cadence::Pattern::DashDot {
+            dash: width * 1.35,
+            gap: width * 0.72,
+            dot: core_width * 0.18,
+        }),
+        TrailMark::Unmarked => Some(cadence::Pattern::Dots {
+            spacing: width * 2.05,
+            radius: core_width * 0.48,
+        }),
     }
+}
+
+fn screen_phase(datum_world: f64, world_points: f64, period: f32) -> f32 {
+    (datum_world * world_points).rem_euclid(f64::from(period)) as f32
 }
 
 pub fn trail_mark(
@@ -728,6 +912,17 @@ fn intersects(edge: &WorldEdge, bounds: [f64; 4]) -> bool {
     })
 }
 
+fn world_polyline_length(points: &[[f64; 2]]) -> f64 {
+    points
+        .windows(2)
+        .map(|window| {
+            let dx = wrapped_delta(window[1][0], window[0][0]);
+            let dy = window[1][1] - window[0][1];
+            dx.hypot(dy)
+        })
+        .sum()
+}
+
 fn enclosing_bounds(points: &[[f64; 2]]) -> [f64; 4] {
     let first = points
         .first()
@@ -803,8 +998,11 @@ mod tests {
     #[test]
     fn crossing_edge_survives_viewport_culling() {
         let edge = WorldEdge {
+            endpoints: [0, 1],
             points: vec![[0.1, 0.5], [0.9, 0.5]],
             bounds: [0.1, 0.5, 0.9, 0.5],
+            length_world: 0.8,
+            lineage: None,
             trail_class: TrailClass::Path,
             mark: TrailMark::Solid,
             access: Access::Open,
@@ -922,15 +1120,66 @@ mod tests {
     }
 
     #[test]
-    fn patterned_cores_cede_subpattern_fragments_to_the_colored_tube() {
-        let width = TrailSalience::Context.width();
-        let core = Stroke::new(width * 0.30, Color32::BLACK);
-        let fragment = [Pos2::ZERO, pos2(width * 0.70, 0.0)];
-        let legible = [Pos2::ZERO, pos2(width * 3.0, 0.0)];
+    fn forks_inherit_one_node_cadence_datum() {
+        let mut edges = vec![
+            cadence_edge(0, 1, 0.01),
+            cadence_edge(1, 2, 0.02),
+            cadence_edge(1, 3, 0.03),
+        ];
+        weave_cadence(4, &mut edges);
+        let trunk = endpoint_datums(&edges[0]);
+        let left = endpoint_datums(&edges[1]);
+        let right = endpoint_datums(&edges[2]);
 
-        assert!(patterned_trail_core(&fragment, width, core, TrailMark::Dashed).is_empty());
-        assert!(patterned_trail_core(&fragment, width, core, TrailMark::DashDot).is_empty());
-        assert!(!patterned_trail_core(&legible, width, core, TrailMark::Dashed).is_empty());
-        assert!(!patterned_trail_core(&legible, width, core, TrailMark::DashDot).is_empty());
+        assert!((trunk[1] - left[0]).abs() < f64::EPSILON);
+        assert!((trunk[1] - right[0]).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn cycles_confine_inconsistent_phase_to_one_chord_seam() {
+        let mut edges = vec![
+            cadence_edge(0, 1, 0.01),
+            cadence_edge(1, 2, 0.02),
+            cadence_edge(2, 0, 0.03),
+        ];
+        weave_cadence(3, &mut edges);
+
+        assert_eq!(
+            edges
+                .iter()
+                .filter(|edge| matches!(edge.lineage, Some(CadenceLineage::Chord { .. })))
+                .count(),
+            1
+        );
+        assert!(edges.iter().all(|edge| edge.lineage.is_some()));
+    }
+
+    fn cadence_edge(a: usize, b: usize, length_world: f64) -> WorldEdge {
+        WorldEdge {
+            endpoints: [a, b],
+            points: vec![[0.0, 0.0], [length_world, 0.0]],
+            bounds: [0.0, 0.0, length_world, 0.0],
+            length_world,
+            lineage: None,
+            trail_class: TrailClass::Path,
+            mark: TrailMark::Dashed,
+            access: Access::Open,
+        }
+    }
+
+    fn endpoint_datums(edge: &WorldEdge) -> [f64; 2] {
+        match edge.lineage.expect("test edge owns cadence lineage") {
+            CadenceLineage::Stem {
+                datum_world,
+                reverse: false,
+            } => [datum_world, datum_world + edge.length_world],
+            CadenceLineage::Stem {
+                datum_world,
+                reverse: true,
+            } => [datum_world + edge.length_world, datum_world],
+            CadenceLineage::Chord {
+                endpoint_datums_world,
+            } => endpoint_datums_world,
+        }
     }
 }
