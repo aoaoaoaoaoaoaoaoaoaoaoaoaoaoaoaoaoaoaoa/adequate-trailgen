@@ -308,7 +308,7 @@ impl Atlas {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
-        let field = TrailField::forge(graph.vertices.len(), &edges);
+        let field = TrailField::forge(&edges);
         Self { classes, field }
     }
 

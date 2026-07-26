@@ -24,8 +24,13 @@ const BASE_TILE_ZOOM: u8 = 12;
 const FIRST_BAND: u8 = 7;
 const LAST_BAND: u8 = 14;
 const BAND_COUNT: usize = (LAST_BAND - FIRST_BAND + 1) as usize;
-const MIN_STROKE_SPAN_POINTS: f64 = 9.0;
 const SIMPLIFICATION_ERROR_POINTS: f64 = 0.42;
+const TUBE_ONSET_ZOOM: f32 = FIRST_BAND as f32;
+const CORE_ONSET_ZOOM: f32 = TUBE_ONSET_ZOOM + 0.30;
+const PATTERN_ONSET_ZOOM: f32 = TUBE_ONSET_ZOOM + 0.78;
+const DISCLOSURE_SPAN_ZOOM: f32 = 0.72;
+const _: () = assert!(TUBE_ONSET_ZOOM < CORE_ONSET_ZOOM);
+const _: () = assert!(CORE_ONSET_ZOOM < PATTERN_ONSET_ZOOM);
 const GPU_CEILING: usize = 256 * 1_048_576;
 const MAX_WRAP_RADIUS: u32 = 2;
 const MAX_WRAP_INSTANCES: usize = (MAX_WRAP_RADIUS * 2 + 1) as usize;
@@ -35,6 +40,7 @@ static NEXT_CORPUS: AtomicU64 = AtomicU64::new(1);
 
 pub struct TrailField {
     corpus: TrailCorpus,
+    laws: Arc<[CadenceDatum]>,
     tiles: HashMap<TileKey, Arc<TrailTile>>,
     visibility: Option<Visibility>,
 }
@@ -46,15 +52,13 @@ struct Visibility {
 }
 
 impl TrailField {
-    pub fn forge(vertex_count: usize, edges: &[WorldEdge]) -> Self {
+    pub fn forge(edges: &[WorldEdge]) -> Self {
         let begun = Instant::now();
-        let onset = edge_onsets(vertex_count, edges);
         let (law_ids, laws) = cadence_laws(edges);
         let mut tiles = HashMap::<TileKey, Vec<TrailMeshBuilder>>::new();
         for (edge_id, edge) in edges.iter().enumerate() {
             let samples = samples(edge);
-            let first = onset[edge_id];
-            for band in first.index()..BAND_COUNT {
+            for band in 0..BAND_COUNT {
                 let band = DetailBand::from_index(band);
                 let simplified = simplify(&samples, band.tolerance_world());
                 for fragment in cleave(&simplified, band.spatial_zoom()) {
@@ -63,13 +67,7 @@ impl TrailField {
                             .map(|_| TrailMeshBuilder::default())
                             .collect()
                     })[band.index()]
-                    .push(
-                        &fragment.points,
-                        fragment.key,
-                        edge,
-                        law_ids[edge_id],
-                        first.zoom(),
-                    );
+                    .push(&fragment.points, fragment.key, edge, law_ids[edge_id]);
                 }
             }
         }
@@ -80,7 +78,7 @@ impl TrailField {
                     key,
                     Arc::new(TrailTile {
                         key,
-                        bands: bands.into_iter().map(|band| band.seal(&laws)).collect(),
+                        bands: bands.into_iter().map(TrailMeshBuilder::seal).collect(),
                     }),
                 )
             })
@@ -99,6 +97,7 @@ impl TrailField {
         }
         Self {
             corpus: TrailCorpus::mint(),
+            laws: laws.into(),
             tiles,
             visibility: None,
         }
@@ -131,6 +130,7 @@ impl TrailField {
             frame.rect,
             TrailPaint {
                 corpus: self.corpus,
+                laws: Arc::clone(&self.laws),
                 band,
                 tiles: Arc::clone(&visibility.tiles),
                 center_world: frame.viewport.center,
@@ -183,116 +183,6 @@ impl DetailBand {
             zoom
         } else {
             BASE_TILE_ZOOM
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct StrokeKind {
-    class: trailgen_core::TrailClass,
-    mark: TrailMark,
-    restricted: bool,
-}
-
-fn edge_onsets(vertex_count: usize, edges: &[WorldEdge]) -> Vec<DetailBand> {
-    let mut incidence = vec![Vec::new(); vertex_count];
-    for (edge_id, edge) in edges.iter().enumerate() {
-        for endpoint in edge.endpoints {
-            incidence[endpoint].push(edge_id);
-        }
-    }
-    let mut union = Union::new(edges.len());
-    for incident in incidence {
-        let mut kinds = HashMap::<StrokeKind, Vec<usize>>::new();
-        for edge_id in incident {
-            kinds
-                .entry(stroke_kind(&edges[edge_id]))
-                .or_default()
-                .push(edge_id);
-        }
-        for pair in kinds.into_values().filter(|group| group.len() == 2) {
-            union.join(pair[0], pair[1]);
-        }
-    }
-    let mut lengths = HashMap::<usize, f64>::new();
-    for (edge_id, edge) in edges.iter().enumerate() {
-        let root = union.root(edge_id);
-        *lengths.entry(root).or_default() += edge.length_world;
-    }
-    edges
-        .iter()
-        .enumerate()
-        .map(|(edge_id, edge)| {
-            let length = lengths[&union.root(edge_id)].max(edge.length_world);
-            let raw = (MIN_STROKE_SPAN_POINTS / (256.0 * length)).log2()
-                + class_disclosure(edge.trail_class);
-            let zoom = raw
-                .ceil()
-                .clamp(f64::from(FIRST_BAND), f64::from(LAST_BAND)) as u8;
-            DetailBand(zoom - FIRST_BAND)
-        })
-        .collect()
-}
-
-const fn stroke_kind(edge: &WorldEdge) -> StrokeKind {
-    StrokeKind {
-        class: edge.trail_class,
-        mark: edge.mark,
-        restricted: matches!(
-            edge.access,
-            trailgen_core::Access::Closed | trailgen_core::Access::Private
-        ),
-    }
-}
-
-const fn class_disclosure(class: trailgen_core::TrailClass) -> f64 {
-    use trailgen_core::TrailClass;
-    match class {
-        TrailClass::Track | TrailClass::Bridleway | TrailClass::Road => -0.35,
-        TrailClass::Path | TrailClass::Footway | TrailClass::Pedestrian => 0.0,
-        TrailClass::Service | TrailClass::Steps | TrailClass::Unknown => 0.25,
-        TrailClass::Bushwhack => 0.65,
-    }
-}
-
-struct Union {
-    parents: Vec<usize>,
-    ranks: Vec<u8>,
-}
-
-impl Union {
-    fn new(len: usize) -> Self {
-        Self {
-            parents: (0..len).collect(),
-            ranks: vec![0; len],
-        }
-    }
-
-    fn root(&mut self, mut node: usize) -> usize {
-        let mut root = node;
-        while self.parents[root] != root {
-            root = self.parents[root];
-        }
-        while self.parents[node] != node {
-            let parent = self.parents[node];
-            self.parents[node] = root;
-            node = parent;
-        }
-        root
-    }
-
-    fn join(&mut self, left: usize, right: usize) {
-        let mut left = self.root(left);
-        let mut right = self.root(right);
-        if left == right {
-            return;
-        }
-        if self.ranks[left] < self.ranks[right] {
-            std::mem::swap(&mut left, &mut right);
-        }
-        self.parents[right] = left;
-        if self.ranks[left] == self.ranks[right] {
-            self.ranks[left] = self.ranks[left].saturating_add(1);
         }
     }
 }
@@ -452,14 +342,7 @@ struct TrailMeshBuilder {
 }
 
 impl TrailMeshBuilder {
-    fn push(
-        &mut self,
-        samples: &[Sample],
-        key: TileKey,
-        edge: &WorldEdge,
-        law: u32,
-        onset_zoom: f32,
-    ) {
+    fn push(&mut self, samples: &[Sample], key: TileKey, edge: &WorldEdge, law: u32) {
         if samples.len() < 2 {
             return;
         }
@@ -476,6 +359,7 @@ impl TrailMeshBuilder {
         let color = TrailSalience::Context
             .access_color(trail_class_color(edge.trail_class), edge.access)
             .to_array();
+        let pattern = pattern_code(edge.mark);
         let base = u32::try_from(self.vertices.len()).expect("trail tile vertex count fits u32");
         for (slot, point) in local.iter().copied().enumerate() {
             let extrusion = basemap::join_normal(&local, slot);
@@ -484,19 +368,15 @@ impl TrailMeshBuilder {
                     local: point,
                     extrusion: [-extrusion[0], -extrusion[1]],
                     srgb: color,
-                    onset_side: -(onset_zoom + 1.0),
                     arc_world: samples[slot].arc_world as f32,
-                    law,
-                    pattern: pattern_code(edge.mark),
+                    cadence: cadence_word(law, pattern, false),
                 },
                 TrailPoint {
                     local: point,
                     extrusion,
                     srgb: color,
-                    onset_side: onset_zoom + 1.0,
                     arc_world: samples[slot].arc_world as f32,
-                    law,
-                    pattern: pattern_code(edge.mark),
+                    cadence: cadence_word(law, pattern, true),
                 },
             ]);
         }
@@ -510,12 +390,12 @@ impl TrailMeshBuilder {
         }
     }
 
-    fn seal(mut self, laws: &[CadenceDatum]) -> TrailMesh {
+    fn seal(mut self) -> TrailMesh {
         let mut global_ids = self
             .vertices
             .iter()
-            .filter(|vertex| vertex.pattern != 0)
-            .map(|vertex| vertex.law)
+            .filter(|vertex| vertex.pattern() != 0)
+            .map(TrailPoint::law)
             .collect::<Vec<_>>();
         global_ids.sort_unstable();
         global_ids.dedup();
@@ -530,22 +410,17 @@ impl TrailMeshBuilder {
             })
             .collect::<HashMap<_, _>>();
         for vertex in &mut self.vertices {
-            vertex.law = if vertex.pattern == 0 {
+            let local = if vertex.pattern() == 0 {
                 0
             } else {
-                remap[&vertex.law]
+                remap[&vertex.law()]
             };
+            vertex.set_law(local);
         }
-        let local_laws =
-            std::iter::once(CadenceDatum::Solid)
-                .chain(global_ids.into_iter().map(|global| {
-                    laws[usize::try_from(global).expect("cadence law index fits usize")]
-                }))
-                .collect();
         TrailMesh {
             vertices: self.vertices.into(),
             indices: self.indices.into(),
-            laws: local_laws,
+            law_ids: std::iter::once(0).chain(global_ids).collect(),
         }
     }
 }
@@ -559,22 +434,44 @@ const fn pattern_code(mark: TrailMark) -> u32 {
     }
 }
 
+const fn cadence_word(law: u32, pattern: u32, positive_side: bool) -> u32 {
+    assert!(
+        law <= u32::MAX >> 3,
+        "cadence law exceeds packed vertex range"
+    );
+    assert!(pattern < 4, "trail pattern exceeds packed vertex range");
+    (law << 3) | (pattern << 1) | positive_side as u32
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct TrailPoint {
     local: [f32; 2],
     extrusion: [f32; 2],
     srgb: [u8; 4],
-    onset_side: f32,
     arc_world: f32,
-    law: u32,
-    pattern: u32,
+    cadence: u32,
+}
+const _: () = assert!(size_of::<TrailPoint>() == 28);
+
+impl TrailPoint {
+    const fn law(&self) -> u32 {
+        self.cadence >> 3
+    }
+
+    const fn pattern(&self) -> u32 {
+        (self.cadence >> 1) & 3
+    }
+
+    const fn set_law(&mut self, law: u32) {
+        self.cadence = cadence_word(law, self.pattern(), self.cadence & 1 != 0);
+    }
 }
 
 struct TrailMesh {
     vertices: Arc<[TrailPoint]>,
     indices: Arc<[u32]>,
-    laws: Arc<[CadenceDatum]>,
+    law_ids: Arc<[u32]>,
 }
 
 struct TrailTile {
@@ -591,7 +488,7 @@ impl TrailTile {
                     .len()
                     .saturating_mul(size_of::<TrailPoint>())
                     .saturating_add(mesh.indices.len().saturating_mul(size_of::<u32>()))
-                    .saturating_add(mesh.laws.len().saturating_mul(size_of::<CadenceDatum>()))
+                    .saturating_add(mesh.law_ids.len().saturating_mul(size_of::<u32>()))
             })
             .sum()
     }
@@ -719,6 +616,7 @@ impl TrailCorpus {
 #[derive(Clone)]
 struct TrailPaint {
     corpus: TrailCorpus,
+    laws: Arc<[CadenceDatum]>,
     band: DetailBand,
     tiles: Arc<[Arc<TrailTile>]>,
     center_world: [f64; 2],
@@ -786,7 +684,8 @@ struct GpuTrailTile {
     draw: Draw,
     buffer: wgpu::Buffer,
     transform: Range<u64>,
-    law_datums: Arc<[CadenceDatum]>,
+    law_ids: Arc<[u32]>,
+    laws: Arc<[CadenceDatum]>,
     law_buffer: wgpu::Buffer,
     law_bind: wgpu::BindGroup,
     law_world_points: f32,
@@ -799,6 +698,7 @@ impl GpuTrailTile {
         device: &wgpu::Device,
         law_layout: &wgpu::BindGroupLayout,
         tile: &TrailTile,
+        laws: &Arc<[CadenceDatum]>,
         band: DetailBand,
         world_points: f32,
         touched: u64,
@@ -829,24 +729,24 @@ impl GpuTrailTile {
             contents: &blade,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::INDEX,
         });
-        let laws = mesh
-            .laws
+        let gpu_laws = mesh
+            .law_ids
             .iter()
-            .copied()
-            .map(|law| GpuLaw::forge(law, f64::from(world_points)))
+            .map(|law| GpuLaw::forge(laws[*law as usize], f64::from(world_points)))
             .collect::<Vec<_>>();
         let law_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("trail-tile-cadence-laws"),
-            contents: bytemuck::cast_slice(&laws),
+            contents: bytemuck::cast_slice(&gpu_laws),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
         let law_bind = law_bind(device, law_layout, &law_buffer);
-        let bytes = bytes.saturating_add(laws.len().saturating_mul(size_of::<GpuLaw>()));
+        let bytes = bytes.saturating_add(gpu_laws.len().saturating_mul(size_of::<GpuLaw>()));
         Some(Self {
             draw,
             buffer,
             transform,
-            law_datums: Arc::clone(&mesh.laws),
+            law_ids: Arc::clone(&mesh.law_ids),
+            laws: Arc::clone(laws),
             law_buffer,
             law_bind,
             law_world_points: world_points,
@@ -855,18 +755,23 @@ impl GpuTrailTile {
         })
     }
 
-    fn refresh_laws(&mut self, queue: &wgpu::Queue, world_points: f32) -> usize {
+    fn refresh_laws(
+        &mut self,
+        queue: &wgpu::Queue,
+        world_points: f32,
+        scratch: &mut Vec<GpuLaw>,
+    ) -> usize {
         if self.law_world_points.to_bits() == world_points.to_bits() {
             return 0;
         }
-        let laws = self
-            .law_datums
-            .iter()
-            .copied()
-            .map(|law| GpuLaw::forge(law, f64::from(world_points)))
-            .collect::<Vec<_>>();
-        let bytes = laws.len().saturating_mul(size_of::<GpuLaw>());
-        queue.write_buffer(&self.law_buffer, 0, bytemuck::cast_slice(&laws));
+        scratch.clear();
+        scratch.extend(
+            self.law_ids
+                .iter()
+                .map(|law| GpuLaw::forge(self.laws[*law as usize], f64::from(world_points))),
+        );
+        let bytes = scratch.len().saturating_mul(size_of::<GpuLaw>());
+        queue.write_buffer(&self.law_buffer, 0, bytemuck::cast_slice(scratch));
         self.law_world_points = world_points;
         bytes
     }
@@ -922,6 +827,7 @@ pub struct TrailMapGpu {
     epoch: u64,
     bytes: usize,
     instances: u32,
+    law_scratch: Vec<GpuLaw>,
     profile: bool,
 }
 
@@ -1010,6 +916,7 @@ impl TrailMapGpu {
             epoch: 0,
             bytes: 0,
             instances: 1,
+            law_scratch: Vec::new(),
             profile: std::env::var_os("TRAILGEN_PROFILE_TRAILS").is_some(),
         }
     }
@@ -1039,7 +946,8 @@ impl TrailMapGpu {
                 band: paint.band,
             };
             if let Some(resident) = self.tiles.get_mut(&key) {
-                cadence_uploaded += resident.refresh_laws(queue, paint.world_points);
+                cadence_uploaded +=
+                    resident.refresh_laws(queue, paint.world_points, &mut self.law_scratch);
                 if active_changed {
                     resident.touched = self.epoch;
                     self.order.push_back((key, self.epoch));
@@ -1050,6 +958,7 @@ impl TrailMapGpu {
                 device,
                 &self.law_layout,
                 tile,
+                &paint.laws,
                 paint.band,
                 paint.world_points,
                 self.epoch,
@@ -1132,9 +1041,8 @@ fn law_bind(
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct GpuLaw {
     metrics: [f32; 4],
-    mode: u32,
-    _pad: [u32; 3],
 }
+const _: () = assert!(size_of::<GpuLaw>() == 16);
 
 impl GpuLaw {
     fn forge(law: CadenceDatum, world_points: f64) -> Self {
@@ -1149,11 +1057,9 @@ impl GpuLaw {
                 metrics: [
                     phase(datum_world, world_points, pattern.period()),
                     0.0,
-                    0.0,
+                    if reverse { -2.0 } else { -1.0 },
                     (length_world * world_points) as f32,
                 ],
-                mode: u32::from(reverse),
-                _pad: [0; 3],
             },
             CadenceDatum::Chord {
                 pattern,
@@ -1165,8 +1071,6 @@ impl GpuLaw {
                 let b = phase(endpoint_datums_world[1], world_points, pattern.period());
                 Self {
                     metrics: [a, b, pattern.splice(a, b, length), length],
-                    mode: 2,
-                    _pad: [0; 3],
                 }
             }
         }
@@ -1188,6 +1092,7 @@ struct Uniform {
     view_zoom: f32,
     _pad: f32,
     radii: [f32; 2],
+    disclosure: [f32; 4],
 }
 
 impl Uniform {
@@ -1209,6 +1114,12 @@ impl Uniform {
             radii: [
                 TrailSalience::Context.width() * 0.5,
                 trail_core(TrailSalience::Context.width()).width * 0.5,
+            ],
+            disclosure: [
+                TUBE_ONSET_ZOOM,
+                CORE_ONSET_ZOOM,
+                PATTERN_ONSET_ZOOM,
+                DISCLOSURE_SPAN_ZOOM,
             ],
         }
     }
@@ -1254,14 +1165,12 @@ fn wrap_radius(world_width: f32, center_x: f32) -> u32 {
 }
 
 const fn trail_layout() -> wgpu::VertexBufferLayout<'static> {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![
+    const ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
         0 => Float32x2,
         1 => Float32x2,
         2 => Unorm8x4,
         3 => Float32,
-        4 => Float32,
-        5 => Uint32,
-        6 => Uint32
+        4 => Uint32
     ];
     wgpu::VertexBufferLayout {
         array_stride: size_of::<TrailPoint>() as u64,
@@ -1295,14 +1204,11 @@ struct Uniform {
     view_zoom: f32,
     pad: f32,
     radii: vec2f,
+    disclosure: vec4f,
 };
 
 struct CadenceLaw {
     metrics: vec4f,
-    mode: u32,
-    pad0: u32,
-    pad1: u32,
-    pad2: u32,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniform;
@@ -1320,7 +1226,11 @@ struct VertexOut {
 };
 
 fn apparition(onset_zoom: f32) -> f32 {
-    let phase = clamp((u.view_zoom - onset_zoom) / 0.72, 0.0, 1.0);
+    let phase = clamp(
+        (u.view_zoom - onset_zoom) / u.disclosure.w,
+        0.0,
+        1.0,
+    );
     return phase * phase * (3.0 - 2.0 * phase);
 }
 
@@ -1344,10 +1254,8 @@ fn trail_vertex(
     @location(0) local: vec2f,
     @location(1) extrusion: vec2f,
     @location(2) color: vec4f,
-    @location(3) onset_side: f32,
-    @location(4) arc_world: f32,
-    @location(5) law: u32,
-    @location(6) pattern: u32,
+    @location(3) arc_world: f32,
+    @location(4) cadence: u32,
     @location(7) origin_high: vec2f,
     @location(8) origin_low: vec2f,
     @location(9) tile_span: f32,
@@ -1355,9 +1263,12 @@ fn trail_vertex(
     @location(11) layer: u32,
 ) -> VertexOut {
     var out: VertexOut;
+    let side = select(-1.0, 1.0, (cadence & 1u) != 0u);
+    let pattern = (cadence >> 1u) & 3u;
+    let law = cadence >> 3u;
     let core = layer == 1u;
-    let onset_zoom = abs(onset_side) - 1.0;
-    let side = sign(onset_side);
+    let core_onset = select(u.disclosure.y, u.disclosure.z, pattern != 0u);
+    let onset_zoom = select(u.disclosure.x, core_onset, core);
     let maturity = apparition(onset_zoom);
     let radius = select(u.radii.x, u.radii.y, core);
     let visible_radius = radius * mix(0.12, 1.0, maturity);
@@ -1380,10 +1291,10 @@ fn trail_vertex(
 fn cadence_distance(in: VertexOut) -> f32 {
     let law = laws[in.law];
     let arc = in.arc_world * u.world_points;
-    if law.mode == 1u {
+    if law.metrics.z == -2.0 {
         return law.metrics.x + law.metrics.w - arc;
     }
-    if law.mode == 2u && arc > law.metrics.z {
+    if law.metrics.z >= 0.0 && arc > law.metrics.z {
         return law.metrics.y + law.metrics.w - arc;
     }
     return law.metrics.x + arc;
@@ -1582,10 +1493,57 @@ mod tests {
             access: trailgen_core::Access::Open,
         };
         let mut builder = TrailMeshBuilder::default();
-        builder.push(&samples, key, &edge, 0, FIRST_BAND.into());
-        let mesh = builder.seal(&[CadenceDatum::Solid]);
+        builder.push(&samples, key, &edge, 0);
+        let mesh = builder.seal();
 
         assert_eq!(mesh.vertices.len(), samples.len() * 2);
         assert_eq!(mesh.indices.len(), (samples.len() - 1) * 6);
+    }
+
+    #[test]
+    fn every_trail_class_survives_into_the_coarsest_band() {
+        use trailgen_core::TrailClass;
+
+        let scale = f64::from(1_u32 << BASE_TILE_ZOOM);
+        let edge = |row: f64, class| {
+            let points = vec![
+                [1_200.2 / scale, (1_532.2 + row) / scale],
+                [1_200.8 / scale, (1_532.2 + row) / scale],
+            ];
+            WorldEdge {
+                endpoints: [0, 1],
+                length_world: 0.6 / scale,
+                points,
+                lineage: None,
+                trail_class: class,
+                mark: TrailMark::Solid,
+                access: trailgen_core::Access::Open,
+            }
+        };
+        let classes = [
+            TrailClass::Unknown,
+            TrailClass::Path,
+            TrailClass::Footway,
+            TrailClass::Track,
+            TrailClass::Service,
+            TrailClass::Pedestrian,
+            TrailClass::Steps,
+            TrailClass::Bridleway,
+            TrailClass::Bushwhack,
+            TrailClass::Road,
+        ];
+        let edges = classes
+            .into_iter()
+            .enumerate()
+            .map(|(slot, class)| edge(slot as f64 * 0.05, class))
+            .collect::<Vec<_>>();
+        let field = TrailField::forge(&edges);
+        let first_band_indices = field
+            .tiles
+            .values()
+            .map(|tile| tile.bands[0].indices.len())
+            .sum::<usize>();
+
+        assert_eq!(first_band_indices, classes.len() * 6);
     }
 }

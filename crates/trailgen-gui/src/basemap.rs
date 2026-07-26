@@ -43,9 +43,15 @@ const MAX_FORGE_TILES: usize = 8_192;
 const NOMAD_BATCH: usize = 64;
 const ROAMING_CACHE: &str = "protomaps-v4";
 const ROAMING_CACHE_CEILING: u64 = 512 * 1_048_576;
-const RETAINED_DEPTH: u8 = 4;
+const CANONICAL_TILE_POINTS: f64 = 256.0;
+const PROMOTION_SPAN_POINTS: f64 = 640.0;
+const DEMOTION_SPAN_POINTS: f64 = 512.0;
+const PREFETCH_GUARD_ZOOM: f64 = 0.12;
+const PREFETCH_MARGIN_CEILING: f64 = 0.50;
+const MOTION_LEASE: Duration = Duration::from_millis(120);
+const FALLBACK_DEPTH: u8 = 2;
 const WORKERS: usize = 8;
-const COVER_APRON: i64 = 1;
+const REQUIRED_APRON: i64 = 1;
 
 #[derive(Clone, Debug)]
 pub struct Source {
@@ -138,17 +144,6 @@ pub struct SourceLevel(u8);
 
 impl SourceLevel {
     #[must_use]
-    pub fn from_frame(frame: MapFramePlan) -> Self {
-        Self(
-            frame
-                .zoom
-                .get()
-                .floor()
-                .clamp(0.0, f64::from(MAX_SOURCE_ZOOM)) as u8,
-        )
-    }
-
-    #[must_use]
     pub const fn new(level: u8) -> Self {
         assert!(level <= MAX_SOURCE_ZOOM, "source level exceeds archive law");
         Self(level)
@@ -168,6 +163,101 @@ impl SourceLevel {
     fn successor(self) -> Self {
         Self(self.0.saturating_add(1).min(MAX_SOURCE_ZOOM))
     }
+
+    fn tile_span(self, view_zoom: f64) -> f64 {
+        CANONICAL_TILE_POINTS * (view_zoom - f64::from(self.0)).exp2()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DetailPlan {
+    pub source: SourceLevel,
+    pub prefetch: bool,
+}
+
+#[derive(Debug)]
+pub struct DetailGovernor {
+    source: Option<SourceLevel>,
+    prior: Option<(f64, Instant)>,
+    last_motion: Option<Instant>,
+    zooming_in: bool,
+    zoom_rate: f64,
+}
+
+impl Default for DetailGovernor {
+    fn default() -> Self {
+        Self {
+            source: None,
+            prior: None,
+            last_motion: None,
+            zooming_in: false,
+            zoom_rate: 0.0,
+        }
+    }
+}
+
+impl DetailGovernor {
+    pub fn resolve(&mut self, view_zoom: f64, ready_latency: Duration, now: Instant) -> DetailPlan {
+        self.observe_motion(view_zoom, now);
+        let mut source = self
+            .source
+            .unwrap_or_else(|| coarsest_adequate_source(view_zoom));
+        while source.get() < MAX_SOURCE_ZOOM && source.tile_span(view_zoom) > PROMOTION_SPAN_POINTS
+        {
+            source = source.successor();
+        }
+        while source.get() > 0 {
+            let parent = source.saturating_sub(1);
+            if parent.tile_span(view_zoom) >= DEMOTION_SPAN_POINTS {
+                break;
+            }
+            source = parent;
+        }
+        self.source = Some(source);
+        let remaining = (PROMOTION_SPAN_POINTS / source.tile_span(view_zoom))
+            .log2()
+            .max(0.0);
+        let margin = self
+            .zoom_rate
+            .mul_add(ready_latency.as_secs_f64(), PREFETCH_GUARD_ZOOM)
+            .min(PREFETCH_MARGIN_CEILING);
+        DetailPlan {
+            source,
+            prefetch: self.zooming_in && source.get() < MAX_SOURCE_ZOOM && remaining <= margin,
+        }
+    }
+
+    fn observe_motion(&mut self, view_zoom: f64, now: Instant) {
+        if let Some((prior_zoom, prior_at)) = self.prior {
+            let delta = view_zoom - prior_zoom;
+            if delta.abs() > f64::EPSILON {
+                self.zooming_in = delta > 0.0;
+                let elapsed = now.saturating_duration_since(prior_at).as_secs_f64();
+                self.zoom_rate = if self.zooming_in && elapsed > 0.0 {
+                    (delta / elapsed).clamp(0.0, 32.0)
+                } else {
+                    0.0
+                };
+                self.prior = Some((view_zoom, now));
+                self.last_motion = Some(now);
+            } else if self
+                .last_motion
+                .is_none_or(|motion| now.saturating_duration_since(motion) > MOTION_LEASE)
+            {
+                self.zooming_in = false;
+                self.zoom_rate = 0.0;
+            }
+        } else {
+            self.prior = Some((view_zoom, now));
+        }
+    }
+}
+
+fn coarsest_adequate_source(view_zoom: f64) -> SourceLevel {
+    (0..=MAX_SOURCE_ZOOM)
+        .map(SourceLevel)
+        .find(|source| source.tile_span(view_zoom) <= PROMOTION_SPAN_POINTS)
+        .unwrap_or(SourceLevel(MAX_SOURCE_ZOOM))
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -207,31 +297,14 @@ pub struct Cover {
 impl Cover {
     pub fn demand_order(&self) -> Vec<TileKey> {
         let mut ordered = Vec::new();
-        if let Some(fallback) = self.strata.first() {
-            ordered.extend(fallback.keys.iter().copied());
+        for intent in [Intent::Fallback, Intent::Required, Intent::Prefetch] {
+            ordered.extend(
+                self.strata
+                    .iter()
+                    .filter(|stratum| stratum.intent == intent)
+                    .flat_map(|stratum| stratum.keys.iter().copied()),
+            );
         }
-        ordered.extend(
-            self.strata
-                .iter()
-                .skip(1)
-                .filter(|stratum| stratum.intent == Intent::Required)
-                .flat_map(|stratum| stratum.keys.iter().copied()),
-        );
-        ordered.extend(
-            self.strata
-                .iter()
-                .skip(1)
-                .rev()
-                .filter(|stratum| stratum.intent == Intent::Retained)
-                .flat_map(|stratum| stratum.keys.iter().copied()),
-        );
-        ordered.extend(
-            self.strata
-                .iter()
-                .skip(1)
-                .filter(|stratum| stratum.intent == Intent::Prefetch)
-                .flat_map(|stratum| stratum.keys.iter().copied()),
-        );
         ordered
     }
 }
@@ -244,7 +317,7 @@ pub struct Stratum {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Intent {
-    Retained,
+    Fallback,
     Required,
     Prefetch,
 }
@@ -415,26 +488,28 @@ impl Basemap {
     }
 }
 
-pub fn cover(frame: MapFramePlan, archive_zoom: Option<u8>) -> Cover {
-    let source = SourceLevel::from_frame(frame);
-    let ceiling = source.successor();
-    let floor = source.saturating_sub(RETAINED_DEPTH);
-    let mut strata = archive_zoom
-        .filter(|archive_zoom| *archive_zoom < floor.get())
-        .map(|archive_zoom| Stratum {
-            intent: Intent::Retained,
-            keys: keys_at(frame, SourceLevel::new(archive_zoom), COVER_APRON),
+pub fn cover(frame: MapFramePlan, detail: DetailPlan, archive_zoom: Option<u8>) -> Cover {
+    let source = detail.source;
+    let fallback = archive_zoom
+        .filter(|archive_zoom| *archive_zoom < source.get())
+        .map_or_else(|| source.saturating_sub(FALLBACK_DEPTH), SourceLevel::new);
+    let mut strata = (fallback != source)
+        .then(|| Stratum {
+            intent: Intent::Fallback,
+            keys: keys_at(frame, fallback, 0),
         })
         .into_iter()
         .collect::<Vec<_>>();
-    strata.extend((floor.get()..=ceiling.get()).map(|level| Stratum {
-        intent: match level.cmp(&source.get()) {
-            std::cmp::Ordering::Less => Intent::Retained,
-            std::cmp::Ordering::Equal => Intent::Required,
-            std::cmp::Ordering::Greater => Intent::Prefetch,
-        },
-        keys: keys_at(frame, SourceLevel::new(level), COVER_APRON),
-    }));
+    strata.push(Stratum {
+        intent: Intent::Required,
+        keys: keys_at(frame, source, REQUIRED_APRON),
+    });
+    if detail.prefetch && source.get() < MAX_SOURCE_ZOOM {
+        strata.push(Stratum {
+            intent: Intent::Prefetch,
+            keys: keys_at(frame, source.successor(), 0),
+        });
+    }
     Cover {
         source,
         cells: cells_at(frame, source, 0),
@@ -1334,7 +1409,7 @@ impl Forge {
                 continue;
             }
             let name = tags.name.map(Arc::from);
-            let onset_zoom = tags.min_zoom.unwrap_or(14.5) as f32;
+            let onset_zoom = disclosure_onset(tags.min_zoom, 14.5);
             match feature.geometry()? {
                 MvtGeometry::Point(point) => self.parking.push(Parking {
                     world: world64(self.key, extent, point.0),
@@ -1526,7 +1601,7 @@ fn boundary_style(detail: Option<i64>, min_zoom: Option<f64>) -> StrokeStyle {
     StrokeStyle {
         color,
         radius_points: radius,
-        onset_zoom: min_zoom.unwrap_or(fallback_onset) as f32,
+        onset_zoom: disclosure_onset(min_zoom, fallback_onset),
     }
 }
 
@@ -1564,7 +1639,7 @@ fn road_style(
         (Some("path"), _) => ([130, 126, 110, 38], 0.10, 11.5),
         _ => return None,
     };
-    let onset_zoom = min_zoom.unwrap_or(fallback_onset) as f32;
+    let onset_zoom = disclosure_onset(min_zoom, fallback_onset);
     (f32::from(source_zoom) + 1.0 >= onset_zoom).then_some(StrokeStyle {
         color,
         radius_points: radius,
@@ -1592,7 +1667,7 @@ fn road_label_style(
     Some(LabelStyle {
         rank,
         size,
-        onset_zoom: min_zoom.unwrap_or(fallback_onset).max(fallback_onset - 1.0) as f32,
+        onset_zoom: disclosure_onset(min_zoom, fallback_onset),
     })
 }
 
@@ -1650,8 +1725,12 @@ fn label_style(
     Some(LabelStyle {
         rank: base + scarcity.saturating_mul(4),
         size: size as f32,
-        onset_zoom: min_zoom.unwrap_or(fallback_onset) as f32,
+        onset_zoom: disclosure_onset(min_zoom, fallback_onset),
     })
+}
+
+fn disclosure_onset(provider: Option<f64>, style: f64) -> f32 {
+    provider.unwrap_or(style).max(style) as f32
 }
 
 #[derive(Default)]
@@ -2044,14 +2123,21 @@ mod tests {
         zoom: 10.0,
     };
 
+    const fn detail(source: u8, prefetch: bool) -> DetailPlan {
+        DetailPlan {
+            source: SourceLevel::new(source),
+            prefetch,
+        }
+    }
+
     #[test]
-    fn vector_cover_prefetches_without_presenting() {
+    fn cover_demands_one_fallback_and_current_detail_only() {
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
-        let cover = cover(MapFramePlan::forge(VIEW, rect), None);
-        assert_eq!(cover.strata.len(), 6);
-        assert_eq!(cover.strata[4].intent, Intent::Required);
-        assert_eq!(cover.strata[5].intent, Intent::Prefetch);
-        assert_eq!(cover.source, SourceLevel::new(10));
+        let cover = cover(MapFramePlan::forge(VIEW, rect), detail(9, false), None);
+        assert_eq!(cover.strata.len(), 2);
+        assert_eq!(cover.strata[0].intent, Intent::Fallback);
+        assert_eq!(cover.strata[1].intent, Intent::Required);
+        assert_eq!(cover.source, SourceLevel::new(9));
         assert!(
             cover
                 .cells
@@ -2063,7 +2149,9 @@ mod tests {
     #[test]
     fn visible_cells_are_independent_units_of_refinement() {
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
-        let cover = cover(MapFramePlan::forge(VIEW, rect), None);
+        let cover = cover(MapFramePlan::forge(VIEW, rect), detail(9, true), None);
+        assert_eq!(cover.strata.len(), 3);
+        assert_eq!(cover.strata[2].intent, Intent::Prefetch);
         let cells = cover.cells;
         assert!(cells.len() > 1);
         let demoted = cells[0]
@@ -2088,6 +2176,7 @@ mod tests {
                 },
                 rect,
             ),
+            detail(0, false),
             None,
         );
         for stratum in cover.strata {
@@ -2107,7 +2196,11 @@ mod tests {
             zoom: Viewport::MAX_ZOOM,
             ..VIEW
         };
-        let cover = cover(MapFramePlan::forge(view, rect), None);
+        let cover = cover(
+            MapFramePlan::forge(view, rect),
+            detail(MAX_SOURCE_ZOOM, true),
+            None,
+        );
         let crown = cover.strata.last().context("top stratum")?;
         assert_eq!(crown.intent, Intent::Required);
         assert!(crown.keys.iter().all(|tile| tile.zoom == MAX_SOURCE_ZOOM));
@@ -2150,13 +2243,60 @@ mod tests {
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
         let view = Viewport { zoom: 11.0, ..VIEW };
 
-        let cover = cover(MapFramePlan::forge(view, rect), Some(4));
+        let cover = cover(MapFramePlan::forge(view, rect), detail(10, false), Some(4));
 
-        assert!(
-            cover
-                .strata
-                .first()
-                .is_some_and(|stratum| stratum.keys.iter().all(|key| key.zoom == 4))
+        assert!(cover.strata.first().is_some_and(|stratum| {
+            stratum.intent == Intent::Fallback && stratum.keys.iter().all(|key| key.zoom == 4)
+        }));
+    }
+
+    #[test]
+    fn detail_governor_overscales_hysteretically_and_prefetches_by_deadline() {
+        let now = Instant::now();
+        let mut governor = DetailGovernor::default();
+        assert_eq!(
+            governor.resolve(10.0, Duration::from_millis(250), now),
+            detail(9, false)
+        );
+        assert_eq!(
+            governor.resolve(
+                10.30,
+                Duration::from_millis(250),
+                now + Duration::from_millis(100),
+            ),
+            detail(9, true)
+        );
+        assert_eq!(
+            governor.resolve(
+                10.30,
+                Duration::from_millis(250),
+                now + Duration::from_millis(250),
+            ),
+            detail(9, false)
+        );
+        assert_eq!(
+            governor.resolve(
+                10.34,
+                Duration::from_millis(250),
+                now + Duration::from_millis(300),
+            ),
+            detail(10, false)
+        );
+        assert_eq!(
+            governor.resolve(
+                10.05,
+                Duration::from_millis(250),
+                now + Duration::from_millis(400),
+            ),
+            detail(10, false)
+        );
+        assert_eq!(
+            governor.resolve(
+                9.99,
+                Duration::from_millis(250),
+                now + Duration::from_millis(500),
+            ),
+            detail(9, false)
         );
     }
 

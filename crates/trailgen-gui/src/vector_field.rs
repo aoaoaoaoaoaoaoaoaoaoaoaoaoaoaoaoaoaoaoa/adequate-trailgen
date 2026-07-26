@@ -16,6 +16,7 @@ use trailgen_core::TrailGraph;
 const VECTOR_CEILING: usize = 512 * 1_048_576;
 const RETRY_FLOOR: Duration = Duration::from_millis(250);
 const RETRY_CEILING: Duration = Duration::from_secs(30);
+const READY_LATENCY_SEED: Duration = Duration::from_millis(250);
 const TRAILHEAD_PARKING_REACH_M: f64 = 160.0;
 
 /// The reusable, streaming vector-map plane beneath every trail workbench.
@@ -25,11 +26,13 @@ pub struct VectorField {
     armory: Option<Basemap>,
     tiles: VectorBank,
     presented: Arc<[VectorPatch]>,
-    inflight: HashSet<TileKey>,
+    inflight: HashMap<TileKey, Instant>,
     missing: HashSet<TileKey>,
     retries: HashMap<TileKey, Retry>,
     demand: Vec<TileKey>,
     demand_dirty: bool,
+    detail: basemap::DetailGovernor,
+    readiness: ReadinessOracle,
     presentation: Option<PresentationStamp>,
     presentation_revision: u64,
     archive_zoom: Option<u8>,
@@ -41,6 +44,8 @@ struct Retry {
     failures: u8,
     after: Instant,
 }
+
+struct ReadinessOracle(Duration);
 
 struct PresentationStamp {
     frame: MapFramePlan,
@@ -68,6 +73,26 @@ impl Retry {
     }
 }
 
+impl Default for ReadinessOracle {
+    fn default() -> Self {
+        Self(READY_LATENCY_SEED)
+    }
+}
+
+impl ReadinessOracle {
+    const fn estimate(&self) -> Duration {
+        self.0
+    }
+
+    fn observe(&mut self, elapsed: Duration) {
+        self.0 = if elapsed > self.0 {
+            elapsed
+        } else {
+            self.0.mul_f64(0.875) + elapsed.mul_f64(0.125)
+        };
+    }
+}
+
 impl VectorField {
     pub fn raise(
         ctx: &egui::Context,
@@ -81,11 +106,13 @@ impl VectorField {
             armory: Some(Basemap::spawn(ctx.clone(), source, !offline)?),
             tiles: VectorBank::new(VECTOR_CEILING),
             presented: Arc::from([]),
-            inflight: HashSet::new(),
+            inflight: HashMap::new(),
             missing: HashSet::new(),
             retries: HashMap::new(),
             demand: Vec::new(),
             demand_dirty: true,
+            detail: basemap::DetailGovernor::default(),
+            readiness: ReadinessOracle::default(),
             presentation: None,
             presentation_revision: 0,
             archive_zoom: None,
@@ -119,7 +146,9 @@ impl VectorField {
                 }
                 basemap::Event::Loaded(tile) => {
                     let key = tile.key;
-                    self.inflight.remove(&key);
+                    if let Some(begun) = self.inflight.remove(&key) {
+                        self.readiness.observe(begun.elapsed());
+                    }
                     self.retries.remove(&key);
                     self.index_parking(&tile);
                     self.tiles.insert(tile);
@@ -176,7 +205,10 @@ impl VectorField {
         {
             return;
         }
-        let cover = basemap::cover(frame, self.archive_zoom);
+        let detail =
+            self.detail
+                .resolve(frame.zoom.get(), self.readiness.estimate(), Instant::now());
+        let cover = basemap::cover(frame, detail, self.archive_zoom);
         self.demand_cover(&cover, ctx);
         if self.presentation.as_ref().is_some_and(|stamp| {
             stamp.frame == frame
@@ -387,7 +419,10 @@ impl VectorField {
         let Some(armory) = &self.armory else {
             return false;
         };
-        if self.tiles.contains(key) || self.inflight.contains(&key) || self.missing.contains(&key) {
+        if self.tiles.contains(key)
+            || self.inflight.contains_key(&key)
+            || self.missing.contains(&key)
+        {
             return false;
         }
         if let Some(retry) = self.retries.get(&key) {
@@ -398,7 +433,7 @@ impl VectorField {
             }
         }
         if armory.request(key) {
-            self.inflight.insert(key);
+            self.inflight.insert(key, Instant::now());
             false
         } else {
             ctx.request_repaint();
@@ -546,9 +581,7 @@ mod tests {
             source: basemap::SourceLevel::new(10),
             cells: Vec::new(),
             strata: vec![
-                stratum(basemap::Intent::Retained, 7),
-                stratum(basemap::Intent::Retained, 8),
-                stratum(basemap::Intent::Retained, 9),
+                stratum(basemap::Intent::Fallback, 7),
                 stratum(basemap::Intent::Required, 10),
                 stratum(basemap::Intent::Prefetch, 11),
             ],
@@ -562,7 +595,7 @@ mod tests {
                     .map(|key| key.zoom)
                     .collect::<Vec<_>>()
             },
-            [7, 10, 9, 8, 11]
+            [7, 10, 11]
         );
     }
 
@@ -575,7 +608,14 @@ mod tests {
             },
             egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1_200.0, 800.0)),
         );
-        let cover = basemap::cover(frame, None);
+        let cover = basemap::cover(
+            frame,
+            basemap::DetailPlan {
+                source: basemap::SourceLevel::new(9),
+                prefetch: false,
+            },
+            None,
+        );
         assert!(cover.cells.len() > 1);
         let exact = cover.cells[0].key;
         let fallback = cover.cells[1]
@@ -587,6 +627,15 @@ mod tests {
         assert_eq!(choices.len(), 2);
         assert_eq!(choices[0].1, exact);
         assert_eq!(choices[1].1, fallback);
+    }
+
+    #[test]
+    fn readiness_oracle_rises_immediately_and_recedes_gradually() {
+        let mut oracle = ReadinessOracle::default();
+        oracle.observe(Duration::from_millis(800));
+        assert_eq!(oracle.estimate(), Duration::from_millis(800));
+        oracle.observe(Duration::from_millis(80));
+        assert!(oracle.estimate() > Duration::from_millis(600));
     }
 
     #[test]
