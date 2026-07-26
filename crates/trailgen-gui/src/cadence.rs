@@ -1,4 +1,4 @@
-use egui::{Color32, Pos2, Rect, Shape, Stroke};
+use egui::{Color32, Pos2, Shape, Stroke};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Pattern {
@@ -39,61 +39,6 @@ impl Pattern {
         }
     }
 
-    pub fn tessellate_clipped<I>(
-        self,
-        points: I,
-        stroke: Stroke,
-        phase: f32,
-        limit: f32,
-        clip: Rect,
-        shapes: &mut Vec<Shape>,
-    ) where
-        I: IntoIterator<Item = Pos2>,
-    {
-        let mut points = points.into_iter();
-        let Some(mut start) = points.next() else {
-            return;
-        };
-        let mut traversed = 0.0;
-        let mut run = Vec::new();
-        let mut run_phase = 0.0;
-
-        for end in points {
-            if traversed >= limit {
-                break;
-            }
-            let vector = end - start;
-            let segment_length = vector.length();
-            if segment_length <= f32::EPSILON {
-                start = end;
-                continue;
-            }
-            let admitted_length = segment_length.min(limit - traversed);
-            let admitted_end = start + vector * (admitted_length / segment_length);
-            if let Some([enter, exit]) = clip_segment(start, admitted_end, clip) {
-                let visible_start = start + (admitted_end - start) * enter;
-                let visible_end = start + (admitted_end - start) * exit;
-                if run
-                    .last()
-                    .is_none_or(|previous: &Pos2| previous.distance(visible_start) > 0.01)
-                {
-                    flush_run(self, stroke, &mut run, run_phase, shapes);
-                    run_phase = phase + traversed + admitted_length * enter;
-                    run.push(visible_start);
-                }
-                run.push(visible_end);
-                if exit < 1.0 {
-                    flush_run(self, stroke, &mut run, run_phase, shapes);
-                }
-            } else {
-                flush_run(self, stroke, &mut run, run_phase, shapes);
-            }
-            traversed += admitted_length;
-            start = end;
-        }
-        flush_run(self, stroke, &mut run, run_phase, shapes);
-    }
-
     pub fn splice(self, start_phase: f32, end_phase: f32, length: f32) -> f32 {
         if matches!(self, Self::Dots { .. }) || length <= f32::EPSILON {
             return length * 0.5;
@@ -123,49 +68,6 @@ impl Pattern {
             Self::Dots { .. } => false,
         }
     }
-}
-
-fn flush_run(
-    pattern: Pattern,
-    stroke: Stroke,
-    run: &mut Vec<Pos2>,
-    phase: f32,
-    shapes: &mut Vec<Shape>,
-) {
-    if run.len() >= 2 {
-        pattern.tessellate(std::mem::take(run), stroke, phase, f32::INFINITY, shapes);
-    } else {
-        run.clear();
-    }
-}
-
-fn clip_segment(start: Pos2, end: Pos2, clip: Rect) -> Option<[f32; 2]> {
-    let vector = end - start;
-    let mut enter = 0.0_f32;
-    let mut exit = 1.0_f32;
-    for (p, q) in [
-        (-vector.x, start.x - clip.left()),
-        (vector.x, clip.right() - start.x),
-        (-vector.y, start.y - clip.top()),
-        (vector.y, clip.bottom() - start.y),
-    ] {
-        if p.abs() <= f32::EPSILON {
-            if q < 0.0 {
-                return None;
-            }
-            continue;
-        }
-        let crossing = q / p;
-        if p < 0.0 {
-            enter = enter.max(crossing);
-        } else {
-            exit = exit.min(crossing);
-        }
-        if enter > exit {
-            return None;
-        }
-    }
-    Some([enter, exit])
 }
 
 fn splice_cost(
@@ -389,25 +291,6 @@ mod tests {
 
         assert!(pattern.ink_at(8.0 + splice));
         assert!(pattern.ink_at(7.0 + length - splice));
-    }
-
-    #[test]
-    fn clipping_preserves_world_phase_without_forging_offscreen_dashes() {
-        let pattern = Pattern::Dash {
-            dash: 6.0,
-            gap: 4.0,
-        };
-        let mut shapes = Vec::new();
-        pattern.tessellate_clipped(
-            [pos2(-10_000.0, 0.0), pos2(10_000.0, 0.0)],
-            Stroke::new(1.0_f32, Color32::BLACK),
-            0.0,
-            f32::INFINITY,
-            Rect::from_min_max(pos2(-5.0, -5.0), pos2(5.0, 5.0)),
-            &mut shapes,
-        );
-
-        assert_eq!(ink_bounds(&shapes), [(-5_500, -3_500), (-500, 5_500)]);
     }
 
     fn ink_bounds(shapes: &[Shape]) -> Vec<(i32, i32)> {

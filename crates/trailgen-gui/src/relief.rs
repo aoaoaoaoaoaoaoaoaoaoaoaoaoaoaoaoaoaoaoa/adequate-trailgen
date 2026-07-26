@@ -1,14 +1,16 @@
 use crate::{
     annotation,
     basemap::{self, Mesh, StrokePoint, TileKey, VectorTile},
-    map,
-    vector_map::{GeometryPass, VectorCorpus, VectorGap, VectorLayer, VectorPaint},
+    map::{self, MapFramePlan},
+    vector_map::{GeometryPass, VectorCorpus, VectorGap, VectorLayer, VectorPaint, VectorPatch},
 };
 use anyhow::{Context as _, Result, ensure};
 use crossbeam_channel::{Receiver, bounded};
-use egui::{Color32, Painter, Rect};
+#[cfg(test)]
+use egui::Rect;
+use egui::{Color32, Painter};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fs::{self, OpenOptions},
     io::{Cursor, Read as _, Write as _},
     path::Path,
@@ -23,17 +25,54 @@ const INTERVAL_M: i32 = 10;
 const INDEX_INTERVAL_M: i32 = 50;
 const CHUNK_POINTS: usize = 96;
 const POINT_CEILING: usize = 16_000_000;
+const LABEL_INDEX_ZOOM: u8 = 14;
+const LABEL_CELL_CEILING: usize = 64;
+const RELIEF_LAWS: [ReliefLaw; 4] = [
+    ReliefLaw {
+        onset_zoom: 10.5,
+        reference_zoom: 11.75,
+        error_points: 0.65,
+        minors: false,
+    },
+    ReliefLaw {
+        onset_zoom: 11.75,
+        reference_zoom: 13.5,
+        error_points: 0.60,
+        minors: true,
+    },
+    ReliefLaw {
+        onset_zoom: 13.5,
+        reference_zoom: 15.75,
+        error_points: 0.50,
+        minors: true,
+    },
+    ReliefLaw {
+        onset_zoom: 15.75,
+        reference_zoom: 0.0,
+        error_points: 0.0,
+        minors: true,
+    },
+];
 
 pub struct Relief {
     corpus: VectorCorpus,
     field: Arc<Field>,
+    revision: u64,
+    visibility: Option<ReliefVisibility>,
     events: Receiver<Result<Field>>,
     _worker: thread::JoinHandle<()>,
 }
 
+struct ReliefVisibility {
+    frame: MapFramePlan,
+    detail: u8,
+    patches: Arc<[VectorPatch]>,
+}
+
 struct Field {
     isohypses: Vec<Isohypse>,
-    tiles: Arc<[Arc<VectorTile>]>,
+    tiles: Vec<Arc<[Arc<VectorTile>]>>,
+    label_index: LabelIndex,
 }
 
 struct Isohypse {
@@ -52,8 +91,52 @@ impl Default for Field {
 
 impl Field {
     fn seal(isohypses: Vec<Isohypse>) -> Self {
-        let tiles = raise_tiles(&isohypses);
-        Self { isohypses, tiles }
+        let tiles = RELIEF_LAWS
+            .into_iter()
+            .map(|law| raise_tiles(&isohypses, law))
+            .collect::<Vec<_>>();
+        if std::env::var_os("TRAILGEN_PROFILE_RELIEF").is_some() {
+            let bytes = tiles
+                .iter()
+                .map(|band| band.iter().map(|tile| tile.resident_bytes()).sum::<usize>())
+                .collect::<Vec<_>>();
+            eprintln!(
+                "relief-atlas chunks={} tiles={} band_bytes={bytes:?}",
+                isohypses.len(),
+                tiles.first().map_or(0, |band| band.len()),
+            );
+        }
+        let label_index = index_labels(&isohypses);
+        Self {
+            isohypses,
+            tiles,
+            label_index,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ReliefLaw {
+    onset_zoom: f32,
+    reference_zoom: f32,
+    error_points: f64,
+    minors: bool,
+}
+
+impl ReliefLaw {
+    fn for_zoom(zoom: f64) -> Option<(u8, Self)> {
+        let slot = RELIEF_LAWS
+            .iter()
+            .rposition(|law| zoom >= f64::from(law.onset_zoom))?;
+        Some((slot as u8, RELIEF_LAWS[slot]))
+    }
+
+    fn tolerance_world(self) -> f64 {
+        if self.error_points <= 0.0 {
+            0.0
+        } else {
+            self.error_points / (256.0 * f64::from(self.reference_zoom).exp2())
+        }
     }
 }
 
@@ -72,6 +155,8 @@ impl Relief {
         Ok(Self {
             corpus: VectorCorpus::mint(),
             field: Arc::new(Field::default()),
+            revision: 0,
+            visibility: None,
             events,
             _worker: worker,
         })
@@ -80,52 +165,70 @@ impl Relief {
     pub fn absorb(&mut self) {
         if let Ok(event) = self.events.try_recv() {
             match event {
-                Ok(field) => self.field = Arc::new(field),
+                Ok(field) => {
+                    self.field = Arc::new(field);
+                    self.revision = self.revision.saturating_add(1);
+                    self.visibility = None;
+                }
                 Err(err) => eprintln!("topography unavailable: {err:#}"),
             }
         }
     }
 
-    pub fn paint(
-        &self,
-        painter: &Painter,
-        viewport: map::Viewport,
-        rect: Rect,
-        gaps: Arc<[VectorGap]>,
-    ) {
-        if viewport.zoom < 10.5 || self.field.tiles.is_empty() {
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn paint(&mut self, painter: &Painter, frame: MapFramePlan, gaps: Arc<[VectorGap]>) {
+        let Some((detail, _law)) = ReliefLaw::for_zoom(frame.zoom.get()) else {
+            return;
+        };
+        let patches = if let Some(visibility) = &self.visibility
+            && visibility.frame == frame
+            && visibility.detail == detail
+        {
+            Arc::clone(&visibility.patches)
+        } else {
+            let Some(tiles) = self.field.tiles.get(usize::from(detail)) else {
+                return;
+            };
+            let patches = visible_tiles(tiles, frame);
+            self.visibility = Some(ReliefVisibility {
+                frame,
+                detail,
+                patches: Arc::clone(&patches),
+            });
+            patches
+        };
+        if patches.is_empty() {
             return;
         }
-        let tiles = visible_tiles(&self.field.tiles, viewport, rect);
         painter.add(egui_wgpu::Callback::new_paint_callback(
-            rect,
+            frame.rect,
             VectorPaint {
                 layer: VectorLayer::Relief,
                 corpus: self.corpus,
+                detail,
                 geometry: GeometryPass::Strokes,
                 gaps,
-                tiles,
-                center_world: viewport.center,
-                world_points: map::world_pixels(viewport) as f32,
-                viewport_points: [rect.width(), rect.height()],
-                view_zoom: viewport.zoom as f32,
+                patches,
+                center_world: frame.viewport.center,
+                world_points: frame.world_points as f32,
+                viewport_points: [frame.rect.width(), frame.rect.height()],
+                view_zoom: frame.zoom.get() as f32,
                 apparition_span: basemap::APPARITION_SPAN,
             },
         ));
     }
 
-    pub fn annotations(
-        &self,
-        viewport: map::Viewport,
-        rect: Rect,
-    ) -> Vec<annotation::LineLabel<'_>> {
-        if viewport.zoom < 12.25 {
+    pub fn annotations(&self, frame: MapFramePlan) -> Vec<annotation::LineLabel<'_>> {
+        if frame.zoom.get() < 12.25 {
             return Vec::new();
         }
-        let visible = map::world_bounds(viewport, rect);
-        self.field
-            .isohypses
-            .iter()
+        let visible = frame.world_bounds();
+        visible_label_slots(&self.field.label_index, visible)
+            .into_iter()
+            .map(|slot| &self.field.isohypses[slot])
             .filter(|isohypse| intersects(visible, isohypse.bounds))
             .filter_map(|isohypse| {
                 let label = isohypse.label.as_deref()?;
@@ -145,16 +248,18 @@ impl Relief {
     }
 }
 
-fn visible_tiles(
-    tiles: &[Arc<VectorTile>],
-    viewport: map::Viewport,
-    rect: Rect,
-) -> Arc<[Arc<VectorTile>]> {
-    let bounds = map::world_bounds(viewport, rect.expand(2.0));
+fn visible_tiles(tiles: &[Arc<VectorTile>], frame: MapFramePlan) -> Arc<[VectorPatch]> {
+    let expansion = 2.0 / frame.world_points;
+    let mut bounds = frame.world_bounds();
+    bounds[0] -= expansion;
+    bounds[1] -= expansion;
+    bounds[2] += expansion;
+    bounds[3] += expansion;
     tiles
         .iter()
         .filter(|tile| tile_intersects(bounds, tile.key))
         .cloned()
+        .map(VectorPatch::whole)
         .collect()
 }
 
@@ -598,12 +703,104 @@ struct StrokeMesh {
     indices: Vec<u32>,
 }
 
-fn raise_tiles(isohypses: &[Isohypse]) -> Arc<[Arc<VectorTile>]> {
+struct LabelIndex {
+    cells: HashMap<TileKey, Arc<[usize]>>,
+    roaming: Arc<[usize]>,
+}
+
+fn index_labels(isohypses: &[Isohypse]) -> LabelIndex {
+    let scale = f64::from(1_u32 << LABEL_INDEX_ZOOM);
+    let mut index = HashMap::<TileKey, Vec<usize>>::new();
+    let mut roaming = Vec::new();
+    for (slot, isohypse) in isohypses
+        .iter()
+        .enumerate()
+        .filter(|(_, isohypse)| isohypse.label.is_some())
+    {
+        let left = (isohypse.bounds[0] * scale).floor() as i64;
+        let right = (isohypse.bounds[2] * scale).floor() as i64;
+        let top = (isohypse.bounds[1] * scale).floor().clamp(0.0, scale - 1.0) as u32;
+        let bottom = (isohypse.bounds[3] * scale).floor().clamp(0.0, scale - 1.0) as u32;
+        let width = right.saturating_sub(left).saturating_add(1);
+        let height = i64::from(bottom.saturating_sub(top).saturating_add(1));
+        if usize::try_from(width.saturating_mul(height)).unwrap_or(usize::MAX) > LABEL_CELL_CEILING
+        {
+            roaming.push(slot);
+            continue;
+        }
+        for y in top..=bottom {
+            for x in left..=right {
+                index
+                    .entry(TileKey {
+                        zoom: LABEL_INDEX_ZOOM,
+                        x: x.rem_euclid(scale as i64) as u32,
+                        y,
+                    })
+                    .or_default()
+                    .push(slot);
+            }
+        }
+    }
+    LabelIndex {
+        cells: index
+            .into_iter()
+            .map(|(key, mut slots)| {
+                slots.sort_unstable();
+                slots.dedup();
+                (key, slots.into())
+            })
+            .collect(),
+        roaming: roaming.into(),
+    }
+}
+
+fn visible_label_slots(index: &LabelIndex, bounds: [f64; 4]) -> Vec<usize> {
+    let scale = f64::from(1_u32 << LABEL_INDEX_ZOOM);
+    let left = (bounds[0] * scale).floor() as i64;
+    let right = (bounds[2] * scale).floor() as i64;
+    let top = (bounds[1] * scale).floor().max(0.0) as i64;
+    let bottom = (bounds[3] * scale).floor().min(scale - 1.0).max(0.0) as i64;
+    let width = right.saturating_sub(left).saturating_add(1);
+    let height = bottom.saturating_sub(top).saturating_add(1);
+    let cell_count = usize::try_from(width.saturating_mul(height)).unwrap_or(usize::MAX);
+    let mut slots = index.roaming.iter().copied().collect::<HashSet<_>>();
+    if cell_count <= index.cells.len().saturating_mul(2).max(64) {
+        for y in top..=bottom {
+            for x in left..=right {
+                let key = TileKey {
+                    zoom: LABEL_INDEX_ZOOM,
+                    x: x.rem_euclid(scale as i64) as u32,
+                    y: y as u32,
+                };
+                if let Some(indexed) = index.cells.get(&key) {
+                    slots.extend(indexed.iter().copied());
+                }
+            }
+        }
+    } else {
+        for (key, indexed) in &index.cells {
+            if tile_intersects(bounds, *key) {
+                slots.extend(indexed.iter().copied());
+            }
+        }
+    }
+    let mut slots = slots.into_iter().collect::<Vec<_>>();
+    slots.sort_unstable();
+    slots
+}
+
+fn raise_tiles(isohypses: &[Isohypse], law: ReliefLaw) -> Arc<[Arc<VectorTile>]> {
     let mut meshes = BTreeMap::<TileKey, StrokeMesh>::new();
+    let tolerance = law.tolerance_world();
     for isohypse in isohypses {
+        let indexed = isohypse.elevation_m % INDEX_INTERVAL_M == 0;
+        if !indexed && !law.minors {
+            continue;
+        }
         let scale = f64::from(1_u32 << isohypse.key.zoom);
-        let mut points = Vec::with_capacity(isohypse.points.len());
-        for world in isohypse.points.iter() {
+        let simplified = simplify_isohypse(&isohypse.points, tolerance);
+        let mut points = Vec::with_capacity(simplified.len());
+        for world in simplified {
             let point = [
                 world[0].mul_add(scale, -f64::from(isohypse.key.x)) as f32,
                 world[1].mul_add(scale, -f64::from(isohypse.key.y)) as f32,
@@ -625,7 +822,6 @@ fn raise_tiles(isohypses: &[Isohypse]) -> Arc<[Arc<VectorTile>]> {
         let Ok(base) = u32::try_from(mesh.vertices.len()) else {
             continue;
         };
-        let indexed = isohypse.elevation_m % INDEX_INTERVAL_M == 0;
         let (color, radius_points, onset_zoom) = if indexed {
             ([80, 67, 48, 92], map::INDEX_ISOHYPSE_RADIUS_POINTS, 10.5)
         } else {
@@ -680,6 +876,53 @@ fn raise_tiles(isohypses: &[Isohypse]) -> Arc<[Arc<VectorTile>]> {
             })
         })
         .collect()
+}
+
+fn simplify_isohypse(points: &[[f64; 2]], tolerance: f64) -> Vec<[f64; 2]> {
+    if points.len() <= 2 || tolerance <= 0.0 {
+        return points.to_vec();
+    }
+    let mut keep = vec![false; points.len()];
+    keep[0] = true;
+    keep[points.len() - 1] = true;
+    let mut frontier = vec![(0, points.len() - 1)];
+    while let Some((start, end)) = frontier.pop() {
+        if end <= start + 1 {
+            continue;
+        }
+        let champion = (start + 1..end)
+            .map(|slot| {
+                (
+                    slot,
+                    segment_distance(points[slot], points[start], points[end]),
+                )
+            })
+            .max_by(|left, right| left.1.total_cmp(&right.1));
+        if let Some((slot, error)) = champion
+            && error > tolerance
+        {
+            keep[slot] = true;
+            frontier.extend([(start, slot), (slot, end)]);
+        }
+    }
+    points
+        .iter()
+        .copied()
+        .zip(keep)
+        .filter_map(|(point, keep)| keep.then_some(point))
+        .collect()
+}
+
+fn segment_distance(point: [f64; 2], start: [f64; 2], end: [f64; 2]) -> f64 {
+    let edge = [end[0] - start[0], end[1] - start[1]];
+    let squared = edge[0].mul_add(edge[0], edge[1] * edge[1]);
+    if squared <= f64::EPSILON {
+        return (point[0] - start[0]).hypot(point[1] - start[1]);
+    }
+    let offset = [point[0] - start[0], point[1] - start[1]];
+    let progress = (offset[0].mul_add(edge[0], offset[1] * edge[1]) / squared).clamp(0.0, 1.0);
+    (point[0] - edge[0].mul_add(progress, start[0]))
+        .hypot(point[1] - edge[1].mul_add(progress, start[1]))
 }
 
 fn encode(field: &Field, identity: &str) -> Result<Vec<u8>> {
@@ -840,6 +1083,56 @@ mod tests {
     }
 
     #[test]
+    fn relief_detail_is_monotone_and_terminates_in_exact_geometry() {
+        let bands = [10.0, 10.5, 11.74, 11.75, 13.49, 13.5, 15.74, 15.75, 23.0]
+            .into_iter()
+            .filter_map(ReliefLaw::for_zoom)
+            .collect::<Vec<_>>();
+        assert!(bands.windows(2).all(|pair| pair[0].0 <= pair[1].0));
+        assert_eq!(bands.last().map(|(slot, _)| *slot), Some(3));
+        assert_eq!(
+            bands.last().map(|(_, law)| law.tolerance_world()),
+            Some(0.0)
+        );
+    }
+
+    #[test]
+    fn relief_simplification_is_a_nested_subsequence() {
+        let points = [[0.0, 0.0], [1.0, 0.1], [2.0, 0.0], [3.0, 0.5], [4.0, 0.0]];
+        let coarse = simplify_isohypse(&points, 0.2);
+        let fine = simplify_isohypse(&points, 0.05);
+        assert!(coarse.iter().all(|point| fine.contains(point)));
+    }
+
+    #[test]
+    fn coarse_relief_excludes_minor_isohypses_by_construction() {
+        let isohypse = |elevation_m| Isohypse {
+            key: TileKey {
+                zoom: 12,
+                x: 1_204,
+                y: 1_532,
+            },
+            elevation_m,
+            label: None,
+            points: Arc::from([
+                [1_204.1 / 4_096.0, 1_532.1 / 4_096.0],
+                [1_204.9 / 4_096.0, 1_532.9 / 4_096.0],
+            ]),
+            bounds: [
+                1_204.1 / 4_096.0,
+                1_532.1 / 4_096.0,
+                1_204.9 / 4_096.0,
+                1_532.9 / 4_096.0,
+            ],
+        };
+        let contours = [isohypse(100), isohypse(110)];
+        let coarse = raise_tiles(&contours, RELIEF_LAWS[0]);
+        let exact = raise_tiles(&contours, RELIEF_LAWS[3]);
+        assert_eq!(coarse[0].strokes.indices.len(), 6);
+        assert_eq!(exact[0].strokes.indices.len(), 12);
+    }
+
+    #[test]
     fn cache_roundtrip_preserves_fixed_interval_semantics() -> Result<()> {
         let field = Field::seal(vec![Isohypse {
             key: TileKey {
@@ -886,26 +1179,30 @@ mod tests {
             center: [(1_204.5) / 4_096.0, (1_532.5) / 4_096.0],
             zoom: 18.0,
         };
-        let visible = visible_tiles(
-            &tiles,
-            viewport,
-            Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1_120.0, 610.0)),
-        );
+        let rect = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1_120.0, 610.0));
+        let visible = visible_tiles(&tiles, MapFramePlan::forge(viewport, rect));
         assert_eq!(
-            visible.iter().map(|tile| tile.key.x).collect::<Vec<_>>(),
+            visible
+                .iter()
+                .map(|patch| patch.tile.key.x)
+                .collect::<Vec<_>>(),
             [1_204]
         );
 
         let seam = visible_tiles(
             &tiles,
-            map::Viewport {
-                center: [1_205.0 / 4_096.0, viewport.center[1]],
-                ..viewport
-            },
-            Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1_120.0, 610.0)),
+            MapFramePlan::forge(
+                map::Viewport {
+                    center: [1_205.0 / 4_096.0, viewport.center[1]],
+                    ..viewport
+                },
+                rect,
+            ),
         );
         assert_eq!(
-            seam.iter().map(|tile| tile.key.x).collect::<Vec<_>>(),
+            seam.iter()
+                .map(|patch| patch.tile.key.x)
+                .collect::<Vec<_>>(),
             [1_204, 1_205]
         );
     }

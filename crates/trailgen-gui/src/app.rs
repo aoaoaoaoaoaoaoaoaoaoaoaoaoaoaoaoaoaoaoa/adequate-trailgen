@@ -1152,9 +1152,10 @@ impl TrailApp {
         }
         let scribe_event = self.scribe.interact(self.viewport, ui, &response, rect);
         let canvas = ui.painter_at(rect);
+        let frame = map::MapFramePlan::forge(self.viewport, rect);
         let _ground = canvas.rect_filled(rect, 0.0, map::MAP_GROUND);
-        let annotations = self.forge_cartography(&canvas, rect);
-        self.atlas.paint_network(&canvas, self.viewport, rect);
+        let annotations = self.forge_cartography(&canvas, frame);
+        self.atlas.paint_network(&canvas, frame);
         if !self.regions.is_empty() || self.scribe.active() {
             live_area::paint(
                 &canvas,
@@ -1219,20 +1220,18 @@ impl TrailApp {
     fn forge_cartography(
         &mut self,
         painter: &egui::Painter,
-        rect: egui::Rect,
-    ) -> annotation::Composition {
-        self.vector.paint_fills(painter, self.viewport, rect);
-        let annotations = self.vector.compose_annotations(
-            painter,
-            self.viewport,
-            rect,
-            self.relief.annotations(self.viewport, rect),
-        );
-        let gaps = annotations.contour_gaps(rect);
-        self.relief
-            .paint(painter, self.viewport, rect, Arc::clone(&gaps));
-        self.vector
-            .paint_strokes(painter, self.viewport, rect, gaps);
+        frame: map::MapFramePlan,
+    ) -> Arc<annotation::Composition> {
+        self.vector.paint_fills(painter, frame);
+        let relief = &self.relief;
+        let annotations =
+            self.vector
+                .compose_annotations(painter, frame, relief.revision(), || {
+                    relief.annotations(frame)
+                });
+        let gaps = annotations.contour_gaps();
+        self.relief.paint(painter, frame, Arc::clone(&gaps));
+        self.vector.paint_strokes(painter, frame, gaps);
         annotations
     }
 

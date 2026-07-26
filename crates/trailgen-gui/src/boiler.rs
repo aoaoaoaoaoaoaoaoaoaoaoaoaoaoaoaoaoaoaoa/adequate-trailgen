@@ -1,4 +1,4 @@
-use crate::{projects::Workbench, vector_map::VectorMapGpu};
+use crate::{projects::Workbench, trail_map::TrailMapGpu, vector_map::VectorMapGpu};
 use anyhow::{Context as _, Result};
 use dwemer_poolrooms::water::Engine;
 use egui_wgpu::{RenderState, RendererOptions, ScreenDescriptor, WgpuConfiguration, wgpu};
@@ -246,6 +246,9 @@ impl Rig {
             let _prior = renderer
                 .callback_resources
                 .insert(VectorMapGpu::new(&gpu.device, gpu.target_format));
+            let _prior = renderer
+                .callback_resources
+                .insert(TrailMapGpu::new(&gpu.device, gpu.target_format));
         }
         let size = window.inner_size();
         let mut config = surface

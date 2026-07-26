@@ -1,4 +1,4 @@
-use crate::{cadence, forge, library::SavedTrail};
+use crate::{cadence, forge, library::SavedTrail, trail_map::TrailField};
 use dwemer_poolrooms::chrome;
 use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, Vec2, pos2, vec2};
 use serde::{Deserialize, Serialize};
@@ -36,20 +36,20 @@ pub const fn candidate_color(ordinal: usize, selected: bool) -> Color32 {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TrailSalience {
+pub enum TrailSalience {
     Context,
     Selected,
 }
 
 impl TrailSalience {
-    const fn width(self) -> f32 {
+    pub const fn width(self) -> f32 {
         match self {
             Self::Context => 4.6,
             Self::Selected => 9.2,
         }
     }
 
-    const fn access_color(self, color: Color32, access: Access) -> Color32 {
+    pub const fn access_color(self, color: Color32, access: Access) -> Color32 {
         if matches!(access, Access::Closed | Access::Private) {
             match self {
                 Self::Context => Color32::from_rgb(188, 112, 101),
@@ -65,6 +65,63 @@ impl TrailSalience {
 pub struct Viewport {
     pub center: [f64; 2],
     pub zoom: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+pub struct CameraZoom(f64);
+
+impl CameraZoom {
+    #[must_use]
+    pub fn from_viewport(viewport: Viewport) -> Self {
+        assert!(
+            viewport.zoom.is_finite(),
+            "camera zoom must be finite before frame planning"
+        );
+        Self(viewport.zoom)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> f64 {
+        self.0
+    }
+
+    #[must_use]
+    pub fn world_points(self) -> f64 {
+        TILE_EDGE * self.0.exp2()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MapFramePlan {
+    pub viewport: Viewport,
+    pub rect: Rect,
+    pub zoom: CameraZoom,
+    pub world_points: f64,
+}
+
+impl MapFramePlan {
+    #[must_use]
+    pub fn forge(viewport: Viewport, rect: Rect) -> Self {
+        assert!(rect.is_positive(), "map frame requires a positive viewport");
+        let zoom = CameraZoom::from_viewport(viewport);
+        Self {
+            viewport,
+            rect,
+            zoom,
+            world_points: zoom.world_points(),
+        }
+    }
+
+    #[must_use]
+    pub fn world_bounds(self) -> [f64; 4] {
+        let half = self.rect.size() * 0.5;
+        [
+            self.viewport.center[0] - f64::from(half.x) / self.world_points,
+            self.viewport.center[1] - f64::from(half.y) / self.world_points,
+            self.viewport.center[0] + f64::from(half.x) / self.world_points,
+            self.viewport.center[1] + f64::from(half.y) / self.world_points,
+        ]
+    }
 }
 
 impl Viewport {
@@ -91,18 +148,7 @@ impl Viewport {
 }
 
 pub fn world_pixels(view: Viewport) -> f64 {
-    TILE_EDGE * view.zoom.exp2()
-}
-
-pub fn world_bounds(view: Viewport, rect: Rect) -> [f64; 4] {
-    let scale = world_pixels(view);
-    let half = rect.size() * 0.5;
-    [
-        view.center[0] - f64::from(half.x) / scale,
-        view.center[1] - f64::from(half.y) / scale,
-        view.center[0] + f64::from(half.x) / scale,
-        view.center[1] + f64::from(half.y) / scale,
-    ]
+    CameraZoom::from_viewport(view).world_points()
 }
 
 pub fn world_at(view: Viewport, rect: Rect, point: Pos2) -> [f64; 2] {
@@ -178,30 +224,29 @@ pub fn navigate_with(
 }
 
 pub struct Atlas {
-    edges: Vec<WorldEdge>,
     classes: Vec<TrailClass>,
+    field: TrailField,
 }
 
-struct WorldEdge {
-    endpoints: [usize; 2],
-    points: Vec<[f64; 2]>,
-    bounds: [f64; 4],
-    length_world: f64,
-    lineage: Option<CadenceLineage>,
-    trail_class: TrailClass,
-    mark: TrailMark,
-    access: Access,
+pub struct WorldEdge {
+    pub endpoints: [usize; 2],
+    pub points: Vec<[f64; 2]>,
+    pub length_world: f64,
+    pub lineage: Option<CadenceLineage>,
+    pub trail_class: TrailClass,
+    pub mark: TrailMark,
+    pub access: Access,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum CadenceLineage {
+pub enum CadenceLineage {
     Stem { datum_world: f64, reverse: bool },
     // Arbitrary cycle lengths cannot close a fixed screen-space period. A chord
     // inherits both endpoint phases and confines the reset to one interior splice.
     Chord { endpoint_datums_world: [f64; 2] },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum TrailMark {
     Solid,
     Dashed,
@@ -241,7 +286,6 @@ impl Atlas {
                     .collect::<Vec<_>>();
                 WorldEdge {
                     endpoints: [edge.a.0, edge.b.0],
-                    bounds: enclosing_bounds(&points),
                     length_world: world_polyline_length(&points),
                     points,
                     lineage: None,
@@ -264,7 +308,8 @@ impl Atlas {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
-        Self { edges, classes }
+        let field = TrailField::forge(graph.vertices.len(), &edges);
+        Self { classes, field }
     }
 
     pub fn paint_legend(&self, painter: &Painter, rect: Rect) {
@@ -336,39 +381,8 @@ impl Atlas {
         }
     }
 
-    pub fn paint_network(&self, painter: &Painter, view: Viewport, rect: Rect) {
-        let bounds = world_bounds(view, rect);
-        let width = TrailSalience::Context.width();
-        let mut cores = Vec::new();
-        for edge in &self.edges {
-            if !intersects(edge, bounds) {
-                continue;
-            }
-            let points = edge
-                .points
-                .iter()
-                .copied()
-                .map(|world| screen_at(view, rect, world))
-                .collect::<Vec<_>>();
-            let _tube = painter.add(Shape::line(
-                points.clone(),
-                Stroke::new(
-                    width,
-                    TrailSalience::Context
-                        .access_color(trail_class_color(edge.trail_class), edge.access),
-                ),
-            ));
-            forge_network_core(
-                &points,
-                width,
-                edge.mark,
-                edge.lineage,
-                world_pixels(view),
-                rect.expand(width),
-                &mut cores,
-            );
-        }
-        painter.extend(cores);
+    pub fn paint_network(&mut self, painter: &Painter, frame: MapFramePlan) {
+        self.field.paint(painter, frame);
     }
 }
 
@@ -567,74 +581,11 @@ pub fn paint_trail_tube_at(
     length
 }
 
-fn forge_network_core(
-    points: &[Pos2],
-    width: f32,
-    mark: TrailMark,
-    lineage: Option<CadenceLineage>,
-    world_points: f64,
-    clip: Rect,
-    shapes: &mut Vec<Shape>,
-) {
-    if points.len() < 2 {
-        return;
-    }
-    let core = trail_core(width);
-    let Some(pattern) = trail_pattern(mark, width, core.width) else {
-        shapes.push(Shape::line(points.to_vec(), core));
-        return;
-    };
-    match lineage.expect("patterned network edges own cadence lineage") {
-        CadenceLineage::Stem {
-            datum_world,
-            reverse,
-        } => {
-            let phase = screen_phase(datum_world, world_points, pattern.period());
-            if reverse {
-                pattern.tessellate_clipped(
-                    points.iter().rev().copied(),
-                    core,
-                    phase,
-                    f32::INFINITY,
-                    clip,
-                    shapes,
-                );
-            } else {
-                pattern.tessellate_clipped(
-                    points.iter().copied(),
-                    core,
-                    phase,
-                    f32::INFINITY,
-                    clip,
-                    shapes,
-                );
-            }
-        }
-        CadenceLineage::Chord {
-            endpoint_datums_world: [a, b],
-        } => {
-            let length = cadence::polyline_length(points);
-            let a_phase = screen_phase(a, world_points, pattern.period());
-            let b_phase = screen_phase(b, world_points, pattern.period());
-            let splice = pattern.splice(a_phase, b_phase, length);
-            pattern.tessellate_clipped(points.iter().copied(), core, a_phase, splice, clip, shapes);
-            pattern.tessellate_clipped(
-                points.iter().rev().copied(),
-                core,
-                b_phase,
-                length - splice,
-                clip,
-                shapes,
-            );
-        }
-    }
-}
-
-fn trail_core(width: f32) -> Stroke {
+pub fn trail_core(width: f32) -> Stroke {
     Stroke::new((width * 0.30).max(1.2), Color32::from_rgb(20, 19, 17))
 }
 
-fn trail_pattern(mark: TrailMark, width: f32, core_width: f32) -> Option<cadence::Pattern> {
+pub fn trail_pattern(mark: TrailMark, width: f32, core_width: f32) -> Option<cadence::Pattern> {
     match mark {
         TrailMark::Solid => None,
         TrailMark::Dashed => Some(cadence::Pattern::Dash {
@@ -651,10 +602,6 @@ fn trail_pattern(mark: TrailMark, width: f32, core_width: f32) -> Option<cadence
             radius: core_width * 0.48,
         }),
     }
-}
-
-fn screen_phase(datum_world: f64, world_points: f64, period: f32) -> f32 {
-    (datum_world * world_points).rem_euclid(f64::from(period)) as f32
 }
 
 pub fn trail_mark(
@@ -903,15 +850,6 @@ pub fn fit_coords(coords: impl Iterator<Item = Coord>, rect: Rect) -> Viewport {
     view
 }
 
-fn intersects(edge: &WorldEdge, bounds: [f64; 4]) -> bool {
-    [-1.0, 0.0, 1.0].into_iter().any(|shift| {
-        edge.bounds[0] + shift <= bounds[2]
-            && edge.bounds[2] + shift >= bounds[0]
-            && edge.bounds[1] <= bounds[3]
-            && edge.bounds[3] >= bounds[1]
-    })
-}
-
 fn world_polyline_length(points: &[[f64; 2]]) -> f64 {
     points
         .windows(2)
@@ -921,23 +859,6 @@ fn world_polyline_length(points: &[[f64; 2]]) -> f64 {
             dx.hypot(dy)
         })
         .sum()
-}
-
-fn enclosing_bounds(points: &[[f64; 2]]) -> [f64; 4] {
-    let first = points
-        .first()
-        .copied()
-        .expect("validated graph edge must contain geometry");
-    points.iter().skip(1).fold(
-        [first[0], first[1], first[0], first[1]],
-        |mut bounds, point| {
-            bounds[0] = bounds[0].min(point[0]);
-            bounds[1] = bounds[1].min(point[1]);
-            bounds[2] = bounds[2].max(point[0]);
-            bounds[3] = bounds[3].max(point[1]);
-            bounds
-        },
-    )
 }
 
 fn wrapped_delta(x: f64, center: f64) -> f64 {
@@ -993,21 +914,6 @@ mod tests {
             assert!([1.0, 2.0, 5.0].contains(&(length / decade)));
             assert!(length <= target);
         }
-    }
-
-    #[test]
-    fn crossing_edge_survives_viewport_culling() {
-        let edge = WorldEdge {
-            endpoints: [0, 1],
-            points: vec![[0.1, 0.5], [0.9, 0.5]],
-            bounds: [0.1, 0.5, 0.9, 0.5],
-            length_world: 0.8,
-            lineage: None,
-            trail_class: TrailClass::Path,
-            mark: TrailMark::Solid,
-            access: Access::Open,
-        };
-        assert!(intersects(&edge, [0.4, 0.4, 0.6, 0.6]));
     }
 
     #[test]
@@ -1158,7 +1064,6 @@ mod tests {
         WorldEdge {
             endpoints: [a, b],
             points: vec![[0.0, 0.0], [length_world, 0.0]],
-            bounds: [0.0, 0.0, length_world, 0.0],
             length_world,
             lineage: None,
             trail_class: TrailClass::Path,

@@ -22,6 +22,7 @@ mod projects;
 mod relief;
 mod slate;
 mod trail_data;
+mod trail_map;
 mod vector_field;
 mod vector_map;
 

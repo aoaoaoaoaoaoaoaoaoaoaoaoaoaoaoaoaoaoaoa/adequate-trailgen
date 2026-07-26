@@ -1,5 +1,6 @@
-use crate::basemap::{FillPoint, StrokePoint, TileKey, VectorTile};
+use crate::basemap::{FillPoint, StrokePoint, TileCell, TileKey, VectorTile};
 use bytemuck::{Pod, Zeroable};
+use egui::{Rect, pos2};
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor, wgpu};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -32,14 +33,41 @@ impl VectorCorpus {
 pub struct VectorPaint {
     pub layer: VectorLayer,
     pub corpus: VectorCorpus,
+    pub detail: u8,
     pub geometry: GeometryPass,
     pub gaps: Arc<[VectorGap]>,
-    pub tiles: Arc<[Arc<VectorTile>]>,
+    pub patches: Arc<[VectorPatch]>,
     pub center_world: [f64; 2],
     pub world_points: f32,
     pub viewport_points: [f32; 2],
     pub view_zoom: f32,
     pub apparition_span: f32,
+}
+
+#[derive(Clone)]
+pub struct VectorPatch {
+    pub tile: Arc<VectorTile>,
+    pub cell: Option<TileCell>,
+}
+
+impl VectorPatch {
+    #[must_use]
+    pub const fn whole(tile: Arc<VectorTile>) -> Self {
+        Self { tile, cell: None }
+    }
+
+    #[must_use]
+    pub const fn clipped(tile: Arc<VectorTile>, cell: TileCell) -> Self {
+        Self {
+            tile,
+            cell: Some(cell),
+        }
+    }
+
+    #[must_use]
+    pub fn contains(&self, world: [f64; 2]) -> bool {
+        self.cell.is_none_or(|cell| cell.contains(world))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -81,10 +109,12 @@ struct GpuKey {
     layer: VectorLayer,
     corpus: VectorCorpus,
     tile: TileKey,
+    detail: u8,
 }
 
 struct ActiveCorpus {
     corpus: VectorCorpus,
+    detail: u8,
     tiles: Vec<TileKey>,
 }
 
@@ -105,7 +135,7 @@ impl CallbackTrait for VectorPaint {
 
     fn paint(
         &self,
-        _info: egui::PaintCallbackInfo,
+        info: egui::PaintCallbackInfo,
         pass: &mut wgpu::RenderPass<'static>,
         resources: &CallbackResources,
     ) {
@@ -115,11 +145,16 @@ impl CallbackTrait for VectorPaint {
         pass.set_bind_group(0, &gpu.bind, &[]);
         if self.geometry != GeometryPass::Strokes {
             pass.set_pipeline(&gpu.fill_pipeline);
-            for tile in self.tiles.iter() {
+            for patch in self.patches.iter() {
+                if !set_patch_scissor(pass, &info, self, patch) {
+                    continue;
+                }
+                let tile = &patch.tile;
                 if let Some(tile) = gpu.tiles.get(&GpuKey {
                     layer: self.layer,
                     corpus: self.corpus,
                     tile: tile.key,
+                    detail: self.detail,
                 }) && let Some(draw) = &tile.fills
                 {
                     draw.paint(pass, &tile.buffer, &tile.transform, gpu.instances);
@@ -132,18 +167,71 @@ impl CallbackTrait for VectorPaint {
             } else {
                 &gpu.stroke_pipeline
             });
-            for tile in self.tiles.iter() {
+            for patch in self.patches.iter() {
+                if !set_patch_scissor(pass, &info, self, patch) {
+                    continue;
+                }
+                let tile = &patch.tile;
                 if let Some(tile) = gpu.tiles.get(&GpuKey {
                     layer: self.layer,
                     corpus: self.corpus,
                     tile: tile.key,
+                    detail: self.detail,
                 }) && let Some(draw) = &tile.strokes
                 {
                     draw.paint(pass, &tile.buffer, &tile.transform, gpu.instances);
                 }
             }
         }
+        let clip = info.clip_rect_in_pixels();
+        pass.set_scissor_rect(
+            clip.left_px.max(0) as u32,
+            clip.top_px.max(0) as u32,
+            clip.width_px.max(0) as u32,
+            clip.height_px.max(0) as u32,
+        );
     }
+}
+
+fn set_patch_scissor(
+    pass: &mut wgpu::RenderPass<'static>,
+    info: &egui::PaintCallbackInfo,
+    paint: &VectorPaint,
+    patch: &VectorPatch,
+) -> bool {
+    let rect = patch.cell.map_or(info.clip_rect, |cell| {
+        let [west, north, east, south] = cell.world_bounds();
+        let center = info.viewport.center();
+        Rect::from_min_max(
+            pos2(
+                center.x + ((west - paint.center_world[0]) * f64::from(paint.world_points)) as f32,
+                center.y + ((north - paint.center_world[1]) * f64::from(paint.world_points)) as f32,
+            ),
+            pos2(
+                center.x + ((east - paint.center_world[0]) * f64::from(paint.world_points)) as f32,
+                center.y + ((south - paint.center_world[1]) * f64::from(paint.world_points)) as f32,
+            ),
+        )
+        .intersect(info.clip_rect)
+    });
+    if !rect.is_positive() {
+        return false;
+    }
+    let clip = egui::epaint::ViewportInPixels::from_points(
+        &rect,
+        info.pixels_per_point,
+        info.screen_size_px,
+    );
+    if clip.width_px <= 0 || clip.height_px <= 0 {
+        return false;
+    }
+    pass.set_scissor_rect(
+        clip.left_px.max(0) as u32,
+        clip.top_px.max(0) as u32,
+        clip.width_px as u32,
+        clip.height_px as u32,
+    );
+    true
 }
 
 pub struct VectorMapGpu {
@@ -255,17 +343,25 @@ impl VectorMapGpu {
 
     fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, paint: &VectorPaint) {
         let begun = Instant::now();
-        let incoming = paint.tiles.iter().map(|tile| tile.key).collect::<Vec<_>>();
-        let changed = self
-            .active
-            .get(&paint.layer)
-            .is_none_or(|active| active.corpus != paint.corpus || active.tiles != incoming);
+        let mut incoming = paint
+            .patches
+            .iter()
+            .map(|patch| patch.tile.key)
+            .collect::<Vec<_>>();
+        incoming.sort_unstable();
+        incoming.dedup();
+        let changed = self.active.get(&paint.layer).is_none_or(|active| {
+            active.corpus != paint.corpus
+                || active.detail != paint.detail
+                || active.tiles != incoming
+        });
         if changed {
             self.epoch = self.epoch.saturating_add(1);
             self.active.insert(
                 paint.layer,
                 ActiveCorpus {
                     corpus: paint.corpus,
+                    detail: paint.detail,
                     tiles: incoming.clone(),
                 },
             );
@@ -276,12 +372,14 @@ impl VectorMapGpu {
                         layer: *layer,
                         corpus: active.corpus,
                         tile: *tile,
+                        detail: active.detail,
                     })
                 }));
             for key in incoming.iter().map(|tile| GpuKey {
                 layer: paint.layer,
                 corpus: paint.corpus,
                 tile: *tile,
+                detail: paint.detail,
             }) {
                 if let Some(resident) = self.tiles.get_mut(&key) {
                     resident.touched = self.epoch;
@@ -290,11 +388,12 @@ impl VectorMapGpu {
             }
         }
         let mut uploaded = 0_usize;
-        for tile in paint.tiles.iter() {
+        for tile in paint.patches.iter().map(|patch| &patch.tile) {
             let key = GpuKey {
                 layer: paint.layer,
                 corpus: paint.corpus,
                 tile: tile.key,
+                detail: paint.detail,
             };
             if self.tiles.contains_key(&key) {
                 continue;
@@ -311,9 +410,10 @@ impl VectorMapGpu {
         self.reap();
         if self.profile {
             eprintln!(
-                "vector-gpu prepare_us={} upload_bytes={uploaded} active_tiles={} changed={changed}",
+                "vector-gpu prepare_us={} upload_bytes={uploaded} active_tiles={} detail={} changed={changed}",
                 begun.elapsed().as_micros(),
-                incoming.len()
+                incoming.len(),
+                paint.detail,
             );
         }
     }
@@ -809,11 +909,13 @@ mod tests {
             layer: VectorLayer::Basemap,
             corpus,
             tile: key,
+            detail: 0,
         }));
         assert!(resident.insert(GpuKey {
             layer: VectorLayer::Relief,
             corpus,
             tile: key,
+            detail: 0,
         }));
         assert_eq!(resident.len(), 2);
     }
@@ -830,13 +932,35 @@ mod tests {
             layer: VectorLayer::Relief,
             corpus: VectorCorpus::mint(),
             tile,
+            detail: 0,
         }));
         assert!(resident.insert(GpuKey {
             layer: VectorLayer::Relief,
             corpus: VectorCorpus::mint(),
             tile,
+            detail: 0,
         }));
         assert_eq!(resident.len(), 2);
+    }
+
+    #[test]
+    fn vector_detail_bands_cannot_alias_gpu_residency() {
+        let tile = TileKey {
+            zoom: 12,
+            x: 1_204,
+            y: 1_532,
+        };
+        let corpus = VectorCorpus::mint();
+        let mut resident = HashSet::new();
+        for detail in 0..4 {
+            assert!(resident.insert(GpuKey {
+                layer: VectorLayer::Relief,
+                corpus,
+                tile,
+                detail,
+            }));
+        }
+        assert_eq!(resident.len(), 4);
     }
 
     #[test]

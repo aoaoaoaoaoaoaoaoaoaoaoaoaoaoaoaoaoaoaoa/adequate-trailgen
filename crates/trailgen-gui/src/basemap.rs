@@ -1,6 +1,6 @@
 use crate::{
     habitat::platform_dirs,
-    map::{self, Viewport},
+    map::{self, MapFramePlan},
 };
 use anyhow::{Context as _, Result, ensure};
 use bytemuck::{Pod, Zeroable};
@@ -45,6 +45,7 @@ const ROAMING_CACHE: &str = "protomaps-v4";
 const ROAMING_CACHE_CEILING: u64 = 512 * 1_048_576;
 const RETAINED_DEPTH: u8 = 4;
 const WORKERS: usize = 8;
+const COVER_APRON: i64 = 1;
 
 #[derive(Clone, Debug)]
 pub struct Source {
@@ -119,41 +120,120 @@ impl TileKey {
     fn coordinate(self) -> Result<TileCoord> {
         TileCoord::new(self.zoom, self.x, self.y).context("invalid PMTiles coordinate")
     }
+
+    #[must_use]
+    pub fn ancestor(self, level: SourceLevel) -> Self {
+        assert!(level.get() <= self.zoom, "a tile ancestor cannot be finer");
+        let shift = u32::from(self.zoom - level.get());
+        Self {
+            zoom: level.get(),
+            x: self.x >> shift,
+            y: self.y >> shift,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct SourceLevel(u8);
+
+impl SourceLevel {
+    #[must_use]
+    pub fn from_frame(frame: MapFramePlan) -> Self {
+        Self(
+            frame
+                .zoom
+                .get()
+                .floor()
+                .clamp(0.0, f64::from(MAX_SOURCE_ZOOM)) as u8,
+        )
+    }
+
+    #[must_use]
+    pub const fn new(level: u8) -> Self {
+        assert!(level <= MAX_SOURCE_ZOOM, "source level exceeds archive law");
+        Self(level)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+
+    #[must_use]
+    const fn saturating_sub(self, depth: u8) -> Self {
+        Self(self.0.saturating_sub(depth))
+    }
+
+    #[must_use]
+    fn successor(self) -> Self {
+        Self(self.0.saturating_add(1).min(MAX_SOURCE_ZOOM))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct TileCell {
+    pub key: TileKey,
+    wrap: i32,
+}
+
+impl TileCell {
+    #[must_use]
+    pub fn world_bounds(self) -> [f64; 4] {
+        let scale = f64::from(1_u32 << self.key.zoom);
+        let west = f64::from(self.key.x) / scale + f64::from(self.wrap);
+        [
+            west,
+            f64::from(self.key.y) / scale,
+            west + 1.0 / scale,
+            f64::from(self.key.y + 1) / scale,
+        ]
+    }
+
+    #[must_use]
+    pub fn contains(self, world: [f64; 2]) -> bool {
+        let bounds = self.world_bounds();
+        let x = world[0] + f64::from(self.wrap);
+        x >= bounds[0] && x < bounds[2] && world[1] >= bounds[1] && world[1] < bounds[3]
+    }
 }
 
 #[derive(Debug)]
 pub struct Cover {
+    pub source: SourceLevel,
+    pub cells: Vec<TileCell>,
     pub strata: Vec<Stratum>,
 }
 
 impl Cover {
-    pub fn finest_resolved(
-        &self,
-        mut residency: impl FnMut(TileKey) -> Residency,
-    ) -> Option<&Stratum> {
-        self.strata.iter().rev().find(|stratum| {
-            if !stratum.intent.presents() {
-                return false;
-            }
-            let mut visible = false;
-            let resolved = stratum.keys.iter().all(|key| match residency(*key) {
-                Residency::Resident => {
-                    visible = true;
-                    true
-                }
-                Residency::Missing => true,
-                Residency::Pending => false,
-            });
-            resolved && visible
-        })
+    pub fn demand_order(&self) -> Vec<TileKey> {
+        let mut ordered = Vec::new();
+        if let Some(fallback) = self.strata.first() {
+            ordered.extend(fallback.keys.iter().copied());
+        }
+        ordered.extend(
+            self.strata
+                .iter()
+                .skip(1)
+                .filter(|stratum| stratum.intent == Intent::Required)
+                .flat_map(|stratum| stratum.keys.iter().copied()),
+        );
+        ordered.extend(
+            self.strata
+                .iter()
+                .skip(1)
+                .rev()
+                .filter(|stratum| stratum.intent == Intent::Retained)
+                .flat_map(|stratum| stratum.keys.iter().copied()),
+        );
+        ordered.extend(
+            self.strata
+                .iter()
+                .skip(1)
+                .filter(|stratum| stratum.intent == Intent::Prefetch)
+                .flat_map(|stratum| stratum.keys.iter().copied()),
+        );
+        ordered
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Residency {
-    Pending,
-    Missing,
-    Resident,
 }
 
 #[derive(Debug)]
@@ -167,12 +247,6 @@ pub enum Intent {
     Retained,
     Required,
     Prefetch,
-}
-
-impl Intent {
-    pub const fn presents(self) -> bool {
-        !matches!(self, Self::Prefetch)
-    }
 }
 
 #[repr(C)]
@@ -300,6 +374,7 @@ pub enum Event {
 
 pub struct Basemap {
     commands: Sender<TileKey>,
+    pending: Receiver<TileKey>,
     pub events: Receiver<Event>,
     _thread: thread::JoinHandle<()>,
 }
@@ -316,7 +391,8 @@ impl Basemap {
         workers: usize,
     ) -> Result<Self> {
         purge_partials(&source.archive)?;
-        let (commands, command_rx) = bounded(256);
+        let (commands, command_rx) = bounded(workers.max(1).saturating_mul(2));
+        let pending = command_rx.clone();
         let (event_tx, events) = bounded(256);
         let thread = thread::Builder::new()
             .name("vector-armory".to_owned())
@@ -324,6 +400,7 @@ impl Basemap {
             .context("spawn vector basemap armory")?;
         Ok(Self {
             commands,
+            pending,
             events,
             _thread: thread,
         })
@@ -332,57 +409,84 @@ impl Basemap {
     pub fn request(&self, key: TileKey) -> bool {
         self.commands.try_send(key).is_ok()
     }
+
+    pub fn preempt(&self) -> Vec<TileKey> {
+        self.pending.try_iter().collect()
+    }
 }
 
-pub fn cover(view: Viewport, rect: egui::Rect, archive_zoom: Option<u8>) -> Cover {
-    let zoom = view.zoom.floor().clamp(0.0, f64::from(MAX_SOURCE_ZOOM)) as u8;
-    let ceiling = zoom.saturating_add(1).min(MAX_SOURCE_ZOOM);
-    let floor = zoom.saturating_sub(RETAINED_DEPTH);
+pub fn cover(frame: MapFramePlan, archive_zoom: Option<u8>) -> Cover {
+    let source = SourceLevel::from_frame(frame);
+    let ceiling = source.successor();
+    let floor = source.saturating_sub(RETAINED_DEPTH);
     let mut strata = archive_zoom
-        .filter(|archive_zoom| *archive_zoom < floor)
+        .filter(|archive_zoom| *archive_zoom < floor.get())
         .map(|archive_zoom| Stratum {
             intent: Intent::Retained,
-            keys: keys_at(view, rect, archive_zoom),
+            keys: keys_at(frame, SourceLevel::new(archive_zoom), COVER_APRON),
         })
         .into_iter()
         .collect::<Vec<_>>();
-    strata.extend((floor..=ceiling).map(|level| Stratum {
-        intent: match level.cmp(&zoom) {
+    strata.extend((floor.get()..=ceiling.get()).map(|level| Stratum {
+        intent: match level.cmp(&source.get()) {
             std::cmp::Ordering::Less => Intent::Retained,
             std::cmp::Ordering::Equal => Intent::Required,
             std::cmp::Ordering::Greater => Intent::Prefetch,
         },
-        keys: keys_at(view, rect, level),
+        keys: keys_at(frame, SourceLevel::new(level), COVER_APRON),
     }));
-    Cover { strata }
+    Cover {
+        source,
+        cells: cells_at(frame, source, 0),
+        strata,
+    }
 }
 
-fn keys_at(view: Viewport, rect: egui::Rect, zoom: u8) -> Vec<TileKey> {
-    let divisions = 1_u32 << zoom;
-    let bounds = map::world_bounds(view, rect);
-    let scale = f64::from(divisions);
-    let left = (bounds[0] * scale).floor() as i64;
-    let right = (bounds[2] * scale).floor() as i64;
-    let top = (bounds[1] * scale).floor().max(0.0) as i64;
-    let bottom = (bounds[3] * scale)
-        .floor()
-        .min(f64::from(divisions.saturating_sub(1))) as i64;
-    let mut keys = Vec::new();
-    for raw_y in top..=bottom {
-        for raw_x in left..=right {
-            keys.push(TileKey {
-                zoom,
-                x: raw_x.rem_euclid(i64::from(divisions)) as u32,
-                y: raw_y as u32,
-            });
-        }
-    }
+fn keys_at(frame: MapFramePlan, level: SourceLevel, apron: i64) -> Vec<TileKey> {
+    let mut keys = cells_at(frame, level, apron)
+        .into_iter()
+        .map(|cell| cell.key)
+        .collect::<Vec<_>>();
     keys.sort_unstable();
     keys.dedup();
     keys.sort_unstable_by(|left, right| {
-        tile_distance(*left, view.center).total_cmp(&tile_distance(*right, view.center))
+        tile_distance(*left, frame.viewport.center)
+            .total_cmp(&tile_distance(*right, frame.viewport.center))
     });
     keys
+}
+
+fn cells_at(frame: MapFramePlan, level: SourceLevel, apron: i64) -> Vec<TileCell> {
+    let divisions = 1_u32 << level.get();
+    let bounds = frame.world_bounds();
+    let scale = f64::from(divisions);
+    let left = (bounds[0] * scale).floor() as i64 - apron;
+    let right = (bounds[2] * scale).floor() as i64 + apron;
+    let top = ((bounds[1] * scale).floor() as i64 - apron).max(0);
+    let bottom = (bounds[3] * scale)
+        .floor()
+        .min(f64::from(divisions.saturating_sub(1))) as i64
+        + apron;
+    let bottom = bottom.min(i64::from(divisions.saturating_sub(1)));
+    let mut cells = Vec::new();
+    for raw_y in top..=bottom {
+        for raw_x in left..=right {
+            cells.push(TileCell {
+                key: TileKey {
+                    zoom: level.get(),
+                    x: raw_x.rem_euclid(i64::from(divisions)) as u32,
+                    y: raw_y as u32,
+                },
+                wrap: i32::try_from(raw_x.div_euclid(i64::from(divisions)))
+                    .expect("viewport wrap fits i32"),
+            });
+        }
+    }
+    cells.sort_unstable_by(|left, right| {
+        tile_distance(left.key, frame.viewport.center)
+            .total_cmp(&tile_distance(right.key, frame.viewport.center))
+    });
+    cells
 }
 
 fn tile_distance(key: TileKey, center: [f64; 2]) -> f64 {
@@ -1933,6 +2037,7 @@ fn staging_path(target: &FsPath, candidate: &FsPath) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::Viewport;
 
     const VIEW: Viewport = Viewport {
         center: [0.5, 0.5],
@@ -1942,38 +2047,33 @@ mod tests {
     #[test]
     fn vector_cover_prefetches_without_presenting() {
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
-        let cover = cover(VIEW, rect, None);
+        let cover = cover(MapFramePlan::forge(VIEW, rect), None);
         assert_eq!(cover.strata.len(), 6);
         assert_eq!(cover.strata[4].intent, Intent::Required);
         assert_eq!(cover.strata[5].intent, Intent::Prefetch);
-        assert_eq!(
+        assert_eq!(cover.source, SourceLevel::new(10));
+        assert!(
             cover
-                .finest_resolved(|_| Residency::Resident)
-                .map(|stratum| stratum.intent),
-            Some(Intent::Required)
+                .cells
+                .iter()
+                .all(|cell| cell.key.zoom == cover.source.get())
         );
     }
 
     #[test]
-    fn absent_fringe_tiles_do_not_imprison_a_resolved_stratum() {
+    fn visible_cells_are_independent_units_of_refinement() {
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
-        let cover = cover(VIEW, rect, None);
-        let required = &cover.strata[4];
-        let absent = required.keys[0];
-
-        let resolved = cover.finest_resolved(|key| {
-            if key == absent {
-                Residency::Missing
-            } else if key.zoom <= absent.zoom {
-                Residency::Resident
-            } else {
-                Residency::Pending
-            }
-        });
-
-        assert_eq!(
-            resolved.map(|stratum| stratum.intent),
-            Some(Intent::Required)
+        let cover = cover(MapFramePlan::forge(VIEW, rect), None);
+        let cells = cover.cells;
+        assert!(cells.len() > 1);
+        let demoted = cells[0]
+            .key
+            .ancestor(SourceLevel::new(cover.source.get() - 1));
+        assert_eq!(demoted.zoom + 1, cells[0].key.zoom);
+        assert!(
+            cells[1..]
+                .iter()
+                .all(|cell| cell.key.zoom == cover.source.get())
         );
     }
 
@@ -1981,11 +2081,13 @@ mod tests {
     fn world_wrap_never_duplicates_archive_demand() {
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 920.0));
         let cover = cover(
-            Viewport {
-                zoom: Viewport::MIN_ZOOM,
-                ..VIEW
-            },
-            rect,
+            MapFramePlan::forge(
+                Viewport {
+                    zoom: Viewport::MIN_ZOOM,
+                    ..VIEW
+                },
+                rect,
+            ),
             None,
         );
         for stratum in cover.strata {
@@ -2005,7 +2107,7 @@ mod tests {
             zoom: Viewport::MAX_ZOOM,
             ..VIEW
         };
-        let cover = cover(view, rect, None);
+        let cover = cover(MapFramePlan::forge(view, rect), None);
         let crown = cover.strata.last().context("top stratum")?;
         assert_eq!(crown.intent, Intent::Required);
         assert!(crown.keys.iter().all(|tile| tile.zoom == MAX_SOURCE_ZOOM));
@@ -2048,7 +2150,7 @@ mod tests {
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
         let view = Viewport { zoom: 11.0, ..VIEW };
 
-        let cover = cover(view, rect, Some(4));
+        let cover = cover(MapFramePlan::forge(view, rect), Some(4));
 
         assert!(
             cover

@@ -491,8 +491,9 @@ impl SurveyWorkbench {
         }
         let event = self.scribe.interact(self.viewport, ui, &response, rect);
         let painter = ui.painter_at(rect);
+        let frame = map::MapFramePlan::forge(self.viewport, rect);
         painter.rect_filled(rect, 0.0, map::MAP_GROUND);
-        self.vector.paint_base(&painter, self.viewport, rect);
+        self.vector.paint_base(&painter, frame);
         live_area::paint(
             &painter,
             self.viewport,
@@ -500,8 +501,7 @@ impl SurveyWorkbench {
             &self.regions,
             self.scribe.preview(self.viewport, rect),
         );
-        self.vector
-            .paint_annotations(&painter, self.viewport, rect, std::iter::empty());
+        self.vector.paint_annotations(&painter, frame, 0, Vec::new);
         map::paint_scale(&painter, self.viewport, rect);
         painter.rect_stroke(
             rect.shrink(0.5),

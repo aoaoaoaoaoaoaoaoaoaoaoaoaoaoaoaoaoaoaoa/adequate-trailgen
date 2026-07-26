@@ -1,11 +1,11 @@
 use crate::{
     annotation,
     basemap::{self, Basemap, Source, TileKey, VectorTile},
-    map::{self, Viewport},
-    vector_map::{GeometryPass, VectorCorpus, VectorLayer, VectorPaint},
+    map::{self, MapFramePlan},
+    vector_map::{GeometryPass, VectorCorpus, VectorLayer, VectorPaint, VectorPatch},
 };
 use anyhow::Result;
-use egui::{Color32, Painter, Rect};
+use egui::{Color32, Painter};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
@@ -20,14 +20,18 @@ const TRAILHEAD_PARKING_REACH_M: f64 = 160.0;
 
 /// The reusable, streaming vector-map plane beneath every trail workbench.
 pub struct VectorField {
-    annotations: annotation::Compositor,
+    annotation_cache: Option<AnnotationCache>,
     corpus: VectorCorpus,
     armory: Option<Basemap>,
     tiles: VectorBank,
-    presented: Arc<[Arc<VectorTile>]>,
+    presented: Arc<[VectorPatch]>,
     inflight: HashSet<TileKey>,
     missing: HashSet<TileKey>,
     retries: HashMap<TileKey, Retry>,
+    demand: Vec<TileKey>,
+    demand_dirty: bool,
+    presentation: Option<PresentationStamp>,
+    presentation_revision: u64,
     archive_zoom: Option<u8>,
     trails: Option<Arc<TrailGraph>>,
     trailhead_parking: HashMap<TileKey, Arc<[basemap::Parking]>>,
@@ -36,6 +40,20 @@ pub struct VectorField {
 struct Retry {
     failures: u8,
     after: Instant,
+}
+
+struct PresentationStamp {
+    frame: MapFramePlan,
+    source: basemap::SourceLevel,
+    cells: Vec<basemap::TileCell>,
+    bank_revision: u64,
+}
+
+struct AnnotationCache {
+    frame: MapFramePlan,
+    presentation_revision: u64,
+    relief_revision: u64,
+    composition: Arc<annotation::Composition>,
 }
 
 impl Retry {
@@ -58,7 +76,7 @@ impl VectorField {
         trails: Option<Arc<TrailGraph>>,
     ) -> Result<Self> {
         Ok(Self {
-            annotations: annotation::Compositor::default(),
+            annotation_cache: None,
             corpus: VectorCorpus::mint(),
             armory: Some(Basemap::spawn(ctx.clone(), source, !offline)?),
             tiles: VectorBank::new(VECTOR_CEILING),
@@ -66,6 +84,10 @@ impl VectorField {
             inflight: HashSet::new(),
             missing: HashSet::new(),
             retries: HashMap::new(),
+            demand: Vec::new(),
+            demand_dirty: true,
+            presentation: None,
+            presentation_revision: 0,
             archive_zoom: None,
             trails,
             trailhead_parking: HashMap::new(),
@@ -116,118 +138,151 @@ impl VectorField {
                     }
                 }
             }
+            self.demand_dirty = true;
         }
         self.trailhead_parking
             .retain(|key, _| self.tiles.contains(*key));
     }
 
-    pub fn paint_base(&mut self, painter: &Painter, viewport: Viewport, rect: Rect) {
-        self.resolve(viewport, rect, painter.ctx());
-        self.submit(painter, viewport, rect, GeometryPass::Both, Arc::from([]));
+    pub fn paint_base(&mut self, painter: &Painter, frame: MapFramePlan) {
+        self.resolve(frame, painter.ctx());
+        self.submit(painter, frame, GeometryPass::Both, Arc::from([]));
     }
 
-    pub fn paint_fills(&mut self, painter: &Painter, viewport: Viewport, rect: Rect) {
-        self.resolve(viewport, rect, painter.ctx());
-        self.submit(painter, viewport, rect, GeometryPass::Fills, Arc::from([]));
+    pub fn paint_fills(&mut self, painter: &Painter, frame: MapFramePlan) {
+        self.resolve(frame, painter.ctx());
+        self.submit(painter, frame, GeometryPass::Fills, Arc::from([]));
     }
 
     pub fn paint_strokes(
         &self,
         painter: &Painter,
-        viewport: Viewport,
-        rect: Rect,
+        frame: MapFramePlan,
         gaps: Arc<[crate::vector_map::VectorGap]>,
     ) {
-        self.submit(painter, viewport, rect, GeometryPass::Strokes, gaps);
+        self.submit(painter, frame, GeometryPass::Strokes, gaps);
     }
 
-    fn resolve(&mut self, viewport: Viewport, rect: Rect, ctx: &egui::Context) {
+    fn resolve(&mut self, frame: MapFramePlan, ctx: &egui::Context) {
         if self.armory.is_none() {
             return;
         }
-        let cover = basemap::cover(viewport, rect, self.archive_zoom);
-        self.demand_cover(&cover, ctx);
-        let coherent = cover
-            .finest_resolved(|key| {
-                if self.tiles.contains(key) {
-                    basemap::Residency::Resident
-                } else if self.missing.contains(&key) {
-                    basemap::Residency::Missing
-                } else {
-                    basemap::Residency::Pending
-                }
-            })
-            .map(|stratum| {
-                stratum
-                    .keys
-                    .iter()
-                    .copied()
-                    .filter(|key| self.tiles.contains(*key))
-                    .collect::<Vec<_>>()
-            });
-        if let Some(keys) = coherent
-            && (keys.len() != self.presented.len()
-                || keys
-                    .iter()
-                    .zip(self.presented.iter())
-                    .any(|(key, tile)| *key != tile.key))
+        let bank_revision = self.tiles.revision();
+        if !self.demand_dirty
+            && self
+                .presentation
+                .as_ref()
+                .is_some_and(|stamp| stamp.frame == frame && stamp.bank_revision == bank_revision)
         {
-            self.presented = keys
-                .into_iter()
-                .filter_map(|key| self.tiles.get(key).cloned())
-                .collect();
+            return;
         }
+        let cover = basemap::cover(frame, self.archive_zoom);
+        self.demand_cover(&cover, ctx);
+        if self.presentation.as_ref().is_some_and(|stamp| {
+            stamp.frame == frame
+                && stamp.source == cover.source
+                && stamp.cells == cover.cells
+                && stamp.bank_revision == bank_revision
+        }) {
+            return;
+        }
+        let choices = choose_residents(&cover.cells, cover.source, |key| self.tiles.contains(key));
+        let mut resident = choices.iter().map(|(_, key)| *key).collect::<Vec<_>>();
+        resident.sort_unstable();
+        resident.dedup();
+        let resident = resident
+            .into_iter()
+            .filter_map(|key| self.tiles.get(key).cloned().map(|tile| (key, tile)))
+            .collect::<HashMap<_, _>>();
+        let patches = choices
+            .into_iter()
+            .filter_map(|(cell, key)| {
+                resident
+                    .get(&key)
+                    .cloned()
+                    .map(|tile| VectorPatch::clipped(tile, cell))
+            })
+            .collect::<Vec<_>>();
+        if !same_patches(&patches, &self.presented) {
+            self.presented = patches.into();
+            self.presentation_revision = self.presentation_revision.saturating_add(1);
+            self.annotation_cache = None;
+        }
+        self.presentation = Some(PresentationStamp {
+            frame,
+            source: cover.source,
+            cells: cover.cells,
+            bank_revision,
+        });
     }
 
     fn submit(
         &self,
         painter: &Painter,
-        viewport: Viewport,
-        rect: Rect,
+        frame: MapFramePlan,
         geometry: GeometryPass,
         gaps: Arc<[crate::vector_map::VectorGap]>,
     ) {
         if !self.presented.is_empty() {
             painter.add(egui_wgpu::Callback::new_paint_callback(
-                rect,
+                frame.rect,
                 VectorPaint {
                     layer: VectorLayer::Basemap,
                     corpus: self.corpus,
+                    detail: 0,
                     geometry,
                     gaps,
-                    tiles: Arc::clone(&self.presented),
-                    center_world: viewport.center,
-                    world_points: map::world_pixels(viewport) as f32,
-                    viewport_points: [rect.width(), rect.height()],
-                    view_zoom: viewport.zoom as f32,
+                    patches: Arc::clone(&self.presented),
+                    center_world: frame.viewport.center,
+                    world_points: frame.world_points as f32,
+                    viewport_points: [frame.rect.width(), frame.rect.height()],
+                    view_zoom: frame.zoom.get() as f32,
                     apparition_span: basemap::APPARITION_SPAN,
                 },
             ));
         }
     }
 
-    pub fn paint_annotations<'a>(
+    pub fn paint_annotations<'a, F>(
         &'a mut self,
         painter: &Painter,
-        viewport: Viewport,
-        rect: Rect,
-        relief: impl IntoIterator<Item = annotation::LineLabel<'a>>,
-    ) {
-        self.compose_annotations(painter, viewport, rect, relief)
+        frame: MapFramePlan,
+        relief_revision: u64,
+        relief: F,
+    ) where
+        F: FnOnce() -> Vec<annotation::LineLabel<'a>>,
+    {
+        self.compose_annotations(painter, frame, relief_revision, relief)
             .paint(painter);
     }
 
-    pub fn compose_annotations<'a>(
+    pub fn compose_annotations<'a, F>(
         &'a mut self,
         painter: &Painter,
-        viewport: Viewport,
-        rect: Rect,
-        relief: impl IntoIterator<Item = annotation::LineLabel<'a>>,
-    ) -> annotation::Composition {
+        frame: MapFramePlan,
+        relief_revision: u64,
+        relief: F,
+    ) -> Arc<annotation::Composition>
+    where
+        F: FnOnce() -> Vec<annotation::LineLabel<'a>>,
+    {
+        if let Some(cache) = &self.annotation_cache
+            && cache.frame == frame
+            && cache.presentation_revision == self.presentation_revision
+            && cache.relief_revision == relief_revision
+        {
+            return Arc::clone(&cache.composition);
+        }
         let points = self
             .presented
             .iter()
-            .flat_map(|tile| tile.labels.iter())
+            .flat_map(|patch| {
+                patch
+                    .tile
+                    .labels
+                    .iter()
+                    .filter(|label| patch.contains(label.world))
+            })
             .map(|label| annotation::PointLabel {
                 world: label.world,
                 text: label.text.as_ref(),
@@ -238,7 +293,14 @@ impl VectorField {
         let roads = self
             .presented
             .iter()
-            .flat_map(|tile| tile.line_labels.iter())
+            .flat_map(|patch| {
+                patch.tile.line_labels.iter().filter(|label| {
+                    label
+                        .path
+                        .get(label.path.len() / 2)
+                        .is_some_and(|world| patch.contains(*world))
+                })
+            })
             .map(|label| annotation::LineLabel {
                 path: &label.path,
                 text: label.text.as_ref(),
@@ -253,21 +315,36 @@ impl VectorField {
         let parking = self
             .presented
             .iter()
-            .filter_map(|tile| self.trailhead_parking.get(&tile.key))
-            .flat_map(|parking| parking.iter())
+            .filter_map(|patch| {
+                self.trailhead_parking
+                    .get(&patch.tile.key)
+                    .map(|parking| (patch, parking))
+            })
+            .flat_map(|(patch, parking)| {
+                parking
+                    .iter()
+                    .filter(|parking| patch.contains(parking.world))
+            })
             .map(|parking| annotation::Parking {
                 world: parking.world,
                 name: parking.name.as_deref(),
                 onset_zoom: parking.onset_zoom,
             });
-        self.annotations.compose(
+        let composition = Arc::new(annotation::compose(
             painter,
-            viewport,
-            rect,
+            frame.viewport,
+            frame.rect,
             points,
-            roads.chain(relief),
+            roads.chain(relief()),
             parking,
-        )
+        ));
+        self.annotation_cache = Some(AnnotationCache {
+            frame,
+            presentation_revision: self.presentation_revision,
+            relief_revision,
+            composition: Arc::clone(&composition),
+        });
+        composition
     }
 
     fn index_parking(&mut self, tile: &VectorTile) {
@@ -286,29 +363,73 @@ impl VectorField {
     }
 
     fn demand_cover(&mut self, cover: &basemap::Cover, ctx: &egui::Context) {
-        for_each_demand(cover, |key| {
-            self.demand(key, ctx);
-        });
+        let demand = cover.demand_order();
+        let changed = demand != self.demand;
+        if changed {
+            if let Some(armory) = &self.armory {
+                for key in armory.preempt() {
+                    self.inflight.remove(&key);
+                }
+            }
+            self.demand = demand;
+        }
+        if !changed && !std::mem::take(&mut self.demand_dirty) {
+            return;
+        }
+        let mut unsettled = false;
+        for key in self.demand.clone() {
+            unsettled |= self.demand(key, ctx);
+        }
+        self.demand_dirty = unsettled;
     }
 
-    fn demand(&mut self, key: TileKey, ctx: &egui::Context) {
+    fn demand(&mut self, key: TileKey, ctx: &egui::Context) -> bool {
         let Some(armory) = &self.armory else {
-            return;
+            return false;
         };
         if self.tiles.contains(key) || self.inflight.contains(&key) || self.missing.contains(&key) {
-            return;
+            return false;
         }
         if let Some(retry) = self.retries.get(&key) {
             let delay = retry.after.saturating_duration_since(Instant::now());
             if !delay.is_zero() {
                 ctx.request_repaint_after(delay);
-                return;
+                return true;
             }
         }
         if armory.request(key) {
             self.inflight.insert(key);
+            false
+        } else {
+            ctx.request_repaint();
+            true
         }
     }
+}
+
+fn choose_residents(
+    cells: &[basemap::TileCell],
+    source: basemap::SourceLevel,
+    mut resident: impl FnMut(TileKey) -> bool,
+) -> Vec<(basemap::TileCell, TileKey)> {
+    cells
+        .iter()
+        .copied()
+        .filter_map(|cell| {
+            (0..=source.get()).rev().find_map(|level| {
+                let key = cell.key.ancestor(basemap::SourceLevel::new(level));
+                resident(key).then_some((cell, key))
+            })
+        })
+        .collect()
+}
+
+fn same_patches(left: &[VectorPatch], right: &[VectorPatch]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(left, right)| Arc::ptr_eq(&left.tile, &right.tile) && left.cell == right.cell)
 }
 
 fn abuts_trail(trails: &TrailGraph, parking: &basemap::Parking) -> bool {
@@ -317,38 +438,11 @@ fn abuts_trail(trails: &TrailGraph, parking: &basemap::Parking) -> bool {
         .is_some_and(|(_, distance_m)| distance_m <= TRAILHEAD_PARKING_REACH_M)
 }
 
-fn for_each_demand(cover: &basemap::Cover, mut demand: impl FnMut(TileKey)) {
-    if let Some(fallback) = cover.strata.first() {
-        fallback.keys.iter().copied().for_each(&mut demand);
-    }
-    cover
-        .strata
-        .iter()
-        .skip(1)
-        .filter(|stratum| stratum.intent == basemap::Intent::Required)
-        .flat_map(|stratum| stratum.keys.iter().copied())
-        .for_each(&mut demand);
-    cover
-        .strata
-        .iter()
-        .skip(1)
-        .rev()
-        .filter(|stratum| stratum.intent == basemap::Intent::Retained)
-        .flat_map(|stratum| stratum.keys.iter().copied())
-        .for_each(&mut demand);
-    cover
-        .strata
-        .iter()
-        .skip(1)
-        .filter(|stratum| stratum.intent == basemap::Intent::Prefetch)
-        .flat_map(|stratum| stratum.keys.iter().copied())
-        .for_each(demand);
-}
-
 struct VectorBank {
     ceiling: usize,
     bytes: usize,
     epoch: u64,
+    revision: u64,
     tiles: HashMap<TileKey, VectorEntry>,
     order: VecDeque<(TileKey, u64)>,
 }
@@ -365,6 +459,7 @@ impl VectorBank {
             ceiling,
             bytes: 0,
             epoch: 0,
+            revision: 0,
             tiles: HashMap::new(),
             order: VecDeque::new(),
         }
@@ -372,6 +467,10 @@ impl VectorBank {
 
     fn contains(&self, key: TileKey) -> bool {
         self.tiles.contains_key(&key)
+    }
+
+    const fn revision(&self) -> u64 {
+        self.revision
     }
 
     fn get(&mut self, key: TileKey) -> Option<&Arc<VectorTile>> {
@@ -386,6 +485,7 @@ impl VectorBank {
         let key = tile.key;
         let bytes = tile.resident_bytes();
         self.epoch = self.epoch.saturating_add(1);
+        self.revision = self.revision.saturating_add(1);
         let fresh = VectorEntry {
             tile,
             bytes,
@@ -443,6 +543,8 @@ mod tests {
             }
         }
         let cover = basemap::Cover {
+            source: basemap::SourceLevel::new(10),
+            cells: Vec::new(),
             strata: vec![
                 stratum(basemap::Intent::Retained, 7),
                 stratum(basemap::Intent::Retained, 8),
@@ -454,12 +556,37 @@ mod tests {
 
         assert_eq!(
             {
-                let mut order = Vec::new();
-                for_each_demand(&cover, |key| order.push(key.zoom));
-                order
+                cover
+                    .demand_order()
+                    .into_iter()
+                    .map(|key| key.zoom)
+                    .collect::<Vec<_>>()
             },
             [7, 10, 9, 8, 11]
         );
+    }
+
+    #[test]
+    fn each_visible_cell_selects_its_own_finest_resident_ancestor() {
+        let frame = MapFramePlan::forge(
+            map::Viewport {
+                center: [0.5, 0.5],
+                zoom: 10.0,
+            },
+            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1_200.0, 800.0)),
+        );
+        let cover = basemap::cover(frame, None);
+        assert!(cover.cells.len() > 1);
+        let exact = cover.cells[0].key;
+        let fallback = cover.cells[1]
+            .key
+            .ancestor(basemap::SourceLevel::new(cover.source.get() - 1));
+        let choices = choose_residents(&cover.cells[..2], cover.source, |key| {
+            key == exact || key == fallback
+        });
+        assert_eq!(choices.len(), 2);
+        assert_eq!(choices[0].1, exact);
+        assert_eq!(choices[1].1, fallback);
     }
 
     #[test]
