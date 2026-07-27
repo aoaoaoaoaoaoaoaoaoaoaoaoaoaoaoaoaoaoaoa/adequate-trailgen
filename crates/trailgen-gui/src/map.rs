@@ -8,7 +8,7 @@ use trailgen_core::{
 };
 
 const TILE_EDGE: f64 = 256.0;
-const EARTH_CIRCUMFERENCE_M: f64 = 40_075_016.686;
+pub const EARTH_CIRCUMFERENCE_M: f64 = 40_075_016.686;
 const FIT_PADDING: f32 = 44.0;
 
 pub const MAP_GROUND_SRGB: [u8; 3] = [196, 194, 176];

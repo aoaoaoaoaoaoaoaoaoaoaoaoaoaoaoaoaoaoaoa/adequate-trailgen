@@ -21,14 +21,15 @@ use std::{
 use wgpu::util::DeviceExt as _;
 
 const BASE_TILE_ZOOM: u8 = 12;
-const FIRST_BAND: u8 = 7;
+const FIRST_BAND: u8 = 9;
 const LAST_BAND: u8 = 14;
 const BAND_COUNT: usize = (LAST_BAND - FIRST_BAND + 1) as usize;
 const SIMPLIFICATION_ERROR_POINTS: f64 = 0.42;
-const TUBE_ONSET_ZOOM: f32 = FIRST_BAND as f32;
-const CORE_ONSET_ZOOM: f32 = TUBE_ONSET_ZOOM + 0.30;
-const PATTERN_ONSET_ZOOM: f32 = TUBE_ONSET_ZOOM + 0.78;
+const TUBE_ONSET_ZOOM: f32 = 9.33;
+const CORE_ONSET_ZOOM: f32 = 9.77;
+const PATTERN_ONSET_ZOOM: f32 = 10.19;
 const DISCLOSURE_SPAN_ZOOM: f32 = 0.72;
+const _: () = assert!(TUBE_ONSET_ZOOM >= FIRST_BAND as f32);
 const _: () = assert!(TUBE_ONSET_ZOOM < CORE_ONSET_ZOOM);
 const _: () = assert!(CORE_ONSET_ZOOM < PATTERN_ONSET_ZOOM);
 const GPU_CEILING: usize = 256 * 1_048_576;
@@ -36,6 +37,7 @@ const MAX_WRAP_RADIUS: u32 = 2;
 const MAX_WRAP_INSTANCES: usize = (MAX_WRAP_RADIUS * 2 + 1) as usize;
 const LAYER_COUNT: usize = 2;
 const MAX_LAYER_INSTANCES: usize = MAX_WRAP_INSTANCES * LAYER_COUNT;
+const PATTERN_COUNT: usize = 3;
 static NEXT_CORPUS: AtomicU64 = AtomicU64::new(1);
 
 pub struct TrailField {
@@ -43,6 +45,7 @@ pub struct TrailField {
     laws: Arc<[CadenceDatum]>,
     tiles: HashMap<TileKey, Arc<TrailTile>>,
     visibility: Option<Visibility>,
+    phase_transport: PhaseTransport,
 }
 
 struct Visibility {
@@ -67,7 +70,13 @@ impl TrailField {
                             .map(|_| TrailMeshBuilder::default())
                             .collect()
                     })[band.index()]
-                    .push(&fragment.points, fragment.key, edge, law_ids[edge_id]);
+                    .push(
+                        &fragment.points,
+                        fragment.key,
+                        edge,
+                        law_ids[edge_id],
+                        laws[law_ids[edge_id] as usize],
+                    );
                 }
             }
         }
@@ -100,6 +109,7 @@ impl TrailField {
             laws: laws.into(),
             tiles,
             visibility: None,
+            phase_transport: PhaseTransport::default(),
         }
     }
 
@@ -126,17 +136,32 @@ impl TrailField {
         if visibility.tiles.is_empty() {
             return;
         }
+        let tiles = Arc::clone(&visibility.tiles);
+        let moments = tiles.iter().fold(
+            [CadenceMoment::default(); PATTERN_COUNT],
+            |mut sum, tile| {
+                for (whole, part) in sum.iter_mut().zip(tile.bands[band.index()].moments.iter()) {
+                    *whole += *part;
+                }
+                sum
+            },
+        );
+        let world_points = frame.world_points as f32;
+        let phase_offsets = self
+            .phase_transport
+            .advance(f64::from(world_points), moments);
         painter.add(egui_wgpu::Callback::new_paint_callback(
             frame.rect,
             TrailPaint {
                 corpus: self.corpus,
                 laws: Arc::clone(&self.laws),
                 band,
-                tiles: Arc::clone(&visibility.tiles),
+                tiles,
                 center_world: frame.viewport.center,
-                world_points: frame.world_points as f32,
+                world_points,
                 viewport_points: [frame.rect.width(), frame.rect.height()],
                 view_zoom: frame.zoom.get() as f32,
+                phase_offsets,
             },
         ));
     }
@@ -147,7 +172,7 @@ struct DetailBand(u8);
 
 impl DetailBand {
     fn for_zoom(zoom: f64) -> Option<Self> {
-        (zoom >= f64::from(FIRST_BAND)).then(|| {
+        (zoom > f64::from(TUBE_ONSET_ZOOM)).then(|| {
             Self(
                 (zoom.floor() as u8)
                     .clamp(FIRST_BAND, LAST_BAND)
@@ -339,12 +364,32 @@ fn same_world(left: [f64; 2], right: [f64; 2]) -> bool {
 struct TrailMeshBuilder {
     vertices: Vec<TrailPoint>,
     indices: Vec<u32>,
+    moments: [CadenceMoment; PATTERN_COUNT],
 }
 
 impl TrailMeshBuilder {
-    fn push(&mut self, samples: &[Sample], key: TileKey, edge: &WorldEdge, law: u32) {
+    fn push(
+        &mut self,
+        samples: &[Sample],
+        key: TileKey,
+        edge: &WorldEdge,
+        law_id: u32,
+        law: CadenceDatum,
+    ) {
         if samples.len() < 2 {
             return;
+        }
+        if let Some((pattern, moment)) = law.moment(
+            samples
+                .first()
+                .expect("trail fragment is nonempty")
+                .arc_world,
+            samples
+                .last()
+                .expect("trail fragment is nonempty")
+                .arc_world,
+        ) {
+            self.moments[pattern] += moment;
         }
         let scale = f64::from(1_u32 << key.zoom);
         let local = samples
@@ -369,14 +414,14 @@ impl TrailMeshBuilder {
                     extrusion: [-extrusion[0], -extrusion[1]],
                     srgb: color,
                     arc_world: samples[slot].arc_world as f32,
-                    cadence: cadence_word(law, pattern, false),
+                    cadence: cadence_word(law_id, pattern, false),
                 },
                 TrailPoint {
                     local: point,
                     extrusion,
                     srgb: color,
                     arc_world: samples[slot].arc_world as f32,
-                    cadence: cadence_word(law, pattern, true),
+                    cadence: cadence_word(law_id, pattern, true),
                 },
             ]);
         }
@@ -421,6 +466,7 @@ impl TrailMeshBuilder {
             vertices: self.vertices.into(),
             indices: self.indices.into(),
             law_ids: std::iter::once(0).chain(global_ids).collect(),
+            moments: self.moments,
         }
     }
 }
@@ -472,6 +518,7 @@ struct TrailMesh {
     vertices: Arc<[TrailPoint]>,
     indices: Arc<[u32]>,
     law_ids: Arc<[u32]>,
+    moments: [CadenceMoment; PATTERN_COUNT],
 }
 
 struct TrailTile {
@@ -508,6 +555,153 @@ enum CadenceDatum {
         endpoint_datums_world: [f64; 2],
         length_world: f64,
     },
+}
+
+impl CadenceDatum {
+    fn moment(self, arc_start: f64, arc_end: f64) -> Option<(usize, CadenceMoment)> {
+        let mass = arc_end - arc_start;
+        if mass <= f64::EPSILON {
+            return None;
+        }
+        let (pattern, first) = match self {
+            Self::Solid => return None,
+            Self::Stem {
+                pattern,
+                datum_world,
+                reverse,
+                length_world,
+            } => {
+                let arc_mean = (arc_start + arc_end) * 0.5;
+                let datum_mean = if reverse {
+                    datum_world + length_world - arc_mean
+                } else {
+                    datum_world + arc_mean
+                };
+                (pattern, mass * datum_mean)
+            }
+            Self::Chord {
+                pattern,
+                endpoint_datums_world,
+                length_world,
+            } => (
+                pattern,
+                chord_datum_integral(endpoint_datums_world, length_world, arc_start, arc_end),
+            ),
+        };
+        Some((
+            pattern_slot(pattern),
+            CadenceMoment {
+                mass_world: mass,
+                first_world: first,
+            },
+        ))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct CadenceMoment {
+    mass_world: f64,
+    first_world: f64,
+}
+
+impl CadenceMoment {
+    fn mean(self) -> Option<f64> {
+        (self.mass_world > f64::EPSILON).then(|| self.first_world / self.mass_world)
+    }
+}
+
+impl std::ops::AddAssign for CadenceMoment {
+    fn add_assign(&mut self, rhs: Self) {
+        self.mass_world += rhs.mass_world;
+        self.first_world += rhs.first_world;
+    }
+}
+
+fn chord_datum_integral(
+    endpoint_datums_world: [f64; 2],
+    length_world: f64,
+    arc_start: f64,
+    arc_end: f64,
+) -> f64 {
+    let midpoint = length_world * 0.5;
+    let primitive = |arc: f64| {
+        if arc <= midpoint {
+            endpoint_datums_world[0].mul_add(arc, arc * arc * 0.5)
+        } else {
+            let first_half = endpoint_datums_world[0].mul_add(midpoint, midpoint * midpoint * 0.5);
+            let tail_area =
+                (endpoint_datums_world[1] + length_world).mul_add(arc - midpoint, first_half);
+            let square_delta = arc.mul_add(arc, -(midpoint * midpoint));
+            (-0.5_f64).mul_add(square_delta, tail_area)
+        }
+    };
+    primitive(arc_end) - primitive(arc_start)
+}
+
+const fn pattern_slot(pattern: Pattern) -> usize {
+    match pattern {
+        Pattern::Dash { .. } => 0,
+        Pattern::DashDot { .. } => 1,
+        Pattern::Dots { .. } => 2,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct PhaseGauge {
+    prior: Option<PhaseFrame>,
+    offset_points: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PhaseFrame {
+    world_points: f64,
+    moment: CadenceMoment,
+}
+
+#[derive(Debug, Default)]
+struct PhaseTransport {
+    gauges: [PhaseGauge; PATTERN_COUNT],
+}
+
+impl PhaseTransport {
+    fn advance(
+        &mut self,
+        world_points: f64,
+        moments: [CadenceMoment; PATTERN_COUNT],
+    ) -> [f64; PATTERN_COUNT] {
+        let periods = context_patterns().map(|pattern| f64::from(pattern.period()));
+        for ((gauge, moment), period) in self.gauges.iter_mut().zip(moments).zip(periods) {
+            if moment.mean().is_none() {
+                gauge.prior = None;
+                continue;
+            }
+            if let Some(prior) = gauge.prior {
+                let mut bridge = prior.moment;
+                bridge += moment;
+                let anchor_world = bridge
+                    .mean()
+                    .expect("two positive cadence moments own a mean");
+                // Zoom changes phase at topological datum d by Δscale·d. The
+                // symmetric old/new arc centroid gives the reversible L² gauge.
+                gauge.offset_points = (prior.world_points - world_points)
+                    .mul_add(anchor_world, gauge.offset_points)
+                    .rem_euclid(period);
+            }
+            gauge.prior = Some(PhaseFrame {
+                world_points,
+                moment,
+            });
+        }
+        self.gauges.map(|gauge| gauge.offset_points)
+    }
+}
+
+fn context_patterns() -> [Pattern; PATTERN_COUNT] {
+    let width = TrailSalience::Context.width();
+    let core_width = trail_core(width).width;
+    [TrailMark::Dashed, TrailMark::DashDot, TrailMark::Unmarked].map(|mark| {
+        trail_pattern(mark, width, core_width).expect("patterned trail marks own a cadence")
+    })
 }
 
 fn cadence_laws(edges: &[WorldEdge]) -> (Vec<u32>, Vec<CadenceDatum>) {
@@ -623,6 +817,7 @@ struct TrailPaint {
     world_points: f32,
     viewport_points: [f32; 2],
     view_zoom: f32,
+    phase_offsets: [f64; PATTERN_COUNT],
 }
 
 impl CallbackTrait for TrailPaint {
@@ -689,6 +884,7 @@ struct GpuTrailTile {
     law_buffer: wgpu::Buffer,
     law_bind: wgpu::BindGroup,
     law_world_points: f32,
+    law_phase_offsets: [f64; PATTERN_COUNT],
     bytes: usize,
     touched: u64,
 }
@@ -698,12 +894,10 @@ impl GpuTrailTile {
         device: &wgpu::Device,
         law_layout: &wgpu::BindGroupLayout,
         tile: &TrailTile,
-        laws: &Arc<[CadenceDatum]>,
-        band: DetailBand,
-        world_points: f32,
+        paint: &TrailPaint,
         touched: u64,
     ) -> Option<Self> {
-        let mesh = &tile.bands[band.index()];
+        let mesh = &tile.bands[paint.band.index()];
         if mesh.vertices.is_empty() || mesh.indices.is_empty() {
             return None;
         }
@@ -732,7 +926,13 @@ impl GpuTrailTile {
         let gpu_laws = mesh
             .law_ids
             .iter()
-            .map(|law| GpuLaw::forge(laws[*law as usize], f64::from(world_points)))
+            .map(|law| {
+                GpuLaw::forge(
+                    paint.laws[*law as usize],
+                    f64::from(paint.world_points),
+                    paint.phase_offsets,
+                )
+            })
             .collect::<Vec<_>>();
         let law_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("trail-tile-cadence-laws"),
@@ -746,10 +946,11 @@ impl GpuTrailTile {
             buffer,
             transform,
             law_ids: Arc::clone(&mesh.law_ids),
-            laws: Arc::clone(laws),
+            laws: Arc::clone(&paint.laws),
             law_buffer,
             law_bind,
-            law_world_points: world_points,
+            law_world_points: paint.world_points,
+            law_phase_offsets: paint.phase_offsets,
             bytes,
             touched,
         })
@@ -759,20 +960,30 @@ impl GpuTrailTile {
         &mut self,
         queue: &wgpu::Queue,
         world_points: f32,
+        phase_offsets: [f64; PATTERN_COUNT],
         scratch: &mut Vec<GpuLaw>,
     ) -> usize {
-        if self.law_world_points.to_bits() == world_points.to_bits() {
+        if self.law_world_points.to_bits() == world_points.to_bits()
+            && self
+                .law_phase_offsets
+                .iter()
+                .zip(phase_offsets)
+                .all(|(prior, next)| prior.to_bits() == next.to_bits())
+        {
             return 0;
         }
         scratch.clear();
-        scratch.extend(
-            self.law_ids
-                .iter()
-                .map(|law| GpuLaw::forge(self.laws[*law as usize], f64::from(world_points))),
-        );
+        scratch.extend(self.law_ids.iter().map(|law| {
+            GpuLaw::forge(
+                self.laws[*law as usize],
+                f64::from(world_points),
+                phase_offsets,
+            )
+        }));
         let bytes = scratch.len().saturating_mul(size_of::<GpuLaw>());
         queue.write_buffer(&self.law_buffer, 0, bytemuck::cast_slice(scratch));
         self.law_world_points = world_points;
+        self.law_phase_offsets = phase_offsets;
         bytes
     }
 }
@@ -946,23 +1157,21 @@ impl TrailMapGpu {
                 band: paint.band,
             };
             if let Some(resident) = self.tiles.get_mut(&key) {
-                cadence_uploaded +=
-                    resident.refresh_laws(queue, paint.world_points, &mut self.law_scratch);
+                cadence_uploaded += resident.refresh_laws(
+                    queue,
+                    paint.world_points,
+                    paint.phase_offsets,
+                    &mut self.law_scratch,
+                );
                 if active_changed {
                     resident.touched = self.epoch;
                     self.order.push_back((key, self.epoch));
                 }
                 continue;
             }
-            let Some(resident) = GpuTrailTile::raise(
-                device,
-                &self.law_layout,
-                tile,
-                &paint.laws,
-                paint.band,
-                paint.world_points,
-                self.epoch,
-            ) else {
+            let Some(resident) =
+                GpuTrailTile::raise(device, &self.law_layout, tile, paint, self.epoch)
+            else {
                 continue;
             };
             uploaded += resident.bytes;
@@ -1045,7 +1254,7 @@ struct GpuLaw {
 const _: () = assert!(size_of::<GpuLaw>() == 16);
 
 impl GpuLaw {
-    fn forge(law: CadenceDatum, world_points: f64) -> Self {
+    fn forge(law: CadenceDatum, world_points: f64, phase_offsets: [f64; PATTERN_COUNT]) -> Self {
         match law {
             CadenceDatum::Solid => Self::zeroed(),
             CadenceDatum::Stem {
@@ -1055,7 +1264,12 @@ impl GpuLaw {
                 length_world,
             } => Self {
                 metrics: [
-                    phase(datum_world, world_points, pattern.period()),
+                    phase(
+                        datum_world,
+                        world_points,
+                        pattern.period(),
+                        phase_offsets[pattern_slot(pattern)],
+                    ),
                     0.0,
                     if reverse { -2.0 } else { -1.0 },
                     (length_world * world_points) as f32,
@@ -1067,8 +1281,19 @@ impl GpuLaw {
                 length_world,
             } => {
                 let length = (length_world * world_points) as f32;
-                let a = phase(endpoint_datums_world[0], world_points, pattern.period());
-                let b = phase(endpoint_datums_world[1], world_points, pattern.period());
+                let offset = phase_offsets[pattern_slot(pattern)];
+                let a = phase(
+                    endpoint_datums_world[0],
+                    world_points,
+                    pattern.period(),
+                    offset,
+                );
+                let b = phase(
+                    endpoint_datums_world[1],
+                    world_points,
+                    pattern.period(),
+                    offset,
+                );
                 Self {
                     metrics: [a, b, pattern.splice(a, b, length), length],
                 }
@@ -1077,8 +1302,10 @@ impl GpuLaw {
     }
 }
 
-fn phase(datum_world: f64, world_points: f64, period: f32) -> f32 {
-    (datum_world * world_points).rem_euclid(f64::from(period)) as f32
+fn phase(datum_world: f64, world_points: f64, period: f32, offset_points: f64) -> f32 {
+    datum_world
+        .mul_add(world_points, offset_points)
+        .rem_euclid(f64::from(period)) as f32
 }
 
 #[repr(C)]
@@ -1372,12 +1599,18 @@ fn fragment_linear(in: VertexOut) -> @location(0) vec4f {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::EARTH_CIRCUMFERENCE_M;
+    use trailgen_core::TrailClass;
 
     #[test]
     fn detail_admission_is_monotone_and_exact_at_fourteen() {
-        let bands = (1..=23)
-            .filter_map(|zoom| DetailBand::for_zoom(f64::from(zoom)))
+        let onset = f64::from(TUBE_ONSET_ZOOM);
+        let bands = [onset + 0.01, 9.9, 10.0, 11.0, 12.0, 13.0, 14.0, 23.0]
+            .into_iter()
+            .filter_map(DetailBand::for_zoom)
             .collect::<Vec<_>>();
+        assert!(DetailBand::for_zoom(onset).is_none());
+        assert_eq!(bands.first().copied(), Some(DetailBand(0)));
         assert!(bands.windows(2).all(|pair| pair[0].0 <= pair[1].0));
         assert_eq!(
             bands.last().copied(),
@@ -1396,6 +1629,40 @@ mod tests {
                     <= SIMPLIFICATION_ERROR_POINTS + f64::EPSILON
             );
         }
+    }
+
+    #[test]
+    fn disclosure_schedule_is_fixed_to_harriman_cartographic_scale() {
+        const HARRIMAN_LATITUDE_DEG: f64 = 41.25;
+        const HARRIMAN_FILAMENT_P95_M: f64 = 182.9;
+        let apparent = |meters: f64, zoom: f32| {
+            let parallel = EARTH_CIRCUMFERENCE_M * HARRIMAN_LATITUDE_DEG.to_radians().cos();
+            meters * 256.0 * f64::from(zoom).exp2() / parallel
+        };
+        let longest_period = [TrailMark::Dashed, TrailMark::DashDot, TrailMark::Unmarked]
+            .into_iter()
+            .filter_map(|mark| {
+                trail_pattern(
+                    mark,
+                    TrailSalience::Context.width(),
+                    trail_core(TrailSalience::Context.width()).width,
+                )
+            })
+            .map(Pattern::period)
+            .max_by(f32::total_cmp)
+            .expect("patterned trail marks are nonempty");
+
+        assert!((apparent(HARRIMAN_FILAMENT_P95_M, TUBE_ONSET_ZOOM) - 1.0).abs() < 0.01);
+        assert!((apparent(HARRIMAN_FILAMENT_P95_M, CORE_ONSET_ZOOM) - 1.36).abs() < 0.02);
+        assert!(
+            f64::from(longest_period)
+                .mul_add(
+                    -1.25,
+                    apparent(1_000.0, PATTERN_ONSET_ZOOM + DISCLOSURE_SPAN_ZOOM),
+                )
+                .abs()
+                < 0.05
+        );
     }
 
     #[test]
@@ -1458,7 +1725,119 @@ mod tests {
         let datum = 0.031_415_926_535_897_934;
         let world_points = 256.0 * 23.5_f64.exp2();
         let expected = (datum * world_points).rem_euclid(f64::from(pattern.period())) as f32;
-        assert!((phase(datum, world_points, pattern.period()) - expected).abs() <= f32::EPSILON);
+        assert!(
+            (phase(datum, world_points, pattern.period(), 0.0) - expected).abs() <= f32::EPSILON
+        );
+    }
+
+    #[test]
+    fn cadence_moments_follow_stems_and_both_sides_of_chords() {
+        let pattern = context_patterns()[0];
+        let mean = |law: CadenceDatum, start, end| {
+            law.moment(start, end)
+                .expect("patterned arc owns a moment")
+                .1
+                .mean()
+                .expect("positive arc owns a mean")
+        };
+        let forward = CadenceDatum::Stem {
+            pattern,
+            datum_world: 0.2,
+            reverse: false,
+            length_world: 0.1,
+        };
+        let reverse = CadenceDatum::Stem {
+            pattern,
+            datum_world: 0.2,
+            reverse: true,
+            length_world: 0.1,
+        };
+        let chord = CadenceDatum::Chord {
+            pattern,
+            endpoint_datums_world: [0.2, 0.5],
+            length_world: 0.1,
+        };
+
+        assert!((mean(forward, 0.02, 0.06) - 0.24).abs() < f64::EPSILON);
+        assert!((mean(reverse, 0.02, 0.06) - 0.26).abs() < f64::EPSILON);
+        assert!((mean(chord, 0.0, 0.1) - 0.375).abs() < 8.0 * f64::EPSILON);
+    }
+
+    #[test]
+    fn phase_transport_is_the_visible_arc_least_squares_gauge() {
+        let moment = CadenceMoment {
+            mass_world: 3.0,
+            first_world: 0.375,
+        };
+        let moments = [moment, CadenceMoment::default(), CadenceMoment::default()];
+        let mut transport = PhaseTransport::default();
+        let initial = transport.advance(100.0, moments)[0];
+        let transported = transport.advance(110.0, moments)[0];
+        let period = f64::from(context_patterns()[0].period());
+        let centered = period
+            .mul_add(0.5, transported - initial)
+            .rem_euclid(period);
+        let shift = period.mul_add(-0.5, centered);
+        let cost = |candidate: f64| {
+            [0.1_f64, 0.125, 0.15]
+                .into_iter()
+                .map(|datum| 10.0_f64.mul_add(datum, candidate).powi(2))
+                .sum::<f64>()
+        };
+
+        assert!((shift + 1.25).abs() < 8.0 * f64::EPSILON);
+        assert!(cost(shift) < cost(shift - 0.25));
+        assert!(cost(shift) < cost(shift + 0.25));
+    }
+
+    #[test]
+    fn phase_transport_is_reversible_across_a_zoom_step() {
+        let moment = |mean| CadenceMoment {
+            mass_world: 1.0,
+            first_world: mean,
+        };
+        let visible = |mean| {
+            [
+                moment(mean),
+                CadenceMoment::default(),
+                CadenceMoment::default(),
+            ]
+        };
+        let mut transport = PhaseTransport::default();
+        let initial = transport.advance(100.0, visible(0.1));
+        let _nearer = transport.advance(110.0, visible(0.2));
+        let returned = transport.advance(100.0, visible(0.1));
+        let period = f64::from(context_patterns()[0].period());
+        let drift = (returned[0] - initial[0]).rem_euclid(period);
+
+        assert!(drift.min(period - drift) < 8.0 * f64::EPSILON);
+    }
+
+    #[test]
+    fn panning_cannot_move_the_transported_cadence() {
+        let moment = |mean| CadenceMoment {
+            mass_world: 1.0,
+            first_world: mean,
+        };
+        let mut transport = PhaseTransport::default();
+        let before = transport.advance(
+            100.0,
+            [
+                moment(0.1),
+                CadenceMoment::default(),
+                CadenceMoment::default(),
+            ],
+        );
+        let after = transport.advance(
+            100.0,
+            [
+                moment(0.9),
+                CadenceMoment::default(),
+                CadenceMoment::default(),
+            ],
+        );
+
+        assert_eq!(before.map(f64::to_bits), after.map(f64::to_bits));
     }
 
     #[test]
@@ -1493,7 +1872,7 @@ mod tests {
             access: trailgen_core::Access::Open,
         };
         let mut builder = TrailMeshBuilder::default();
-        builder.push(&samples, key, &edge, 0);
+        builder.push(&samples, key, &edge, 0, CadenceDatum::Solid);
         let mesh = builder.seal();
 
         assert_eq!(mesh.vertices.len(), samples.len() * 2);
@@ -1502,8 +1881,6 @@ mod tests {
 
     #[test]
     fn every_trail_class_survives_into_the_coarsest_band() {
-        use trailgen_core::TrailClass;
-
         let scale = f64::from(1_u32 << BASE_TILE_ZOOM);
         let edge = |row: f64, class| {
             let points = vec![
