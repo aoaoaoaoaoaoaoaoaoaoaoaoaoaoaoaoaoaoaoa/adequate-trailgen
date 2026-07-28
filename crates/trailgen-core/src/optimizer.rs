@@ -302,30 +302,16 @@ impl LoopHunter {
         }];
         let mut routes = Vec::<Route>::new();
         let mut meter = SearchMeter::new(monitor, self.params.max_frontier);
+        let Some(mut closer) = LoopCloser::forge(scope, start, self.params, constraints, monitor)
+        else {
+            return Vec::new();
+        };
 
         while let Some(state) = stack.pop() {
             if !meter.advance(routes.len()) {
                 break;
             }
-            if closes_allowed(constraints) && state.at != start && !state.edges.is_empty() {
-                let max_return_m = constraints.max_distance_m.mul_add(1.35, -state.distance_m);
-                for return_edges in shortest_return_paths(ReturnHunt {
-                    graph,
-                    from: state.at,
-                    target: start,
-                    previous: state.edges.last().copied(),
-                    barred: &state.used,
-                    max_distance_m: max_return_m,
-                    keep: self.params.closure_paths,
-                    law: self.params.routing,
-                    monitor,
-                    allowed: scope.allowed,
-                }) {
-                    let mut route_edges = state.edges.clone();
-                    route_edges.extend(return_edges);
-                    push_allowed_route(&mut routes, graph, start, route_edges, constraints);
-                }
-            }
+            closer.strike(&state, constraints, &mut routes);
             if state.edges.len() >= self.params.max_hops {
                 continue;
             }
@@ -841,15 +827,210 @@ struct ReturnHunt<'a> {
     allowed: Option<&'a [bool]>,
 }
 
-fn shortest_return_paths(hunt: ReturnHunt<'_>) -> Vec<Vec<EdgeId>> {
+struct LoopCloser<'graph, 'monitor> {
+    graph: &'graph TrailGraph,
+    target: VertexId,
+    keep: usize,
+    law: RoutingLaw,
+    monitor: &'monitor dyn SearchMonitor,
+    allowed: Option<&'graph [bool]>,
+    active: bool,
+    workspace: ClosureWorkspace,
+    oracle: Option<ClosureOracle>,
+}
+
+impl<'graph, 'monitor> LoopCloser<'graph, 'monitor> {
+    fn forge(
+        scope: SearchScope<'graph>,
+        target: VertexId,
+        params: SearchParams,
+        constraints: &LoopConstraints,
+        monitor: &'monitor dyn SearchMonitor,
+    ) -> Option<Self> {
+        let active = closes_allowed(constraints);
+        let oracle = if active && params.closure_paths <= 1 {
+            Some(ClosureOracle::forge(
+                scope.graph,
+                target,
+                scope.allowed,
+                params.routing,
+                monitor,
+            )?)
+        } else {
+            None
+        };
+        Some(Self {
+            graph: scope.graph,
+            target,
+            keep: params.closure_paths,
+            law: params.routing,
+            monitor,
+            allowed: scope.allowed,
+            active,
+            workspace: ClosureWorkspace::new(scope.graph.edges.len()),
+            oracle,
+        })
+    }
+
+    fn strike(&mut self, state: &State, constraints: &LoopConstraints, routes: &mut Vec<Route>) {
+        if !self.active || state.at == self.target || state.edges.is_empty() {
+            return;
+        }
+        let max_distance_m = constraints.max_distance_m.mul_add(1.35, -state.distance_m);
+        let hunt = ReturnHunt {
+            graph: self.graph,
+            from: state.at,
+            target: self.target,
+            previous: state.edges.last().copied(),
+            barred: &state.used,
+            max_distance_m,
+            keep: self.keep,
+            law: self.law,
+            monitor: self.monitor,
+            allowed: self.allowed,
+        };
+        for return_edges in shortest_return_paths(hunt, &mut self.workspace, self.oracle.as_ref()) {
+            let mut edges = state.edges.clone();
+            edges.extend(return_edges);
+            push_allowed_route(routes, self.graph, self.target, edges, constraints);
+        }
+    }
+}
+
+fn shortest_return_paths(
+    hunt: ReturnHunt<'_>,
+    workspace: &mut ClosureWorkspace,
+    oracle: Option<&ClosureOracle>,
+) -> Vec<Vec<EdgeId>> {
     if hunt.max_distance_m < 0.0 {
         return Vec::new();
     }
+    if hunt.keep <= 1 {
+        return shortest_return_path(
+            hunt,
+            workspace,
+            oracle.expect("single-path closure search has an oracle"),
+        )
+        .into_iter()
+        .collect();
+    }
+    enumerate_return_paths(hunt)
+}
+
+fn shortest_return_path(
+    hunt: ReturnHunt<'_>,
+    workspace: &mut ClosureWorkspace,
+    oracle: &ClosureOracle,
+) -> Option<Vec<EdgeId>> {
+    // A* ranks by the shared reverse potential, while each turn-state keeps
+    // the (routing cost, physical distance) skyline required by the separate
+    // hard distance budget.
+    workspace.begin();
+    let origin = SupportWalk {
+        at: hunt.from,
+        previous: hunt.previous,
+    };
+    let origin_label = workspace
+        .admit(
+            closure_slot(hunt.graph, origin),
+            ClosureLabel {
+                routing_cost_m: 0.0,
+                distance_m: 0.0,
+                predecessor: None,
+                edge: None,
+                live: true,
+            },
+        )
+        .expect("an empty closure skyline admits its origin");
+    let rank_m = oracle.cost(hunt.graph, origin);
+    if !rank_m.is_finite() {
+        return None;
+    }
+    workspace.heap.push(ClosureFrontier {
+        rank_m,
+        routing_cost_m: 0.0,
+        distance_m: 0.0,
+        walk: origin,
+        label: origin_label,
+    });
+    let expansion_cap = return_expansion_cap(1, hunt.graph.edges.len());
+    let mut expanded = 0usize;
+
+    while let Some(frontier) = workspace.heap.pop() {
+        if hunt.monitor.cancelled() {
+            return None;
+        }
+        if expanded >= expansion_cap {
+            break;
+        }
+        if !workspace.labels[frontier.label].live {
+            continue;
+        }
+        expanded += 1;
+        if frontier.walk.at == hunt.target && frontier.label != origin_label {
+            let path = recover_closure_path(&workspace.labels, frontier.label);
+            if edge_simple(&path) {
+                return Some(path);
+            }
+            continue;
+        }
+        for edge_id in &hunt.graph.adjacency[frontier.walk.at.0] {
+            if hunt.allowed.is_some_and(|allowed| !allowed[edge_id.0])
+                || hunt.barred.contains(edge_id)
+                || frontier.walk.previous == Some(*edge_id)
+                || !hunt
+                    .graph
+                    .turn_allowed(frontier.walk.previous, frontier.walk.at, *edge_id)
+            {
+                continue;
+            }
+            let Some(edge_cost) = hunt.law.edge_cost(hunt.graph, *edge_id) else {
+                continue;
+            };
+            let edge = &hunt.graph.edges[edge_id.0];
+            let Some(at) = edge.traverse(frontier.walk.at) else {
+                continue;
+            };
+            let distance_m = frontier.distance_m + edge.attr.length_m;
+            if distance_m > hunt.max_distance_m {
+                continue;
+            }
+            let routing_cost_m = frontier.routing_cost_m + edge_cost;
+            let walk = SupportWalk {
+                at,
+                previous: Some(*edge_id),
+            };
+            let remaining_cost_m = oracle.cost(hunt.graph, walk);
+            if !remaining_cost_m.is_finite() {
+                continue;
+            }
+            let Some(label) = workspace.admit(
+                closure_slot(hunt.graph, walk),
+                ClosureLabel {
+                    routing_cost_m,
+                    distance_m,
+                    predecessor: Some(frontier.label),
+                    edge: Some(*edge_id),
+                    live: true,
+                },
+            ) else {
+                continue;
+            };
+            workspace.heap.push(ClosureFrontier {
+                rank_m: routing_cost_m + remaining_cost_m,
+                routing_cost_m,
+                distance_m,
+                walk,
+                label,
+            });
+        }
+    }
+    None
+}
+
+fn enumerate_return_paths(hunt: ReturnHunt<'_>) -> Vec<Vec<EdgeId>> {
     let keep = hunt.keep.max(1);
-    let expansion_cap = keep
-        .saturating_mul(hunt.graph.edges.len().max(1))
-        .saturating_mul(8)
-        .max(64);
+    let expansion_cap = return_expansion_cap(keep, hunt.graph.edges.len());
     let mut heap = BinaryHeap::new();
     heap.push(ReturnPathState {
         routing_cost_m: 0.0,
@@ -912,6 +1093,12 @@ fn shortest_return_paths(hunt: ReturnHunt<'_>) -> Vec<Vec<EdgeId>> {
     paths
 }
 
+fn return_expansion_cap(keep: usize, edge_count: usize) -> usize {
+    keep.saturating_mul(edge_count.max(1))
+        .saturating_mul(8)
+        .max(64)
+}
+
 fn sort_heuristic_fanout(
     graph: &TrailGraph,
     fanout: &mut [EdgeId],
@@ -954,6 +1141,237 @@ const fn splitmix64(mut x: u64) -> u64 {
     x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     x ^ (x >> 31)
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ClosureLabel {
+    routing_cost_m: f64,
+    distance_m: f64,
+    predecessor: Option<usize>,
+    edge: Option<EdgeId>,
+    live: bool,
+}
+
+impl ClosureLabel {
+    fn dominates(&self, routing_cost_m: f64, distance_m: f64) -> bool {
+        self.live && self.routing_cost_m <= routing_cost_m && self.distance_m <= distance_m
+    }
+
+    fn is_dominated_by(&self, routing_cost_m: f64, distance_m: f64) -> bool {
+        routing_cost_m <= self.routing_cost_m && distance_m <= self.distance_m
+    }
+}
+
+struct ClosureWorkspace {
+    skylines: Vec<Vec<usize>>,
+    touched: Vec<usize>,
+    labels: Vec<ClosureLabel>,
+    heap: BinaryHeap<ClosureFrontier>,
+}
+
+impl ClosureWorkspace {
+    fn new(edge_count: usize) -> Self {
+        Self {
+            skylines: vec![Vec::new(); closure_slot_count(edge_count)],
+            touched: Vec::new(),
+            labels: Vec::new(),
+            heap: BinaryHeap::new(),
+        }
+    }
+
+    fn begin(&mut self) {
+        for slot in self.touched.drain(..) {
+            self.skylines[slot].clear();
+        }
+        self.labels.clear();
+        self.heap.clear();
+    }
+
+    fn admit(&mut self, slot: usize, label: ClosureLabel) -> Option<usize> {
+        let peers = &mut self.skylines[slot];
+        let pristine = peers.is_empty();
+        if peers
+            .iter()
+            .any(|id| self.labels[*id].dominates(label.routing_cost_m, label.distance_m))
+        {
+            return None;
+        }
+        for id in peers.iter().copied() {
+            let incumbent = &mut self.labels[id];
+            if incumbent.is_dominated_by(label.routing_cost_m, label.distance_m) {
+                incumbent.live = false;
+            }
+        }
+        peers.retain(|id| self.labels[*id].live);
+        let id = self.labels.len();
+        self.labels.push(label);
+        if pristine {
+            self.touched.push(slot);
+        }
+        peers.push(id);
+        Some(id)
+    }
+}
+
+/// Exact shortest-cost potentials on the directed turn-state graph. Per-path
+/// outbound-edge bans are deliberately relaxed, so these shared values remain
+/// admissible for every closure attempted by one loop search.
+struct ClosureOracle {
+    cost_m: Vec<f64>,
+}
+
+impl ClosureOracle {
+    fn forge(
+        graph: &TrailGraph,
+        target: VertexId,
+        allowed: Option<&[bool]>,
+        law: RoutingLaw,
+        monitor: &dyn SearchMonitor,
+    ) -> Option<Self> {
+        let mut cost_m = vec![f64::INFINITY; closure_slot_count(graph.edges.len())];
+        let mut heap = BinaryHeap::new();
+        let mut incoming = vec![Vec::new(); graph.vertices.len()];
+        for edge in &graph.edges {
+            if allowed.is_some_and(|allowed| !allowed[edge.id.0])
+                || law.edge_cost(graph, edge.id).is_none()
+            {
+                continue;
+            }
+            if edge.traverse(edge.a) == Some(edge.b) {
+                incoming[edge.b.0].push(edge.id);
+            }
+            if edge.traverse(edge.b) == Some(edge.a) {
+                incoming[edge.a.0].push(edge.id);
+            }
+        }
+        for edge_id in &incoming[target.0] {
+            let walk = SupportWalk {
+                at: target,
+                previous: Some(*edge_id),
+            };
+            let slot = closure_slot(graph, walk);
+            cost_m[slot] = 0.0;
+            heap.push(SupportFrontier { cost: 0.0, walk });
+        }
+
+        while let Some(SupportFrontier { cost, walk }) = heap.pop() {
+            if monitor.cancelled() {
+                return None;
+            }
+            if cost > cost_m[closure_slot(graph, walk)] {
+                continue;
+            }
+            let edge_id = walk
+                .previous
+                .expect("an oracle frontier always follows an edge");
+            let edge = &graph.edges[edge_id.0];
+            let Some(via) = edge.other(walk.at) else {
+                continue;
+            };
+            if edge.traverse(via) != Some(walk.at) {
+                continue;
+            }
+            let edge_cost_m = law
+                .edge_cost(graph, edge_id)
+                .expect("an oracle frontier only contains lawful edges");
+            for prior in &incoming[via.0] {
+                if *prior == edge_id {
+                    continue;
+                }
+                if !graph.turn_allowed(Some(*prior), via, edge_id) {
+                    continue;
+                }
+                let predecessor = SupportWalk {
+                    at: via,
+                    previous: Some(*prior),
+                };
+                let slot = closure_slot(graph, predecessor);
+                let candidate_m = cost + edge_cost_m;
+                if candidate_m < cost_m[slot] {
+                    cost_m[slot] = candidate_m;
+                    heap.push(SupportFrontier {
+                        cost: candidate_m,
+                        walk: predecessor,
+                    });
+                }
+            }
+        }
+        Some(Self { cost_m })
+    }
+
+    fn cost(&self, graph: &TrailGraph, walk: SupportWalk) -> f64 {
+        self.cost_m[closure_slot(graph, walk)]
+    }
+}
+
+fn closure_slot(graph: &TrailGraph, walk: SupportWalk) -> usize {
+    let Some(edge_id) = walk.previous else {
+        return graph.edges.len() * 2;
+    };
+    let edge = &graph.edges[edge_id.0];
+    edge_id.0 * 2
+        + if walk.at == edge.a {
+            0
+        } else {
+            debug_assert_eq!(walk.at, edge.b);
+            1
+        }
+}
+
+fn closure_slot_count(edge_count: usize) -> usize {
+    edge_count
+        .checked_mul(2)
+        .and_then(|slots| slots.checked_add(1))
+        .expect("a trail graph has fewer than usize::MAX / 2 edges")
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ClosureFrontier {
+    rank_m: f64,
+    routing_cost_m: f64,
+    distance_m: f64,
+    walk: SupportWalk,
+    label: usize,
+}
+
+impl Eq for ClosureFrontier {}
+
+impl Ord for ClosureFrontier {
+    fn cmp(&self, rhs: &Self) -> Ordering {
+        rhs.rank_m
+            .total_cmp(&self.rank_m)
+            .then_with(|| rhs.routing_cost_m.total_cmp(&self.routing_cost_m))
+            .then_with(|| rhs.distance_m.total_cmp(&self.distance_m))
+            .then_with(|| rhs.walk.cmp(&self.walk))
+            .then_with(|| rhs.label.cmp(&self.label))
+    }
+}
+
+impl PartialOrd for ClosureFrontier {
+    fn partial_cmp(&self, rhs: &Self) -> Option<Ordering> {
+        Some(self.cmp(rhs))
+    }
+}
+
+fn recover_closure_path(labels: &[ClosureLabel], mut label: usize) -> Vec<EdgeId> {
+    let mut path = Vec::new();
+    loop {
+        let current = &labels[label];
+        let Some(edge) = current.edge else {
+            break;
+        };
+        path.push(edge);
+        label = current
+            .predecessor
+            .expect("every closure edge has a predecessor");
+    }
+    path.reverse();
+    path
+}
+
+fn edge_simple(path: &[EdgeId]) -> bool {
+    let mut seen = BTreeSet::new();
+    path.iter().all(|edge| seen.insert(*edge))
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1047,6 +1465,75 @@ mod tests {
             confidence: 1.0,
             provenance: vec![Provenance::fixture(name)],
         }
+    }
+
+    fn named_edge(graph: &TrailGraph, name: &str) -> EdgeId {
+        graph
+            .edges
+            .iter()
+            .find(|edge| {
+                edge.attr
+                    .provenance
+                    .iter()
+                    .any(|source| source.source_id.as_deref() == Some(name))
+            })
+            .map(|edge| edge.id)
+            .expect("fixture edge exists")
+    }
+
+    #[test]
+    fn closure_oracle_preserves_cost_distance_pareto_labels() {
+        let approach = Coord::new(-0.001, 0.0);
+        let from = Coord::new(0.0, 0.0);
+        let bend = Coord::new(0.002, 0.003);
+        let junction = Coord::new(0.004, 0.0);
+        let merge = Coord::new(0.005, 0.0);
+        let target = Coord::new(0.008, 0.0);
+        let mut road = branch(vec![from, junction], "short-road");
+        road.trail_class = TrailClass::Road;
+        road.terrain = Terrain::Road;
+        road.road_exposure = 1.0;
+        let graph = GraphBuilder::default()
+            .build(&[
+                branch(vec![approach, from], "approach"),
+                branch(vec![from, bend, junction], "long-clean"),
+                road,
+                branch(vec![junction, merge], "common"),
+                branch(vec![merge, target], "tail"),
+            ])
+            .expect("build cost-distance closure fixture");
+        let from = graph.nearest_vertex(from).expect("closure origin");
+        let target = graph.nearest_vertex(target).expect("closure target");
+        let approach = named_edge(&graph, "approach");
+        let road = named_edge(&graph, "short-road");
+        let barred = BTreeSet::from([approach]);
+        let law = RoutingLaw { road_aversion: 2.0 };
+        let oracle =
+            ClosureOracle::forge(&graph, target, None, law, &()).expect("forge closure oracle");
+        let mut workspace = ClosureWorkspace::new(graph.edges.len());
+        let paths = shortest_return_paths(
+            ReturnHunt {
+                graph: &graph,
+                from,
+                target,
+                previous: Some(approach),
+                barred: &barred,
+                max_distance_m: 1_000.0,
+                keep: 1,
+                law,
+                monitor: &(),
+                allowed: None,
+            },
+            &mut workspace,
+            Some(&oracle),
+        );
+
+        assert_eq!(paths.len(), 1);
+        let path = &paths[0];
+        assert_eq!(graph.walk_edges(from, path), Some(target));
+        assert!(edge_simple(path));
+        assert!(path.contains(&road));
+        assert!(route_distance(&graph, path) <= 1_000.0);
     }
 
     #[test]
