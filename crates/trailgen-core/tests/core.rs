@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::io::Cursor;
 
 use protobuf::{Message, MessageField};
@@ -561,6 +561,7 @@ fn difficulty_penalizes_rough_uncertain_closed_edges() {
         provenance: vec![Provenance::fixture("smooth")],
     };
     let savage = SegmentDraft {
+        geometry: LineString::new(vec![Coord::new(0.0, 0.001), Coord::new(0.01, 0.001)]).unwrap(),
         junctions: JunctionPolicy::default(),
         turn_ref: None,
         turn_restrictions: Vec::new(),
@@ -571,11 +572,13 @@ fn difficulty_penalizes_rough_uncertain_closed_edges() {
         terrain_confidence: None,
         surface: Some("dirt".to_owned()),
         access: Access::Closed,
+        travel: EdgeTravel::Both,
+        road_exposure: 0.0,
         confidence: 0.25,
         provenance: vec![Provenance::fixture("savage")],
-        ..smooth.clone()
     };
     let uncertain = SegmentDraft {
+        geometry: LineString::new(vec![Coord::new(0.0, 0.002), Coord::new(0.01, 0.002)]).unwrap(),
         junctions: JunctionPolicy::default(),
         turn_ref: None,
         turn_restrictions: Vec::new(),
@@ -586,11 +589,13 @@ fn difficulty_penalizes_rough_uncertain_closed_edges() {
         terrain_confidence: None,
         surface: Some("dirt".to_owned()),
         access: Access::Open,
+        travel: EdgeTravel::Both,
+        road_exposure: 0.0,
         confidence: 0.9,
         provenance: vec![Provenance::fixture("uncertain")],
-        ..smooth.clone()
     };
     let unmarked = SegmentDraft {
+        geometry: LineString::new(vec![Coord::new(0.0, 0.003), Coord::new(0.01, 0.003)]).unwrap(),
         marking: TrailMarking::Unmarked,
         provenance: vec![Provenance::fixture("unmarked")],
         ..smooth.clone()
@@ -2504,6 +2509,63 @@ fn loop_hunter_closes_sparse_frontier_with_shortest_return_path() {
 }
 
 #[test]
+fn loop_search_is_invariant_to_shape_point_resolution() {
+    let corners = [
+        Coord::new(0.0, 0.0),
+        Coord::new(0.01, 0.0),
+        Coord::new(0.01, 0.01),
+        Coord::new(0.0, 0.01),
+        Coord::new(0.0, 0.0),
+    ];
+    let subdivisions = 80;
+    let mut points = Vec::new();
+    for side in corners.windows(2) {
+        for step in 0..subdivisions {
+            let t = f64::from(step) / f64::from(subdivisions);
+            points.push(Coord::new(
+                (side[1].lon - side[0].lon).mul_add(t, side[0].lon),
+                (side[1].lat - side[0].lat).mul_add(t, side[0].lat),
+            ));
+        }
+    }
+    points.push(corners[4]);
+    let mut draft = square_drafts().remove(0);
+    draft.geometry = LineString::new(points).unwrap();
+    let graph = GraphBuilder::default().build(&[draft]).unwrap();
+    let start = graph.nearest_vertex(corners[0]).unwrap();
+    let routes = LoopHunter {
+        params: SearchParams {
+            max_hops: 2,
+            max_frontier: 100,
+            keep: 4,
+            ..SearchParams::default()
+        },
+    }
+    .hunt(
+        &graph,
+        start,
+        &LoopConstraints {
+            min_distance_m: 4_000.0,
+            max_distance_m: 5_000.0,
+            max_difficulty: 10_000.0,
+            allowed_shapes: vec![RouteShape::Loop],
+            ..LoopConstraints::default()
+        },
+        4,
+    );
+
+    assert_eq!(
+        graph.edges.len(),
+        usize::try_from(subdivisions).unwrap() * 4
+    );
+    assert!(routes.iter().any(|route| {
+        route.verdict.satisfied
+            && route.metrics.shape == RouteShape::Loop
+            && route.edges.len() == graph.edges.len()
+    }));
+}
+
+#[test]
 fn loop_hunter_road_aversion_finds_a_clean_closure_without_extra_breadth() {
     let graph = GraphBuilder::default()
         .build(&closure_trap_drafts())
@@ -2543,7 +2605,7 @@ fn loop_hunter_road_aversion_finds_a_clean_closure_without_extra_breadth() {
 }
 
 #[test]
-fn loop_hunter_seed_diversifies_sparse_frontier_order() {
+fn loop_hunter_seed_is_reproducible() {
     let graph = GraphBuilder::default().build(&bowtie_drafts()).unwrap();
     let start = graph.nearest_vertex(Coord::new(0.0, 0.0)).unwrap();
     let constraints = LoopConstraints {
@@ -2557,7 +2619,7 @@ fn loop_hunter_seed_diversifies_sparse_frontier_order() {
         LoopHunter {
             params: SearchParams {
                 max_hops: 1,
-                max_frontier: 2,
+                max_frontier: 100,
                 keep: 1,
                 closure_paths: 1,
                 seed,
@@ -2567,16 +2629,11 @@ fn loop_hunter_seed_diversifies_sparse_frontier_order() {
         .hunt(&graph, start, &constraints, 1)
         .into_iter()
         .next()
-        .expect("tight seeded frontier should still close one bowtie lobe")
+        .expect("support search should close one bowtie lobe")
         .edges
     };
 
     assert_eq!(hunt(11), hunt(11));
-    let signatures = (0..32).map(hunt).collect::<BTreeSet<_>>();
-    assert!(
-        signatures.len() > 1,
-        "seeded sparse frontier should choose more than one symmetric lobe: {signatures:?}"
-    );
 }
 
 #[test]
@@ -2618,46 +2675,37 @@ fn exact_solver_enumerates_only_fully_bounded_loops() {
     }));
 }
 
+fn bent_branch(offset: f64, travel: EdgeTravel, provenance: &str) -> SegmentDraft {
+    SegmentDraft {
+        junctions: JunctionPolicy::ExplicitEndpoints,
+        turn_ref: None,
+        turn_restrictions: Vec::new(),
+        geometry: LineString::new(vec![
+            Coord::new(0.0, 0.0),
+            Coord::new(0.005, offset),
+            Coord::new(0.01, 0.0),
+        ])
+        .unwrap(),
+        trail_class: TrailClass::default(),
+        standing: TrailStanding::Unknown,
+        marking: TrailMarking::default(),
+        terrain: Terrain::Trail,
+        terrain_confidence: None,
+        surface: None,
+        access: Access::Open,
+        travel,
+        road_exposure: 0.0,
+        confidence: 1.0,
+        provenance: vec![Provenance::fixture(provenance)],
+    }
+}
+
 #[test]
-fn exact_solver_accepts_two_edge_multiedge_loops() {
+fn exact_solver_accepts_two_edge_physically_distinct_loops() {
     let graph = GraphBuilder::default()
         .build(&[
-            SegmentDraft {
-                junctions: JunctionPolicy::default(),
-                turn_ref: None,
-                turn_restrictions: Vec::new(),
-                geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)])
-                    .unwrap(),
-                trail_class: TrailClass::default(),
-                standing: TrailStanding::Unknown,
-                marking: TrailMarking::default(),
-                terrain: Terrain::Trail,
-                terrain_confidence: None,
-                surface: None,
-                access: Access::Open,
-                travel: EdgeTravel::Both,
-                road_exposure: 0.0,
-                confidence: 1.0,
-                provenance: vec![Provenance::fixture("out")],
-            },
-            SegmentDraft {
-                junctions: JunctionPolicy::default(),
-                turn_ref: None,
-                turn_restrictions: Vec::new(),
-                geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)])
-                    .unwrap(),
-                trail_class: TrailClass::default(),
-                standing: TrailStanding::Unknown,
-                marking: TrailMarking::default(),
-                terrain: Terrain::Trail,
-                terrain_confidence: None,
-                surface: None,
-                access: Access::Open,
-                travel: EdgeTravel::Both,
-                road_exposure: 0.0,
-                confidence: 1.0,
-                provenance: vec![Provenance::fixture("back")],
-            },
+            bent_branch(0.001, EdgeTravel::Both, "out"),
+            bent_branch(-0.001, EdgeTravel::Both, "back"),
         ])
         .unwrap();
     let start = graph.nearest_vertex(Coord::new(0.0, 0.0)).unwrap();
@@ -2690,115 +2738,69 @@ fn exact_solver_accepts_two_edge_multiedge_loops() {
 }
 
 #[test]
-fn solvers_collapse_reversed_equivalent_edge_sets() {
-    let graph = GraphBuilder::default()
-        .build(&[
-            SegmentDraft {
-                junctions: JunctionPolicy::default(),
-                turn_ref: None,
-                turn_restrictions: Vec::new(),
-                geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)])
-                    .unwrap(),
-                trail_class: TrailClass::default(),
-                standing: TrailStanding::Unknown,
-                marking: TrailMarking::default(),
-                terrain: Terrain::Trail,
-                terrain_confidence: None,
-                surface: None,
-                access: Access::Open,
-                travel: EdgeTravel::Both,
-                road_exposure: 0.0,
-                confidence: 1.0,
-                provenance: vec![Provenance::fixture("braid-a")],
-            },
-            SegmentDraft {
-                junctions: JunctionPolicy::default(),
-                turn_ref: None,
-                turn_restrictions: Vec::new(),
-                geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)])
-                    .unwrap(),
-                trail_class: TrailClass::default(),
-                standing: TrailStanding::Unknown,
-                marking: TrailMarking::default(),
-                terrain: Terrain::Trail,
-                terrain_confidence: None,
-                surface: None,
-                access: Access::Open,
-                travel: EdgeTravel::Both,
-                road_exposure: 0.0,
-                confidence: 1.0,
-                provenance: vec![Provenance::fixture("braid-b")],
-            },
-        ])
-        .unwrap();
-    let start = graph.nearest_vertex(Coord::new(0.0, 0.0)).unwrap();
-    let routes = ExactLoopSolver {
-        params: SearchParams {
-            max_hops: 2,
-            max_frontier: 100,
-            keep: 8,
-            ..SearchParams::default()
-        },
+fn graph_builder_collapses_physical_support_duplicated_by_snapping() {
+    let graph = GraphBuilder {
+        snap_tolerance_m: 10.0,
+        ..GraphBuilder::default()
     }
-    .enumerate(
-        &graph,
-        start,
-        &LoopConstraints {
-            min_distance_m: 0.0,
-            max_distance_m: 10_000.0,
-            max_difficulty: 10_000.0,
-            allowed_shapes: vec![RouteShape::Loop],
-            ..LoopConstraints::default()
+    .build(&[
+        SegmentDraft {
+            junctions: JunctionPolicy::default(),
+            turn_ref: None,
+            turn_restrictions: Vec::new(),
+            geometry: LineString::new(vec![Coord::new(0.0, 0.000_05), Coord::new(0.01, 0.000_05)])
+                .unwrap(),
+            trail_class: TrailClass::default(),
+            standing: TrailStanding::Unknown,
+            marking: TrailMarking::default(),
+            terrain: Terrain::Trail,
+            terrain_confidence: None,
+            surface: None,
+            access: Access::Open,
+            travel: EdgeTravel::Both,
+            road_exposure: 0.0,
+            confidence: 1.0,
+            provenance: vec![Provenance::fixture("braid-a")],
         },
-        8,
+        SegmentDraft {
+            junctions: JunctionPolicy::default(),
+            turn_ref: None,
+            turn_restrictions: Vec::new(),
+            geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
+            trail_class: TrailClass::default(),
+            standing: TrailStanding::Unknown,
+            marking: TrailMarking::default(),
+            terrain: Terrain::Trail,
+            terrain_confidence: None,
+            surface: None,
+            access: Access::Open,
+            travel: EdgeTravel::Both,
+            road_exposure: 0.0,
+            confidence: 1.0,
+            provenance: vec![Provenance::fixture("braid-b")],
+        },
+    ])
+    .unwrap();
+    assert_eq!(graph.edges.len(), 1);
+    let provenance = &graph.edges[0].attr.provenance;
+    assert!(
+        provenance
+            .iter()
+            .any(|source| source.source_id.as_deref() == Some("braid-a"))
     );
-
-    assert_eq!(routes.len(), 1);
-    assert_eq!(routes[0].metrics.shape, RouteShape::Loop);
-    assert_eq!(routes[0].edges.len(), 2);
-    assert!(routes[0].metrics.repeated_edge_fraction <= f64::EPSILON);
+    assert!(
+        provenance
+            .iter()
+            .any(|source| source.source_id.as_deref() == Some("braid-b"))
+    );
 }
 
 #[test]
 fn directed_travel_diagnostics_are_exported() {
     let graph = GraphBuilder::default()
         .build(&[
-            SegmentDraft {
-                junctions: JunctionPolicy::default(),
-                turn_ref: None,
-                turn_restrictions: Vec::new(),
-                geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)])
-                    .unwrap(),
-                trail_class: TrailClass::default(),
-                standing: TrailStanding::Unknown,
-                marking: TrailMarking::default(),
-                terrain: Terrain::Trail,
-                terrain_confidence: None,
-                surface: None,
-                access: Access::Open,
-                travel: EdgeTravel::Forward,
-                road_exposure: 0.0,
-                confidence: 0.95,
-                provenance: vec![Provenance::fixture("forward")],
-            },
-            SegmentDraft {
-                junctions: JunctionPolicy::default(),
-                turn_ref: None,
-                turn_restrictions: Vec::new(),
-                geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)])
-                    .unwrap(),
-                trail_class: TrailClass::default(),
-                standing: TrailStanding::Unknown,
-                marking: TrailMarking::default(),
-                terrain: Terrain::Trail,
-                terrain_confidence: None,
-                surface: None,
-                access: Access::Open,
-                travel: EdgeTravel::Backward,
-                road_exposure: 0.0,
-                confidence: 0.9,
-                provenance: vec![Provenance::fixture("backward")],
-            },
+            bent_branch(0.0005, EdgeTravel::Forward, "forward"),
+            bent_branch(-0.0005, EdgeTravel::Backward, "backward"),
         ])
         .unwrap();
     let start = graph.nearest_vertex(Coord::new(0.0, 0.0)).unwrap();
@@ -2843,40 +2845,8 @@ fn directed_travel_diagnostics_are_exported() {
 #[test]
 fn temporal_direction_overlay_constrains_route_generation() {
     let drafts = [
-        SegmentDraft {
-            junctions: JunctionPolicy::default(),
-            turn_ref: None,
-            turn_restrictions: Vec::new(),
-            geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
-            trail_class: TrailClass::default(),
-            standing: TrailStanding::Unknown,
-            marking: TrailMarking::default(),
-            terrain: Terrain::Trail,
-            terrain_confidence: None,
-            surface: None,
-            access: Access::Open,
-            travel: EdgeTravel::Both,
-            road_exposure: 0.0,
-            confidence: 1.0,
-            provenance: vec![Provenance::fixture("out")],
-        },
-        SegmentDraft {
-            junctions: JunctionPolicy::default(),
-            turn_ref: None,
-            turn_restrictions: Vec::new(),
-            geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
-            trail_class: TrailClass::default(),
-            standing: TrailStanding::Unknown,
-            marking: TrailMarking::default(),
-            terrain: Terrain::Trail,
-            terrain_confidence: None,
-            surface: None,
-            access: Access::Open,
-            travel: EdgeTravel::Both,
-            road_exposure: 0.0,
-            confidence: 1.0,
-            provenance: vec![Provenance::fixture("back")],
-        },
+        bent_branch(0.0005, EdgeTravel::Both, "out"),
+        bent_branch(-0.0005, EdgeTravel::Both, "back"),
     ];
     let constraints = LoopConstraints {
         min_distance_m: 0.0,

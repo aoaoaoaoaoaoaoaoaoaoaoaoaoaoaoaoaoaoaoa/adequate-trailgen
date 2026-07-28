@@ -197,56 +197,20 @@ impl GraphBuilder {
             cuts[snap.target_primitive].push(Cut::snapped(snap.target_t, snap.coord));
         }
 
-        let mut vertices = Vec::<Vertex>::new();
-        let mut vertex_by_coord = BTreeMap::<(u64, u64), VertexId>::new();
-        let mut edges = Vec::<Edge>::new();
-        let snap_provenance = Provenance {
-            source: "graph-builder".to_owned(),
-            layer: Some("near-miss-snap".to_owned()),
-            source_id: Some(format!("tolerance {:.1} m", self.snap_tolerance_m)),
-            license: None,
-        };
-
-        let mut edges_by_draft = vec![Vec::<EdgeId>::new(); drafts.len()];
-        for (primitive, xs) in primitives.iter().copied().zip(cuts) {
-            let xs = normalize_cuts(xs);
-            for pair in xs.windows(2) {
-                let a = pair[0].coord;
-                let b = pair[1].coord;
-                if a.planar_distance2(b) < 1.0e-18 {
-                    continue;
-                }
-                let va = vertex_id(a, &mut vertices, &mut vertex_by_coord);
-                let vb = vertex_id(b, &mut vertices, &mut vertex_by_coord);
-                if va == vb {
-                    continue;
-                }
-                let draft = &drafts[primitive.src];
-                let geometry = edge_geometry(
-                    draft,
-                    vertices[va.0].coord,
-                    vertices[vb.0].coord,
-                    pair[0].t,
-                    pair[1].t,
-                );
-                let id = EdgeId(edges.len());
-                let snapped = pair[0].snapped || pair[1].snapped;
-                let attr = edge_attr(draft, &geometry, snapped.then_some(snap_provenance.clone()));
-                let mut edge = Edge {
-                    id,
-                    a: va,
-                    b: vb,
-                    geometry,
-                    attr,
-                };
-                self.weights.apply_edge(&mut edge);
-                edges.push(edge);
-                edges_by_draft[primitive.src].push(id);
-            }
-        }
-
-        let mut graph = TrailGraph::new(vertices, edges);
-        graph.turn_bans = turn_bans(drafts, &edges_by_draft, &graph, self.snap_tolerance_m);
+        let assembly = assemble_edges(
+            drafts,
+            &primitives,
+            cuts,
+            self.weights,
+            self.snap_tolerance_m,
+        );
+        let mut graph = TrailGraph::new(assembly.vertices, assembly.edges);
+        graph.turn_bans = turn_bans(
+            drafts,
+            &assembly.edges_by_draft,
+            &graph,
+            self.snap_tolerance_m,
+        );
         enrich_graph(
             &mut graph,
             &EmbeddedElevation,
@@ -254,6 +218,127 @@ impl GraphBuilder {
             self.weights,
         )?;
         Ok(graph)
+    }
+}
+
+struct EdgeAssembly {
+    vertices: Vec<Vertex>,
+    edges: Vec<Edge>,
+    edges_by_draft: Vec<Vec<EdgeId>>,
+}
+
+fn assemble_edges(
+    drafts: &[SegmentDraft],
+    primitives: &[Primitive],
+    cuts: Vec<Vec<Cut>>,
+    weights: DifficultyWeights,
+    snap_tolerance_m: f64,
+) -> EdgeAssembly {
+    let mut vertices = Vec::<Vertex>::new();
+    let mut vertex_by_coord = BTreeMap::<(u64, u64), VertexId>::new();
+    let mut edges = Vec::<Edge>::new();
+    let mut edge_by_support = BTreeMap::<Vec<(u64, u64)>, EdgeId>::new();
+    let mut edges_by_draft = vec![Vec::<EdgeId>::new(); drafts.len()];
+    let snap_provenance = Provenance {
+        source: "graph-builder".to_owned(),
+        layer: Some("near-miss-snap".to_owned()),
+        source_id: Some(format!("tolerance {snap_tolerance_m:.1} m")),
+        license: None,
+    };
+
+    for (primitive, xs) in primitives.iter().copied().zip(cuts) {
+        let xs = normalize_cuts(xs);
+        for pair in xs.windows(2) {
+            let a = pair[0].coord;
+            let b = pair[1].coord;
+            if a.planar_distance2(b) < 1.0e-18 {
+                continue;
+            }
+            let va = vertex_id(a, &mut vertices, &mut vertex_by_coord);
+            let vb = vertex_id(b, &mut vertices, &mut vertex_by_coord);
+            if va == vb {
+                continue;
+            }
+            let draft = &drafts[primitive.src];
+            let geometry = edge_geometry(
+                draft,
+                vertices[va.0].coord,
+                vertices[vb.0].coord,
+                pair[0].t,
+                pair[1].t,
+            );
+            let snapped = pair[0].snapped || pair[1].snapped;
+            let attr = edge_attr(draft, &geometry, snapped.then_some(snap_provenance.clone()));
+            let id = EdgeId(edges.len());
+            let mut edge = Edge {
+                id,
+                a: va,
+                b: vb,
+                geometry,
+                attr,
+            };
+            weights.apply_edge(&mut edge);
+            let support = support_key(&edge.geometry);
+            let id = if let Some(id) = edge_by_support.get(&support).copied() {
+                corroborate_edge(&mut edges[id.0], &edge);
+                weights.apply_edge(&mut edges[id.0]);
+                id
+            } else {
+                edge_by_support.insert(support, id);
+                edges.push(edge);
+                id
+            };
+            edges_by_draft[primitive.src].push(id);
+        }
+    }
+
+    EdgeAssembly {
+        vertices,
+        edges,
+        edges_by_draft,
+    }
+}
+
+fn support_key(geometry: &LineString) -> Vec<(u64, u64)> {
+    let forward = geometry
+        .points
+        .iter()
+        .map(|point| (point.lon.to_bits(), point.lat.to_bits()));
+    let reverse = geometry
+        .points
+        .iter()
+        .rev()
+        .map(|point| (point.lon.to_bits(), point.lat.to_bits()));
+    let forward = forward.collect::<Vec<_>>();
+    let reverse = reverse.collect::<Vec<_>>();
+    forward.min(reverse)
+}
+
+fn corroborate_edge(preferred: &mut Edge, suppressed: &Edge) {
+    for provenance in &suppressed.attr.provenance {
+        if !preferred.attr.provenance.contains(provenance) {
+            preferred.attr.provenance.push(provenance.clone());
+        }
+    }
+    preferred.attr.confidence = preferred.attr.confidence.max(suppressed.attr.confidence);
+    if preferred.attr.trail_class == TrailClass::Unknown {
+        preferred.attr.trail_class = suppressed.attr.trail_class;
+    }
+    if preferred.attr.standing == TrailStanding::Unknown {
+        preferred.attr.standing = suppressed.attr.standing;
+    }
+    if preferred.attr.marking == TrailMarking::Unknown {
+        preferred.attr.marking = suppressed.attr.marking;
+    }
+    if preferred.attr.terrain == Terrain::Unknown {
+        preferred.attr.terrain = suppressed.attr.terrain;
+        preferred.attr.terrain_confidence = suppressed.attr.terrain_confidence;
+    }
+    if preferred.attr.surface.is_none() {
+        preferred.attr.surface.clone_from(&suppressed.attr.surface);
+    }
+    if preferred.attr.access == Access::Unknown {
+        preferred.attr.access = suppressed.attr.access;
     }
 }
 

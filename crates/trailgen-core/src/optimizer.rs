@@ -1,6 +1,7 @@
+use crate::Coord;
 use crate::RouteShape;
 use crate::constraints::LoopConstraints;
-use crate::model::{EdgeId, TrailGraph, VertexId};
+use crate::model::{EdgeId, EdgeTravel, TrailGraph, VertexId};
 use crate::route::{Route, rank_routes};
 use crate::trail::RoutingLaw;
 use serde::{Deserialize, Serialize};
@@ -72,6 +73,10 @@ impl<'a> SearchScope<'a> {
             .copied()
             .filter(|edge| self.allowed.is_none_or(|allowed| allowed[edge.0]))
             .collect()
+    }
+
+    fn allows(self, edge: EdgeId) -> bool {
+        self.allowed.is_none_or(|allowed| allowed[edge.0])
     }
 }
 
@@ -293,6 +298,9 @@ impl LoopHunter {
         count: usize,
         monitor: &dyn SearchMonitor,
     ) -> Vec<Route> {
+        if constraints.allowed_shapes.as_slice() == [RouteShape::Loop] {
+            return support_loop_portfolio(self.params, scope, start, constraints, count, monitor);
+        }
         let graph = scope.graph;
         let mut stack = vec![State {
             at: start,
@@ -633,6 +641,836 @@ fn support_out_and_backs(
     }
     meter.finish(routes.len());
     finish_routes(routes, graph, constraints, count, params.keep, monitor)
+}
+
+const SUPPORT_RINGS: u32 = 12;
+const SUPPORT_SECTORS: u32 = 16;
+
+#[derive(Clone, Debug)]
+struct SupportDesign {
+    promise_m: f64,
+    supports: Vec<VertexId>,
+}
+
+fn support_loop_portfolio(
+    params: SearchParams,
+    scope: SearchScope<'_>,
+    start: VertexId,
+    constraints: &LoopConstraints,
+    count: usize,
+    monitor: &dyn SearchMonitor,
+) -> Vec<Route> {
+    let graph = scope.graph;
+    let skeleton = RoutingSkeleton::forge(scope, start, params.routing);
+    let radial = radial_distances(&skeleton, start, constraints.max_distance_m * 0.55, monitor);
+    if monitor.cancelled() {
+        return Vec::new();
+    }
+    let landmarks = support_landmarks(graph, start, &radial, constraints);
+    let designs = support_designs(graph, &radial, &landmarks, constraints, params);
+    let limit = designs.len().min(params.max_frontier);
+    let mut meter = SearchMeter::new(monitor, limit);
+    let mut workspace = ArcWorkspace::new(skeleton.arcs.len());
+    let mut banned = vec![false; graph.vertices.len()];
+    let mut barred = vec![false; skeleton.arcs.len()];
+    let mut routes = Vec::new();
+    let mut forge = SupportForge {
+        skeleton: &skeleton,
+        start,
+        constraints,
+        monitor,
+        outbound: vec![None; graph.vertices.len()],
+    };
+    for design in designs.into_iter().take(limit) {
+        if !meter.advance(routes.len()) {
+            break;
+        }
+        if let Some(edges) =
+            forge.loop_through(&design.supports, &mut workspace, &mut banned, &mut barred)
+        {
+            push_allowed_route(&mut routes, graph, start, edges, constraints);
+        }
+    }
+    if monitor.cancelled() {
+        return Vec::new();
+    }
+    meter.finish(routes.len());
+    finish_routes(routes, graph, constraints, count, params.keep, monitor)
+}
+
+fn support_designs(
+    graph: &TrailGraph,
+    radial: &[f64],
+    landmarks: &[VertexId],
+    constraints: &LoopConstraints,
+    params: SearchParams,
+) -> Vec<SupportDesign> {
+    let pool = params.keep.max(1).saturating_mul(8);
+    let target_m = (constraints.min_distance_m + constraints.max_distance_m) * 0.5;
+    let mut designs = landmarks
+        .iter()
+        .copied()
+        .map(|pivot| SupportDesign {
+            promise_m: radial[pivot.0] * 2.0,
+            supports: vec![pivot],
+        })
+        .collect::<Vec<_>>();
+
+    let mut pairs = Vec::new();
+    for first in landmarks.iter().copied() {
+        for second in landmarks.iter().copied().filter(|second| *second != first) {
+            pairs.push((
+                radial[first.0]
+                    + graph.vertices[first.0]
+                        .coord
+                        .haversine_m(graph.vertices[second.0].coord)
+                    + radial[second.0],
+                [first, second],
+            ));
+        }
+    }
+    pairs.sort_by(|left, right| {
+        support_rank(left.0, &left.1, target_m, params.seed).cmp(&support_rank(
+            right.0,
+            &right.1,
+            target_m,
+            params.seed,
+        ))
+    });
+    designs.extend(
+        pairs
+            .into_iter()
+            .take(pool)
+            .map(|(promise_m, supports)| SupportDesign {
+                promise_m,
+                supports: supports.into(),
+            }),
+    );
+
+    let mut triples = Vec::new();
+    for first in landmarks.iter().copied() {
+        for second in landmarks.iter().copied().filter(|second| *second != first) {
+            for third in landmarks
+                .iter()
+                .copied()
+                .filter(|third| *third != first && *third != second)
+            {
+                triples.push((
+                    radial[first.0]
+                        + graph.vertices[first.0]
+                            .coord
+                            .haversine_m(graph.vertices[second.0].coord)
+                        + graph.vertices[second.0]
+                            .coord
+                            .haversine_m(graph.vertices[third.0].coord)
+                        + radial[third.0],
+                    [first, second, third],
+                ));
+            }
+        }
+    }
+    triples.sort_by(|left, right| {
+        support_rank(left.0, &left.1, target_m, params.seed).cmp(&support_rank(
+            right.0,
+            &right.1,
+            target_m,
+            params.seed,
+        ))
+    });
+    designs.extend(triples.into_iter().take(pool.saturating_mul(2)).map(
+        |(promise_m, supports)| SupportDesign {
+            promise_m,
+            supports: supports.into(),
+        },
+    ));
+    designs.sort_by(|left, right| {
+        support_rank(left.promise_m, &left.supports, target_m, params.seed).cmp(&support_rank(
+            right.promise_m,
+            &right.supports,
+            target_m,
+            params.seed,
+        ))
+    });
+    designs
+}
+
+fn support_rank(promise_m: f64, supports: &[VertexId], target_m: f64, seed: u64) -> (u64, u64) {
+    let deviation = (promise_m - target_m).abs().to_bits();
+    let hash = supports
+        .iter()
+        .fold(seed, |hash, vertex| splitmix64(hash ^ vertex.0 as u64));
+    (deviation, hash)
+}
+
+fn support_landmarks(
+    graph: &TrailGraph,
+    start: VertexId,
+    radial: &[f64],
+    constraints: &LoopConstraints,
+) -> Vec<VertexId> {
+    let ceiling_m = constraints.max_distance_m * 0.5;
+    if ceiling_m <= 0.0 || !ceiling_m.is_finite() {
+        return Vec::new();
+    }
+    let floor_m = ceiling_m / 16.0;
+    let origin = graph.vertices[start.0].coord;
+    let reachable = graph
+        .vertices
+        .iter()
+        .filter(|vertex| vertex.id != start && radial[vertex.id.0].is_finite())
+        .collect::<Vec<_>>();
+    let mut landmarks = BTreeSet::new();
+    for ring in 0..SUPPORT_RINGS {
+        let target_m =
+            floor_m + (ceiling_m - floor_m) * (f64::from(ring) + 0.5) / f64::from(SUPPORT_RINGS);
+        for sector in 0..SUPPORT_SECTORS {
+            landmarks.extend(
+                reachable
+                    .iter()
+                    .copied()
+                    .filter(|vertex| bearing_sector(origin, vertex.coord) == sector)
+                    .min_by(|left, right| {
+                        (radial[left.id.0] - target_m)
+                            .abs()
+                            .total_cmp(&(radial[right.id.0] - target_m).abs())
+                            .then_with(|| left.id.cmp(&right.id))
+                    })
+                    .map(|vertex| vertex.id),
+            );
+        }
+    }
+    landmarks.into_iter().collect()
+}
+
+fn bearing_sector(origin: Coord, point: Coord) -> u32 {
+    let x = (point.lon - origin.lon) * origin.lat.to_radians().cos();
+    let y = point.lat - origin.lat;
+    let turn = (y.atan2(x) + std::f64::consts::PI) / std::f64::consts::TAU;
+    (0..SUPPORT_SECTORS - 1)
+        .find(|sector| turn < f64::from(*sector + 1) / f64::from(SUPPORT_SECTORS))
+        .unwrap_or(SUPPORT_SECTORS - 1)
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct ArcId(usize);
+
+struct RoutingArc {
+    id: ArcId,
+    a: VertexId,
+    b: VertexId,
+    edges: Vec<EdgeId>,
+    distance_m: f64,
+    routing_cost_m: f64,
+    forward: bool,
+    backward: bool,
+}
+
+impl RoutingArc {
+    fn traverse(&self, from: VertexId) -> Option<VertexId> {
+        if from == self.a && self.forward {
+            Some(self.b)
+        } else if from == self.b && self.backward {
+            Some(self.a)
+        } else {
+            None
+        }
+    }
+
+    fn first_edge_from(&self, from: VertexId) -> Option<EdgeId> {
+        self.traverse(from)?;
+        if from == self.a {
+            self.edges.first().copied()
+        } else {
+            self.edges.last().copied()
+        }
+    }
+
+    fn last_edge_at(&self, at: VertexId) -> Option<EdgeId> {
+        if at == self.b && self.forward {
+            self.edges.last().copied()
+        } else if at == self.a && self.backward {
+            self.edges.first().copied()
+        } else {
+            None
+        }
+    }
+
+    fn append_edges_from(&self, from: VertexId, output: &mut Vec<EdgeId>) -> Option<VertexId> {
+        let at = self.traverse(from)?;
+        if from == self.a {
+            output.extend(self.edges.iter().copied());
+        } else {
+            output.extend(self.edges.iter().rev().copied());
+        }
+        Some(at)
+    }
+}
+
+struct RoutingSkeleton<'graph> {
+    graph: &'graph TrailGraph,
+    arcs: Vec<RoutingArc>,
+    adjacency: Vec<Vec<ArcId>>,
+}
+
+impl<'graph> RoutingSkeleton<'graph> {
+    fn forge(scope: SearchScope<'graph>, start: VertexId, law: RoutingLaw) -> Self {
+        let graph = scope.graph;
+        let incidence = routing_incidence(scope, law);
+        let preserved = preserved_vertices(graph, &incidence, start);
+        let arcs = skeleton_arcs(graph, &incidence, &preserved, law);
+        let adjacency = arc_adjacency(graph.vertices.len(), &arcs);
+        Self {
+            graph,
+            arcs,
+            adjacency,
+        }
+    }
+
+    fn turn_allowed(&self, previous: Option<ArcId>, via: VertexId, next: ArcId) -> bool {
+        let prior = previous.and_then(|arc| self.arcs[arc.0].last_edge_at(via));
+        self.arcs[next.0]
+            .first_edge_from(via)
+            .is_some_and(|edge| self.graph.turn_allowed(prior, via, edge))
+    }
+
+    fn expand(&self, start: VertexId, arcs: &[ArcId]) -> Option<Vec<EdgeId>> {
+        let mut at = start;
+        let mut edges = Vec::new();
+        for arc in arcs {
+            at = self.arcs[arc.0].append_edges_from(at, &mut edges)?;
+        }
+        Some(edges)
+    }
+}
+
+fn routing_incidence(scope: SearchScope<'_>, law: RoutingLaw) -> Vec<Vec<EdgeId>> {
+    let graph = scope.graph;
+    let mut incidence = vec![Vec::new(); graph.vertices.len()];
+    for edge in graph
+        .edges
+        .iter()
+        .filter(|edge| scope.allows(edge.id) && law.edge_cost(graph, edge.id).is_some())
+    {
+        incidence[edge.a.0].push(edge.id);
+        incidence[edge.b.0].push(edge.id);
+    }
+    incidence
+}
+
+fn preserved_vertices(graph: &TrailGraph, incidence: &[Vec<EdgeId>], start: VertexId) -> Vec<bool> {
+    let mut barred_turn = vec![false; graph.vertices.len()];
+    for ban in &graph.turn_bans {
+        barred_turn[ban.via.0] = true;
+    }
+    let mut preserved = graph
+        .vertices
+        .iter()
+        .map(|vertex| {
+            let edges = &incidence[vertex.id.0];
+            let distinct_neighbours = edges.len() == 2
+                && graph.edges[edges[0].0].other(vertex.id)
+                    != graph.edges[edges[1].0].other(vertex.id);
+            vertex.id == start
+                || barred_turn[vertex.id.0]
+                || !distinct_neighbours
+                || edges
+                    .iter()
+                    .any(|edge| graph.edges[edge.0].attr.travel != EdgeTravel::Both)
+        })
+        .collect::<Vec<_>>();
+    let roots = preserved.clone();
+    for vertex in graph.vertices.iter().filter(|vertex| roots[vertex.id.0]) {
+        for edge in &incidence[vertex.id.0] {
+            let neighbour = graph.edges[edge.0]
+                .other(vertex.id)
+                .expect("an incident edge contains its vertex");
+            preserved[neighbour.0] = true;
+        }
+    }
+    preserved
+}
+
+fn skeleton_arcs(
+    graph: &TrailGraph,
+    incidence: &[Vec<EdgeId>],
+    preserved: &[bool],
+    law: RoutingLaw,
+) -> Vec<RoutingArc> {
+    let mut visited = vec![false; graph.edges.len()];
+    let mut arcs = Vec::new();
+    for vertex in graph
+        .vertices
+        .iter()
+        .filter(|vertex| preserved[vertex.id.0])
+    {
+        for first in incidence[vertex.id.0].iter().copied() {
+            if visited[first.0] {
+                continue;
+            }
+            let mut edges = Vec::new();
+            let mut at = vertex.id;
+            let mut edge_id = first;
+            let endpoint = loop {
+                visited[edge_id.0] = true;
+                edges.push(edge_id);
+                let next = graph.edges[edge_id.0]
+                    .other(at)
+                    .expect("an incident edge contains its vertex");
+                if preserved[next.0] {
+                    break next;
+                }
+                edge_id = incidence[next.0]
+                    .iter()
+                    .copied()
+                    .find(|candidate| *candidate != edge_id)
+                    .expect("an elided vertex has exactly two incident edges");
+                at = next;
+            };
+            let id = ArcId(arcs.len());
+            let distance_m = edges
+                .iter()
+                .map(|edge| graph.edges[edge.0].attr.length_m)
+                .sum();
+            let routing_cost_m = edges
+                .iter()
+                .map(|edge| {
+                    law.edge_cost(graph, *edge)
+                        .expect("a skeleton contains only lawful edges")
+                })
+                .sum();
+            arcs.push(RoutingArc {
+                id,
+                a: vertex.id,
+                b: endpoint,
+                forward: chain_traversable(graph, vertex.id, edges.iter().copied()),
+                backward: chain_traversable(graph, endpoint, edges.iter().rev().copied()),
+                edges,
+                distance_m,
+                routing_cost_m,
+            });
+        }
+    }
+    arcs
+}
+
+fn arc_adjacency(vertex_count: usize, arcs: &[RoutingArc]) -> Vec<Vec<ArcId>> {
+    let mut adjacency = vec![Vec::new(); vertex_count];
+    for arc in arcs {
+        if arc.forward {
+            adjacency[arc.a.0].push(arc.id);
+        }
+        if arc.backward {
+            adjacency[arc.b.0].push(arc.id);
+        }
+    }
+    adjacency
+}
+
+fn chain_traversable(
+    graph: &TrailGraph,
+    mut at: VertexId,
+    edges: impl IntoIterator<Item = EdgeId>,
+) -> bool {
+    for edge in edges {
+        let Some(next) = graph.edges[edge.0].traverse(at) else {
+            return false;
+        };
+        at = next;
+    }
+    true
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RadialFrontier {
+    distance_m: f64,
+    at: VertexId,
+}
+
+impl Eq for RadialFrontier {}
+
+impl Ord for RadialFrontier {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .distance_m
+            .total_cmp(&self.distance_m)
+            .then_with(|| other.at.cmp(&self.at))
+    }
+}
+
+impl PartialOrd for RadialFrontier {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+fn radial_distances(
+    skeleton: &RoutingSkeleton<'_>,
+    start: VertexId,
+    maximum_m: f64,
+    monitor: &dyn SearchMonitor,
+) -> Vec<f64> {
+    let graph = skeleton.graph;
+    let mut distance = vec![f64::INFINITY; graph.vertices.len()];
+    distance[start.0] = 0.0;
+    let mut heap = BinaryHeap::from([RadialFrontier {
+        distance_m: 0.0,
+        at: start,
+    }]);
+    while let Some(frontier) = heap.pop() {
+        if monitor.cancelled() {
+            break;
+        }
+        if frontier.distance_m > distance[frontier.at.0] {
+            continue;
+        }
+        for arc_id in &skeleton.adjacency[frontier.at.0] {
+            let arc = &skeleton.arcs[arc_id.0];
+            let Some(at) = arc.traverse(frontier.at) else {
+                continue;
+            };
+            let next_m = frontier.distance_m + arc.distance_m;
+            if next_m <= maximum_m && next_m < distance[at.0] {
+                distance[at.0] = next_m;
+                heap.push(RadialFrontier {
+                    distance_m: next_m,
+                    at,
+                });
+            }
+        }
+    }
+    distance
+}
+
+struct SupportForge<'graph, 'constraint, 'monitor> {
+    skeleton: &'graph RoutingSkeleton<'graph>,
+    start: VertexId,
+    constraints: &'constraint LoopConstraints,
+    monitor: &'monitor dyn SearchMonitor,
+    outbound: Vec<Option<MeasuredPath>>,
+}
+
+impl SupportForge<'_, '_, '_> {
+    fn loop_through(
+        &mut self,
+        supports: &[VertexId],
+        workspace: &mut ArcWorkspace,
+        banned: &mut [bool],
+        barred: &mut [bool],
+    ) -> Option<Vec<EdgeId>> {
+        banned.fill(false);
+        barred.fill(false);
+        banned[self.start.0] = true;
+        let maximum_m = self.constraints.max_distance_m;
+        let mut arcs = Vec::new();
+        let mut at = self.start;
+        let mut spent_m = 0.0;
+        for target in supports.iter().copied().chain(std::iter::once(self.start)) {
+            let hunt = AvoidanceHunt {
+                skeleton: self.skeleton,
+                from: at,
+                target,
+                previous: arcs.last().copied(),
+                banned,
+                barred,
+                max_distance_m: maximum_m - spent_m,
+                monitor: self.monitor,
+            };
+            let path = if at == self.start && arcs.is_empty() {
+                if self.outbound[target.0].is_none() {
+                    self.outbound[target.0] = shortest_path_avoiding(hunt, workspace);
+                }
+                self.outbound[target.0].clone()?
+            } else {
+                shortest_path_avoiding(hunt, workspace)?
+            };
+            ban_internal_vertices(self.skeleton, at, &path.arcs, banned);
+            for arc in &path.arcs {
+                barred[arc.0] = true;
+            }
+            if at != self.start {
+                banned[at.0] = true;
+            }
+            spent_m += path.distance_m;
+            arcs.extend(path.arcs);
+            at = target;
+        }
+        let graph = self.skeleton.graph;
+        let edges = self.skeleton.expand(self.start, &arcs)?;
+        (edge_simple(&edges) && graph.walk_edges(self.start, &edges) == Some(self.start))
+            .then_some(edges)
+    }
+}
+
+fn ban_internal_vertices(
+    skeleton: &RoutingSkeleton<'_>,
+    mut at: VertexId,
+    arcs: &[ArcId],
+    banned: &mut [bool],
+) {
+    for arc in arcs.iter().copied().take(arcs.len().saturating_sub(1)) {
+        at = skeleton.arcs[arc.0]
+            .traverse(at)
+            .expect("a recovered path is a legal walk");
+        banned[at.0] = true;
+    }
+}
+
+#[derive(Clone, Copy)]
+struct AvoidanceHunt<'a> {
+    skeleton: &'a RoutingSkeleton<'a>,
+    from: VertexId,
+    target: VertexId,
+    previous: Option<ArcId>,
+    banned: &'a [bool],
+    barred: &'a [bool],
+    max_distance_m: f64,
+    monitor: &'a dyn SearchMonitor,
+}
+
+#[derive(Clone)]
+struct MeasuredPath {
+    arcs: Vec<ArcId>,
+    distance_m: f64,
+}
+
+fn shortest_path_avoiding(
+    hunt: AvoidanceHunt<'_>,
+    workspace: &mut ArcWorkspace,
+) -> Option<MeasuredPath> {
+    if hunt.max_distance_m < 0.0 {
+        return None;
+    }
+    let skeleton = hunt.skeleton;
+    let target = skeleton.graph.vertices[hunt.target.0].coord;
+    let origin_bound_m = skeleton.graph.vertices[hunt.from.0]
+        .coord
+        .haversine_m(target);
+    if origin_bound_m > hunt.max_distance_m {
+        return None;
+    }
+    workspace.begin();
+    let origin = ArcWalk {
+        at: hunt.from,
+        previous: hunt.previous,
+    };
+    let origin_label = workspace.admit(
+        arc_slot(skeleton, origin),
+        ArcLabel {
+            routing_cost_m: 0.0,
+            distance_m: 0.0,
+            predecessor: None,
+            arc: None,
+            live: true,
+        },
+    )?;
+    workspace.heap.push(ArcFrontier {
+        rank_m: origin_bound_m,
+        routing_cost_m: 0.0,
+        distance_m: 0.0,
+        walk: origin,
+        label: origin_label,
+    });
+    let mut expanded = 0usize;
+    let expansion_cap = return_expansion_cap(1, skeleton.graph.edges.len());
+    while let Some(frontier) = workspace.heap.pop() {
+        if hunt.monitor.cancelled() || expanded >= expansion_cap {
+            return None;
+        }
+        if !workspace.labels[frontier.label].live {
+            continue;
+        }
+        expanded += 1;
+        if frontier.walk.at == hunt.target {
+            let arcs = recover_arc_path(&workspace.labels, frontier.label);
+            return arc_simple(&arcs).then_some(MeasuredPath {
+                arcs,
+                distance_m: frontier.distance_m,
+            });
+        }
+        for arc_id in &skeleton.adjacency[frontier.walk.at.0] {
+            if hunt.barred[arc_id.0]
+                || frontier.walk.previous == Some(*arc_id)
+                || !skeleton.turn_allowed(frontier.walk.previous, frontier.walk.at, *arc_id)
+            {
+                continue;
+            }
+            let arc = &skeleton.arcs[arc_id.0];
+            let Some(at) = arc.traverse(frontier.walk.at) else {
+                continue;
+            };
+            if at != hunt.target && hunt.banned[at.0] {
+                continue;
+            }
+            let distance_m = frontier.distance_m + arc.distance_m;
+            let remaining_bound_m = skeleton.graph.vertices[at.0].coord.haversine_m(target);
+            if distance_m + remaining_bound_m > hunt.max_distance_m {
+                continue;
+            }
+            let routing_cost_m = frontier.routing_cost_m + arc.routing_cost_m;
+            let walk = ArcWalk {
+                at,
+                previous: Some(*arc_id),
+            };
+            let Some(label) = workspace.admit(
+                arc_slot(skeleton, walk),
+                ArcLabel {
+                    routing_cost_m,
+                    distance_m,
+                    predecessor: Some(frontier.label),
+                    arc: Some(*arc_id),
+                    live: true,
+                },
+            ) else {
+                continue;
+            };
+            workspace.heap.push(ArcFrontier {
+                rank_m: routing_cost_m + remaining_bound_m,
+                routing_cost_m,
+                distance_m,
+                walk,
+                label,
+            });
+        }
+    }
+    None
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct ArcWalk {
+    at: VertexId,
+    previous: Option<ArcId>,
+}
+
+#[derive(Clone, Debug)]
+struct ArcLabel {
+    routing_cost_m: f64,
+    distance_m: f64,
+    predecessor: Option<usize>,
+    arc: Option<ArcId>,
+    live: bool,
+}
+
+impl ArcLabel {
+    fn dominates(&self, routing_cost_m: f64, distance_m: f64) -> bool {
+        self.live && self.routing_cost_m <= routing_cost_m && self.distance_m <= distance_m
+    }
+
+    fn is_dominated_by(&self, routing_cost_m: f64, distance_m: f64) -> bool {
+        routing_cost_m <= self.routing_cost_m && distance_m <= self.distance_m
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ArcFrontier {
+    rank_m: f64,
+    routing_cost_m: f64,
+    distance_m: f64,
+    walk: ArcWalk,
+    label: usize,
+}
+
+impl Eq for ArcFrontier {}
+
+impl Ord for ArcFrontier {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .rank_m
+            .total_cmp(&self.rank_m)
+            .then_with(|| other.routing_cost_m.total_cmp(&self.routing_cost_m))
+            .then_with(|| other.distance_m.total_cmp(&self.distance_m))
+            .then_with(|| other.walk.cmp(&self.walk))
+            .then_with(|| other.label.cmp(&self.label))
+    }
+}
+
+impl PartialOrd for ArcFrontier {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+struct ArcWorkspace {
+    skylines: Vec<Vec<usize>>,
+    touched: Vec<usize>,
+    labels: Vec<ArcLabel>,
+    heap: BinaryHeap<ArcFrontier>,
+}
+
+impl ArcWorkspace {
+    fn new(arc_count: usize) -> Self {
+        Self {
+            skylines: vec![Vec::new(); closure_slot_count(arc_count)],
+            touched: Vec::new(),
+            labels: Vec::new(),
+            heap: BinaryHeap::new(),
+        }
+    }
+
+    fn begin(&mut self) {
+        for slot in self.touched.drain(..) {
+            self.skylines[slot].clear();
+        }
+        self.labels.clear();
+        self.heap.clear();
+    }
+
+    fn admit(&mut self, slot: usize, label: ArcLabel) -> Option<usize> {
+        let peers = &mut self.skylines[slot];
+        let pristine = peers.is_empty();
+        if peers
+            .iter()
+            .any(|id| self.labels[*id].dominates(label.routing_cost_m, label.distance_m))
+        {
+            return None;
+        }
+        for id in peers.iter().copied() {
+            let incumbent = &mut self.labels[id];
+            if incumbent.is_dominated_by(label.routing_cost_m, label.distance_m) {
+                incumbent.live = false;
+            }
+        }
+        peers.retain(|id| self.labels[*id].live);
+        let id = self.labels.len();
+        self.labels.push(label);
+        if pristine {
+            self.touched.push(slot);
+        }
+        peers.push(id);
+        Some(id)
+    }
+}
+
+fn arc_slot(skeleton: &RoutingSkeleton<'_>, walk: ArcWalk) -> usize {
+    let Some(arc_id) = walk.previous else {
+        return skeleton.arcs.len() * 2;
+    };
+    let arc = &skeleton.arcs[arc_id.0];
+    arc_id.0 * 2
+        + if walk.at == arc.a {
+            0
+        } else {
+            debug_assert_eq!(walk.at, arc.b);
+            1
+        }
+}
+
+fn recover_arc_path(labels: &[ArcLabel], mut label: usize) -> Vec<ArcId> {
+    let mut arcs = Vec::new();
+    while let Some(predecessor) = labels[label].predecessor {
+        arcs.push(
+            labels[label]
+                .arc
+                .expect("a non-origin arc label records its arc"),
+        );
+        label = predecessor;
+    }
+    arcs.reverse();
+    arcs
+}
+
+fn arc_simple(arcs: &[ArcId]) -> bool {
+    let mut seen = BTreeSet::new();
+    arcs.iter().all(|arc| seen.insert(*arc))
 }
 
 fn support_path(
@@ -1479,6 +2317,45 @@ mod tests {
             })
             .map(|edge| edge.id)
             .expect("fixture edge exists")
+    }
+
+    #[test]
+    fn routing_skeleton_crushes_shape_points_without_losing_support() {
+        let corners = [
+            Coord::new(0.0, 0.0),
+            Coord::new(0.01, 0.0),
+            Coord::new(0.01, 0.01),
+            Coord::new(0.0, 0.01),
+            Coord::new(0.0, 0.0),
+        ];
+        let mut points = Vec::new();
+        for side in corners.windows(2) {
+            for step in 0..40_u32 {
+                let t = f64::from(step) / 40.0;
+                points.push(Coord::new(
+                    (side[1].lon - side[0].lon).mul_add(t, side[0].lon),
+                    (side[1].lat - side[0].lat).mul_add(t, side[0].lat),
+                ));
+            }
+        }
+        points.push(corners[4]);
+        let graph = GraphBuilder::default()
+            .build(&[branch(points, "fine-ring")])
+            .expect("build fine ring");
+        let start = graph.nearest_vertex(corners[0]).expect("ring origin");
+        let skeleton =
+            RoutingSkeleton::forge(SearchScope::all(&graph), start, RoutingLaw::default());
+
+        assert_eq!(graph.edges.len(), 160);
+        assert_eq!(skeleton.arcs.len(), 3);
+        assert_eq!(
+            skeleton
+                .arcs
+                .iter()
+                .map(|arc| arc.edges.len())
+                .sum::<usize>(),
+            graph.edges.len()
+        );
     }
 
     #[test]
