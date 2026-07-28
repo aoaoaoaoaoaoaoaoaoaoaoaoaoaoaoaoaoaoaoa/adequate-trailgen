@@ -2,13 +2,12 @@ use crate::{
     library::SearchBoundary,
     map::{self, Viewport},
 };
-use dwemer_poolrooms::chrome;
 use egui::{Color32, CursorIcon, Painter, Pos2, Rect, Response, Stroke, Ui};
 use trailgen_core::Coord;
 
 const SAMPLE_DISTANCE_POINTS: f32 = 4.0;
 const MIN_AREA_POINTS2: f32 = 400.0;
-const BRONZE: Color32 = Color32::from_rgb(196, 170, 124);
+const SEARCH_MAGENTA: Color32 = Color32::from_rgb(190, 91, 147);
 
 #[derive(Default)]
 pub struct BoundaryScribe {
@@ -118,14 +117,14 @@ pub fn paint(
                 )
             })
             .collect();
-        paint_ring(painter, points, BRONZE);
+        paint_ring(painter, points, SEARCH_MAGENTA);
     }
     if preview.len() >= 2 {
         let mut points = preview.to_vec();
         if points.len() >= 3 {
             points.push(points[0]);
         }
-        let _preview = painter.line(points, Stroke::new(2.5_f32, chrome::HOT));
+        let _preview = painter.line(points, Stroke::new(2.5_f32, SEARCH_MAGENTA));
     }
 }
 

@@ -297,7 +297,12 @@ pub struct Cover {
 impl Cover {
     pub fn demand_order(&self) -> Vec<TileKey> {
         let mut ordered = Vec::new();
-        for intent in [Intent::Fallback, Intent::Required, Intent::Prefetch] {
+        for intent in [
+            Intent::Fallback,
+            Intent::Required,
+            Intent::Wayfinding,
+            Intent::Prefetch,
+        ] {
             ordered.extend(
                 self.strata
                     .iter()
@@ -319,6 +324,7 @@ pub struct Stratum {
 pub enum Intent {
     Fallback,
     Required,
+    Wayfinding,
     Prefetch,
 }
 
@@ -488,7 +494,12 @@ impl Basemap {
     }
 }
 
-pub fn cover(frame: MapFramePlan, detail: DetailPlan, archive_zoom: Option<u8>) -> Cover {
+pub fn cover(
+    frame: MapFramePlan,
+    detail: DetailPlan,
+    archive_zoom: Option<u8>,
+    with_wayfinding: bool,
+) -> Cover {
     let source = detail.source;
     let fallback = archive_zoom
         .filter(|archive_zoom| *archive_zoom < source.get())
@@ -508,6 +519,16 @@ pub fn cover(frame: MapFramePlan, detail: DetailPlan, archive_zoom: Option<u8>) 
         strata.push(Stratum {
             intent: Intent::Prefetch,
             keys: keys_at(frame, source.successor(), 0),
+        });
+    }
+    if with_wayfinding
+        && archive_zoom.is_some_and(|zoom| zoom >= TRAILHEAD_PARKING_SOURCE_ZOOM)
+        && source.get() < TRAILHEAD_PARKING_SOURCE_ZOOM
+        && frame.zoom.get() >= f64::from(TRAILHEAD_PARKING_ONSET_ZOOM) + TRAILHEAD_PARKING_FETCH_LAG
+    {
+        strata.push(Stratum {
+            intent: Intent::Wayfinding,
+            keys: keys_at(frame, SourceLevel::new(TRAILHEAD_PARKING_SOURCE_ZOOM), 0),
         });
     }
     Cover {
@@ -1265,12 +1286,19 @@ struct StrokeStyle {
     onset_zoom: f32,
 }
 
-const WATER_FILL: [u8; 4] = [125, 169, 188, 255];
+const WATER_FILL: [u8; 4] = [101, 156, 181, 255];
 const WATER_STROKE: StrokeStyle = StrokeStyle {
     color: [71, 130, 154, 180],
     radius_points: 0.48,
     onset_zoom: 0.0,
 };
+const TRAILHEAD_PARKING_ONSET_ZOOM: f32 = 10.25;
+const TRAILHEAD_PARKING_SOURCE_ZOOM: u8 = 13;
+const TRAILHEAD_PARKING_FETCH_LAG: f64 = 0.5;
+
+const fn trailhead_parking_onset(_provider_onset: Option<f64>) -> f32 {
+    TRAILHEAD_PARKING_ONSET_ZOOM
+}
 
 struct Forge {
     key: TileKey,
@@ -1409,7 +1437,9 @@ impl Forge {
                 continue;
             }
             let name = tags.name.map(Arc::from);
-            let onset_zoom = disclosure_onset(tags.min_zoom, 14.5);
+            // The provider's generic POI priority is immaterial after VectorField
+            // reclassifies this as public parking abutting a trail.
+            let onset_zoom = trailhead_parking_onset(tags.min_zoom);
             match feature.geometry()? {
                 MvtGeometry::Point(point) => self.parking.push(Parking {
                     world: world64(self.key, extent, point.0),
@@ -2133,7 +2163,12 @@ mod tests {
     #[test]
     fn cover_demands_one_fallback_and_current_detail_only() {
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
-        let cover = cover(MapFramePlan::forge(VIEW, rect), detail(9, false), None);
+        let cover = cover(
+            MapFramePlan::forge(VIEW, rect),
+            detail(9, false),
+            None,
+            false,
+        );
         assert_eq!(cover.strata.len(), 2);
         assert_eq!(cover.strata[0].intent, Intent::Fallback);
         assert_eq!(cover.strata[1].intent, Intent::Required);
@@ -2147,9 +2182,50 @@ mod tests {
     }
 
     #[test]
+    fn regional_view_demands_local_wayfinding_from_the_project_archive() {
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
+        let viewport = Viewport { zoom: 11.0, ..VIEW };
+        let trail_map = cover(
+            MapFramePlan::forge(viewport, rect),
+            detail(10, false),
+            Some(15),
+            true,
+        );
+        let wayfinding = trail_map
+            .strata
+            .iter()
+            .find(|stratum| stratum.intent == Intent::Wayfinding)
+            .expect("regional project view should demand trailhead parking");
+        assert!(!wayfinding.keys.is_empty());
+        assert!(
+            wayfinding
+                .keys
+                .iter()
+                .all(|key| key.zoom == TRAILHEAD_PARKING_SOURCE_ZOOM)
+        );
+        let survey = cover(
+            MapFramePlan::forge(viewport, rect),
+            detail(10, false),
+            Some(15),
+            false,
+        );
+        assert!(
+            survey
+                .strata
+                .iter()
+                .all(|stratum| stratum.intent != Intent::Wayfinding)
+        );
+    }
+
+    #[test]
     fn visible_cells_are_independent_units_of_refinement() {
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
-        let cover = cover(MapFramePlan::forge(VIEW, rect), detail(9, true), None);
+        let cover = cover(
+            MapFramePlan::forge(VIEW, rect),
+            detail(9, true),
+            None,
+            false,
+        );
         assert_eq!(cover.strata.len(), 3);
         assert_eq!(cover.strata[2].intent, Intent::Prefetch);
         let cells = cover.cells;
@@ -2178,6 +2254,7 @@ mod tests {
             ),
             detail(0, false),
             None,
+            false,
         );
         for stratum in cover.strata {
             let distinct = stratum
@@ -2200,6 +2277,7 @@ mod tests {
             MapFramePlan::forge(view, rect),
             detail(MAX_SOURCE_ZOOM, true),
             None,
+            false,
         );
         let crown = cover.strata.last().context("top stratum")?;
         assert_eq!(crown.intent, Intent::Required);
@@ -2243,7 +2321,12 @@ mod tests {
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
         let view = Viewport { zoom: 11.0, ..VIEW };
 
-        let cover = cover(MapFramePlan::forge(view, rect), detail(10, false), Some(4));
+        let cover = cover(
+            MapFramePlan::forge(view, rect),
+            detail(10, false),
+            Some(4),
+            false,
+        );
 
         assert!(cover.strata.first().is_some_and(|stratum| {
             stratum.intent == Intent::Fallback && stratum.keys.iter().all(|key| key.zoom == 4)
@@ -2358,6 +2441,13 @@ mod tests {
         for restriction in ["private", "no", "customers", "permit", "destination"] {
             assert!(!public_access(Some(restriction)));
         }
+    }
+
+    #[test]
+    fn trail_access_parking_overrules_generic_poi_secrecy() {
+        let onset = trailhead_parking_onset(Some(18.0));
+        assert!((onset - trailhead_parking_onset(None)).abs() < f32::EPSILON);
+        assert!(apparition(11.14, onset) > 0.6);
     }
 
     #[test]

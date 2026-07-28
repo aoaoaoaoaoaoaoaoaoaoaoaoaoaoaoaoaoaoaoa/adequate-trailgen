@@ -70,6 +70,7 @@ pub struct TrailApp {
     serial: u64,
     forge_phase: ForgePhase,
     placing_trailhead: bool,
+    trailhead_drag: Option<TrailheadDrag>,
     editor: Option<TrailEditor>,
     vector: VectorField,
     relief: Relief,
@@ -120,6 +121,18 @@ struct PinDrag {
     slot: usize,
     before: TrailSketch,
     grab: egui::Vec2,
+}
+
+struct TrailheadDrag {
+    origin: Coord,
+    preview: Coord,
+    grab: egui::Vec2,
+}
+
+#[derive(Clone, Copy, Default)]
+struct TrailheadGesture {
+    captured: bool,
+    stopped: bool,
 }
 
 impl TrailEditor {
@@ -379,6 +392,7 @@ impl TrailApp {
             serial: 0,
             forge_phase: ForgePhase::Idle,
             placing_trailhead: false,
+            trailhead_drag: None,
             editor: None,
             vector,
             relief,
@@ -596,6 +610,7 @@ impl TrailApp {
             chrome::tension(ui, &place);
             if place.clicked() {
                 self.placing_trailhead = !placing;
+                self.trailhead_drag = None;
                 if self.placing_trailhead {
                     self.scribe.disarm();
                     self.boundary_scribe.disarm();
@@ -608,13 +623,19 @@ impl TrailApp {
                 if clear.clicked() {
                     recipe.trailhead = None;
                     self.placing_trailhead = false;
+                    self.trailhead_drag = None;
                     self.water.click(clear.rect);
                 }
             }
         });
-        if recipe.trailhead.is_some() {
-            let _set = chrome::note(ui, "TRAILHEAD SET");
-        }
+        let _set = chrome::note(
+            ui,
+            if recipe.trailhead.is_some() {
+                "TRAILHEAD SET · DRAG PIN OR ALT+CLICK TO MOVE"
+            } else {
+                "ALT+CLICK MAP TO PLACE"
+            },
+        );
     }
 
     fn search_boundary_editor(&mut self, ui: &mut egui::Ui, recipe: &mut SearchRecipe) {
@@ -650,6 +671,7 @@ impl TrailApp {
                     self.boundary_scribe.arm();
                     self.scribe.disarm();
                     self.placing_trailhead = false;
+                    self.trailhead_drag = None;
                     self.leave_focus();
                 }
                 self.water.click(draw.rect);
@@ -666,7 +688,7 @@ impl TrailApp {
         let _state = chrome::note(
             ui,
             if recipe.boundary.is_some() {
-                "ROUTES STAY INSIDE THE BRONZE BOUNDARY"
+                "ROUTES STAY INSIDE THE SEARCH BOUNDARY"
             } else {
                 "NO SEARCH-AREA LIMIT"
             },
@@ -809,6 +831,7 @@ impl TrailApp {
                 self.scribe.arm();
                 self.boundary_scribe.disarm();
                 self.placing_trailhead = false;
+                self.trailhead_drag = None;
                 self.leave_focus();
             }
             self.water.click(select.rect);
@@ -902,9 +925,11 @@ impl TrailApp {
                     "Click to add support points; drag any bronze pin to reshape the trail."
                 }
             } else if self.placing_trailhead {
-                "Click a trail on the map to place the trailhead. Esc cancels."
+                "Click a trail to place the trailhead. Alt+click also works; Esc cancels."
             } else if self.active_trailhead().is_none() {
-                "Place a trailhead on the map, then choose Find trails."
+                "Place a trailhead, or Alt+click the map, then choose Find trails."
+            } else if self.trailhead_drag.is_some() {
+                "Drag the trailhead to a new starting point."
             } else {
                 &self.status
             };
@@ -1245,6 +1270,7 @@ impl TrailApp {
         if ui.input(|input| input.pointer.button_pressed(egui::PointerButton::Primary)) {
             self.seize_editor_support(pointer, support_under_pointer, rect);
         }
+        let trailhead_gesture = self.interact_trailhead(ui, rect);
         let editor_dragging = self
             .editor
             .as_ref()
@@ -1256,7 +1282,10 @@ impl TrailApp {
             ui,
             &response,
             rect,
-            !self.scribe.active() && !self.boundary_scribe.active() && !editor_dragging,
+            !self.scribe.active()
+                && !self.boundary_scribe.active()
+                && !editor_dragging
+                && !trailhead_gesture.captured,
         );
         if moved {
             self.fit = Fit::None;
@@ -1289,7 +1318,11 @@ impl TrailApp {
         if self.editor.is_some() {
             self.paint_support_points(&canvas, rect);
         } else if let Some(trailhead) = self.active_trailhead() {
-            map::paint_start(&canvas, trailhead.coord(), self.viewport, rect);
+            let (coord, seized) = self
+                .trailhead_drag
+                .as_ref()
+                .map_or_else(|| (trailhead.coord(), false), |drag| (drag.preview, true));
+            map::paint_start(&canvas, coord, self.viewport, rect, seized);
         }
         self.scale_bar.paint(&canvas, self.viewport, rect);
         self.atlas.paint_legend(&canvas, rect);
@@ -1301,35 +1334,14 @@ impl TrailApp {
         );
         self.paint_map_header(&canvas, rect);
 
-        if editor_dragging
-            && let Some(pointer) = pointer
-            && let Some((slot, grab)) = self
-                .editor
-                .as_ref()
-                .and_then(|editor| editor.drag.as_ref())
-                .map(|drag| (drag.slot, drag.grab))
-        {
-            self.place_editor_support(
-                map::coord_at(self.viewport, rect, pointer - grab),
-                Some(slot),
-                false,
-            );
-        }
-        if ui.input(|input| input.pointer.button_released(egui::PointerButton::Primary)) {
-            self.finish_editor_drag();
-        }
-        if response.clicked()
-            && self.editor.is_some()
-            && support_under_pointer.is_none()
-            && let Some(pointer) = pointer
-        {
-            self.place_editor_support(map::coord_at(self.viewport, rect, pointer), None, true);
-        } else if response.clicked()
-            && self.placing_trailhead
-            && let Some(pointer) = response.interact_pointer_pos()
-        {
-            self.place_trailhead(map::coord_at(self.viewport, rect, pointer), pointer);
-        }
+        self.settle_map_gestures(
+            ui,
+            &response,
+            rect,
+            pointer,
+            support_under_pointer,
+            trailhead_gesture,
+        );
         if before != self.viewport {
             ui.ctx().request_repaint();
         }
@@ -1454,6 +1466,126 @@ impl TrailApp {
         }
     }
 
+    fn settle_map_gestures(
+        &mut self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        rect: egui::Rect,
+        pointer: Option<egui::Pos2>,
+        support_under_pointer: Option<usize>,
+        trailhead: TrailheadGesture,
+    ) {
+        if let Some(pointer) = pointer
+            && let Some((slot, grab)) = self
+                .editor
+                .as_ref()
+                .and_then(|editor| editor.drag.as_ref())
+                .map(|drag| (drag.slot, drag.grab))
+        {
+            self.place_editor_support(
+                map::coord_at(self.viewport, rect, pointer - grab),
+                Some(slot),
+                false,
+            );
+        }
+        if ui.input(|input| input.pointer.button_released(egui::PointerButton::Primary)) {
+            self.finish_editor_drag();
+        }
+        if trailhead.stopped {
+            self.finish_trailhead_drag(rect);
+        }
+        let alt_click = response.clicked_by(egui::PointerButton::Primary)
+            && ui.input(|input| input.modifiers.alt)
+            && self.trailhead_input_available()
+            && !trailhead.captured;
+        if alt_click && let Some(pointer) = pointer {
+            self.place_trailhead(map::coord_at(self.viewport, rect, pointer), pointer);
+        } else if response.clicked()
+            && self.editor.is_some()
+            && support_under_pointer.is_none()
+            && let Some(pointer) = pointer
+        {
+            self.place_editor_support(map::coord_at(self.viewport, rect, pointer), None, true);
+        } else if response.clicked()
+            && self.placing_trailhead
+            && let Some(pointer) = response.interact_pointer_pos()
+        {
+            self.place_trailhead(map::coord_at(self.viewport, rect, pointer), pointer);
+        }
+    }
+
+    const fn trailhead_input_available(&self) -> bool {
+        self.editor.is_none()
+            && self.focus.is_none()
+            && self.corpus.is_none()
+            && !self.forge_phase.active()
+            && !self.scribe.active()
+            && !self.boundary_scribe.active()
+    }
+
+    fn interact_trailhead(&mut self, ui: &egui::Ui, rect: egui::Rect) -> TrailheadGesture {
+        if !self.trailhead_input_available() {
+            return TrailheadGesture::default();
+        }
+        let Some(coord) = self
+            .trailhead_drag
+            .as_ref()
+            .map(|drag| drag.preview)
+            .or_else(|| self.active_trailhead().map(Trailhead::coord))
+        else {
+            return TrailheadGesture::default();
+        };
+        let anchor = map::screen_at(self.viewport, rect, map::world_from_coord(coord));
+        let (pointer, pressed, released, down) = ui.input(|input| {
+            (
+                input.pointer.interact_pos(),
+                input.pointer.button_pressed(egui::PointerButton::Primary),
+                input.pointer.button_released(egui::PointerButton::Primary),
+                input.pointer.button_down(egui::PointerButton::Primary),
+            )
+        });
+        let hot = pointer.is_some_and(|pointer| crate::forge::pin_grip(anchor).contains(pointer));
+        if pressed
+            && hot
+            && let Some(pointer) = pointer
+        {
+            self.placing_trailhead = false;
+            self.trailhead_drag = Some(TrailheadDrag {
+                origin: coord,
+                preview: coord,
+                grab: pointer - anchor,
+            });
+        }
+        if (down || released)
+            && let (Some(drag), Some(pointer)) = (&mut self.trailhead_drag, pointer)
+        {
+            drag.preview = map::coord_at(self.viewport, rect, pointer - drag.grab);
+        }
+        let seized = self.trailhead_drag.is_some();
+        if seized || hot {
+            ui.ctx().set_cursor_icon(if seized {
+                egui::CursorIcon::Grabbing
+            } else {
+                egui::CursorIcon::Grab
+            });
+        }
+        TrailheadGesture {
+            captured: hot || seized,
+            stopped: seized && released,
+        }
+    }
+
+    fn finish_trailhead_drag(&mut self, rect: egui::Rect) {
+        let Some(drag) = self.trailhead_drag.take() else {
+            return;
+        };
+        if drag.preview == drag.origin {
+            return;
+        }
+        let pointer = map::screen_at(self.viewport, rect, map::world_from_coord(drag.preview));
+        self.place_trailhead(drag.preview, pointer);
+    }
+
     fn seize_editor_support(
         &mut self,
         pointer: Option<egui::Pos2>,
@@ -1561,7 +1693,7 @@ impl TrailApp {
             BoundaryEvent::Committed(boundary) => {
                 self.library.search_mut().boundary = Some(boundary);
                 self.mark_library_dirty();
-                "Search area set. Routes will remain inside the bronze boundary."
+                "Search area set. Routes will remain inside the boundary."
                     .clone_into(&mut self.status);
             }
         }
@@ -1573,7 +1705,7 @@ impl TrailApp {
             return;
         };
         if distance_m > TRAILHEAD_SNAP_M {
-            "Click closer to a downloaded trail.".clone_into(&mut self.status);
+            "Move closer to a downloaded trail.".clone_into(&mut self.status);
             return;
         }
         let coord = self.graph.vertices[vertex.0].coord;
@@ -1583,11 +1715,12 @@ impl TrailApp {
         };
         self.library.search_mut().trailhead = Some(trailhead);
         self.placing_trailhead = false;
+        self.trailhead_drag = None;
         self.flush_library();
         self.status = if distance_m < 20.0 {
-            "Trailhead placed.".to_owned()
+            "Trailhead set.".to_owned()
         } else {
-            format!("Trailhead placed {distance_m:.0} m from your click.")
+            format!("Trailhead set; snapped {distance_m:.0} m to the trail.")
         };
         self.water.click(crate::forge::pin_grip(pointer));
     }
@@ -1966,6 +2099,7 @@ impl TrailApp {
         self.scribe.disarm();
         self.boundary_scribe.disarm();
         self.placing_trailhead = false;
+        self.trailhead_drag = None;
         self.fit = Fit::None;
         self.editor = Some(TrailEditor {
             name,
@@ -2288,6 +2422,10 @@ impl TrailApp {
         }
         if escape && self.boundary_scribe.active() {
             self.boundary_scribe.disarm();
+            return;
+        }
+        if escape && self.trailhead_drag.is_some() {
+            self.trailhead_drag = None;
             return;
         }
         if escape && self.placing_trailhead {

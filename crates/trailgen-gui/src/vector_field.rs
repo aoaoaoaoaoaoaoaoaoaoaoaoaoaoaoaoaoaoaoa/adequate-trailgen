@@ -172,8 +172,12 @@ impl VectorField {
             }
             self.demand_dirty = true;
         }
+        let parking_tiles = self.trailhead_parking.len();
         self.trailhead_parking
             .retain(|key, _| self.tiles.contains(*key));
+        if parking_tiles != self.trailhead_parking.len() {
+            self.presentation_revision = self.presentation_revision.saturating_add(1);
+        }
     }
 
     pub fn paint_base(
@@ -229,7 +233,7 @@ impl VectorField {
         let detail =
             self.detail
                 .resolve(frame.zoom.get(), self.readiness.estimate(), Instant::now());
-        let cover = basemap::cover(frame, detail, self.archive_zoom);
+        let cover = basemap::cover(frame, detail, self.archive_zoom, self.trails.is_some());
         self.demand_cover(&cover, ctx);
         if self.presentation.as_ref().is_some_and(|stamp| {
             stamp.frame == frame
@@ -415,24 +419,21 @@ impl VectorField {
                 repeatable: true,
                 break_line: false,
             });
-        let parking = self
-            .presented
-            .iter()
-            .filter_map(|patch| {
-                self.trailhead_parking
-                    .get(&patch.tile.key)
-                    .map(|parking| (patch, parking))
-            })
-            .flat_map(|(patch, parking)| {
-                parking
-                    .iter()
-                    .filter(|parking| patch.contains(parking.world))
-            })
-            .map(|parking| annotation::Parking {
-                world: parking.world,
-                name: parking.name.as_deref(),
-                onset_zoom: parking.onset_zoom,
-            });
+        let mut parking = self
+            .trailhead_parking
+            .values()
+            .flat_map(|parking| parking.iter())
+            .collect::<Vec<_>>();
+        parking.sort_unstable_by(|left, right| {
+            left.world[1]
+                .total_cmp(&right.world[1])
+                .then_with(|| left.world[0].total_cmp(&right.world[0]))
+        });
+        let parking = parking.into_iter().map(|parking| annotation::Parking {
+            world: parking.world,
+            name: parking.name.as_deref(),
+            onset_zoom: parking.onset_zoom,
+        });
         self.annotations.reconcile(
             painter,
             annotation::Reconciliation {
@@ -455,9 +456,12 @@ impl VectorField {
             .cloned()
             .collect::<Arc<[_]>>();
         if parking.is_empty() {
-            self.trailhead_parking.remove(&tile.key);
+            if self.trailhead_parking.remove(&tile.key).is_some() {
+                self.presentation_revision = self.presentation_revision.saturating_add(1);
+            }
         } else {
             self.trailhead_parking.insert(tile.key, parking);
+            self.presentation_revision = self.presentation_revision.saturating_add(1);
         }
     }
 
@@ -706,6 +710,7 @@ mod tests {
                 prefetch: false,
             },
             None,
+            false,
         );
         assert!(cover.cells.len() > 1);
         let exact = cover.cells[0].key;
@@ -740,6 +745,7 @@ mod tests {
                 prefetch: false,
             },
             None,
+            false,
         );
         let cells = &cover.cells[..2];
         let parent = basemap::SourceLevel::new(8);

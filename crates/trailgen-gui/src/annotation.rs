@@ -11,6 +11,7 @@ const REPEAT_SEPARATION: f32 = 480.0;
 const TRANSITION: Duration = Duration::from_millis(160);
 const IDENTITY_SCALE: f64 = 2_097_152.0;
 const STRAIGHT_SUPPORT_COSINE: f64 = 0.93;
+const PARKING_LABEL_LAG: f32 = 1.25;
 
 pub struct PointLabel<'a> {
     pub world: [f64; 2],
@@ -624,7 +625,8 @@ fn prepare_parking<'a>(
             footprint,
         });
         let Some(name) = mark.name else { continue };
-        let label_maturity = basemap::apparition(viewport.zoom as f32, mark.onset_zoom + 0.45);
+        let label_maturity =
+            basemap::apparition(viewport.zoom as f32, mark.onset_zoom + PARKING_LABEL_LAG);
         if label_maturity <= 0.01 {
             continue;
         }
@@ -640,7 +642,7 @@ fn prepare_parking<'a>(
                 id: Identity::forge(1, name, mark.world),
                 text: name.to_owned(),
                 rank: 720,
-                birth_zoom: mark.onset_zoom + 0.45,
+                birth_zoom: mark.onset_zoom + PARKING_LABEL_LAG,
                 world_key: world_key(mark.world),
                 world: mark.world,
                 offset: center - anchor,
@@ -985,6 +987,31 @@ mod tests {
     use super::*;
 
     const VIEW: Rect = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(800.0, 600.0));
+
+    #[test]
+    fn parking_sigil_precedes_its_name() {
+        let context = egui::Context::default();
+        let _output = context.run_ui(egui::RawInput::default(), |ui| {
+            let viewport = map::Viewport {
+                center: [0.5, 0.5],
+                zoom: 10.75,
+            };
+            let composition = compose(
+                ui.painter(),
+                viewport,
+                VIEW,
+                std::iter::empty(),
+                std::iter::empty(),
+                [Parking {
+                    world: viewport.center,
+                    name: Some("TRAIL LOT"),
+                    onset_zoom: 10.25,
+                }],
+            );
+            assert_eq!(composition.parking.len(), 1);
+            assert!(composition.labels.is_empty());
+        });
+    }
     const CAMERA: map::Viewport = map::Viewport {
         center: [0.5, 0.5],
         zoom: 12.0,

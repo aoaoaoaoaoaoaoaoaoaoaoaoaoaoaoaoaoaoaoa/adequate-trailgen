@@ -459,12 +459,9 @@ impl Atlas {
         );
         for (slot, class) in self.classes.iter().copied().enumerate() {
             let y = (slot as f32).mul_add(row, plate.top() + 29.0);
-            paint_trail_tube(
-                painter,
-                &[pos2(plate.left() + 10.0, y), pos2(plate.left() + 32.0, y)],
-                TrailSalience::Context.width(),
-                trail_class_color(class),
-                TrailMark::Solid,
+            let _swatch = painter.line_segment(
+                [pos2(plate.left() + 10.0, y), pos2(plate.left() + 32.0, y)],
+                Stroke::new(TrailSalience::Context.width(), trail_class_color(class)),
             );
             painter.text(
                 pos2(plate.left() + 41.0, y),
@@ -862,9 +859,9 @@ fn surface_has_any(surface: Option<&str>, needles: &[&str]) -> bool {
     })
 }
 
-pub fn paint_start(painter: &Painter, trailhead: Coord, view: Viewport, rect: Rect) {
+pub fn paint_start(painter: &Painter, trailhead: Coord, view: Viewport, rect: Rect, seized: bool) {
     let anchor = screen_at(view, rect, world_from_coord(trailhead));
-    forge::pin(painter, anchor, false);
+    forge::pin(painter, anchor, seized);
 }
 
 fn paint_scale_length(
