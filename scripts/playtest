@@ -203,7 +203,7 @@ if [ "${TRAILGEN_GUI_CARTOGRAPHY:-0}" = 1 ]; then
     xdotool mousemove --window "$window" 756 423
     xdotool click --repeat 8 --delay 70 4
     attempts=0
-    while ! test -s "$project/cache/isohypses-v3.bin"; do
+    while ! test -s "$project/cache/isohypses-v4.bin"; do
         attempts=$((attempts + 1))
         if [ "$attempts" -ge 240 ]; then
             import -window "$window" "$out/cartography-timeout.png"

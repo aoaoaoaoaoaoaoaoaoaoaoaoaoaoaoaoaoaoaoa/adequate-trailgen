@@ -1,7 +1,7 @@
 use crate::{
     annotation,
     basemap::{self, Mesh, StrokePoint, TileKey, VectorTile},
-    map::{self, MapFramePlan},
+    map::{self, CartographicPlan, MapFramePlan},
     vector_map::{GeometryPass, VectorCorpus, VectorGap, VectorLayer, VectorPaint, VectorPatch},
 };
 use anyhow::{Context as _, Result, ensure};
@@ -16,17 +16,19 @@ use std::{
     path::Path,
     sync::Arc,
     thread,
+    time::{Duration, Instant},
 };
 use trailgen_data::{TopographicTile, Topography};
 
-const CACHE: &str = "cache/isohypses-v3.bin";
-const MAGIC: &[u8; 8] = b"TRLISO03";
+const CACHE: &str = "cache/isohypses-v4.bin";
+const MAGIC: &[u8; 8] = b"TRLISO04";
 const INTERVAL_M: i32 = 10;
 const INDEX_INTERVAL_M: i32 = 50;
-const CHUNK_POINTS: usize = 96;
 const POINT_CEILING: usize = 16_000_000;
 const LABEL_INDEX_ZOOM: u8 = 14;
 const LABEL_CELL_CEILING: usize = 64;
+const DETAIL_HYSTERESIS_ZOOM: f64 = 0.08;
+const DETAIL_TRANSITION: Duration = Duration::from_millis(160);
 const RELIEF_LAWS: [ReliefLaw; 4] = [
     ReliefLaw {
         onset_zoom: 10.5,
@@ -59,14 +61,21 @@ pub struct Relief {
     field: Arc<Field>,
     revision: u64,
     visibility: Option<ReliefVisibility>,
+    transition: Option<ReliefTransition>,
     events: Receiver<Result<Field>>,
     _worker: thread::JoinHandle<()>,
 }
 
+#[derive(Clone)]
 struct ReliefVisibility {
     frame: MapFramePlan,
     detail: u8,
     patches: Arc<[VectorPatch]>,
+}
+
+struct ReliefTransition {
+    prior: ReliefVisibility,
+    begun: Instant,
 }
 
 struct Field {
@@ -131,6 +140,23 @@ impl ReliefLaw {
         Some((slot as u8, RELIEF_LAWS[slot]))
     }
 
+    fn resolve(prior: Option<u8>, zoom: f64) -> Option<(u8, Self)> {
+        let target = Self::for_zoom(zoom)?;
+        let Some(prior) = prior else {
+            return Some(target);
+        };
+        let prior_law = RELIEF_LAWS[usize::from(prior)];
+        let retain = (target.0 > prior
+            && zoom < f64::from(target.1.onset_zoom) + DETAIL_HYSTERESIS_ZOOM)
+            || (target.0 < prior
+                && zoom >= f64::from(prior_law.onset_zoom) - DETAIL_HYSTERESIS_ZOOM);
+        if retain {
+            Some((prior, prior_law))
+        } else {
+            Some(target)
+        }
+    }
+
     fn tolerance_world(self) -> f64 {
         if self.error_points <= 0.0 {
             0.0
@@ -157,6 +183,7 @@ impl Relief {
             field: Arc::new(Field::default()),
             revision: 0,
             visibility: None,
+            transition: None,
             events,
             _worker: worker,
         })
@@ -169,6 +196,7 @@ impl Relief {
                     self.field = Arc::new(field);
                     self.revision = self.revision.saturating_add(1);
                     self.visibility = None;
+                    self.transition = None;
                 }
                 Err(err) => eprintln!("topography unavailable: {err:#}"),
             }
@@ -179,27 +207,90 @@ impl Relief {
         self.revision
     }
 
-    pub fn paint(&mut self, painter: &Painter, frame: MapFramePlan, gaps: Arc<[VectorGap]>) {
-        let Some((detail, _law)) = ReliefLaw::for_zoom(frame.zoom.get()) else {
+    pub fn paint(
+        &mut self,
+        painter: &Painter,
+        frame: MapFramePlan,
+        cartography: CartographicPlan,
+        gaps: Arc<[VectorGap]>,
+    ) {
+        let Some((detail, _law)) = ReliefLaw::resolve(
+            self.visibility.as_ref().map(|visibility| visibility.detail),
+            cartography.zoom.get(),
+        ) else {
             return;
         };
-        let patches = if let Some(visibility) = &self.visibility
-            && visibility.frame == frame
-            && visibility.detail == detail
-        {
-            Arc::clone(&visibility.patches)
-        } else {
-            let Some(tiles) = self.field.tiles.get(usize::from(detail)) else {
-                return;
-            };
-            let patches = visible_tiles(tiles, frame);
-            self.visibility = Some(ReliefVisibility {
+        let unchanged = self
+            .visibility
+            .as_ref()
+            .is_some_and(|visibility| visibility.frame == frame && visibility.detail == detail);
+        if !unchanged {
+            let patches = relief_patches(&self.field, detail, frame);
+            let next = ReliefVisibility {
                 frame,
                 detail,
-                patches: Arc::clone(&patches),
-            });
-            patches
-        };
+                patches,
+            };
+            if self
+                .visibility
+                .as_ref()
+                .is_some_and(|visibility| visibility.detail != detail)
+            {
+                self.transition = self.visibility.clone().map(|prior| ReliefTransition {
+                    prior,
+                    begun: Instant::now(),
+                });
+            }
+            self.visibility = Some(next);
+        }
+        if let Some(transition) = &mut self.transition
+            && transition.prior.frame != frame
+        {
+            transition.prior.frame = frame;
+            transition.prior.patches = relief_patches(&self.field, transition.prior.detail, frame);
+        }
+        let now = Instant::now();
+        let maturity = self.transition.as_ref().map(|transition| {
+            smooth_transition(
+                now.saturating_duration_since(transition.begun)
+                    .as_secs_f32()
+                    / DETAIL_TRANSITION.as_secs_f32(),
+            )
+        });
+        if maturity.is_some_and(|maturity| maturity >= 1.0) {
+            self.transition = None;
+        }
+        let current = self
+            .visibility
+            .as_ref()
+            .expect("relief visibility was just established");
+        let mut patches = Vec::with_capacity(
+            current.patches.len()
+                + self
+                    .transition
+                    .as_ref()
+                    .map_or(0, |transition| transition.prior.patches.len()),
+        );
+        if let Some(transition) = &self.transition {
+            let opacity = 1.0 - maturity.unwrap_or(1.0);
+            patches.extend(
+                transition
+                    .prior
+                    .patches
+                    .iter()
+                    .cloned()
+                    .map(|patch| patch.with_opacity(opacity)),
+            );
+            painter.ctx().request_repaint();
+        }
+        let opacity = maturity.unwrap_or(1.0);
+        patches.extend(
+            current
+                .patches
+                .iter()
+                .cloned()
+                .map(|patch| patch.with_opacity(opacity)),
+        );
         if patches.is_empty() {
             return;
         }
@@ -208,21 +299,24 @@ impl Relief {
             VectorPaint {
                 layer: VectorLayer::Relief,
                 corpus: self.corpus,
-                detail,
                 geometry: GeometryPass::Strokes,
                 gaps,
-                patches,
+                patches: patches.into(),
                 center_world: frame.viewport.center,
                 world_points: frame.world_points as f32,
                 viewport_points: [frame.rect.width(), frame.rect.height()],
-                view_zoom: frame.zoom.get() as f32,
+                view_zoom: cartography.zoom.get() as f32,
                 apparition_span: basemap::APPARITION_SPAN,
             },
         ));
     }
 
-    pub fn annotations(&self, frame: MapFramePlan) -> Vec<annotation::LineLabel<'_>> {
-        if frame.zoom.get() < 12.25 {
+    pub fn annotations(
+        &self,
+        frame: MapFramePlan,
+        cartography: CartographicPlan,
+    ) -> Vec<annotation::LineLabel<'_>> {
+        if cartography.zoom.get() < 12.25 {
             return Vec::new();
         }
         let visible = frame.world_bounds();
@@ -248,7 +342,19 @@ impl Relief {
     }
 }
 
-fn visible_tiles(tiles: &[Arc<VectorTile>], frame: MapFramePlan) -> Arc<[VectorPatch]> {
+fn relief_patches(field: &Field, detail: u8, frame: MapFramePlan) -> Arc<[VectorPatch]> {
+    field.tiles.get(usize::from(detail)).map_or_else(
+        || Arc::from([]),
+        |tiles| visible_tiles(tiles, frame, detail),
+    )
+}
+
+fn smooth_transition(phase: f32) -> f32 {
+    let phase = phase.clamp(0.0, 1.0);
+    phase * phase * 2.0_f32.mul_add(-phase, 3.0)
+}
+
+fn visible_tiles(tiles: &[Arc<VectorTile>], frame: MapFramePlan, detail: u8) -> Arc<[VectorPatch]> {
     let expansion = 2.0 / frame.world_points;
     let mut bounds = frame.world_bounds();
     bounds[0] -= expansion;
@@ -259,7 +365,7 @@ fn visible_tiles(tiles: &[Arc<VectorTile>], frame: MapFramePlan) -> Arc<[VectorP
         .iter()
         .filter(|tile| tile_intersects(bounds, tile.key))
         .cloned()
-        .map(VectorPatch::whole)
+        .map(|tile| VectorPatch::whole(tile).stratum(detail))
         .collect()
 }
 
@@ -416,24 +522,18 @@ fn reap_strata(
     for (elevation_m, segments) in strata {
         for mut chain in stitch(&segments) {
             smooth(&mut chain);
-            let mut start = 0;
-            while start + 1 < chain.len() {
-                let end = (start + CHUNK_POINTS).min(chain.len());
-                let points = chain[start..end]
-                    .iter()
-                    .copied()
-                    .map(|point| mosaic.world(point))
-                    .collect::<Arc<[_]>>();
-                isohypses.push(Isohypse {
-                    key,
-                    elevation_m,
-                    label: (elevation_m % INDEX_INTERVAL_M == 0)
-                        .then(|| Arc::from(format!("{elevation_m} m"))),
-                    bounds: bounds(&points),
-                    points,
-                });
-                start = end - 1;
-            }
+            let points = chain
+                .into_iter()
+                .map(|point| mosaic.world(point))
+                .collect::<Arc<[_]>>();
+            isohypses.push(Isohypse {
+                key,
+                elevation_m,
+                label: (elevation_m % INDEX_INTERVAL_M == 0)
+                    .then(|| Arc::from(format!("{elevation_m} m"))),
+                bounds: bounds(&points),
+                points,
+            });
         }
     }
 }
@@ -1097,6 +1197,14 @@ mod tests {
     }
 
     #[test]
+    fn relief_detail_resists_boundary_chatter_in_both_directions() {
+        assert_eq!(ReliefLaw::resolve(Some(1), 13.55).map(|law| law.0), Some(1));
+        assert_eq!(ReliefLaw::resolve(Some(1), 13.60).map(|law| law.0), Some(2));
+        assert_eq!(ReliefLaw::resolve(Some(2), 13.45).map(|law| law.0), Some(2));
+        assert_eq!(ReliefLaw::resolve(Some(2), 13.40).map(|law| law.0), Some(1));
+    }
+
+    #[test]
     fn relief_simplification_is_a_nested_subsequence() {
         let points = [[0.0, 0.0], [1.0, 0.1], [2.0, 0.0], [3.0, 0.5], [4.0, 0.0]];
         let coarse = simplify_isohypse(&points, 0.2);
@@ -1180,7 +1288,7 @@ mod tests {
             zoom: 18.0,
         };
         let rect = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1_120.0, 610.0));
-        let visible = visible_tiles(&tiles, MapFramePlan::forge(viewport, rect));
+        let visible = visible_tiles(&tiles, MapFramePlan::forge(viewport, rect), 0);
         assert_eq!(
             visible
                 .iter()
@@ -1198,6 +1306,7 @@ mod tests {
                 },
                 rect,
             ),
+            0,
         );
         assert_eq!(
             seam.iter()

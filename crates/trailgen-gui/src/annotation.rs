@@ -1,9 +1,16 @@
 use crate::{basemap, forge, map, vector_map::VectorGap};
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Vec2, epaint::TextShape, vec2};
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 const LABEL_CEILING: usize = 180;
 const REPEAT_SEPARATION: f32 = 480.0;
+const TRANSITION: Duration = Duration::from_millis(160);
+const IDENTITY_SCALE: f64 = 2_097_152.0;
+const STRAIGHT_SUPPORT_COSINE: f64 = 0.93;
 
 pub struct PointLabel<'a> {
     pub world: [f64; 2],
@@ -38,6 +45,7 @@ pub struct Parking<'a> {
     pub onset_zoom: f32,
 }
 
+#[cfg(test)]
 pub fn compose<'a>(
     painter: &Painter,
     viewport: map::Viewport,
@@ -58,21 +66,12 @@ pub fn compose<'a>(
     );
     prepare_points(painter, viewport, rect, points, &mut prepared);
     prepare_lines(painter, viewport, rect, lines, &mut prepared);
-    prepared.sort_unstable_by(|left, right| {
-        left.birth_zoom
-            .total_cmp(&right.birth_zoom)
-            .then_with(|| left.rank.cmp(&right.rank))
-            .then_with(|| left.text.cmp(&right.text))
-            .then_with(|| left.world_key.cmp(&right.world_key))
-            .then_with(|| left.angle.total_cmp(&right.angle))
-    });
+    sort_prepared(&mut prepared);
 
     let mut ledger = Ledger::new(&prepared);
     let live_parking = ledger.admit_parking(&parking_marks);
     ledger.admit(Repetition::Primary, &live_parking);
-    if viewport.zoom >= 15.0 {
-        ledger.admit(Repetition::Repeat, &live_parking);
-    }
+    ledger.admit(Repetition::Repeat, &live_parking);
     let selected = ledger.finish();
 
     let labels = selected
@@ -87,6 +86,7 @@ pub fn compose<'a>(
                 label.anchor - rect.min.to_vec2(),
                 Vec2::angled(label.angle),
                 label.galley.size() * 0.5 + vec2(3.0, 1.5),
+                1.0,
             )
         })
         .collect::<Vec<_>>()
@@ -100,6 +100,17 @@ pub fn compose<'a>(
             .collect(),
         gaps,
     }
+}
+
+fn sort_prepared(prepared: &mut [Prepared]) {
+    prepared.sort_unstable_by(|left, right| {
+        left.birth_zoom
+            .total_cmp(&right.birth_zoom)
+            .then_with(|| left.rank.cmp(&right.rank))
+            .then_with(|| left.text.cmp(&right.text))
+            .then_with(|| left.world_key.cmp(&right.world_key))
+            .then_with(|| left.angle.total_cmp(&right.angle))
+    });
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -129,8 +140,290 @@ impl Composition {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Stamp {
+    pub epoch: u64,
+    pub presentation: u64,
+    pub relief: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Reconciliation {
+    pub frame: map::MapFramePlan,
+    pub cartography: map::CartographicPlan,
+    pub stamp: Stamp,
+}
+
+#[derive(Default)]
+pub struct Engine {
+    stamp: Option<Stamp>,
+    labels: Vec<ResidentLabel>,
+    parking: Vec<ResidentParking>,
+}
+
+struct ResidentLabel {
+    label: Prepared,
+    born: Instant,
+    leaving: Option<Instant>,
+}
+
+struct ResidentParking {
+    mark: ParkingMark,
+    born: Instant,
+    leaving: Option<Instant>,
+}
+
+impl Engine {
+    #[must_use]
+    pub fn coherent(&self, stamp: Stamp) -> bool {
+        self.stamp == Some(stamp)
+    }
+
+    #[must_use]
+    pub const fn inhabited(&self) -> bool {
+        self.stamp.is_some()
+    }
+
+    pub fn reconcile<'a>(
+        &mut self,
+        painter: &Painter,
+        scene: Reconciliation,
+        points: impl IntoIterator<Item = PointLabel<'a>>,
+        lines: impl IntoIterator<Item = LineLabel<'a>>,
+        parking: impl IntoIterator<Item = Parking<'a>>,
+    ) -> Arc<Composition> {
+        let now = Instant::now();
+        self.reap(now);
+        let semantic = map::Viewport {
+            zoom: scene.cartography.zoom.get(),
+            ..scene.frame.viewport
+        };
+        let mut prepared = Vec::new();
+        let mut marks = Vec::new();
+        prepare_parking(
+            painter,
+            semantic,
+            scene.frame.rect,
+            parking,
+            &mut prepared,
+            &mut marks,
+        );
+        prepare_points(painter, semantic, scene.frame.rect, points, &mut prepared);
+        prepare_lines(painter, semantic, scene.frame.rect, lines, &mut prepared);
+        sort_prepared(&mut prepared);
+
+        let mark_slots = marks
+            .iter()
+            .enumerate()
+            .map(|(slot, mark)| (mark.id, slot))
+            .collect::<HashMap<_, _>>();
+        let mut ledger = Ledger::new(&prepared);
+        let mut live_parking = vec![false; marks.len()];
+        for resident in &self.parking {
+            if let Some(&slot) = mark_slots.get(&resident.mark.id)
+                && ledger.admit_parking_mark(&marks[slot])
+            {
+                live_parking[slot] = true;
+            }
+        }
+        let mut new_marks = (0..marks.len())
+            .filter(|slot| !live_parking[*slot])
+            .collect::<Vec<_>>();
+        new_marks.sort_unstable_by_key(|slot| marks[*slot].id);
+        for slot in new_marks {
+            if ledger.admit_parking_mark(&marks[slot]) {
+                live_parking[slot] = true;
+            }
+        }
+
+        let prepared_slots = prepared
+            .iter()
+            .enumerate()
+            .map(|(slot, label)| (label.id, slot))
+            .collect::<HashMap<_, _>>();
+        for resident in &self.labels {
+            if let Some(&slot) = prepared_slots.get(&resident.label.id) {
+                ledger.admit_retained(slot, &live_parking);
+            }
+        }
+        ledger.admit(Repetition::Primary, &live_parking);
+        ledger.admit(Repetition::Repeat, &live_parking);
+        let selected = ledger.finish();
+        self.reconcile_parking(
+            marks
+                .into_iter()
+                .zip(live_parking)
+                .filter_map(|(mark, live)| live.then_some(mark)),
+            now,
+        );
+        self.reconcile_labels(selected.into_iter().map(|slot| prepared[slot].clone()), now);
+        self.stamp = Some(scene.stamp);
+        self.project(painter, scene.frame.viewport, scene.frame.rect)
+    }
+
+    pub fn project(
+        &mut self,
+        painter: &Painter,
+        camera: map::Viewport,
+        rect: Rect,
+    ) -> Arc<Composition> {
+        let now = Instant::now();
+        self.reap(now);
+        let mut transitioning = false;
+        let parking = self
+            .parking
+            .iter()
+            .filter_map(|resident| {
+                let alpha = resident.maturity(now);
+                transitioning |= alpha < 1.0;
+                (alpha > 0.0).then(|| {
+                    let mut mark = resident.mark;
+                    mark.anchor = map::screen_at(camera, rect, mark.world);
+                    mark.footprint =
+                        Rect::from_center_size(mark.anchor, Vec2::splat(19.0)).expand(2.0);
+                    mark.maturity *= alpha;
+                    mark
+                })
+            })
+            .collect();
+        let labels = self
+            .labels
+            .iter()
+            .filter_map(|resident| {
+                let alpha = resident.maturity(now);
+                transitioning |= alpha < 1.0;
+                (alpha > 0.0).then(|| resident.label.project(camera, rect, alpha))
+            })
+            .collect::<Vec<_>>();
+        let gaps = labels
+            .iter()
+            .filter(|label| label.break_line)
+            .map(|label| {
+                VectorGap::screen(
+                    label.anchor - rect.min.to_vec2(),
+                    Vec2::angled(label.angle),
+                    label.galley.size() * 0.5 + vec2(3.0, 1.5),
+                    label.transition,
+                )
+            })
+            .collect::<Vec<_>>()
+            .into();
+        if transitioning {
+            painter.ctx().request_repaint();
+        }
+        Arc::new(Composition {
+            labels,
+            parking,
+            gaps,
+        })
+    }
+
+    fn reconcile_labels(&mut self, selected: impl IntoIterator<Item = Prepared>, now: Instant) {
+        let mut prior = self
+            .labels
+            .drain(..)
+            .map(|resident| (resident.label.id, resident))
+            .collect::<HashMap<_, _>>();
+        let mut next = Vec::new();
+        let mut seen = HashSet::new();
+        for mut label in selected {
+            if !seen.insert(label.id) {
+                continue;
+            }
+            if let Some(mut resident) = prior.remove(&label.id) {
+                label.world = resident.label.world;
+                label.angle = resident.label.angle;
+                resident.label = label;
+                resident.leaving = None;
+                next.push(resident);
+            } else {
+                next.push(ResidentLabel {
+                    label,
+                    born: now,
+                    leaving: None,
+                });
+            }
+        }
+        next.extend(prior.into_values().map(|mut resident| {
+            resident.leaving.get_or_insert(now);
+            resident
+        }));
+        self.labels = next;
+    }
+
+    fn reconcile_parking(&mut self, selected: impl IntoIterator<Item = ParkingMark>, now: Instant) {
+        let mut prior = self
+            .parking
+            .drain(..)
+            .map(|resident| (resident.mark.id, resident))
+            .collect::<HashMap<_, _>>();
+        let mut next = Vec::new();
+        for mut mark in selected {
+            if let Some(mut resident) = prior.remove(&mark.id) {
+                mark.world = resident.mark.world;
+                resident.mark = mark;
+                resident.leaving = None;
+                next.push(resident);
+            } else {
+                next.push(ResidentParking {
+                    mark,
+                    born: now,
+                    leaving: None,
+                });
+            }
+        }
+        next.extend(prior.into_values().map(|mut resident| {
+            resident.leaving.get_or_insert(now);
+            resident
+        }));
+        self.parking = next;
+    }
+
+    fn reap(&mut self, now: Instant) {
+        self.labels.retain(|resident| !resident.departed(now));
+        self.parking.retain(|resident| !resident.departed(now));
+    }
+}
+
+impl ResidentLabel {
+    fn maturity(&self, now: Instant) -> f32 {
+        transition_maturity(self.born, self.leaving, now)
+    }
+
+    fn departed(&self, now: Instant) -> bool {
+        self.leaving
+            .is_some_and(|leaving| now.saturating_duration_since(leaving) >= TRANSITION)
+    }
+}
+
+impl ResidentParking {
+    fn maturity(&self, now: Instant) -> f32 {
+        transition_maturity(self.born, self.leaving, now)
+    }
+
+    fn departed(&self, now: Instant) -> bool {
+        self.leaving
+            .is_some_and(|leaving| now.saturating_duration_since(leaving) >= TRANSITION)
+    }
+}
+
+fn transition_maturity(born: Instant, leaving: Option<Instant>, now: Instant) -> f32 {
+    let entering = smooth_time(now.saturating_duration_since(born));
+    let leaving = leaving.map_or(1.0, |leaving| {
+        1.0 - smooth_time(now.saturating_duration_since(leaving))
+    });
+    entering.min(leaving)
+}
+
+fn smooth_time(elapsed: Duration) -> f32 {
+    let phase = (elapsed.as_secs_f32() / TRANSITION.as_secs_f32()).clamp(0.0, 1.0);
+    phase * phase * 2.0_f32.mul_add(-phase, 3.0)
+}
+
 #[derive(Clone, Copy)]
 struct ParkingMark {
+    id: Identity,
+    world: [f64; 2],
     anchor: Pos2,
     maturity: f32,
     footprint: Rect,
@@ -138,10 +431,13 @@ struct ParkingMark {
 
 #[derive(Clone)]
 struct Prepared {
+    id: Identity,
     text: String,
     rank: u16,
     birth_zoom: f32,
     world_key: [u64; 2],
+    world: [f64; 2],
+    offset: Vec2,
     anchor: Pos2,
     angle: f32,
     footprint: Rect,
@@ -151,6 +447,48 @@ struct Prepared {
     repeatable: bool,
     break_line: bool,
     patron: Option<usize>,
+    transition: f32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+struct Identity {
+    kind: u8,
+    text: u64,
+    cell: [i64; 2],
+}
+
+impl Identity {
+    fn forge(kind: u8, text: &str, world: [f64; 2]) -> Self {
+        Self {
+            kind,
+            text: text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+                (hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3)
+            }),
+            cell: world.map(|axis| (axis * IDENTITY_SCALE).round() as i64),
+        }
+    }
+}
+
+impl Prepared {
+    fn project(&self, camera: map::Viewport, rect: Rect, transition: f32) -> Self {
+        let mut projected = self.clone();
+        projected.anchor = map::screen_at(camera, rect, self.world) + self.offset;
+        projected.footprint = text_shape(
+            projected.anchor,
+            projected.angle,
+            Arc::clone(&projected.galley),
+            projected.ink,
+        )
+        .visual_bounding_rect()
+        .expand(3.0);
+        projected.ink = projected.ink.gamma_multiply(transition);
+        projected.halo = projected.halo.map(|halo| Halo {
+            color: halo.color.gamma_multiply(transition),
+            ..halo
+        });
+        projected.transition = transition;
+        projected
+    }
 }
 
 struct Ledger<'a> {
@@ -211,20 +549,43 @@ impl<'a> Ledger<'a> {
         }
     }
 
+    fn admit_retained(&mut self, slot: usize, live_parking: &[bool]) {
+        let label = &self.prepared[slot];
+        if label
+            .patron
+            .is_some_and(|patron| !live_parking.get(patron).copied().unwrap_or(false))
+            || self
+                .occupied
+                .iter()
+                .any(|prior| prior.intersects(label.footprint))
+        {
+            return;
+        }
+        self.occupied.push(label.footprint);
+        self.accepted
+            .entry(label.text.clone())
+            .or_default()
+            .push(label.anchor);
+        self.selected.push(slot);
+    }
+
+    #[cfg(test)]
     fn admit_parking(&mut self, marks: &[ParkingMark]) -> Vec<bool> {
         marks
             .iter()
-            .map(|mark| {
-                let free = self
-                    .occupied
-                    .iter()
-                    .all(|prior| !prior.intersects(mark.footprint));
-                if free {
-                    self.occupied.push(mark.footprint);
-                }
-                free
-            })
+            .map(|mark| self.admit_parking_mark(mark))
             .collect()
+    }
+
+    fn admit_parking_mark(&mut self, mark: &ParkingMark) -> bool {
+        let free = self
+            .occupied
+            .iter()
+            .all(|prior| !prior.intersects(mark.footprint));
+        if free {
+            self.occupied.push(mark.footprint);
+        }
+        free
     }
 
     fn finish(self) -> Vec<usize> {
@@ -256,6 +617,8 @@ fn prepare_parking<'a>(
         anchors.push(anchor);
         let patron = marks.len();
         marks.push(ParkingMark {
+            id: Identity::forge(0, mark.name.unwrap_or("parking"), mark.world),
+            world: mark.world,
             anchor,
             maturity,
             footprint,
@@ -274,10 +637,13 @@ fn prepare_parking<'a>(
         let footprint = Rect::from_center_size(center, galley.size()).expand(3.0);
         if rect.contains_rect(footprint) {
             prepared.push(Prepared {
+                id: Identity::forge(1, name, mark.world),
                 text: name.to_owned(),
                 rank: 720,
                 birth_zoom: mark.onset_zoom + 0.45,
                 world_key: world_key(mark.world),
+                world: mark.world,
+                offset: center - anchor,
                 anchor: center,
                 angle: 0.0,
                 footprint,
@@ -290,6 +656,7 @@ fn prepare_parking<'a>(
                 repeatable: false,
                 break_line: false,
                 patron: Some(patron),
+                transition: 1.0,
             });
         }
     }
@@ -308,19 +675,21 @@ fn prepare_points<'a>(
             continue;
         }
         let anchor = map::screen_at(viewport, rect, label.world);
-        let size = label.size * 0.12_f32.mul_add(maturity, 0.88);
         let galley = painter.layout_no_wrap(
             label.text.to_owned(),
-            FontId::proportional(size),
+            FontId::proportional(label.size),
             Color32::PLACEHOLDER,
         );
         let footprint = Rect::from_center_size(anchor, galley.size()).expand(3.0);
         if rect.contains_rect(footprint) {
             prepared.push(Prepared {
+                id: Identity::forge(2, label.text, label.world),
                 text: label.text.to_owned(),
                 rank: label.rank,
                 birth_zoom: label.onset_zoom,
                 world_key: world_key(label.world),
+                world: label.world,
+                offset: Vec2::ZERO,
                 anchor,
                 angle: 0.0,
                 footprint,
@@ -333,6 +702,7 @@ fn prepare_points<'a>(
                 repeatable: false,
                 break_line: false,
                 patron: None,
+                transition: 1.0,
             });
         }
     }
@@ -350,10 +720,9 @@ fn prepare_lines<'a>(
         if maturity <= 0.01 {
             continue;
         }
-        let size = label.size * 0.08_f32.mul_add(maturity, 0.92);
         let galley = painter.layout_no_wrap(
             label.text.to_owned(),
-            FontId::proportional(size),
+            FontId::proportional(label.size),
             Color32::PLACEHOLDER,
         );
         for placement in
@@ -366,10 +735,13 @@ fn prepare_lines<'a>(
                 label.ink,
             );
             prepared.push(Prepared {
+                id: Identity::forge(3, label.text, placement.world),
                 text: label.text.to_owned(),
                 rank: label.rank,
                 birth_zoom: placement.birth_zoom,
                 world_key: world_key(placement.world),
+                world: placement.world,
+                offset: Vec2::ZERO,
                 anchor: placement.anchor,
                 angle: placement.angle,
                 footprint: shape.visual_bounding_rect().expand(3.0),
@@ -382,6 +754,7 @@ fn prepare_lines<'a>(
                 repeatable: label.repeatable,
                 break_line: label.break_line,
                 patron: None,
+                transition: 1.0,
             });
         }
     }
@@ -461,36 +834,22 @@ fn line_placements(
     if total_points < f64::from(span) {
         return Vec::new();
     }
-    let half_world = f64::from(span * 0.5) / world_points;
     let target_spacing = (label.x + 96.0).max(220.0);
     let base_zoom = (f64::from(target_spacing) / (total * 256.0)).log2() as f32;
     dyadic_centers(total, total_points as f32, label.x)
         .into_iter()
         .filter_map(|center| {
-            let birth_zoom = (base_zoom + f32::from(center.generation)).max(onset_zoom);
+            let (direction, reach) = straight_support(&path, &lengths, center.distance)?;
+            let support_zoom = (f64::from(span * 0.5) / (reach * 256.0)).log2() as f32;
+            let birth_zoom = (base_zoom + f32::from(center.generation))
+                .max(onset_zoom)
+                .max(support_zoom);
             if viewport.zoom as f32 + f32::EPSILON < birth_zoom {
                 return None;
             }
             let world = point_at(&path, &lengths, center.distance);
-            let start = map::screen_at(
-                viewport,
-                rect,
-                point_at(&path, &lengths, center.distance - half_world),
-            );
             let anchor = map::screen_at(viewport, rect, world);
-            let end = map::screen_at(
-                viewport,
-                rect,
-                point_at(&path, &lengths, center.distance + half_world),
-            );
-            let left = anchor - start;
-            let right = end - anchor;
-            let bend = unsigned_angle(left, right);
-            let chord = end.distance(start);
-            if chord < span * 0.90 || bend > 0.38 {
-                return None;
-            }
-            let mut angle = (end.y - start.y).atan2(end.x - start.x);
+            let mut angle = direction[1].atan2(direction[0]) as f32;
             if angle > std::f32::consts::FRAC_PI_2 {
                 angle -= std::f32::consts::PI;
             } else if angle < -std::f32::consts::FRAC_PI_2 {
@@ -505,6 +864,53 @@ fn line_placements(
             })
         })
         .collect()
+}
+
+fn straight_support(path: &[[f64; 2]], lengths: &[f64], distance: f64) -> Option<([f64; 2], f64)> {
+    let slot = lengths
+        .partition_point(|length| *length <= distance)
+        .saturating_sub(1)
+        .min(path.len().saturating_sub(2));
+    let spine = unit(segment_vector(path, slot))?;
+    let aligned = |candidate: [f64; 2]| {
+        unit(candidate).is_some_and(|candidate| {
+            spine[0].mul_add(candidate[0], spine[1] * candidate[1]) >= STRAIGHT_SUPPORT_COSINE
+        })
+    };
+    let mut west = distance - lengths[slot];
+    for prior in (0..slot).rev() {
+        if !aligned(segment_vector(path, prior)) {
+            break;
+        }
+        west += lengths[prior + 1] - lengths[prior];
+    }
+    let mut east = lengths[slot + 1] - distance;
+    for next in slot + 1..path.len() - 1 {
+        if !aligned(segment_vector(path, next)) {
+            break;
+        }
+        east += lengths[next + 1] - lengths[next];
+    }
+    let reach = west.min(east);
+    if reach <= f64::EPSILON {
+        return None;
+    }
+    let start = point_at(path, lengths, distance - reach);
+    let end = point_at(path, lengths, distance + reach);
+    let direction = unit([end[0] - start[0], end[1] - start[1]])?;
+    Some((direction, reach))
+}
+
+fn segment_vector(path: &[[f64; 2]], slot: usize) -> [f64; 2] {
+    [
+        path[slot + 1][0] - path[slot][0],
+        path[slot + 1][1] - path[slot][1],
+    ]
+}
+
+fn unit(vector: [f64; 2]) -> Option<[f64; 2]> {
+    let length = vector[0].hypot(vector[1]);
+    (length > f64::EPSILON).then(|| [vector[0] / length, vector[1] / length])
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -555,13 +961,6 @@ fn point_at(path: &[[f64; 2]], lengths: &[f64], distance: f64) -> [f64; 2] {
         (path[slot][0] - path[slot - 1][0]).mul_add(progress, path[slot - 1][0]),
         (path[slot][1] - path[slot - 1][1]).mul_add(progress, path[slot - 1][1]),
     ]
-}
-
-fn unsigned_angle(left: Vec2, right: Vec2) -> f32 {
-    left.x
-        .mul_add(right.y, -left.y * right.x)
-        .atan2(left.dot(right))
-        .abs()
 }
 
 fn rotated_footprint(anchor: Pos2, size: Vec2, angle: f32) -> Rect {
@@ -776,5 +1175,105 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(coarse.iter().all(|anchor| fine.contains(anchor)));
         assert!(fine.len() > coarse.len());
+    }
+
+    #[test]
+    fn line_label_eligibility_is_upward_closed_at_fractional_zoom() {
+        let path = [[0.499, 0.5], [0.501, 0.5]];
+        let rect = Rect::from_center_size(Pos2::ZERO, Vec2::splat(1_000_000.0));
+        let mut prior = HashMap::<[u64; 2], u32>::new();
+        for step in 0..49 {
+            let viewport = map::Viewport {
+                center: [0.5, 0.5],
+                zoom: f64::from(step).mul_add(0.125, 10.0),
+            };
+            let placements = line_placements(&path, vec2(80.0, 12.0), rect, viewport, 10.0);
+            let current = placements
+                .iter()
+                .map(|placement| (world_key(placement.world), placement.angle.to_bits()))
+                .collect::<HashMap<_, _>>();
+            for (world, angle) in prior {
+                assert_eq!(
+                    current.get(&world),
+                    Some(&angle),
+                    "an admitted line anchor vanished or changed tangent at step {step}"
+                );
+            }
+            prior = current;
+        }
+    }
+
+    #[test]
+    fn temporal_ledger_retains_an_established_label_against_new_priority() {
+        let context = egui::Context::default();
+        let _output = context.run_ui(egui::RawInput::default(), |ui| {
+            let painter = ui.painter().clone();
+            let camera = map::Viewport {
+                center: [0.5, 0.5],
+                zoom: 11.0,
+            };
+            let path = [
+                map::world_at(camera, VIEW, egui::pos2(100.0, 300.0)),
+                map::world_at(camera, VIEW, egui::pos2(700.0, 300.0)),
+            ];
+            let old = LineLabel {
+                path: &path,
+                text: "OLD",
+                rank: 900,
+                size: 12.0,
+                onset_zoom: 0.0,
+                ink: Color32::BLACK,
+                halo: None,
+                repeatable: true,
+                break_line: true,
+            };
+            let mut engine = Engine::default();
+            let frame = map::MapFramePlan::forge(camera, VIEW);
+            let scene = |epoch| Reconciliation {
+                frame,
+                cartography: map::CartographicPlan {
+                    zoom: frame.zoom,
+                    epoch,
+                    gesture: 0,
+                    moving: false,
+                },
+                stamp: Stamp {
+                    epoch,
+                    presentation: 0,
+                    relief: 0,
+                },
+            };
+            let _first = engine.reconcile(
+                &painter,
+                scene(0),
+                std::iter::empty(),
+                [old],
+                std::iter::empty(),
+            );
+            assert_eq!(engine.labels.len(), 1);
+            assert_eq!(engine.labels[0].label.text, "OLD");
+            let _second = engine.reconcile(
+                &painter,
+                scene(1),
+                [PointLabel {
+                    world: camera.center,
+                    text: "NEW BUT STRONGER",
+                    rank: 1,
+                    size: 12.0,
+                    onset_zoom: 0.0,
+                }],
+                [old],
+                std::iter::empty(),
+            );
+            assert_eq!(
+                engine
+                    .labels
+                    .iter()
+                    .filter(|resident| resident.leaving.is_none())
+                    .map(|resident| resident.label.text.as_str())
+                    .collect::<Vec<_>>(),
+                ["OLD"]
+            );
+        });
     }
 }

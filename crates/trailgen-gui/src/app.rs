@@ -62,6 +62,8 @@ pub struct TrailApp {
     sort: TrailSort,
     gallery: GalleryDeck,
     viewport: Viewport,
+    cartography: map::CartographicClock,
+    scale_bar: map::ScaleBar,
     focus_frame: FocusFrame,
     fit: Fit,
     serial: u64,
@@ -316,6 +318,7 @@ impl TrailApp {
         });
         let forge = SearchForge::spawn(ctx.clone(), Arc::clone(&graph))?;
         let atlas = Atlas::forge(&graph);
+        let cartography = map::CartographicClock::new(viewport);
         let status = if library.search().trailhead.is_some() {
             "Choose Find trails to search from this trailhead."
         } else {
@@ -340,6 +343,8 @@ impl TrailApp {
             sort: slate.sort,
             gallery: slate.gallery,
             viewport,
+            cartography,
+            scale_bar: map::ScaleBar::default(),
             focus_frame: FocusFrame::default(),
             fit: if restored_viewport.is_some() {
                 Fit::None
@@ -1153,9 +1158,10 @@ impl TrailApp {
         let scribe_event = self.scribe.interact(self.viewport, ui, &response, rect);
         let canvas = ui.painter_at(rect);
         let frame = map::MapFramePlan::forge(self.viewport, rect);
+        let cartography = self.cartography.observe(self.viewport, ui.ctx());
         let _ground = canvas.rect_filled(rect, 0.0, map::MAP_GROUND);
-        let annotations = self.forge_cartography(&canvas, frame);
-        self.atlas.paint_network(&canvas, frame);
+        let annotations = self.forge_cartography(&canvas, frame, cartography);
+        self.atlas.paint_network(&canvas, frame, cartography);
         if !self.regions.is_empty() || self.scribe.active() {
             live_area::paint(
                 &canvas,
@@ -1172,7 +1178,7 @@ impl TrailApp {
         } else if let Some(trailhead) = self.active_trailhead() {
             map::paint_start(&canvas, trailhead.coord(), self.viewport, rect);
         }
-        map::paint_scale(&canvas, self.viewport, rect);
+        self.scale_bar.paint(&canvas, self.viewport, rect);
         self.atlas.paint_legend(&canvas, rect);
         let _edge = canvas.rect_stroke(
             rect.shrink(0.5),
@@ -1221,16 +1227,18 @@ impl TrailApp {
         &mut self,
         painter: &egui::Painter,
         frame: map::MapFramePlan,
+        cartography: map::CartographicPlan,
     ) -> Arc<annotation::Composition> {
-        self.vector.paint_fills(painter, frame);
+        self.vector.paint_fills(painter, frame, cartography);
         let relief = &self.relief;
         let annotations =
             self.vector
-                .compose_annotations(painter, frame, relief.revision(), || {
-                    relief.annotations(frame)
+                .compose_annotations(painter, frame, cartography, relief.revision(), || {
+                    relief.annotations(frame, cartography)
                 });
         let gaps = annotations.contour_gaps();
-        self.relief.paint(painter, frame, Arc::clone(&gaps));
+        self.relief
+            .paint(painter, frame, cartography, Arc::clone(&gaps));
         self.vector.paint_strokes(painter, frame, gaps);
         annotations
     }

@@ -33,7 +33,6 @@ impl VectorCorpus {
 pub struct VectorPaint {
     pub layer: VectorLayer,
     pub corpus: VectorCorpus,
-    pub detail: u8,
     pub geometry: GeometryPass,
     pub gaps: Arc<[VectorGap]>,
     pub patches: Arc<[VectorPatch]>,
@@ -48,12 +47,19 @@ pub struct VectorPaint {
 pub struct VectorPatch {
     pub tile: Arc<VectorTile>,
     pub cell: Option<TileCell>,
+    pub detail: u8,
+    pub opacity: f32,
 }
 
 impl VectorPatch {
     #[must_use]
     pub const fn whole(tile: Arc<VectorTile>) -> Self {
-        Self { tile, cell: None }
+        Self {
+            tile,
+            cell: None,
+            detail: 0,
+            opacity: 1.0,
+        }
     }
 
     #[must_use]
@@ -61,7 +67,21 @@ impl VectorPatch {
         Self {
             tile,
             cell: Some(cell),
+            detail: 0,
+            opacity: 1.0,
         }
+    }
+
+    #[must_use]
+    pub const fn stratum(mut self, detail: u8) -> Self {
+        self.detail = detail;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_opacity(mut self, opacity: f32) -> Self {
+        self.opacity = opacity;
+        self
     }
 
     #[must_use]
@@ -89,17 +109,24 @@ pub struct VectorGap {
     center: [f32; 2],
     axis: [f32; 2],
     half_extent: [f32; 2],
-    _pad: [f32; 2],
+    maturity: f32,
+    _pad: f32,
 }
 
 impl VectorGap {
     #[must_use]
-    pub fn screen(center: egui::Pos2, axis: egui::Vec2, half_extent: egui::Vec2) -> Self {
+    pub fn screen(
+        center: egui::Pos2,
+        axis: egui::Vec2,
+        half_extent: egui::Vec2,
+        maturity: f32,
+    ) -> Self {
         Self {
             center: center.to_vec2().into(),
             axis: axis.into(),
             half_extent: half_extent.into(),
-            _pad: [0.0; 2],
+            maturity,
+            _pad: 0.0,
         }
     }
 }
@@ -114,8 +141,7 @@ struct GpuKey {
 
 struct ActiveCorpus {
     corpus: VectorCorpus,
-    detail: u8,
-    tiles: Vec<TileKey>,
+    tiles: Vec<(u8, TileKey)>,
 }
 
 impl CallbackTrait for VectorPaint {
@@ -154,7 +180,7 @@ impl CallbackTrait for VectorPaint {
                     layer: self.layer,
                     corpus: self.corpus,
                     tile: tile.key,
-                    detail: self.detail,
+                    detail: patch.detail,
                 }) && let Some(draw) = &tile.fills
                 {
                     draw.paint(pass, &tile.buffer, &tile.transform, gpu.instances);
@@ -176,7 +202,7 @@ impl CallbackTrait for VectorPaint {
                     layer: self.layer,
                     corpus: self.corpus,
                     tile: tile.key,
-                    detail: self.detail,
+                    detail: patch.detail,
                 }) && let Some(draw) = &tile.strokes
                 {
                     draw.paint(pass, &tile.buffer, &tile.transform, gpu.instances);
@@ -346,40 +372,38 @@ impl VectorMapGpu {
         let mut incoming = paint
             .patches
             .iter()
-            .map(|patch| patch.tile.key)
+            .map(|patch| (patch.detail, patch.tile.key))
             .collect::<Vec<_>>();
         incoming.sort_unstable();
         incoming.dedup();
-        let changed = self.active.get(&paint.layer).is_none_or(|active| {
-            active.corpus != paint.corpus
-                || active.detail != paint.detail
-                || active.tiles != incoming
-        });
+        let changed = self
+            .active
+            .get(&paint.layer)
+            .is_none_or(|active| active.corpus != paint.corpus || active.tiles != incoming);
         if changed {
             self.epoch = self.epoch.saturating_add(1);
             self.active.insert(
                 paint.layer,
                 ActiveCorpus {
                     corpus: paint.corpus,
-                    detail: paint.detail,
                     tiles: incoming.clone(),
                 },
             );
             self.active_set.clear();
             self.active_set
                 .extend(self.active.iter().flat_map(|(layer, active)| {
-                    active.tiles.iter().map(|tile| GpuKey {
+                    active.tiles.iter().map(|(detail, tile)| GpuKey {
                         layer: *layer,
                         corpus: active.corpus,
                         tile: *tile,
-                        detail: active.detail,
+                        detail: *detail,
                     })
                 }));
-            for key in incoming.iter().map(|tile| GpuKey {
+            for key in incoming.iter().map(|(detail, tile)| GpuKey {
                 layer: paint.layer,
                 corpus: paint.corpus,
                 tile: *tile,
-                detail: paint.detail,
+                detail: *detail,
             }) {
                 if let Some(resident) = self.tiles.get_mut(&key) {
                     resident.touched = self.epoch;
@@ -388,17 +412,20 @@ impl VectorMapGpu {
             }
         }
         let mut uploaded = 0_usize;
-        for tile in paint.patches.iter().map(|patch| &patch.tile) {
+        let mut opacity_uploaded = 0_usize;
+        for patch in paint.patches.iter() {
+            let tile = &patch.tile;
             let key = GpuKey {
                 layer: paint.layer,
                 corpus: paint.corpus,
                 tile: tile.key,
-                detail: paint.detail,
+                detail: patch.detail,
             };
-            if self.tiles.contains_key(&key) {
+            if let Some(resident) = self.tiles.get_mut(&key) {
+                opacity_uploaded += resident.refresh_opacity(queue, patch.opacity);
                 continue;
             }
-            let resident = GpuTile::raise(device, tile, self.epoch);
+            let resident = GpuTile::raise(device, tile, patch.opacity, self.epoch);
             uploaded = uploaded.saturating_add(resident.bytes);
             self.bytes = self.bytes.saturating_add(resident.bytes);
             self.order.push_back((key, self.epoch));
@@ -409,11 +436,15 @@ impl VectorMapGpu {
         self.instances = uniform.wrap_radius.saturating_mul(2).saturating_add(1);
         self.reap();
         if self.profile {
+            let strata = incoming
+                .iter()
+                .map(|(detail, _)| *detail)
+                .collect::<HashSet<_>>()
+                .len();
             eprintln!(
-                "vector-gpu prepare_us={} upload_bytes={uploaded} active_tiles={} detail={} changed={changed}",
+                "vector-gpu prepare_us={} upload_bytes={uploaded} opacity_upload_bytes={opacity_uploaded} active_tiles={} strata={strata} changed={changed}",
                 begun.elapsed().as_micros(),
                 incoming.len(),
-                paint.detail,
             );
         }
     }
@@ -535,10 +566,11 @@ const fn stroke_layout() -> wgpu::VertexBufferLayout<'static> {
 }
 
 const fn tile_layout() -> wgpu::VertexBufferLayout<'static> {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![
+    const ATTRIBUTES: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
         4 => Float32x2,
         5 => Float32x2,
-        6 => Float32
+        6 => Float32,
+        8 => Float32
     ];
     wgpu::VertexBufferLayout {
         array_stride: size_of::<TileInstance>() as u64,
@@ -548,16 +580,18 @@ const fn tile_layout() -> wgpu::VertexBufferLayout<'static> {
 }
 
 struct GpuTile {
+    key: TileKey,
     fills: Option<Draw>,
     strokes: Option<Draw>,
     buffer: wgpu::Buffer,
     transform: Range<u64>,
+    opacity: f32,
     bytes: usize,
     touched: u64,
 }
 
 impl GpuTile {
-    fn raise(device: &wgpu::Device, tile: &VectorTile, touched: u64) -> Self {
+    fn raise(device: &wgpu::Device, tile: &VectorTile, opacity: f32, touched: u64) -> Self {
         let mut blade = Vec::with_capacity(
             tile.resident_bytes()
                 .saturating_add(size_of::<TileInstance>() * MAX_WRAP_INSTANCES),
@@ -566,22 +600,40 @@ impl GpuTile {
         let strokes = Draw::pack(&mut blade, &tile.strokes.vertices, &tile.strokes.indices);
         let transform = append(
             &mut blade,
-            &[TileInstance::forge(tile.key); MAX_WRAP_INSTANCES],
+            &[TileInstance::forge(tile.key, opacity); MAX_WRAP_INSTANCES],
         );
         let bytes = blade.len();
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("vector-tile"),
             contents: &blade,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::INDEX,
+            usage: wgpu::BufferUsages::VERTEX
+                | wgpu::BufferUsages::INDEX
+                | wgpu::BufferUsages::COPY_DST,
         });
         Self {
+            key: tile.key,
             fills,
             strokes,
             buffer,
             transform,
+            opacity,
             bytes,
             touched,
         }
+    }
+
+    fn refresh_opacity(&mut self, queue: &wgpu::Queue, opacity: f32) -> usize {
+        if self.opacity.to_bits() == opacity.to_bits() {
+            return 0;
+        }
+        let transforms = [TileInstance::forge(self.key, opacity); MAX_WRAP_INSTANCES];
+        queue.write_buffer(
+            &self.buffer,
+            self.transform.start,
+            bytemuck::cast_slice(&transforms),
+        );
+        self.opacity = opacity;
+        size_of_val(&transforms)
     }
 }
 
@@ -679,11 +731,12 @@ struct TileInstance {
     origin_high: [f32; 2],
     origin_low: [f32; 2],
     span: f32,
-    _pad: [f32; 3],
+    opacity: f32,
+    _pad: [f32; 2],
 }
 
 impl TileInstance {
-    fn forge(key: TileKey) -> Self {
+    fn forge(key: TileKey, opacity: f32) -> Self {
         let divisions = f64::from(1_u32 << key.zoom);
         let [x_high, x_low] = split(f64::from(key.x) / divisions);
         let [y_high, y_low] = split(f64::from(key.y) / divisions);
@@ -691,7 +744,8 @@ impl TileInstance {
             origin_high: [x_high, y_high],
             origin_low: [x_low, y_low],
             span: (1.0 / divisions) as f32,
-            _pad: [0.0; 3],
+            opacity,
+            _pad: [0.0; 2],
         }
     }
 }
@@ -713,7 +767,8 @@ struct Gap {
     center: vec2f,
     axis: vec2f,
     half_extent: vec2f,
-    pad: vec2f,
+    maturity: f32,
+    pad: f32,
 };
 
 struct Uniform {
@@ -775,13 +830,14 @@ fn fill_vertex(
     @location(4) origin_high: vec2f,
     @location(5) origin_low: vec2f,
     @location(6) tile_span: f32,
+    @location(8) opacity: f32,
     @builtin(instance_index) instance: u32,
 ) -> VertexOut {
     var out: VertexOut;
     let clip = clip_at(local, origin_high, origin_low, tile_span, instance);
     out.position = vec4f(clip, 0.0, 1.0);
     let maturity = apparition(onset_zoom);
-    out.color = vec4f(color.rgb, color.a * maturity);
+    out.color = vec4f(color.rgb, color.a * maturity * opacity);
     out.edge_distance = 0.0;
     out.solid_radius = -1.0;
     out.tile_local = local;
@@ -799,19 +855,20 @@ fn stroke_vertex(
     @location(4) origin_high: vec2f,
     @location(5) origin_low: vec2f,
     @location(6) tile_span: f32,
+    @location(8) opacity: f32,
     @builtin(instance_index) instance: u32,
 ) -> VertexOut {
     var out: VertexOut;
     let onset_zoom = abs(onset_side) - 1.0;
     let side = sign(onset_side);
     let maturity = apparition(onset_zoom);
-    let visible_radius = radius * mix(0.12, 1.0, maturity);
+    let visible_radius = radius * maturity;
     let expanded_radius = visible_radius + 0.8;
     let offset = extrusion * expanded_radius * 2.0 / u.viewport;
     let clip = clip_at(local, origin_high, origin_low, tile_span, instance)
         + vec2f(offset.x, -offset.y);
     out.position = vec4f(clip, 0.0, 1.0);
-    out.color = vec4f(color.rgb, color.a * mix(0.16, 1.0, maturity));
+    out.color = vec4f(color.rgb, color.a * maturity * opacity);
     out.edge_distance = side * expanded_radius;
     out.solid_radius = visible_radius;
     out.tile_local = local
@@ -820,17 +877,18 @@ fn stroke_vertex(
     return out;
 }
 
-fn inside_gap(point: vec2f) -> bool {
+fn gap_maturity(point: vec2f) -> f32 {
+    var maturity = 0.0;
     for (var slot = 0u; slot < min(u.gap_count, 32u); slot += 1u) {
         let gap = u.gaps[slot];
         let delta = point - gap.center;
         let normal = vec2f(-gap.axis.y, gap.axis.x);
         if abs(dot(delta, gap.axis)) <= gap.half_extent.x
             && abs(dot(delta, normal)) <= gap.half_extent.y {
-            return true;
+            maturity = max(maturity, gap.maturity);
         }
     }
-    return false;
+    return maturity;
 }
 
 fn painted(in: VertexOut, break_contours: bool) -> vec4f {
@@ -839,9 +897,7 @@ fn painted(in: VertexOut, break_contours: bool) -> vec4f {
     if any(in.tile_local < vec2f(0.0)) || any(in.tile_local >= vec2f(1.0)) {
         discard;
     }
-    if break_contours && inside_gap(in.map_point) {
-        discard;
-    }
+    let gap = select(0.0, gap_maturity(in.map_point), break_contours);
     var coverage = 1.0;
     if in.solid_radius >= 0.0 {
         let feather = max(fwidth(in.edge_distance), 0.65);
@@ -851,7 +907,7 @@ fn painted(in: VertexOut, break_contours: bool) -> vec4f {
             1.0,
         );
     }
-    return vec4f(in.color.rgb, in.color.a * coverage);
+    return vec4f(in.color.rgb, in.color.a * coverage * (1.0 - gap));
 }
 
 @fragment
@@ -999,7 +1055,7 @@ mod tests {
             x: (center * 4096.0).floor() as u32,
             y: 0,
         };
-        let tile = TileInstance::forge(key);
+        let tile = TileInstance::forge(key, 1.0);
         let local = 1234.0_f32 / 4096.0;
         let [center_high, center_low] = split(center);
         let actual = f64::from(
@@ -1010,6 +1066,20 @@ mod tests {
         let point = (f64::from(key.x) + f64::from(local)) / 4096.0;
         let expected = (point - center) * world_points;
         assert!((actual - expected).abs() < 0.1, "{actual} != {expected}");
+    }
+
+    #[test]
+    fn vector_tile_opacity_is_instance_local() {
+        let tile = TileInstance::forge(
+            TileKey {
+                zoom: 12,
+                x: 1_204,
+                y: 1_532,
+            },
+            0.375,
+        );
+        assert_eq!(tile.opacity.to_bits(), 0.375_f32.to_bits());
+        assert_eq!(size_of::<TileInstance>(), 8 * size_of::<f32>());
     }
 
     #[test]

@@ -2,12 +2,17 @@ use crate::{cadence, forge, library::SavedTrail, trail_map::TrailField};
 use dwemer_poolrooms::chrome;
 use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, Vec2, pos2, vec2};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, f64::consts::PI};
+use std::{
+    collections::BTreeSet,
+    f64::consts::PI,
+    time::{Duration, Instant},
+};
 use trailgen_core::{
-    Access, Coord, LineString, Route, Terrain, TrailClass, TrailGraph, TrailMarking, TrailStanding,
+    Access, Coord, Route, Terrain, TrailClass, TrailGraph, TrailMarking, TrailStanding,
 };
 
 const TILE_EDGE: f64 = 256.0;
+const CARTOGRAPHIC_SETTLE: Duration = Duration::from_millis(120);
 pub const EARTH_CIRCUMFERENCE_M: f64 = 40_075_016.686;
 const FIT_PADDING: f32 = 44.0;
 
@@ -26,6 +31,52 @@ pub const CANDIDATE_COLORS: [Color32; 8] = [
     Color32::from_rgb(216, 194, 39),
     Color32::from_rgb(126, 102, 226),
 ];
+
+#[derive(Debug, Default)]
+pub struct ScaleBar {
+    current_m: Option<f64>,
+    born: Option<Instant>,
+    departing: Option<(f64, Instant)>,
+}
+
+impl ScaleBar {
+    pub fn paint(&mut self, painter: &Painter, view: Viewport, rect: Rect) {
+        let latitude = world_to_coord(view.center).lat.to_radians();
+        let meters_per_point = EARTH_CIRCUMFERENCE_M * latitude.cos() / world_pixels(view);
+        let target = pleasant_length(meters_per_point * 105.0);
+        let current = self.current_m.get_or_insert(target);
+        let current_width = *current / meters_per_point;
+        if current.to_bits() != target.to_bits() && !(72.0..=148.0).contains(&current_width) {
+            self.departing = Some((*current, Instant::now()));
+            *current = target;
+            self.born = Some(Instant::now());
+        }
+        let now = Instant::now();
+        if let Some((departing, begun)) = self.departing {
+            let maturity = smooth_transition(now.saturating_duration_since(begun));
+            paint_scale_length(painter, rect, departing, meters_per_point, 1.0 - maturity);
+            if maturity >= 1.0 {
+                self.departing = None;
+            } else {
+                painter.ctx().request_repaint();
+            }
+        }
+        let maturity = self.born.map_or(1.0, |begun| {
+            smooth_transition(now.saturating_duration_since(begun))
+        });
+        paint_scale_length(painter, rect, *current, meters_per_point, maturity);
+        if maturity < 1.0 {
+            painter.ctx().request_repaint();
+        } else {
+            self.born = None;
+        }
+    }
+}
+
+fn smooth_transition(elapsed: Duration) -> f32 {
+    let phase = (elapsed.as_secs_f32() / 0.16).clamp(0.0, 1.0);
+    phase * phase * 2.0_f32.mul_add(-phase, 3.0)
+}
 
 pub const fn candidate_color(ordinal: usize, selected: bool) -> Color32 {
     if selected {
@@ -97,6 +148,82 @@ pub struct MapFramePlan {
     pub rect: Rect,
     pub zoom: CameraZoom,
     pub world_points: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct CartographicPlan {
+    pub zoom: CameraZoom,
+    pub epoch: u64,
+    pub gesture: u64,
+    pub moving: bool,
+}
+
+#[derive(Debug)]
+pub struct CartographicClock {
+    observed: Viewport,
+    committed_zoom: CameraZoom,
+    last_motion: Option<Instant>,
+    epoch: u64,
+    gesture: u64,
+}
+
+impl CartographicClock {
+    #[must_use]
+    pub fn new(viewport: Viewport) -> Self {
+        Self {
+            observed: viewport,
+            committed_zoom: CameraZoom::from_viewport(viewport),
+            last_motion: None,
+            epoch: 0,
+            gesture: 0,
+        }
+    }
+
+    pub fn observe(&mut self, viewport: Viewport, ctx: &egui::Context) -> CartographicPlan {
+        let (plan, repaint_after) = self.resolve(viewport, Instant::now());
+        if let Some(repaint_after) = repaint_after {
+            ctx.request_repaint_after(repaint_after);
+        }
+        plan
+    }
+
+    fn resolve(
+        &mut self,
+        viewport: Viewport,
+        now: Instant,
+    ) -> (CartographicPlan, Option<Duration>) {
+        let changed = viewport != self.observed;
+        if changed {
+            if self.last_motion.is_none() {
+                self.gesture = self.gesture.saturating_add(1);
+            }
+            self.observed = viewport;
+            self.last_motion = Some(now);
+        }
+
+        let repaint_after = if let Some(last_motion) = self.last_motion {
+            let quiet = now.saturating_duration_since(last_motion);
+            if quiet >= CARTOGRAPHIC_SETTLE {
+                self.committed_zoom = CameraZoom::from_viewport(viewport);
+                self.epoch = self.epoch.saturating_add(1);
+                self.last_motion = None;
+                None
+            } else {
+                Some(CARTOGRAPHIC_SETTLE.saturating_sub(quiet))
+            }
+        } else {
+            None
+        };
+        (
+            CartographicPlan {
+                zoom: self.committed_zoom,
+                epoch: self.epoch,
+                gesture: self.gesture,
+                moving: self.last_motion.is_some(),
+            },
+            repaint_after,
+        )
+    }
 }
 
 impl MapFramePlan {
@@ -233,6 +360,7 @@ pub struct WorldEdge {
     pub points: Vec<[f64; 2]>,
     pub length_world: f64,
     pub lineage: Option<CadenceLineage>,
+    pub cadence_component: Option<u32>,
     pub trail_class: TrailClass,
     pub mark: TrailMark,
     pub access: Access,
@@ -289,6 +417,7 @@ impl Atlas {
                     length_world: world_polyline_length(&points),
                     points,
                     lineage: None,
+                    cadence_component: None,
                     trail_class: edge.attr.trail_class,
                     mark: trail_mark(
                         edge.attr.trail_class,
@@ -381,8 +510,13 @@ impl Atlas {
         }
     }
 
-    pub fn paint_network(&mut self, painter: &Painter, frame: MapFramePlan) {
-        self.field.paint(painter, frame);
+    pub fn paint_network(
+        &mut self,
+        painter: &Painter,
+        frame: MapFramePlan,
+        cartography: CartographicPlan,
+    ) {
+        self.field.paint(painter, frame, cartography);
     }
 }
 
@@ -398,6 +532,7 @@ fn weave_cadence(vertex_count: usize, edges: &mut [WorldEdge]) {
         }
     }
 
+    let mut component = 0_u32;
     for mark in [TrailMark::Dashed, TrailMark::DashDot, TrailMark::Unmarked] {
         let mut datums = vec![None; vertex_count];
         for root in 0..vertex_count {
@@ -408,6 +543,10 @@ fn weave_cadence(vertex_count: usize, edges: &mut [WorldEdge]) {
             {
                 continue;
             }
+            let active_component = component;
+            component = component
+                .checked_add(1)
+                .expect("cadence component count fits u32");
             datums[root] = Some(0.0);
             let mut frontier = vec![root];
             while let Some(vertex) = frontier.pop() {
@@ -430,6 +569,7 @@ fn weave_cadence(vertex_count: usize, edges: &mut [WorldEdge]) {
                             datum_world: datum,
                             reverse: vertex == b,
                         });
+                        edges[edge_id].cadence_component = Some(active_component);
                         frontier.push(other);
                     } else {
                         edges[edge_id].lineage = Some(CadenceLineage::Chord {
@@ -438,6 +578,7 @@ fn weave_cadence(vertex_count: usize, edges: &mut [WorldEdge]) {
                                 datums[b].expect("chord endpoint b owns a cadence datum"),
                             ],
                         });
+                        edges[edge_id].cadence_component = Some(active_component);
                     }
                 }
             }
@@ -454,35 +595,36 @@ pub fn paint_route(
     color: Color32,
 ) {
     let mut at = route.start;
-    let mut datum = 0.0;
+    let mut strokes = Vec::with_capacity(route.edges.len());
     for edge_id in &route.edges {
         let edge = &graph.edges[edge_id.0];
         let line = edge.oriented_geometry(at);
-        let points = line
+        let world = line
             .points
             .iter()
             .copied()
             .map(world_from_coord)
-            .map(|world| screen_at(view, rect, world))
             .collect::<Vec<_>>();
-        datum += paint_trail_tube_at(
-            painter,
-            &points,
-            TrailSalience::Selected.width(),
-            TrailSalience::Selected.access_color(color, edge.attr.access),
-            trail_mark(
+        strokes.push(SelectedStroke {
+            length_world: world_polyline_length(&world),
+            points: world
+                .into_iter()
+                .map(|world| screen_at(view, rect, world))
+                .collect(),
+            color: TrailSalience::Selected.access_color(color, edge.attr.access),
+            mark: trail_mark(
                 edge.attr.trail_class,
                 edge.attr.standing,
                 edge.attr.marking,
                 edge.attr.terrain,
                 edge.attr.surface.as_deref(),
             ),
-            datum,
-        );
+        });
         at = edge
             .traverse(at)
             .expect("validated route edge must be traversable");
     }
+    paint_selected_strokes(painter, &strokes, view);
 }
 
 pub fn paint_saved_trail(
@@ -492,53 +634,92 @@ pub fn paint_saved_trail(
     rect: Rect,
     color: Color32,
 ) {
-    let mut datum = 0.0;
-    for leg in &trail.legs {
-        datum += paint_line(
+    let strokes = trail
+        .legs
+        .iter()
+        .map(|leg| {
+            let world = leg
+                .geometry
+                .points
+                .iter()
+                .copied()
+                .map(world_from_coord)
+                .collect::<Vec<_>>();
+            SelectedStroke {
+                length_world: world_polyline_length(&world),
+                points: world
+                    .into_iter()
+                    .map(|world| screen_at(view, rect, world))
+                    .collect(),
+                color: TrailSalience::Selected.access_color(color, leg.access),
+                mark: trail_mark(
+                    leg.trail_class,
+                    leg.standing,
+                    leg.marking,
+                    leg.terrain,
+                    leg.surface.as_deref(),
+                ),
+            }
+        })
+        .collect::<Vec<_>>();
+    paint_selected_strokes(painter, &strokes, view);
+}
+
+struct SelectedStroke {
+    points: Vec<Pos2>,
+    length_world: f64,
+    color: Color32,
+    mark: TrailMark,
+}
+
+fn paint_selected_strokes(painter: &Painter, strokes: &[SelectedStroke], view: Viewport) {
+    let width = TrailSalience::Selected.width();
+    let core_width = trail_core(width).width;
+    let mut moments = [(0.0_f64, 0.0_f64); 3];
+    let mut datum_world = 0.0;
+    for stroke in strokes {
+        if let Some(slot) = selected_pattern_slot(stroke.mark) {
+            let mean = stroke.length_world.mul_add(0.5, datum_world);
+            moments[slot].0 += stroke.length_world;
+            moments[slot].1 = stroke.length_world.mul_add(mean, moments[slot].1);
+        }
+        datum_world += stroke.length_world;
+    }
+    let scale = world_pixels(view);
+    let offsets: [f64; 3] = std::array::from_fn(|slot| {
+        let (mass, first) = moments[slot];
+        if mass <= f64::EPSILON {
+            0.0
+        } else {
+            let mark = [TrailMark::Dashed, TrailMark::DashDot, TrailMark::Unmarked][slot];
+            let period = trail_pattern(mark, width, core_width)
+                .expect("patterned selected marks own a cadence")
+                .period();
+            (-scale * first / mass).rem_euclid(f64::from(period))
+        }
+    });
+    datum_world = 0.0;
+    for stroke in strokes {
+        let phase = selected_pattern_slot(stroke.mark).map_or(0.0, |slot| offsets[slot]);
+        let _length = paint_trail_tube_at(
             painter,
-            &leg.geometry,
-            view,
-            rect,
-            TrailSalience::Selected.access_color(color, leg.access),
-            trail_mark(
-                leg.trail_class,
-                leg.standing,
-                leg.marking,
-                leg.terrain,
-                leg.surface.as_deref(),
-            ),
-            datum,
+            &stroke.points,
+            width,
+            stroke.color,
+            stroke.mark,
+            datum_world.mul_add(scale, phase) as f32,
         );
+        datum_world += stroke.length_world;
     }
 }
 
-fn paint_line(
-    painter: &Painter,
-    line: &LineString,
-    view: Viewport,
-    rect: Rect,
-    color: Color32,
-    mark: TrailMark,
-    datum: f32,
-) -> f32 {
-    let points = line
-        .points
-        .iter()
-        .copied()
-        .map(world_from_coord)
-        .map(|world| screen_at(view, rect, world))
-        .collect::<Vec<_>>();
-    if points.len() < 2 {
-        return 0.0;
+const fn selected_pattern_slot(mark: TrailMark) -> Option<usize> {
+    match mark {
+        TrailMark::Solid => None,
+        TrailMark::Dashed => Some(0),
+        TrailMark::DashDot => Some(1),
+        TrailMark::Unmarked => Some(2),
     }
-    paint_trail_tube_at(
-        painter,
-        &points,
-        TrailSalience::Selected.width(),
-        color,
-        mark,
-        datum,
-    )
 }
 
 pub fn paint_trail_tube(
@@ -695,14 +876,17 @@ pub fn paint_start(painter: &Painter, trailhead: Coord, view: Viewport, rect: Re
     forge::pin(painter, anchor, false);
 }
 
-pub fn paint_scale(painter: &Painter, view: Viewport, rect: Rect) {
-    let latitude = world_to_coord(view.center).lat.to_radians();
-    let meters_per_point = EARTH_CIRCUMFERENCE_M * latitude.cos() / world_pixels(view);
-    let target_m = meters_per_point * 105.0;
-    let meters = pleasant_length(target_m);
+fn paint_scale_length(
+    painter: &Painter,
+    rect: Rect,
+    meters: f64,
+    meters_per_point: f64,
+    maturity: f32,
+) {
     let width = (meters / meters_per_point) as f32;
     let origin = pos2(rect.left() + 18.0, rect.bottom() - 19.0);
-    let stroke = Stroke::new(2.0_f32, Color32::from_rgb(238, 232, 216));
+    let ink = Color32::from_rgb(238, 232, 216).gamma_multiply(maturity);
+    let stroke = Stroke::new(2.0_f32, ink);
     painter.line_segment([origin, origin + vec2(width, 0.0)], stroke);
     painter.line_segment([origin - vec2(0.0, 4.0), origin + vec2(0.0, 4.0)], stroke);
     painter.line_segment(
@@ -719,7 +903,7 @@ pub fn paint_scale(painter: &Painter, view: Viewport, rect: Rect) {
         egui::Align2::CENTER_BOTTOM,
         label,
         egui::FontId::monospace(11.0),
-        Color32::from_rgb(238, 232, 216),
+        ink,
     );
 }
 
@@ -889,6 +1073,40 @@ fn pleasant_length(target: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cartographic_epoch_ignores_every_intermediate_camera_sample() {
+        let initial = Viewport {
+            center: [0.5, 0.5],
+            zoom: 12.0,
+        };
+        let begun = Instant::now();
+        let mut clock = CartographicClock::new(initial);
+        let intermediate = Viewport {
+            zoom: 12.4,
+            ..initial
+        };
+        let (moving, _) = clock.resolve(intermediate, begun);
+        assert!(moving.moving);
+        assert_eq!(moving.zoom.get().to_bits(), initial.zoom.to_bits());
+        assert_eq!(moving.epoch, 0);
+
+        let target = Viewport {
+            zoom: 13.0,
+            ..initial
+        };
+        let (still_moving, _) = clock.resolve(
+            target,
+            begun + CARTOGRAPHIC_SETTLE.saturating_sub(Duration::from_millis(1)),
+        );
+        assert!(still_moving.moving);
+        assert_eq!(still_moving.zoom.get().to_bits(), initial.zoom.to_bits());
+
+        let (settled, _) = clock.resolve(target, begun + CARTOGRAPHIC_SETTLE * 2);
+        assert!(!settled.moving);
+        assert_eq!(settled.zoom.get().to_bits(), target.zoom.to_bits());
+        assert_eq!(settled.epoch, 1);
+    }
 
     #[test]
     fn mercator_round_trip_is_tight() {
@@ -1066,6 +1284,7 @@ mod tests {
             points: vec![[0.0, 0.0], [length_world, 0.0]],
             length_world,
             lineage: None,
+            cadence_component: None,
             trail_class: TrailClass::Path,
             mark: TrailMark::Dashed,
             access: Access::Open,

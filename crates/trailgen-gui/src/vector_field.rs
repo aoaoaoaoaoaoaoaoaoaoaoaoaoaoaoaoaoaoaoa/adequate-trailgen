@@ -1,7 +1,7 @@
 use crate::{
     annotation,
     basemap::{self, Basemap, Source, TileKey, VectorTile},
-    map::{self, MapFramePlan},
+    map::{self, CartographicPlan, MapFramePlan},
     vector_map::{GeometryPass, VectorCorpus, VectorLayer, VectorPaint, VectorPatch},
 };
 use anyhow::Result;
@@ -18,20 +18,23 @@ const RETRY_FLOOR: Duration = Duration::from_millis(250);
 const RETRY_CEILING: Duration = Duration::from_secs(30);
 const READY_LATENCY_SEED: Duration = Duration::from_millis(250);
 const TRAILHEAD_PARKING_REACH_M: f64 = 160.0;
+const PRESENTATION_TRANSITION: Duration = Duration::from_millis(160);
 
 /// The reusable, streaming vector-map plane beneath every trail workbench.
 pub struct VectorField {
-    annotation_cache: Option<AnnotationCache>,
+    annotations: annotation::Engine,
     corpus: VectorCorpus,
     armory: Option<Basemap>,
     tiles: VectorBank,
     presented: Arc<[VectorPatch]>,
+    transition: Option<PresentationTransition>,
     inflight: HashMap<TileKey, Instant>,
     missing: HashSet<TileKey>,
     retries: HashMap<TileKey, Retry>,
     demand: Vec<TileKey>,
     demand_dirty: bool,
     detail: basemap::DetailGovernor,
+    cartographic_zoom: f32,
     readiness: ReadinessOracle,
     presentation: Option<PresentationStamp>,
     presentation_revision: u64,
@@ -54,11 +57,9 @@ struct PresentationStamp {
     bank_revision: u64,
 }
 
-struct AnnotationCache {
-    frame: MapFramePlan,
-    presentation_revision: u64,
-    relief_revision: u64,
-    composition: Arc<annotation::Composition>,
+struct PresentationTransition {
+    prior: Arc<[VectorPatch]>,
+    begun: Instant,
 }
 
 impl Retry {
@@ -101,17 +102,19 @@ impl VectorField {
         trails: Option<Arc<TrailGraph>>,
     ) -> Result<Self> {
         Ok(Self {
-            annotation_cache: None,
+            annotations: annotation::Engine::default(),
             corpus: VectorCorpus::mint(),
             armory: Some(Basemap::spawn(ctx.clone(), source, !offline)?),
             tiles: VectorBank::new(VECTOR_CEILING),
             presented: Arc::from([]),
+            transition: None,
             inflight: HashMap::new(),
             missing: HashSet::new(),
             retries: HashMap::new(),
             demand: Vec::new(),
             demand_dirty: true,
             detail: basemap::DetailGovernor::default(),
+            cartographic_zoom: 0.0,
             readiness: ReadinessOracle::default(),
             presentation: None,
             presentation_revision: 0,
@@ -173,13 +176,23 @@ impl VectorField {
             .retain(|key, _| self.tiles.contains(*key));
     }
 
-    pub fn paint_base(&mut self, painter: &Painter, frame: MapFramePlan) {
-        self.resolve(frame, painter.ctx());
+    pub fn paint_base(
+        &mut self,
+        painter: &Painter,
+        frame: MapFramePlan,
+        cartography: CartographicPlan,
+    ) {
+        self.resolve(frame, cartography, painter.ctx());
         self.submit(painter, frame, GeometryPass::Both, Arc::from([]));
     }
 
-    pub fn paint_fills(&mut self, painter: &Painter, frame: MapFramePlan) {
-        self.resolve(frame, painter.ctx());
+    pub fn paint_fills(
+        &mut self,
+        painter: &Painter,
+        frame: MapFramePlan,
+        cartography: CartographicPlan,
+    ) {
+        self.resolve(frame, cartography, painter.ctx());
         self.submit(painter, frame, GeometryPass::Fills, Arc::from([]));
     }
 
@@ -192,10 +205,18 @@ impl VectorField {
         self.submit(painter, frame, GeometryPass::Strokes, gaps);
     }
 
-    fn resolve(&mut self, frame: MapFramePlan, ctx: &egui::Context) {
+    fn resolve(&mut self, frame: MapFramePlan, cartography: CartographicPlan, ctx: &egui::Context) {
+        if self
+            .transition
+            .as_ref()
+            .is_some_and(|transition| transition.begun.elapsed() >= PRESENTATION_TRANSITION)
+        {
+            self.transition = None;
+        }
         if self.armory.is_none() {
             return;
         }
+        self.cartographic_zoom = cartography.zoom.get() as f32;
         let bank_revision = self.tiles.revision();
         if !self.demand_dirty
             && self
@@ -205,9 +226,11 @@ impl VectorField {
         {
             return;
         }
-        let detail =
-            self.detail
-                .resolve(frame.zoom.get(), self.readiness.estimate(), Instant::now());
+        let detail = self.detail.resolve(
+            cartography.zoom.get(),
+            self.readiness.estimate(),
+            Instant::now(),
+        );
         let cover = basemap::cover(frame, detail, self.archive_zoom);
         self.demand_cover(&cover, ctx);
         if self.presentation.as_ref().is_some_and(|stamp| {
@@ -218,7 +241,18 @@ impl VectorField {
         }) {
             return;
         }
-        let choices = choose_residents(&cover.cells, cover.source, |key| self.tiles.contains(key));
+        let preferred = self
+            .presented
+            .iter()
+            .filter_map(|patch| patch.cell.map(|cell| (cell, patch.tile.key)))
+            .collect::<HashMap<_, _>>();
+        let choices = choose_residents(
+            &cover.cells,
+            cover.source,
+            !cartography.moving,
+            &preferred,
+            |key| self.tiles.contains(key),
+        );
         let mut resident = choices.iter().map(|(_, key)| *key).collect::<Vec<_>>();
         resident.sort_unstable();
         resident.dedup();
@@ -236,9 +270,17 @@ impl VectorField {
             })
             .collect::<Vec<_>>();
         if !same_patches(&patches, &self.presented) {
+            if !cartography.moving
+                && !self.presented.is_empty()
+                && patch_sources_differ(&patches, &self.presented)
+            {
+                self.transition = Some(PresentationTransition {
+                    prior: Arc::clone(&self.presented),
+                    begun: Instant::now(),
+                });
+            }
             self.presented = patches.into();
             self.presentation_revision = self.presentation_revision.saturating_add(1);
-            self.annotation_cache = None;
         }
         self.presentation = Some(PresentationStamp {
             frame,
@@ -256,35 +298,61 @@ impl VectorField {
         gaps: Arc<[crate::vector_map::VectorGap]>,
     ) {
         if !self.presented.is_empty() {
+            let patches = self.presentation_layers(painter);
             painter.add(egui_wgpu::Callback::new_paint_callback(
                 frame.rect,
                 VectorPaint {
                     layer: VectorLayer::Basemap,
                     corpus: self.corpus,
-                    detail: 0,
                     geometry,
                     gaps,
-                    patches: Arc::clone(&self.presented),
+                    patches,
                     center_world: frame.viewport.center,
                     world_points: frame.world_points as f32,
                     viewport_points: [frame.rect.width(), frame.rect.height()],
-                    view_zoom: frame.zoom.get() as f32,
+                    view_zoom: self.cartographic_zoom,
                     apparition_span: basemap::APPARITION_SPAN,
                 },
             ));
         }
     }
 
+    fn presentation_layers(&self, painter: &Painter) -> Arc<[VectorPatch]> {
+        let Some(transition) = &self.transition else {
+            return Arc::clone(&self.presented);
+        };
+        let maturity = smooth_transition(
+            transition.begun.elapsed().as_secs_f32() / PRESENTATION_TRANSITION.as_secs_f32(),
+        );
+        if maturity >= 1.0 {
+            return Arc::clone(&self.presented);
+        }
+        painter.ctx().request_repaint();
+        transition
+            .prior
+            .iter()
+            .cloned()
+            .map(|patch| patch.with_opacity(1.0))
+            .chain(
+                self.presented
+                    .iter()
+                    .cloned()
+                    .map(|patch| patch.with_opacity(maturity)),
+            )
+            .collect()
+    }
+
     pub fn paint_annotations<'a, F>(
         &'a mut self,
         painter: &Painter,
         frame: MapFramePlan,
+        cartography: CartographicPlan,
         relief_revision: u64,
         relief: F,
     ) where
         F: FnOnce() -> Vec<annotation::LineLabel<'a>>,
     {
-        self.compose_annotations(painter, frame, relief_revision, relief)
+        self.compose_annotations(painter, frame, cartography, relief_revision, relief)
             .paint(painter);
     }
 
@@ -292,18 +360,23 @@ impl VectorField {
         &'a mut self,
         painter: &Painter,
         frame: MapFramePlan,
+        cartography: CartographicPlan,
         relief_revision: u64,
         relief: F,
     ) -> Arc<annotation::Composition>
     where
         F: FnOnce() -> Vec<annotation::LineLabel<'a>>,
     {
-        if let Some(cache) = &self.annotation_cache
-            && cache.frame == frame
-            && cache.presentation_revision == self.presentation_revision
-            && cache.relief_revision == relief_revision
+        let stamp = annotation::Stamp {
+            epoch: cartography.epoch,
+            presentation: self.presentation_revision,
+            relief: relief_revision,
+        };
+        if (cartography.moving && self.annotations.inhabited()) || self.annotations.coherent(stamp)
         {
-            return Arc::clone(&cache.composition);
+            return self
+                .annotations
+                .project(painter, frame.viewport, frame.rect);
         }
         let points = self
             .presented
@@ -362,21 +435,17 @@ impl VectorField {
                 name: parking.name.as_deref(),
                 onset_zoom: parking.onset_zoom,
             });
-        let composition = Arc::new(annotation::compose(
+        self.annotations.reconcile(
             painter,
-            frame.viewport,
-            frame.rect,
+            annotation::Reconciliation {
+                frame,
+                cartography,
+                stamp,
+            },
             points,
             roads.chain(relief()),
             parking,
-        ));
-        self.annotation_cache = Some(AnnotationCache {
-            frame,
-            presentation_revision: self.presentation_revision,
-            relief_revision,
-            composition: Arc::clone(&composition),
-        });
-        composition
+        )
     }
 
     fn index_parking(&mut self, tile: &VectorTile) {
@@ -445,12 +514,23 @@ impl VectorField {
 fn choose_residents(
     cells: &[basemap::TileCell],
     source: basemap::SourceLevel,
+    permit_upgrade: bool,
+    preferred: &HashMap<basemap::TileCell, TileKey>,
     mut resident: impl FnMut(TileKey) -> bool,
 ) -> Vec<(basemap::TileCell, TileKey)> {
+    let coherent = permit_upgrade && cells.iter().all(|cell| resident(cell.key));
     cells
         .iter()
         .copied()
         .filter_map(|cell| {
+            if coherent {
+                return Some((cell, cell.key));
+            }
+            if let Some(&key) = preferred.get(&cell)
+                && resident(key)
+            {
+                return Some((cell, key));
+            }
             (0..=source.get()).rev().find_map(|level| {
                 let key = cell.key.ancestor(basemap::SourceLevel::new(level));
                 resident(key).then_some((cell, key))
@@ -465,6 +545,19 @@ fn same_patches(left: &[VectorPatch], right: &[VectorPatch]) -> bool {
             .iter()
             .zip(right)
             .all(|(left, right)| Arc::ptr_eq(&left.tile, &right.tile) && left.cell == right.cell)
+}
+
+fn patch_sources_differ(left: &[VectorPatch], right: &[VectorPatch]) -> bool {
+    left.len() != right.len()
+        || left
+            .iter()
+            .zip(right)
+            .any(|(left, right)| left.tile.key != right.tile.key)
+}
+
+fn smooth_transition(phase: f32) -> f32 {
+    let phase = phase.clamp(0.0, 1.0);
+    phase * phase * 2.0_f32.mul_add(-phase, 3.0)
 }
 
 fn abuts_trail(trails: &TrailGraph, parking: &basemap::Parking) -> bool {
@@ -621,12 +714,54 @@ mod tests {
         let fallback = cover.cells[1]
             .key
             .ancestor(basemap::SourceLevel::new(cover.source.get() - 1));
-        let choices = choose_residents(&cover.cells[..2], cover.source, |key| {
-            key == exact || key == fallback
-        });
+        let choices = choose_residents(
+            &cover.cells[..2],
+            cover.source,
+            true,
+            &HashMap::new(),
+            |key| key == exact || key == fallback,
+        );
         assert_eq!(choices.len(), 2);
         assert_eq!(choices[0].1, exact);
         assert_eq!(choices[1].1, fallback);
+    }
+
+    #[test]
+    fn source_cover_upgrades_only_when_every_visible_cell_is_ready() {
+        let frame = MapFramePlan::forge(
+            map::Viewport {
+                center: [0.5, 0.5],
+                zoom: 10.0,
+            },
+            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1_200.0, 800.0)),
+        );
+        let cover = basemap::cover(
+            frame,
+            basemap::DetailPlan {
+                source: basemap::SourceLevel::new(9),
+                prefetch: false,
+            },
+            None,
+        );
+        let cells = &cover.cells[..2];
+        let parent = basemap::SourceLevel::new(8);
+        let preferred = cells
+            .iter()
+            .map(|cell| (*cell, cell.key.ancestor(parent)))
+            .collect::<HashMap<_, _>>();
+        let mut resident = preferred.values().copied().collect::<HashSet<_>>();
+        resident.insert(cells[0].key);
+
+        let partial = choose_residents(cells, cover.source, true, &preferred, |key| {
+            resident.contains(&key)
+        });
+        assert!(partial.iter().all(|(cell, key)| *key == preferred[cell]));
+
+        resident.extend(cells.iter().map(|cell| cell.key));
+        let coherent = choose_residents(cells, cover.source, true, &preferred, |key| {
+            resident.contains(&key)
+        });
+        assert!(coherent.iter().all(|(cell, key)| *key == cell.key));
     }
 
     #[test]

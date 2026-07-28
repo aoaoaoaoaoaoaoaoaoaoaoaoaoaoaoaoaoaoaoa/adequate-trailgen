@@ -262,6 +262,8 @@ struct SurveyWorkbench {
     fault: Option<String>,
     vector: VectorField,
     viewport: Viewport,
+    cartography: map::CartographicClock,
+    scale_bar: map::ScaleBar,
     fit_regions: bool,
     scribe: RegionScribe,
     slate_path: PathBuf,
@@ -286,6 +288,7 @@ impl SurveyWorkbench {
             zoom: 4.2,
         });
         let vector = VectorField::raise(ctx, BasemapSource::bootstrap()?, offline, None)?;
+        let cartography = map::CartographicClock::new(viewport);
         let mut project = Self {
             root: place.root,
             name: place.name,
@@ -300,6 +303,8 @@ impl SurveyWorkbench {
             fault: None,
             vector,
             viewport,
+            cartography,
+            scale_bar: map::ScaleBar::default(),
             fit_regions,
             scribe: RegionScribe::default(),
             slate_path,
@@ -492,8 +497,9 @@ impl SurveyWorkbench {
         let event = self.scribe.interact(self.viewport, ui, &response, rect);
         let painter = ui.painter_at(rect);
         let frame = map::MapFramePlan::forge(self.viewport, rect);
+        let cartography = self.cartography.observe(self.viewport, ui.ctx());
         painter.rect_filled(rect, 0.0, map::MAP_GROUND);
-        self.vector.paint_base(&painter, frame);
+        self.vector.paint_base(&painter, frame, cartography);
         live_area::paint(
             &painter,
             self.viewport,
@@ -501,8 +507,9 @@ impl SurveyWorkbench {
             &self.regions,
             self.scribe.preview(self.viewport, rect),
         );
-        self.vector.paint_annotations(&painter, frame, 0, Vec::new);
-        map::paint_scale(&painter, self.viewport, rect);
+        self.vector
+            .paint_annotations(&painter, frame, cartography, 0, Vec::new);
+        self.scale_bar.paint(&painter, self.viewport, rect);
         painter.rect_stroke(
             rect.shrink(0.5),
             0.0,
