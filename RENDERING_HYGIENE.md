@@ -23,6 +23,19 @@ independent camera uniforms, protect the union of the current frame’s resource
 from eviction, and remain bounded by the shared residency ceiling. A new corpus
 must not alias an old corpus merely because its tile coordinates agree.
 
+## Responsiveness
+
+The event loop never performs work proportional to a graph, route portfolio,
+tile corpus, or file. Search completion, sorting, project refresh, cache
+construction, geometry preparation, and derived statistics run off-thread.
+Their UI events may install prepared ownership, update bounded state, and
+request a repaint; they may not finish the work on receipt.
+
+Delayed content is lawful and must expose a named preparing state. A frozen
+window is not. Background work carries generation identity, cooperates with
+cancellation between indivisible operations, and cannot publish stale results.
+Decorative animation must never enlarge the visibility-critical transaction.
+
 ## Detail
 
 Level of detail is an analytic cartographic schedule, not a frame-by-frame
@@ -48,6 +61,12 @@ Never submit a primitive whose identical successor wholly occludes it. Candidate
 routes sharing one canonical physical support may collapse to the topmost
 occurrence when width and styling semantics make the discarded draws
 pixel-equivalent. Distinct parallel supports must survive.
+
+Privileged routes are style-continuous chains, not bags of provider or graph
+fragments. Fuse consecutive supports through degree-two vertices; split at
+branches, visual-law changes, and ownership changes. Bound selected-line miters
+and close true chain endpoints, so width cannot turn graph seams into gaps or
+acute bends into spikes.
 
 The same principle applies before the GPU: normalize provider identity once,
 cache derived projections, and share immutable buffers. Do not conceal work in

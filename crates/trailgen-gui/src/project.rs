@@ -1,4 +1,7 @@
-use crate::library::{Library, SearchBoundary};
+use crate::{
+    library::{Library, SearchBoundary},
+    portfolio::CandidatePortfolio,
+};
 use anyhow::{Context as _, Result, ensure};
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use egui::Context;
@@ -106,6 +109,7 @@ pub struct SearchRequest {
     pub params: SearchParams,
     pub solver: SolverKind,
     pub count: usize,
+    pub manual_defaults: LoopConstraints,
 }
 
 impl SearchRequest {
@@ -240,7 +244,12 @@ pub enum SearchEvent {
     },
     Found {
         serial: u64,
-        routes: Vec<Route>,
+        portfolio: Box<CandidatePortfolio>,
+        elapsed: Duration,
+    },
+    PreparingResults {
+        serial: u64,
+        count: usize,
         elapsed: Duration,
     },
     Stopped {
@@ -305,69 +314,10 @@ impl SearchForge {
         let worker = thread::Builder::new()
             .name("trail-search".to_owned())
             .spawn(move || {
-                while let Ok(SearchJob { request, halt }) = commands.recv() {
-                    let started = Instant::now();
-                    let monitor = ForgeMonitor {
-                        serial: request.serial,
-                        halt,
-                        events: events_tx.clone(),
-                        ctx: ctx.clone(),
-                    };
-                    let mask = if let Some(boundary) = &request.boundary {
-                        monitor.report(SearchProgress {
-                            stage: SearchStage::Preparing,
-                            explored: 0,
-                            limit: worker_graph.edges.len(),
-                            candidates: 0,
-                        });
-                        let Some(mask) = boundary.edge_mask(&worker_graph, |explored, limit| {
-                            monitor.report(SearchProgress {
-                                stage: SearchStage::Preparing,
-                                explored,
-                                limit,
-                                candidates: 0,
-                            });
-                            !monitor.cancelled()
-                        }) else {
-                            let _stopped = events_tx.send(SearchEvent::Stopped {
-                                serial: request.serial,
-                                elapsed: started.elapsed(),
-                            });
-                            ctx.request_repaint();
-                            continue;
-                        };
-                        Some(mask)
-                    } else {
-                        None
-                    };
-                    let scope = mask.as_deref().map_or_else(
-                        || SearchScope::all(&worker_graph),
-                        |mask| SearchScope::restricted(&worker_graph, mask),
-                    );
-                    let routes = exact_matches(request.solver.solve_scoped(
-                        request.params,
-                        scope,
-                        request.start,
-                        &request.constraints,
-                        request.count,
-                        &monitor,
-                    ));
-                    let event = if monitor.cancelled() {
-                        SearchEvent::Stopped {
-                            serial: request.serial,
-                            elapsed: started.elapsed(),
-                        }
-                    } else {
-                        SearchEvent::Found {
-                            serial: request.serial,
-                            routes,
-                            elapsed: started.elapsed(),
-                        }
-                    };
-                    if events_tx.send(event).is_err() {
+                while let Ok(job) = commands.recv() {
+                    if !forge_search(&worker_graph, &events_tx, &ctx, job) {
                         break;
                     }
-                    ctx.request_repaint();
                 }
             })
             .context("spawn trail search")?;
@@ -390,6 +340,116 @@ impl SearchForge {
             .map_err(|_| anyhow::anyhow!("trail search is already running"))?;
         Ok(handle)
     }
+}
+
+fn forge_search(
+    graph: &TrailGraph,
+    events: &Sender<SearchEvent>,
+    ctx: &Context,
+    job: SearchJob,
+) -> bool {
+    let SearchJob { request, halt } = job;
+    let started = Instant::now();
+    let monitor = ForgeMonitor {
+        serial: request.serial,
+        halt,
+        events: events.clone(),
+        ctx: ctx.clone(),
+    };
+    let mask = if let Some(boundary) = &request.boundary {
+        monitor.report(SearchProgress {
+            stage: SearchStage::Preparing,
+            explored: 0,
+            limit: graph.edges.len(),
+            candidates: 0,
+        });
+        let Some(mask) = boundary.edge_mask(graph, |explored, limit| {
+            monitor.report(SearchProgress {
+                stage: SearchStage::Preparing,
+                explored,
+                limit,
+                candidates: 0,
+            });
+            !monitor.cancelled()
+        }) else {
+            return publish(
+                events,
+                ctx,
+                SearchEvent::Stopped {
+                    serial: request.serial,
+                    elapsed: started.elapsed(),
+                },
+            );
+        };
+        Some(mask)
+    } else {
+        None
+    };
+    let scope = mask.as_deref().map_or_else(
+        || SearchScope::all(graph),
+        |mask| SearchScope::restricted(graph, mask),
+    );
+    let routes = exact_matches(request.solver.solve_scoped(
+        request.params,
+        scope,
+        request.start,
+        &request.constraints,
+        request.count,
+        &monitor,
+    ));
+    let search_elapsed = started.elapsed();
+    if monitor.cancelled() {
+        return publish(
+            events,
+            ctx,
+            SearchEvent::Stopped {
+                serial: request.serial,
+                elapsed: search_elapsed,
+            },
+        );
+    }
+    if !publish(
+        events,
+        ctx,
+        SearchEvent::PreparingResults {
+            serial: request.serial,
+            count: routes.len(),
+            elapsed: search_elapsed,
+        },
+    ) {
+        return false;
+    }
+    let portfolio = CandidatePortfolio::forge(
+        graph,
+        routes,
+        request.params.routing,
+        &request.manual_defaults,
+        || monitor.cancelled(),
+    );
+    let event = if monitor.cancelled() {
+        SearchEvent::Stopped {
+            serial: request.serial,
+            elapsed: started.elapsed(),
+        }
+    } else if let Some(portfolio) = portfolio {
+        SearchEvent::Found {
+            serial: request.serial,
+            portfolio: Box::new(portfolio),
+            elapsed: search_elapsed,
+        }
+    } else {
+        SearchEvent::Stopped {
+            serial: request.serial,
+            elapsed: started.elapsed(),
+        }
+    };
+    publish(events, ctx, event)
+}
+
+fn publish(events: &Sender<SearchEvent>, ctx: &Context, event: SearchEvent) -> bool {
+    let live = events.send(event).is_ok();
+    ctx.request_repaint();
+    live
 }
 
 fn exact_matches(routes: Vec<Route>) -> Vec<Route> {
@@ -434,6 +494,7 @@ mod tests {
             params: SearchParams::default(),
             solver: SolverKind::Auto,
             count: 1,
+            manual_defaults: LoopConstraints::default(),
         };
         assert!(request.validate(&graph).is_err());
         Ok(())

@@ -74,7 +74,7 @@ pub fn candidate_tile(
     ui: &mut Ui,
     route: &Route,
     preview: &CandidatePreview,
-    ordinal: usize,
+    identity: usize,
     active: bool,
 ) -> Response {
     tile_shell(
@@ -84,7 +84,7 @@ pub fn candidate_tile(
         preview.standing,
         active,
         |ui, rect| {
-            let color = candidate_color(ordinal, active);
+            let color = candidate_color(identity, active);
             preview.paint(ui, rect, color);
         },
     )

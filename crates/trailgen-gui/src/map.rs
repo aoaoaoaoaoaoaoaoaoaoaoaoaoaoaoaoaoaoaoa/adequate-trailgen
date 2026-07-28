@@ -510,36 +510,8 @@ impl Atlas {
 }
 
 impl RouteOverlay {
-    pub fn candidates(graph: &TrailGraph, routes: &[Route], order: &[usize]) -> Self {
-        let mut edges = candidate_crown(routes, order)
-            .into_iter()
-            .map(|(edge_id, color)| {
-                let edge = &graph.edges[edge_id.0];
-                let points = edge
-                    .geometry
-                    .points
-                    .iter()
-                    .copied()
-                    .map(world_from_coord)
-                    .collect::<Vec<_>>();
-                WorldEdge {
-                    endpoints: [edge.a.0, edge.b.0],
-                    length_world: world_polyline_length(&points),
-                    points,
-                    lineage: None,
-                    color,
-                    trail_class: edge.attr.trail_class,
-                    mark: trail_mark(
-                        edge.attr.trail_class,
-                        edge.attr.standing,
-                        edge.attr.marking,
-                        edge.attr.terrain,
-                        edge.attr.surface.as_deref(),
-                    ),
-                    access: edge.attr.access,
-                }
-            })
-            .collect::<Vec<_>>();
+    pub fn candidates(graph: &TrailGraph, routes: &[Route]) -> Self {
+        let mut edges = candidate_chains(graph, routes);
         weave_cadence(graph.vertices.len(), &mut edges);
         Self {
             field: TrailField::overlay(&edges),
@@ -551,25 +523,117 @@ impl RouteOverlay {
     }
 }
 
-fn candidate_crown(routes: &[Route], order: &[usize]) -> Vec<(EdgeId, Color32)> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Crown {
+    occurrence: usize,
+    slot: usize,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct OverlayStyle {
+    color: Color32,
+    trail_class: TrailClass,
+    mark: TrailMark,
+    access: Access,
+}
+
+struct OverlayDraft {
+    endpoints: [usize; 2],
+    points: Vec<[f64; 2]>,
+    style: OverlayStyle,
+}
+
+fn candidate_crown(routes: &[Route]) -> BTreeMap<EdgeId, Crown> {
     let mut crown = BTreeMap::new();
-    let mut z = 0;
-    for (ordinal, slot) in order.iter().copied().enumerate() {
-        let color = candidate_color(ordinal, false);
-        for edge in &routes[slot].edges {
-            crown.insert(*edge, (z, color));
-            z += 1;
+    let mut occurrence = 0;
+    for (slot, route) in routes.iter().enumerate() {
+        for edge in &route.edges {
+            crown.insert(*edge, Crown { occurrence, slot });
+            occurrence += 1;
         }
     }
-    let mut crown = crown
-        .into_iter()
-        .map(|(edge, (z, color))| (z, edge, color))
-        .collect::<Vec<_>>();
-    crown.sort_unstable_by_key(|(z, _, _)| *z);
     crown
-        .into_iter()
-        .map(|(_, edge, color)| (edge, color))
-        .collect()
+}
+
+fn candidate_chains(graph: &TrailGraph, routes: &[Route]) -> Vec<WorldEdge> {
+    let crown = candidate_crown(routes);
+    let mut degree = vec![0_u16; graph.vertices.len()];
+    for edge_id in crown.keys() {
+        let edge = &graph.edges[edge_id.0];
+        degree[edge.a.0] = degree[edge.a.0].saturating_add(1);
+        degree[edge.b.0] = degree[edge.b.0].saturating_add(1);
+    }
+    let mut chains = Vec::new();
+    let mut occurrence = 0;
+    for (slot, route) in routes.iter().enumerate() {
+        let mut at = route.start;
+        let mut draft = None::<OverlayDraft>;
+        for edge_id in &route.edges {
+            let edge = &graph.edges[edge_id.0];
+            let next = edge
+                .traverse(at)
+                .expect("candidate edge must remain traversable");
+            let owner = crown[edge_id];
+            if owner.slot == slot && owner.occurrence == occurrence {
+                let style = OverlayStyle {
+                    color: candidate_color(slot, false),
+                    trail_class: edge.attr.trail_class,
+                    mark: trail_mark(
+                        edge.attr.trail_class,
+                        edge.attr.standing,
+                        edge.attr.marking,
+                        edge.attr.terrain,
+                        edge.attr.surface.as_deref(),
+                    ),
+                    access: edge.attr.access,
+                };
+                let points = edge
+                    .oriented_geometry(at)
+                    .points
+                    .iter()
+                    .copied()
+                    .map(world_from_coord)
+                    .collect::<Vec<_>>();
+                if let Some(run) = &mut draft
+                    && run.endpoints[1] == at.0
+                    && degree[at.0] == 2
+                    && run.style == style
+                {
+                    run.points.extend(points.into_iter().skip(1));
+                    run.endpoints[1] = next.0;
+                } else {
+                    seal_overlay(&mut draft, &mut chains);
+                    draft = Some(OverlayDraft {
+                        endpoints: [at.0, next.0],
+                        points,
+                        style,
+                    });
+                }
+            } else {
+                seal_overlay(&mut draft, &mut chains);
+            }
+            at = next;
+            occurrence += 1;
+        }
+        seal_overlay(&mut draft, &mut chains);
+    }
+    chains
+}
+
+fn seal_overlay(draft: &mut Option<OverlayDraft>, chains: &mut Vec<WorldEdge>) {
+    let Some(draft) = draft.take() else {
+        return;
+    };
+    chains.push(WorldEdge {
+        endpoints: draft.endpoints,
+        length_world: world_polyline_length(&draft.points),
+        points: draft.points,
+        lineage: None,
+        color: draft.style.color,
+        trail_class: draft.style.trail_class,
+        mark: draft.style.mark,
+        access: draft.style.access,
+    });
 }
 
 fn weave_cadence(vertex_count: usize, edges: &mut [WorldEdge]) {
@@ -1130,7 +1194,7 @@ fn pleasant_length(target: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use trailgen_core::{ConstraintVerdict, RouteMetrics, VertexId};
+    use trailgen_core::{ConstraintVerdict, GraphBuilder, RouteMetrics, VertexId, io::geojson};
 
     fn route(edges: impl IntoIterator<Item = usize>) -> Route {
         Route {
@@ -1212,16 +1276,78 @@ mod tests {
     #[test]
     fn candidate_crown_keeps_only_the_topmost_copy_of_shared_support() {
         let routes = [route([0, 1]), route([1, 2])];
-        let crown = candidate_crown(&routes, &[0, 1]);
+        let crown = candidate_crown(&routes);
 
         assert_eq!(
-            crown,
-            vec![
-                (EdgeId(0), candidate_color(0, false)),
-                (EdgeId(1), candidate_color(1, false)),
-                (EdgeId(2), candidate_color(1, false)),
-            ]
+            crown[&EdgeId(0)],
+            Crown {
+                occurrence: 0,
+                slot: 0
+            }
         );
+        assert_eq!(
+            crown[&EdgeId(1)],
+            Crown {
+                occurrence: 2,
+                slot: 1
+            }
+        );
+        assert_eq!(
+            crown[&EdgeId(2)],
+            Crown {
+                occurrence: 3,
+                slot: 1
+            }
+        );
+    }
+
+    #[test]
+    fn candidate_chains_join_degree_two_supports() {
+        let graph = GraphBuilder::default()
+            .build(
+                &geojson::network_from_str(
+                    r#"{
+                        "type": "FeatureCollection",
+                        "features": [
+                            {
+                                "type": "Feature",
+                                "properties": {
+                                    "id": "a",
+                                    "source": "fixture",
+                                    "terrain": "trail",
+                                    "access": "open",
+                                    "confidence": 1.0
+                                },
+                                "geometry": {
+                                    "type": "LineString",
+                                    "coordinates": [[-74.0, 41.0], [-73.999, 41.0]]
+                                }
+                            },
+                            {
+                                "type": "Feature",
+                                "properties": {
+                                    "id": "b",
+                                    "source": "fixture",
+                                    "terrain": "trail",
+                                    "access": "open",
+                                    "confidence": 1.0
+                                },
+                                "geometry": {
+                                    "type": "LineString",
+                                    "coordinates": [[-73.999, 41.0], [-73.998, 41.0]]
+                                }
+                            }
+                        ]
+                    }"#,
+                )
+                .expect("fixture network must parse"),
+            )
+            .expect("fixture graph must build");
+        let chains = candidate_chains(&graph, &[route([0, 1])]);
+
+        assert_eq!(chains.len(), 1);
+        assert_eq!(chains[0].endpoints, [0, 2]);
+        assert_eq!(chains[0].points.len(), 3);
     }
 
     #[test]

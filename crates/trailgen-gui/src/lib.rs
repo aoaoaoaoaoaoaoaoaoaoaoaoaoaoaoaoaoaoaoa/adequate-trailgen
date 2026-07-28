@@ -16,6 +16,7 @@ mod habitat;
 mod library;
 mod live_area;
 mod map;
+mod portfolio;
 mod profile;
 mod project;
 mod projects;

@@ -5,6 +5,7 @@ use crate::{
     library::{Library, SavedTrail, SearchRecipe, TrailId, Trailhead},
     live_area::{self, RegionScribe, ScribeEvent},
     map::{self, Atlas, SELECTED_TRAIL_COLOR, Viewport},
+    portfolio::{self, CandidatePortfolio},
     profile::ElevationProfile,
     project::{Project, SearchEvent, SearchForge, SearchHandle, SearchRequest},
     relief::Relief,
@@ -28,8 +29,8 @@ use std::{
     time::{Duration, Instant},
 };
 use trailgen_core::{
-    Coord, LoopConstraints, Route, RouteMetrics, RouteShape, SearchParams, SearchProgress,
-    SearchStage, SolverKind, SupportPoint, Trail, TrailGraph, TrailRealization, TrailStanding,
+    Coord, LoopConstraints, RouteMetrics, RouteShape, SearchParams, SearchProgress, SearchStage,
+    SolverKind, SupportPoint, Trail, TrailGraph, TrailRealization, TrailStanding,
 };
 use trailgen_data::SurveyRegion;
 
@@ -58,7 +59,7 @@ pub struct TrailApp {
     library: Library,
     committed_library: Library,
     library_dirty: Option<Instant>,
-    candidates: Option<CandidateRun>,
+    candidates: Option<CandidatePortfolio>,
     focus: Option<Focus>,
     sort: TrailSort,
     gallery: GalleryDeck,
@@ -90,14 +91,6 @@ pub struct TrailApp {
     trail_data_status: Option<String>,
     map_rect: egui::Rect,
     workspace_signal: Option<Action>,
-}
-
-struct CandidateRun {
-    routes: Vec<Route>,
-    designs: Vec<Option<Trail>>,
-    profiles: Vec<Option<ElevationProfile>>,
-    previews: Vec<gallery::CandidatePreview>,
-    overlay: map::RouteOverlay,
 }
 
 struct TrailEditor {
@@ -993,10 +986,6 @@ impl TrailApp {
         }
         if let Some((sort, rect)) = sort {
             self.sort = sort;
-            if let Some(run) = &mut self.candidates {
-                let order = gallery::order_candidates(&run.routes, sort);
-                run.overlay = map::RouteOverlay::candidates(&self.graph, &run.routes, &order);
-            }
             self.water.select(rect);
         }
         if let Some(rect) = clear {
@@ -1203,7 +1192,7 @@ impl TrailApp {
                 ui.add_space(6.0);
                 let _rack = ui.horizontal(|ui| {
                     ui.add_space(6.0);
-                    for (ordinal, slot) in order.iter().copied().enumerate() {
+                    for slot in order.iter().copied() {
                         let active = self
                             .focus
                             .as_ref()
@@ -1212,7 +1201,7 @@ impl TrailApp {
                             ui,
                             &run.routes[slot],
                             &run.previews[slot],
-                            ordinal,
+                            slot,
                             active,
                         );
                         if response.hovered() {
@@ -1880,6 +1869,7 @@ impl TrailApp {
             params,
             solver: self.solver,
             count: CANDIDATE_COUNT,
+            manual_defaults: self.defaults.clone(),
         })
     }
 
@@ -1903,39 +1893,40 @@ impl TrailApp {
                 }
                 SearchEvent::Found {
                     serial,
-                    routes,
+                    portfolio,
                     elapsed,
                 } if self.forge_phase.serial() == Some(serial) => {
                     self.forge_phase = ForgePhase::Idle;
-                    let count = routes.len();
-                    let designs = routes
-                        .iter()
-                        .map(|route| self.design_for_candidate(route))
-                        .collect();
-                    let profiles = routes
-                        .iter()
-                        .map(|route| ElevationProfile::forge(&self.graph, route))
-                        .collect();
-                    let previews = routes
-                        .iter()
-                        .map(|route| gallery::CandidatePreview::forge(&self.graph, route))
-                        .collect();
-                    let order = gallery::order_candidates(&routes, self.sort);
-                    let overlay = map::RouteOverlay::candidates(&self.graph, &routes, &order);
-                    self.candidates = Some(CandidateRun {
-                        routes,
-                        designs,
-                        profiles,
-                        previews,
-                        overlay,
-                    });
+                    let count = portfolio.routes.len();
+                    self.candidates = Some(*portfolio);
                     self.status = if count == 0 {
                         format!("No trails matched in {}.", duration(elapsed))
                     } else {
                         format!("Found {count} trail(s) in {}.", duration(elapsed))
                     };
-                    if self.map_rect.is_positive() {
-                        self.water.thwack(self.map_rect, 0.8);
+                    ctx.request_repaint();
+                }
+                SearchEvent::PreparingResults {
+                    serial,
+                    count,
+                    elapsed,
+                } if self.forge_phase.serial() == Some(serial) => {
+                    if let ForgePhase::Striking {
+                        progress, stopping, ..
+                    } = &mut self.forge_phase
+                    {
+                        *progress = SearchProgress {
+                            stage: SearchStage::Ranking,
+                            explored: count,
+                            limit: count,
+                            candidates: count,
+                        };
+                        if !*stopping {
+                            self.status = format!(
+                                "Found {count} trail(s) in {}. Preparing display…",
+                                duration(elapsed)
+                            );
+                        }
                     }
                     ctx.request_repaint();
                 }
@@ -1950,6 +1941,7 @@ impl TrailApp {
                     ctx.request_repaint();
                 }
                 SearchEvent::Progress { .. }
+                | SearchEvent::PreparingResults { .. }
                 | SearchEvent::Found { .. }
                 | SearchEvent::Stopped { .. } => {}
             }
@@ -2004,19 +1996,6 @@ impl TrailApp {
             self.corpus = None;
             self.flush_library();
         }
-    }
-
-    fn design_for_candidate(&self, route: &Route) -> Option<Trail> {
-        let trail = Trail::infer(&self.graph, route, self.params.routing)?;
-        let realized = trail
-            .realize(
-                route.name.clone(),
-                &self.graph,
-                &self.manual_constraints(route.metrics.shape),
-                1.0,
-            )
-            .ok()?;
-        (realized.route.edges == route.edges).then_some(trail)
     }
 
     const fn active_trailhead(&self) -> Option<Trailhead> {
@@ -2122,25 +2101,7 @@ impl TrailApp {
     }
 
     fn manual_constraints(&self, shape: RouteShape) -> LoopConstraints {
-        let mut constraints = self.defaults.clone();
-        constraints.min_distance_m = 0.0;
-        constraints.max_distance_m = 1.0e9;
-        constraints.min_difficulty = 0.0;
-        constraints.max_difficulty = 1.0e9;
-        constraints.target_difficulty = None;
-        constraints.min_ascent_m = 0.0;
-        constraints.max_ascent_m = 1.0e9;
-        constraints.min_descent_m = 0.0;
-        constraints.max_descent_m = 1.0e9;
-        constraints.max_road_fraction = 1.0;
-        constraints.max_low_confidence_fraction = 1.0;
-        constraints.max_repeated_edge_fraction = if shape == RouteShape::OutAndBack {
-            1.0
-        } else {
-            0.0
-        };
-        constraints.allowed_shapes = vec![shape];
-        constraints
+        portfolio::manual_constraints(&self.defaults, shape)
     }
 
     fn reforge_editor(&mut self) {

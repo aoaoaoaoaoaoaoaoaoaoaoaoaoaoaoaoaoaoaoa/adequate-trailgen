@@ -27,6 +27,7 @@ const CORE_ONSET_ZOOM: f32 = 11.05;
 const PATTERN_ONSET_ZOOM: f32 = 11.48;
 const DISCLOSURE_SPAN_ZOOM: f32 = 0.58;
 const OVERLAY_ONSET_ZOOM: f32 = -100.0;
+const SELECTED_MITER_LIMIT: f32 = std::f32::consts::SQRT_2;
 const DETAIL_HYSTERESIS_ZOOM: f64 = 0.08;
 const DETAIL_TRANSITION: std::time::Duration = std::time::Duration::from_millis(160);
 const _: () = assert!(TUBE_ONSET_ZOOM >= FIRST_BAND as f32);
@@ -110,6 +111,7 @@ impl TrailField {
                         edge,
                         law_ids[edge_id],
                         salience,
+                        salience == TrailSalience::Selected && band.zoom() >= 13.0,
                     );
                 }
             }
@@ -464,6 +466,7 @@ impl TrailMeshBuilder {
         edge: &WorldEdge,
         law_id: u32,
         salience: TrailSalience,
+        cap_supports: bool,
     ) {
         if samples.len() < 2 {
             return;
@@ -482,18 +485,18 @@ impl TrailMeshBuilder {
         let pattern = pattern_code(edge.mark);
         let base = u32::try_from(self.vertices.len()).expect("trail tile vertex count fits u32");
         for (slot, point) in local.iter().copied().enumerate() {
-            let extrusion = basemap::join_normal(&local, slot);
+            let [negative, positive] = ribbon_extrusions(&local, slot, salience, cap_supports);
             self.vertices.extend([
                 TrailPoint {
                     local: point,
-                    extrusion: [-extrusion[0], -extrusion[1]],
+                    extrusion: negative,
                     srgb: color,
                     arc_world: samples[slot].arc_world as f32,
                     cadence: cadence_word(law_id, pattern, false),
                 },
                 TrailPoint {
                     local: point,
-                    extrusion,
+                    extrusion: positive,
                     srgb: color,
                     arc_world: samples[slot].arc_world as f32,
                     cadence: cadence_word(law_id, pattern, true),
@@ -542,6 +545,45 @@ impl TrailMeshBuilder {
             indices: self.indices.into(),
             law_ids: std::iter::once(0).chain(global_ids).collect(),
         }
+    }
+}
+
+fn ribbon_extrusions(
+    points: &[[f32; 2]],
+    slot: usize,
+    salience: TrailSalience,
+    cap_supports: bool,
+) -> [[f32; 2]; 2] {
+    let mut join = basemap::join_normal(points, slot);
+    if salience == TrailSalience::Selected {
+        let reach = join[0].hypot(join[1]);
+        if reach > SELECTED_MITER_LIMIT {
+            let scale = SELECTED_MITER_LIMIT / reach;
+            join = [join[0] * scale, join[1] * scale];
+        }
+    }
+    let mut pair = [[-join[0], -join[1]], join];
+    if cap_supports && (slot == 0 || slot + 1 == points.len()) {
+        let tangent = if slot == 0 {
+            ribbon_direction(points[0], points[1], -1.0)
+        } else {
+            ribbon_direction(points[points.len() - 2], points[points.len() - 1], 1.0)
+        };
+        for extrusion in &mut pair {
+            extrusion[0] += tangent[0];
+            extrusion[1] += tangent[1];
+        }
+    }
+    pair
+}
+
+fn ribbon_direction(from: [f32; 2], to: [f32; 2], sign: f32) -> [f32; 2] {
+    let delta = [to[0] - from[0], to[1] - from[1]];
+    let length = delta[0].hypot(delta[1]);
+    if length <= f32::EPSILON {
+        [0.0, 0.0]
+    } else {
+        [delta[0] * sign / length, delta[1] * sign / length]
     }
 }
 
@@ -1876,11 +1918,28 @@ mod tests {
             access: trailgen_core::Access::Open,
         };
         let mut builder = TrailMeshBuilder::default();
-        builder.push(&samples, key, &edge, 0, TrailSalience::Context);
+        builder.push(&samples, key, &edge, 0, TrailSalience::Context, false);
         let mesh = builder.seal();
 
         assert_eq!(mesh.vertices.len(), samples.len() * 2);
         assert_eq!(mesh.indices.len(), (samples.len() - 1) * 6);
+    }
+
+    #[test]
+    fn selected_ribbons_cap_support_seams_and_repel_miter_spikes() {
+        let straight = [[0.0, 0.0], [1.0, 0.0]];
+        let start = ribbon_extrusions(&straight, 0, TrailSalience::Selected, true);
+        let end = ribbon_extrusions(&straight, 1, TrailSalience::Selected, true);
+        assert!(start.iter().all(|extrusion| extrusion[0] < 0.0));
+        assert!(end.iter().all(|extrusion| extrusion[0] > 0.0));
+
+        let corner = [[0.0, 0.0], [1.0, 0.0], [0.5, 0.866_025_4]];
+        let context = ribbon_extrusions(&corner, 1, TrailSalience::Context, false);
+        let selected = ribbon_extrusions(&corner, 1, TrailSalience::Selected, true);
+        assert!(context[1][0].hypot(context[1][1]) > SELECTED_MITER_LIMIT);
+        assert!(selected.iter().all(
+            |extrusion| extrusion[0].hypot(extrusion[1]) <= SELECTED_MITER_LIMIT + f32::EPSILON
+        ));
     }
 
     #[test]

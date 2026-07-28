@@ -35,29 +35,56 @@ xdotool windowmap --sync "$window"
 xdotool windowfocus --sync "$window"
 xwininfo -id "$window" >"$out/window.txt"
 
+pan_map() {
+    limit=$1
+    xdotool mousemove --sync --window "$window" 850 390
+    xdotool mousedown 1
+    i=0
+    while [ "$i" -lt "$limit" ]; do
+        xdotool mousemove --sync --window "$window" 950 390
+        sleep 0.02
+        xdotool mousemove --sync --window "$window" 950 490
+        sleep 0.02
+        xdotool mousemove --sync --window "$window" 850 490
+        sleep 0.02
+        xdotool mousemove --sync --window "$window" 850 390
+        sleep 0.02
+        i=$((i + 1))
+    done
+    xdotool mouseup 1
+}
+
 sleep 4
 import -window "$window" "$out/ready.png"
+search_start_ns=$(date +%s%N)
+printf '%s\n' "$((search_start_ns / 1000))" >"$out/search-start-unix-us.txt"
 xdotool key --window "$window" ctrl+Return
+if [ "${TRAILGEN_PROFILE_PROMOTION_PROBE:-0}" = 1 ]; then
+    sleep 1.8
+    probe_start_ns=$(date +%s%N)
+    printf '%s\n' "$((probe_start_ns / 1000))" >"$out/probe-start-unix-us.txt"
+    pan_map 20
+    probe_end_ns=$(date +%s%N)
+    printf '%s\n' "$((probe_end_ns / 1000))" >"$out/probe-end-unix-us.txt"
+fi
 sleep "${TRAILGEN_PROFILE_SEARCH_WAIT_S:-20}"
+results_ready_ns=$(date +%s%N)
+printf '%s\n' "$((results_ready_ns / 1000))" >"$out/results-ready-unix-us.txt"
 import -window "$window" "$out/results.png"
+xdotool mousemove --sync --window "$window" 420 760
+xdotool click 1
+sleep 1
+import -window "$window" "$out/candidate-focus.png"
+xdotool mousemove --sync --window "$window" 800 310
+xdotool click --repeat 5 --delay 50 4
+sleep 1
+import -window "$window" "$out/candidate-detail.png"
+xdotool key Escape
+sleep 1
 
 start_ns=$(date +%s%N)
 printf '%s\n' "$((start_ns / 1000))" >"$out/trace-start-unix-us.txt"
-xdotool mousemove --sync --window "$window" 850 390
-xdotool mousedown 1
-i=0
-while [ "$i" -lt 40 ]; do
-    xdotool mousemove --sync --window "$window" 950 390
-    sleep 0.02
-    xdotool mousemove --sync --window "$window" 950 490
-    sleep 0.02
-    xdotool mousemove --sync --window "$window" 850 490
-    sleep 0.02
-    xdotool mousemove --sync --window "$window" 850 390
-    sleep 0.02
-    i=$((i + 1))
-done
-xdotool mouseup 1
+pan_map 40
 xdotool mousemove --sync --window "$window" 850 390
 xdotool click --repeat 8 --delay 50 4
 xdotool click --repeat 8 --delay 50 5
@@ -66,7 +93,7 @@ printf '%s\n' "$((end_ns / 1000))" >"$out/trace-end-unix-us.txt"
 printf '%s\n' "$((end_ns - start_ns))" >"$out/trace-wall-ns.txt"
 sleep 1
 import -window "$window" "$out/after-trace.png"
-xdotool mousemove --sync --window "$window" 850 390
+xdotool mousemove --sync --window "$window" 825 280
 xdotool click --repeat 8 --delay 50 4
 sleep 1
 import -window "$window" "$out/detail.png"
@@ -94,5 +121,23 @@ shapes=$(awk -F, -v start="$start_us" -v end="$end_us" \
     'NR > 1 && $1 >= start && $1 <= end { sum += $4; n++ }
      END { printf "%.0f", sum / n }' "$out/frames.csv")
 wall_ms=$(( $(cat "$out/trace-wall-ns.txt") / 1000000 ))
-summary="frames=$samples wall_ms=$wall_ms paint_p50_us=$p50 paint_p95_us=$p95 paint_worst_us=$worst mean_shapes=$shapes"
+search_start_us=$(cat "$out/search-start-unix-us.txt")
+results_ready_us=$(cat "$out/results-ready-unix-us.txt")
+promotion_worst=$(awk -F, -v start="$search_start_us" -v end="$results_ready_us" \
+    'NR > 1 && $1 >= start && $1 <= end && $3 > worst { worst = $3 }
+     END { print worst + 0 }' "$out/frames.csv")
+summary="frames=$samples wall_ms=$wall_ms paint_p50_us=$p50 paint_p95_us=$p95 paint_worst_us=$worst mean_shapes=$shapes promotion_worst_us=$promotion_worst"
+if [ -f "$out/probe-start-unix-us.txt" ]; then
+    probe_start_us=$(cat "$out/probe-start-unix-us.txt")
+    probe_end_us=$(cat "$out/probe-end-unix-us.txt")
+    probe=$(awk -F, -v start="$probe_start_us" -v end="$probe_end_us" \
+        'NR > 1 && $1 >= start && $1 <= end {
+             n++;
+             if ($2 > interval) interval = $2;
+             if ($3 > worst) worst = $3;
+         }
+         END { printf " probe_frames=%d probe_worst_us=%d probe_max_interval_us=%d",
+               n, worst, interval }' "$out/frames.csv")
+    summary="$summary$probe"
+fi
 printf '%s\n' "$summary" | tee "$out/summary.txt"
