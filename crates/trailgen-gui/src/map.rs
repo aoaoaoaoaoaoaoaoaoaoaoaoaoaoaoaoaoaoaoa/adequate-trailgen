@@ -154,7 +154,6 @@ pub struct MapFramePlan {
 pub struct CartographicPlan {
     pub zoom: CameraZoom,
     pub epoch: u64,
-    pub gesture: u64,
     pub moving: bool,
 }
 
@@ -164,7 +163,6 @@ pub struct CartographicClock {
     committed_zoom: CameraZoom,
     last_motion: Option<Instant>,
     epoch: u64,
-    gesture: u64,
 }
 
 impl CartographicClock {
@@ -175,7 +173,6 @@ impl CartographicClock {
             committed_zoom: CameraZoom::from_viewport(viewport),
             last_motion: None,
             epoch: 0,
-            gesture: 0,
         }
     }
 
@@ -194,9 +191,6 @@ impl CartographicClock {
     ) -> (CartographicPlan, Option<Duration>) {
         let changed = viewport != self.observed;
         if changed {
-            if self.last_motion.is_none() {
-                self.gesture = self.gesture.saturating_add(1);
-            }
             self.observed = viewport;
             self.last_motion = Some(now);
         }
@@ -218,7 +212,6 @@ impl CartographicClock {
             CartographicPlan {
                 zoom: self.committed_zoom,
                 epoch: self.epoch,
-                gesture: self.gesture,
                 moving: self.last_motion.is_some(),
             },
             repaint_after,
@@ -360,7 +353,6 @@ pub struct WorldEdge {
     pub points: Vec<[f64; 2]>,
     pub length_world: f64,
     pub lineage: Option<CadenceLineage>,
-    pub cadence_component: Option<u32>,
     pub trail_class: TrailClass,
     pub mark: TrailMark,
     pub access: Access,
@@ -417,7 +409,6 @@ impl Atlas {
                     length_world: world_polyline_length(&points),
                     points,
                     lineage: None,
-                    cadence_component: None,
                     trail_class: edge.attr.trail_class,
                     mark: trail_mark(
                         edge.attr.trail_class,
@@ -510,13 +501,8 @@ impl Atlas {
         }
     }
 
-    pub fn paint_network(
-        &mut self,
-        painter: &Painter,
-        frame: MapFramePlan,
-        cartography: CartographicPlan,
-    ) {
-        self.field.paint(painter, frame, cartography);
+    pub fn paint_network(&mut self, painter: &Painter, frame: MapFramePlan) {
+        self.field.paint(painter, frame);
     }
 }
 
@@ -532,7 +518,6 @@ fn weave_cadence(vertex_count: usize, edges: &mut [WorldEdge]) {
         }
     }
 
-    let mut component = 0_u32;
     for mark in [TrailMark::Dashed, TrailMark::DashDot, TrailMark::Unmarked] {
         let mut datums = vec![None; vertex_count];
         for root in 0..vertex_count {
@@ -543,10 +528,6 @@ fn weave_cadence(vertex_count: usize, edges: &mut [WorldEdge]) {
             {
                 continue;
             }
-            let active_component = component;
-            component = component
-                .checked_add(1)
-                .expect("cadence component count fits u32");
             datums[root] = Some(0.0);
             let mut frontier = vec![root];
             while let Some(vertex) = frontier.pop() {
@@ -569,7 +550,6 @@ fn weave_cadence(vertex_count: usize, edges: &mut [WorldEdge]) {
                             datum_world: datum,
                             reverse: vertex == b,
                         });
-                        edges[edge_id].cadence_component = Some(active_component);
                         frontier.push(other);
                     } else {
                         edges[edge_id].lineage = Some(CadenceLineage::Chord {
@@ -578,7 +558,6 @@ fn weave_cadence(vertex_count: usize, edges: &mut [WorldEdge]) {
                                 datums[b].expect("chord endpoint b owns a cadence datum"),
                             ],
                         });
-                        edges[edge_id].cadence_component = Some(active_component);
                     }
                 }
             }
@@ -675,50 +654,43 @@ struct SelectedStroke {
 fn paint_selected_strokes(painter: &Painter, strokes: &[SelectedStroke], view: Viewport) {
     let width = TrailSalience::Selected.width();
     let core_width = trail_core(width).width;
-    let mut moments = [(0.0_f64, 0.0_f64); 3];
+    let scale = world_pixels(view);
+    let lattice = cadence::WorldLevel::at_zoom(view.zoom);
+    let cells_per_world = lattice.cells_per_world();
+    let cell_points = (scale / cells_per_world) as f32;
     let mut datum_world = 0.0;
     for stroke in strokes {
-        if let Some(slot) = selected_pattern_slot(stroke.mark) {
-            let mean = stroke.length_world.mul_add(0.5, datum_world);
-            moments[slot].0 += stroke.length_world;
-            moments[slot].1 = stroke.length_world.mul_add(mean, moments[slot].1);
-        }
-        datum_world += stroke.length_world;
-    }
-    let scale = world_pixels(view);
-    let offsets: [f64; 3] = std::array::from_fn(|slot| {
-        let (mass, first) = moments[slot];
-        if mass <= f64::EPSILON {
-            0.0
-        } else {
-            let mark = [TrailMark::Dashed, TrailMark::DashDot, TrailMark::Unmarked][slot];
-            let period = trail_pattern(mark, width, core_width)
-                .expect("patterned selected marks own a cadence")
-                .period();
-            (-scale * first / mass).rem_euclid(f64::from(period))
-        }
-    });
-    datum_world = 0.0;
-    for stroke in strokes {
-        let phase = selected_pattern_slot(stroke.mark).map_or(0.0, |slot| offsets[slot]);
-        let _length = paint_trail_tube_at(
-            painter,
-            &stroke.points,
-            width,
-            stroke.color,
-            stroke.mark,
-            datum_world.mul_add(scale, phase) as f32,
-        );
+        let pattern = trail_lattice_pattern(stroke.mark, core_width, cell_points);
+        let phase = (datum_world * cells_per_world).rem_euclid(2.0) as f32 * cell_points;
+        let _length =
+            paint_trail_tube_pattern(painter, &stroke.points, width, stroke.color, pattern, phase);
         datum_world += stroke.length_world;
     }
 }
 
-const fn selected_pattern_slot(mark: TrailMark) -> Option<usize> {
+fn trail_lattice_pattern(
+    mark: TrailMark,
+    core_width: f32,
+    cell_points: f32,
+) -> Option<cadence::Pattern> {
     match mark {
         TrailMark::Solid => None,
-        TrailMark::Dashed => Some(0),
-        TrailMark::DashDot => Some(1),
-        TrailMark::Unmarked => Some(2),
+        TrailMark::Dashed => Some(cadence::Pattern::Dash {
+            dash: cell_points,
+            gap: cell_points,
+        }),
+        TrailMark::DashDot => {
+            let micro = cell_points * 0.25;
+            Some(cadence::Pattern::DashDot {
+                dash: micro * 3.0,
+                gap: micro * 2.0,
+                dot: micro,
+            })
+        }
+        TrailMark::Unmarked => Some(cadence::Pattern::Dots {
+            spacing: cell_points * 2.0,
+            radius: core_width * 0.48,
+        }),
     }
 }
 
@@ -740,13 +712,32 @@ pub fn paint_trail_tube_at(
     mark: TrailMark,
     datum: f32,
 ) -> f32 {
+    let core = trail_core(width);
+    paint_trail_tube_pattern(
+        painter,
+        points,
+        width,
+        color,
+        trail_pattern(mark, width, core.width),
+        datum,
+    )
+}
+
+fn paint_trail_tube_pattern(
+    painter: &Painter,
+    points: &[Pos2],
+    width: f32,
+    color: Color32,
+    pattern: Option<cadence::Pattern>,
+    datum: f32,
+) -> f32 {
     if points.len() < 2 {
         return 0.0;
     }
     let length = cadence::polyline_length(points);
     let _tube = painter.add(Shape::line(points.to_vec(), Stroke::new(width, color)));
     let core = trail_core(width);
-    if let Some(pattern) = trail_pattern(mark, width, core.width) {
+    if let Some(pattern) = pattern {
         let mut shapes = Vec::new();
         pattern.tessellate(
             points.iter().copied(),
@@ -1284,7 +1275,6 @@ mod tests {
             points: vec![[0.0, 0.0], [length_world, 0.0]],
             length_world,
             lineage: None,
-            cadence_component: None,
             trail_class: TrailClass::Path,
             mark: TrailMark::Dashed,
             access: Access::Open,

@@ -1,9 +1,9 @@
 use crate::{
     basemap::{self, TileKey},
-    cadence::Pattern,
+    cadence::WorldLevel,
     map::{
-        CadenceLineage, CartographicPlan, MapFramePlan, TrailMark, TrailSalience, WorldEdge,
-        trail_class_color, trail_core, trail_pattern,
+        CadenceLineage, MapFramePlan, TrailMark, TrailSalience, WorldEdge, trail_class_color,
+        trail_core,
     },
 };
 use bytemuck::{Pod, Zeroable};
@@ -39,8 +39,6 @@ const MAX_WRAP_RADIUS: u32 = 2;
 const MAX_WRAP_INSTANCES: usize = (MAX_WRAP_RADIUS * 2 + 1) as usize;
 const LAYER_COUNT: usize = 2;
 const MAX_LAYER_INSTANCES: usize = MAX_WRAP_INSTANCES * LAYER_COUNT;
-#[cfg(test)]
-const PATTERN_COUNT: usize = 3;
 static NEXT_CORPUS: AtomicU64 = AtomicU64::new(1);
 
 pub struct TrailField {
@@ -49,7 +47,7 @@ pub struct TrailField {
     tiles: HashMap<TileKey, Arc<TrailTile>>,
     visibility: Option<Visibility>,
     transition: Option<DetailTransition>,
-    phase_transport: PhaseTransport,
+    cadence: Option<WorldLevel>,
 }
 
 #[derive(Clone)]
@@ -67,7 +65,7 @@ struct DetailTransition {
 impl TrailField {
     pub fn forge(edges: &[WorldEdge]) -> Self {
         let begun = Instant::now();
-        let (law_ids, laws, component_patterns) = cadence_laws(edges);
+        let (law_ids, laws) = cadence_laws(edges);
         let mut tiles = HashMap::<TileKey, Vec<TrailMeshBuilder>>::new();
         for (edge_id, edge) in edges.iter().enumerate() {
             let samples = samples(edge);
@@ -80,13 +78,7 @@ impl TrailField {
                             .map(|_| TrailMeshBuilder::default())
                             .collect()
                     })[band.index()]
-                    .push(
-                        &fragment.points,
-                        fragment.key,
-                        edge,
-                        law_ids[edge_id],
-                        laws[law_ids[edge_id] as usize],
-                    );
+                    .push(&fragment.points, fragment.key, edge, law_ids[edge_id]);
                 }
             }
         }
@@ -120,14 +112,14 @@ impl TrailField {
             tiles,
             visibility: None,
             transition: None,
-            phase_transport: PhaseTransport::new(component_patterns),
+            cadence: None,
         }
     }
 
-    pub fn paint(&mut self, painter: &Painter, frame: MapFramePlan, cartography: CartographicPlan) {
+    pub fn paint(&mut self, painter: &Painter, frame: MapFramePlan) {
         let Some(band) = DetailBand::resolve(
             self.visibility.as_ref().map(|visibility| visibility.band),
-            cartography.zoom.get(),
+            frame.zoom.get(),
         ) else {
             return;
         };
@@ -162,16 +154,9 @@ impl TrailField {
             return;
         }
         let tiles = Arc::clone(&visibility.tiles);
-        let mut moments = vec![CadenceMoment::default(); self.phase_transport.len()];
-        for tile in tiles.iter() {
-            for &(component, moment) in tile.bands[band.index()].moments.iter() {
-                moments[component as usize] += moment;
-            }
-        }
+        let cadence = WorldLevel::resolve(self.cadence, frame.zoom.get(), DETAIL_HYSTERESIS_ZOOM);
+        self.cadence = Some(cadence);
         let world_points = frame.world_points as f32;
-        let phase_offsets =
-            self.phase_transport
-                .advance(f64::from(world_points), &moments, cartography.gesture);
         let now = Instant::now();
         let transition = self.transition.as_ref().map(|transition| {
             let elapsed = now.saturating_duration_since(transition.begun);
@@ -211,8 +196,8 @@ impl TrailField {
                 center_world: frame.viewport.center,
                 world_points,
                 viewport_points: [frame.rect.width(), frame.rect.height()],
-                view_zoom: cartography.zoom.get() as f32,
-                phase_offsets: phase_offsets.into(),
+                view_zoom: frame.zoom.get() as f32,
+                cadence_cells_per_world: cadence.cells_per_world() as f32,
             },
         ));
     }
@@ -432,32 +417,12 @@ fn same_world(left: [f64; 2], right: [f64; 2]) -> bool {
 struct TrailMeshBuilder {
     vertices: Vec<TrailPoint>,
     indices: Vec<u32>,
-    moments: HashMap<u32, CadenceMoment>,
 }
 
 impl TrailMeshBuilder {
-    fn push(
-        &mut self,
-        samples: &[Sample],
-        key: TileKey,
-        edge: &WorldEdge,
-        law_id: u32,
-        law: CadenceDatum,
-    ) {
+    fn push(&mut self, samples: &[Sample], key: TileKey, edge: &WorldEdge, law_id: u32) {
         if samples.len() < 2 {
             return;
-        }
-        if let Some((component, moment)) = law.moment(
-            samples
-                .first()
-                .expect("trail fragment is nonempty")
-                .arc_world,
-            samples
-                .last()
-                .expect("trail fragment is nonempty")
-                .arc_world,
-        ) {
-            *self.moments.entry(component).or_default() += moment;
         }
         let scale = f64::from(1_u32 << key.zoom);
         let local = samples
@@ -534,7 +499,6 @@ impl TrailMeshBuilder {
             vertices: self.vertices.into(),
             indices: self.indices.into(),
             law_ids: std::iter::once(0).chain(global_ids).collect(),
-            moments: self.moments.into_iter().collect(),
         }
     }
 }
@@ -586,7 +550,6 @@ struct TrailMesh {
     vertices: Arc<[TrailPoint]>,
     indices: Arc<[u32]>,
     law_ids: Arc<[u32]>,
-    moments: Arc<[(u32, CadenceMoment)]>,
 }
 
 struct TrailTile {
@@ -613,227 +576,29 @@ impl TrailTile {
 enum CadenceDatum {
     Solid,
     Stem {
-        component: u32,
-        pattern: Pattern,
         datum_world: f64,
         reverse: bool,
         length_world: f64,
     },
     Chord {
-        component: u32,
-        pattern: Pattern,
         endpoint_datums_world: [f64; 2],
         length_world: f64,
     },
 }
 
-impl CadenceDatum {
-    fn moment(self, arc_start: f64, arc_end: f64) -> Option<(u32, CadenceMoment)> {
-        let mass = arc_end - arc_start;
-        if mass <= f64::EPSILON {
-            return None;
-        }
-        let (component, first) = match self {
-            Self::Solid => return None,
-            Self::Stem {
-                component,
-                datum_world,
-                reverse,
-                length_world,
-                ..
-            } => {
-                let arc_mean = (arc_start + arc_end) * 0.5;
-                let datum_mean = if reverse {
-                    datum_world + length_world - arc_mean
-                } else {
-                    datum_world + arc_mean
-                };
-                (component, mass * datum_mean)
-            }
-            Self::Chord {
-                component,
-                endpoint_datums_world,
-                length_world,
-                ..
-            } => (
-                component,
-                chord_datum_integral(endpoint_datums_world, length_world, arc_start, arc_end),
-            ),
-        };
-        Some((
-            component,
-            CadenceMoment {
-                mass_world: mass,
-                first_world: first,
-            },
-        ))
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct CadenceMoment {
-    mass_world: f64,
-    first_world: f64,
-}
-
-impl CadenceMoment {
-    fn mean(self) -> Option<f64> {
-        (self.mass_world > f64::EPSILON).then(|| self.first_world / self.mass_world)
-    }
-}
-
-impl std::ops::AddAssign for CadenceMoment {
-    fn add_assign(&mut self, rhs: Self) {
-        self.mass_world += rhs.mass_world;
-        self.first_world += rhs.first_world;
-    }
-}
-
-fn chord_datum_integral(
-    endpoint_datums_world: [f64; 2],
-    length_world: f64,
-    arc_start: f64,
-    arc_end: f64,
-) -> f64 {
-    let midpoint = length_world * 0.5;
-    let primitive = |arc: f64| {
-        if arc <= midpoint {
-            endpoint_datums_world[0].mul_add(arc, arc * arc * 0.5)
-        } else {
-            let first_half = endpoint_datums_world[0].mul_add(midpoint, midpoint * midpoint * 0.5);
-            let tail_area =
-                (endpoint_datums_world[1] + length_world).mul_add(arc - midpoint, first_half);
-            let square_delta = arc.mul_add(arc, -(midpoint * midpoint));
-            (-0.5_f64).mul_add(square_delta, tail_area)
-        }
-    };
-    primitive(arc_end) - primitive(arc_start)
-}
-
-#[derive(Clone, Copy, Debug)]
-struct PhaseGauge {
-    gesture: u64,
-    origin_world_points: f64,
-    anchor_world: Option<f64>,
-    origin_offset_points: f64,
-    offset_points: f64,
-    last_world_points: Option<f64>,
-    latest_anchor_world: Option<f64>,
-}
-
-impl Default for PhaseGauge {
-    fn default() -> Self {
-        Self {
-            gesture: u64::MAX,
-            origin_world_points: 0.0,
-            anchor_world: None,
-            origin_offset_points: 0.0,
-            offset_points: 0.0,
-            last_world_points: None,
-            latest_anchor_world: None,
-        }
-    }
-}
-
-#[derive(Debug)]
-struct PhaseTransport {
-    gauges: Vec<PhaseGauge>,
-    periods: Vec<f64>,
-}
-
-impl PhaseTransport {
-    fn new(patterns: Vec<Pattern>) -> Self {
-        Self {
-            gauges: vec![PhaseGauge::default(); patterns.len()],
-            periods: patterns
-                .into_iter()
-                .map(|pattern| f64::from(pattern.period()))
-                .collect(),
-        }
-    }
-
-    const fn len(&self) -> usize {
-        self.gauges.len()
-    }
-
-    fn advance(&mut self, world_points: f64, moments: &[CadenceMoment], gesture: u64) -> Vec<f64> {
-        assert_eq!(moments.len(), self.gauges.len());
-        for ((gauge, moment), period) in self.gauges.iter_mut().zip(moments).zip(&self.periods) {
-            if gauge.gesture != gesture {
-                gauge.gesture = gesture;
-                gauge.origin_world_points = gauge.last_world_points.unwrap_or(world_points);
-                gauge.origin_offset_points = gauge.offset_points;
-                gauge.anchor_world = gauge.latest_anchor_world.or_else(|| moment.mean());
-            } else if gauge.anchor_world.is_none() {
-                gauge.origin_world_points = world_points;
-                gauge.origin_offset_points = gauge.offset_points;
-                gauge.anchor_world = moment.mean();
-            }
-            if let Some(anchor_world) = gauge.anchor_world {
-                // With a gesture-fixed visible-arc measure, this is the unique
-                // L²-minimal gauge and is analytic rather than frame-integrated.
-                gauge.offset_points = (gauge.origin_world_points - world_points)
-                    .mul_add(anchor_world, gauge.origin_offset_points)
-                    .rem_euclid(*period);
-            }
-            gauge.last_world_points = Some(world_points);
-            if let Some(mean) = moment.mean() {
-                gauge.latest_anchor_world = Some(mean);
-            }
-        }
-        self.gauges
-            .iter()
-            .map(|gauge| gauge.offset_points)
-            .collect()
-    }
-}
-
-#[cfg(test)]
-fn context_patterns() -> [Pattern; PATTERN_COUNT] {
-    let width = TrailSalience::Context.width();
-    let core_width = trail_core(width).width;
-    [TrailMark::Dashed, TrailMark::DashDot, TrailMark::Unmarked].map(|mark| {
-        trail_pattern(mark, width, core_width).expect("patterned trail marks own a cadence")
-    })
-}
-
-fn cadence_laws(edges: &[WorldEdge]) -> (Vec<u32>, Vec<CadenceDatum>, Vec<Pattern>) {
+fn cadence_laws(edges: &[WorldEdge]) -> (Vec<u32>, Vec<CadenceDatum>) {
     let mut laws = vec![CadenceDatum::Solid];
-    let component_count = edges
-        .iter()
-        .filter_map(|edge| edge.cadence_component)
-        .max()
-        .map_or(0, |component| component as usize + 1);
-    let mut component_patterns = vec![None; component_count];
     let law_ids = edges
         .iter()
         .map(|edge| {
-            let Some(pattern) = trail_pattern(
-                edge.mark,
-                TrailSalience::Context.width(),
-                trail_core(TrailSalience::Context.width()).width,
-            ) else {
+            let Some(lineage) = edge.lineage else {
                 return 0;
             };
-            let component = edge
-                .cadence_component
-                .expect("patterned trail edge owns a cadence component");
-            let pattern_slot = &mut component_patterns[component as usize];
-            assert!(
-                pattern_slot.is_none_or(|known| known == pattern),
-                "one cadence component cannot mix pattern laws"
-            );
-            *pattern_slot = Some(pattern);
-            let law = match edge
-                .lineage
-                .expect("patterned trail edge owns a cadence lineage")
-            {
+            let law = match lineage {
                 CadenceLineage::Stem {
                     datum_world,
                     reverse,
                 } => CadenceDatum::Stem {
-                    component,
-                    pattern,
                     datum_world,
                     reverse,
                     length_world: edge.length_world,
@@ -841,8 +606,6 @@ fn cadence_laws(edges: &[WorldEdge]) -> (Vec<u32>, Vec<CadenceDatum>, Vec<Patter
                 CadenceLineage::Chord {
                     endpoint_datums_world,
                 } => CadenceDatum::Chord {
-                    component,
-                    pattern,
                     endpoint_datums_world,
                     length_world: edge.length_world,
                 },
@@ -851,14 +614,7 @@ fn cadence_laws(edges: &[WorldEdge]) -> (Vec<u32>, Vec<CadenceDatum>, Vec<Patter
             u32::try_from(laws.len() - 1).expect("cadence law count fits u32")
         })
         .collect();
-    (
-        law_ids,
-        laws,
-        component_patterns
-            .into_iter()
-            .map(|pattern| pattern.expect("cadence components own a pattern"))
-            .collect(),
-    )
+    (law_ids, laws)
 }
 
 fn visible_keys(
@@ -933,7 +689,7 @@ struct TrailPaint {
     world_points: f32,
     viewport_points: [f32; 2],
     view_zoom: f32,
-    phase_offsets: Arc<[f64]>,
+    cadence_cells_per_world: f32,
 }
 
 #[derive(Clone)]
@@ -1009,7 +765,7 @@ struct GpuTrailTile {
     laws: Arc<[CadenceDatum]>,
     law_buffer: wgpu::Buffer,
     law_bind: wgpu::BindGroup,
-    law_world_points: f32,
+    law_cells_per_world: f32,
     opacity: f32,
     bytes: usize,
     touched: u64,
@@ -1060,8 +816,7 @@ impl GpuTrailTile {
             .map(|law| {
                 GpuLaw::forge(
                     paint.laws[*law as usize],
-                    f64::from(paint.world_points),
-                    &paint.phase_offsets,
+                    f64::from(paint.cadence_cells_per_world),
                 )
             })
             .collect::<Vec<_>>();
@@ -1081,7 +836,7 @@ impl GpuTrailTile {
             laws: Arc::clone(&paint.laws),
             law_buffer,
             law_bind,
-            law_world_points: paint.world_points,
+            law_cells_per_world: paint.cadence_cells_per_world,
             opacity,
             bytes,
             touched,
@@ -1112,24 +867,21 @@ impl GpuTrailTile {
     fn refresh_laws(
         &mut self,
         queue: &wgpu::Queue,
-        world_points: f32,
-        phase_offsets: &[f64],
+        cells_per_world: f32,
         scratch: &mut Vec<GpuLaw>,
     ) -> usize {
-        if self.law_world_points.to_bits() == world_points.to_bits() {
+        if self.law_cells_per_world.to_bits() == cells_per_world.to_bits() {
             return 0;
         }
         scratch.clear();
-        scratch.extend(self.law_ids.iter().map(|law| {
-            GpuLaw::forge(
-                self.laws[*law as usize],
-                f64::from(world_points),
-                phase_offsets,
-            )
-        }));
+        scratch.extend(
+            self.law_ids
+                .iter()
+                .map(|law| GpuLaw::forge(self.laws[*law as usize], f64::from(cells_per_world))),
+        );
         let bytes = scratch.len().saturating_mul(size_of::<GpuLaw>());
         queue.write_buffer(&self.law_buffer, 0, bytemuck::cast_slice(scratch));
-        self.law_world_points = world_points;
+        self.law_cells_per_world = cells_per_world;
         bytes
     }
 }
@@ -1309,8 +1061,7 @@ impl TrailMapGpu {
                 if let Some(resident) = self.tiles.get_mut(&key) {
                     cadence_uploaded += resident.refresh_laws(
                         queue,
-                        paint.world_points,
-                        &paint.phase_offsets,
+                        paint.cadence_cells_per_world,
                         &mut self.law_scratch,
                     );
                     instance_uploaded += resident.refresh_opacity(queue, layer.opacity);
@@ -1415,60 +1166,45 @@ struct GpuLaw {
 const _: () = assert!(size_of::<GpuLaw>() == 16);
 
 impl GpuLaw {
-    fn forge(law: CadenceDatum, world_points: f64, phase_offsets: &[f64]) -> Self {
+    fn forge(law: CadenceDatum, cells_per_world: f64) -> Self {
         match law {
             CadenceDatum::Solid => Self::zeroed(),
             CadenceDatum::Stem {
-                component,
-                pattern,
                 datum_world,
                 reverse,
                 length_world,
             } => Self {
                 metrics: [
-                    phase(
-                        datum_world,
-                        world_points,
-                        pattern.period(),
-                        phase_offsets[component as usize],
+                    lattice_phase(
+                        if reverse {
+                            datum_world + length_world
+                        } else {
+                            datum_world
+                        },
+                        cells_per_world,
                     ),
                     0.0,
                     if reverse { -2.0 } else { -1.0 },
-                    (length_world * world_points) as f32,
+                    length_world as f32,
                 ],
             },
             CadenceDatum::Chord {
-                component,
-                pattern,
                 endpoint_datums_world,
                 length_world,
-            } => {
-                let length = (length_world * world_points) as f32;
-                let offset = phase_offsets[component as usize];
-                let a = phase(
-                    endpoint_datums_world[0],
-                    world_points,
-                    pattern.period(),
-                    offset,
-                );
-                let b = phase(
-                    endpoint_datums_world[1],
-                    world_points,
-                    pattern.period(),
-                    offset,
-                );
-                Self {
-                    metrics: [a, b, pattern.splice(a, b, length), length],
-                }
-            }
+            } => Self {
+                metrics: [
+                    lattice_phase(endpoint_datums_world[0], cells_per_world),
+                    lattice_phase(endpoint_datums_world[1], cells_per_world),
+                    (length_world * 0.5) as f32,
+                    length_world as f32,
+                ],
+            },
         }
     }
 }
 
-fn phase(datum_world: f64, world_points: f64, period: f32, offset_points: f64) -> f32 {
-    datum_world
-        .mul_add(world_points, offset_points)
-        .rem_euclid(f64::from(period)) as f32
+fn lattice_phase(datum_world: f64, cells_per_world: f64) -> f32 {
+    (datum_world * cells_per_world).rem_euclid(8.0) as f32
 }
 
 #[repr(C)]
@@ -1480,7 +1216,7 @@ struct Uniform {
     world_points: f32,
     wrap_radius: u32,
     view_zoom: f32,
-    _pad: f32,
+    cadence_cells_per_world: f32,
     radii: [f32; 2],
     disclosure: [f32; 4],
 }
@@ -1500,7 +1236,7 @@ impl Uniform {
             world_points: paint.world_points,
             wrap_radius,
             view_zoom: paint.view_zoom,
-            _pad: 0.0,
+            cadence_cells_per_world: paint.cadence_cells_per_world,
             radii: [
                 TrailSalience::Context.width() * 0.5,
                 trail_core(TrailSalience::Context.width()).width * 0.5,
@@ -1593,7 +1329,7 @@ struct Uniform {
     world_points: f32,
     wrap_radius: u32,
     view_zoom: f32,
-    pad: f32,
+    cadence_cells_per_world: f32,
     radii: vec2f,
     disclosure: vec4f,
 };
@@ -1680,42 +1416,57 @@ fn trail_vertex(
     return out;
 }
 
-fn cadence_distance(in: VertexOut) -> f32 {
+fn cadence_coordinate(in: VertexOut) -> f32 {
     let law = laws[in.law];
-    let arc = in.arc_world * u.world_points;
+    let arc = in.arc_world;
     if law.metrics.z == -2.0 {
-        return law.metrics.x + law.metrics.w - arc;
+        return law.metrics.x - arc * u.cadence_cells_per_world;
     }
     if law.metrics.z >= 0.0 && arc > law.metrics.z {
-        return law.metrics.y + law.metrics.w - arc;
+        return law.metrics.y
+            + (law.metrics.w - arc) * u.cadence_cells_per_world;
     }
-    return law.metrics.x + arc;
+    return law.metrics.x + arc * u.cadence_cells_per_world;
 }
 
-fn interval_ink(value: f32, start: f32, end: f32) -> f32 {
-    let feather = max(fwidth(value), 0.55);
-    return smoothstep(start - feather, start + feather, value)
-        * (1.0 - smoothstep(end - feather, end + feather, value));
+fn alternating_ink(coordinate: f32) -> f32 {
+    let wave = sin(3.14159265359 * coordinate);
+    let feather = max(fwidth(wave), 0.01);
+    return smoothstep(-feather, feather, wave);
+}
+
+fn cyclic_interval_ink(phase: f32, period: f32, end: f32) -> f32 {
+    let distance_to_start = min(phase, period - phase);
+    let distance_to_end = abs(phase - end);
+    let distance = min(distance_to_start, distance_to_end);
+    let signed = select(-distance, distance, phase <= end);
+    let feather = max(fwidth(signed), 0.01);
+    return smoothstep(-feather, feather, signed);
 }
 
 fn cadence_ink(in: VertexOut) -> f32 {
     if in.pattern == 0u {
         return 1.0;
     }
-    let distance = cadence_distance(in);
+    let coordinate = cadence_coordinate(in);
+    let cell_points = u.world_points / u.cadence_cells_per_world;
     if in.pattern == 1u {
-        let phase = distance - floor(distance / 9.982) * 9.982;
-        return 1.0 - smoothstep(5.66, 6.76, phase);
+        return alternating_ink(coordinate);
     }
     if in.pattern == 2u {
-        let phase = distance - floor(distance / 13.0824) * 13.0824;
+        let micro_coordinate = coordinate * 4.0;
+        let phase = micro_coordinate - floor(micro_coordinate / 8.0) * 8.0;
+        let axial = abs(phase - 5.0) * cell_points * 0.25;
+        let dot_distance = length(vec2f(axial, in.edge_distance));
+        let dot_feather = max(fwidth(dot_distance), 0.55);
+        let dot = 1.0 - smoothstep(0.62 - dot_feather, 0.62 + dot_feather, dot_distance);
         return max(
-            1.0 - smoothstep(5.66, 6.76, phase),
-            interval_ink(phase, 9.522, 9.7704),
+            cyclic_interval_ink(phase, 8.0, 3.0),
+            dot,
         );
     }
-    let phase = distance - floor(distance / 9.43) * 9.43;
-    let axial = min(phase, 9.43 - phase);
+    let phase = coordinate - floor(coordinate / 2.0) * 2.0;
+    let axial = min(phase, 2.0 - phase) * cell_points;
     let radius = 0.6624;
     let distance_to_center = length(vec2f(axial, in.edge_distance));
     let feather = max(fwidth(distance_to_center), 0.55);
@@ -1726,7 +1477,8 @@ fn painted(in: VertexOut) -> vec4f {
     if any(in.tile_local < vec2f(0.0)) || any(in.tile_local >= vec2f(1.0)) {
         discard;
     }
-    let feather = max(fwidth(in.edge_distance), 0.65);
+    let distant_feather = mix(1.05, 0.65, apparition(u.disclosure.x));
+    let feather = max(fwidth(in.edge_distance), distant_feather);
     let edge = clamp(
         (in.solid_radius + feather * 0.5 - abs(in.edge_distance)) / feather,
         0.0,
@@ -1815,30 +1567,16 @@ mod tests {
             let parallel = EARTH_CIRCUMFERENCE_M * HARRIMAN_LATITUDE_DEG.to_radians().cos();
             meters * 256.0 * f64::from(zoom).exp2() / parallel
         };
-        let longest_period = [TrailMark::Dashed, TrailMark::DashDot, TrailMark::Unmarked]
-            .into_iter()
-            .filter_map(|mark| {
-                trail_pattern(
-                    mark,
-                    TrailSalience::Context.width(),
-                    trail_core(TrailSalience::Context.width()).width,
-                )
-            })
-            .map(Pattern::period)
-            .max_by(f32::total_cmp)
-            .expect("patterned trail marks are nonempty");
+        let pattern_zoom = f64::from(PATTERN_ONSET_ZOOM + DISCLOSURE_SPAN_ZOOM);
+        let cadence = WorldLevel::at_zoom(pattern_zoom);
+        let cadence_period = 2.0 * 256.0 * pattern_zoom.exp2() / cadence.cells_per_world();
 
         assert!((apparent(HARRIMAN_FILAMENT_P95_M, TUBE_ONSET_ZOOM) - 1.0).abs() < 0.01);
         assert!((apparent(HARRIMAN_FILAMENT_P95_M, CORE_ONSET_ZOOM) - 1.36).abs() < 0.02);
-        assert!(
-            f64::from(longest_period)
-                .mul_add(
-                    -1.25,
-                    apparent(1_000.0, PATTERN_ONSET_ZOOM + DISCLOSURE_SPAN_ZOOM),
-                )
-                .abs()
-                < 0.05
-        );
+        assert!((8.0..=16.0).contains(&cadence_period));
+        assert!((1.0..=1.25).contains(
+            &(apparent(1_000.0, PATTERN_ONSET_ZOOM + DISCLOSURE_SPAN_ZOOM) / cadence_period)
+        ));
     }
 
     #[test]
@@ -1894,156 +1632,90 @@ mod tests {
 
     #[test]
     fn cadence_phase_is_evaluated_in_double_precision() {
-        let pattern = Pattern::Dash {
-            dash: 6.21,
-            gap: 3.772,
-        };
         let datum = 0.031_415_926_535_897_934;
-        let world_points = 256.0 * 23.5_f64.exp2();
-        let expected = (datum * world_points).rem_euclid(f64::from(pattern.period())) as f32;
-        assert!(
-            (phase(datum, world_points, pattern.period(), 0.0) - expected).abs() <= f32::EPSILON
-        );
-    }
-
-    #[test]
-    fn cadence_moments_follow_stems_and_both_sides_of_chords() {
-        let pattern = context_patterns()[0];
-        let mean = |law: CadenceDatum, start, end| {
-            law.moment(start, end)
-                .expect("patterned arc owns a moment")
-                .1
-                .mean()
-                .expect("positive arc owns a mean")
-        };
-        let forward = CadenceDatum::Stem {
-            component: 0,
-            pattern,
-            datum_world: 0.2,
-            reverse: false,
-            length_world: 0.1,
-        };
-        let reverse = CadenceDatum::Stem {
-            component: 0,
-            pattern,
-            datum_world: 0.2,
-            reverse: true,
-            length_world: 0.1,
-        };
-        let chord = CadenceDatum::Chord {
-            component: 0,
-            pattern,
-            endpoint_datums_world: [0.2, 0.5],
-            length_world: 0.1,
-        };
-
-        assert!((mean(forward, 0.02, 0.06) - 0.24).abs() < f64::EPSILON);
-        assert!((mean(reverse, 0.02, 0.06) - 0.26).abs() < f64::EPSILON);
-        assert!((mean(chord, 0.0, 0.1) - 0.375).abs() < 8.0 * f64::EPSILON);
-    }
-
-    #[test]
-    fn phase_transport_is_the_visible_arc_least_squares_gauge() {
-        let moment = CadenceMoment {
-            mass_world: 3.0,
-            first_world: 0.375,
-        };
-        let moments = [moment];
-        let mut transport = PhaseTransport::new(vec![context_patterns()[0]]);
-        let initial = transport.advance(100.0, &moments, 0)[0];
-        let transported = transport.advance(110.0, &moments, 0)[0];
-        let period = f64::from(context_patterns()[0].period());
-        let centered = period
-            .mul_add(0.5, transported - initial)
-            .rem_euclid(period);
-        let shift = period.mul_add(-0.5, centered);
-        let cost = |candidate: f64| {
-            [0.1_f64, 0.125, 0.15]
-                .into_iter()
-                .map(|datum| 10.0_f64.mul_add(datum, candidate).powi(2))
-                .sum::<f64>()
-        };
-
-        assert!((shift + 1.25).abs() < 8.0 * f64::EPSILON);
-        assert!(cost(shift) < cost(shift - 0.25));
-        assert!(cost(shift) < cost(shift + 0.25));
-    }
-
-    #[test]
-    fn phase_transport_is_reversible_across_a_zoom_step() {
-        let moment = |mean| CadenceMoment {
-            mass_world: 1.0,
-            first_world: mean,
-        };
-        let visible = |mean| [moment(mean)];
-        let mut transport = PhaseTransport::new(vec![context_patterns()[0]]);
-        let initial = transport.advance(100.0, &visible(0.1), 0);
-        let _nearer = transport.advance(110.0, &visible(0.2), 0);
-        let returned = transport.advance(100.0, &visible(0.1), 0);
-        let period = f64::from(context_patterns()[0].period());
-        let drift = (returned[0] - initial[0]).rem_euclid(period);
-
-        assert!(drift.min(period - drift) < 8.0 * f64::EPSILON);
-    }
-
-    #[test]
-    fn a_new_gesture_transports_its_first_camera_sample() {
-        let moment = CadenceMoment {
-            mass_world: 1.0,
-            first_world: 0.1,
-        };
-        let pattern = context_patterns()[0];
-        let period = f64::from(pattern.period());
-        let mut transport = PhaseTransport::new(vec![pattern]);
-        let initial = transport.advance(100.0, &[moment], 0)[0];
-        let first_motion = transport.advance(110.0, &[moment], 1)[0];
-        let wrapped = (first_motion - initial).rem_euclid(period);
-        let shift = if wrapped > period * 0.5 {
-            wrapped - period
-        } else {
-            wrapped
-        };
-
-        assert!((shift + 1.0).abs() < 8.0 * f64::EPSILON);
-    }
-
-    #[test]
-    fn panning_cannot_move_the_transported_cadence() {
-        let moment = |mean| CadenceMoment {
-            mass_world: 1.0,
-            first_world: mean,
-        };
-        let mut transport = PhaseTransport::new(vec![context_patterns()[0]]);
-        let before = transport.advance(100.0, &[moment(0.1)], 0);
-        let after = transport.advance(100.0, &[moment(0.9)], 0);
+        let cells_per_world = 2.0_f64.powi(29);
+        let expected = (datum * cells_per_world).rem_euclid(8.0) as f32;
 
         assert_eq!(
-            before.into_iter().map(f64::to_bits).collect::<Vec<_>>(),
-            after.into_iter().map(f64::to_bits).collect::<Vec<_>>()
+            lattice_phase(datum, cells_per_world).to_bits(),
+            expected.to_bits()
         );
     }
 
     #[test]
-    fn disconnected_components_own_independent_least_squares_gauges() {
-        let pattern = context_patterns()[0];
-        let moment = |mean| CadenceMoment {
-            mass_world: 1.0,
-            first_world: mean,
-        };
-        let mut transport = PhaseTransport::new(vec![pattern, pattern]);
-        let initial = transport.advance(100.0, &[moment(0.1), moment(0.3)], 0);
-        let zoomed = transport.advance(110.0, &[moment(0.1), moment(0.3)], 0);
-        let period = f64::from(pattern.period());
-        let shift = |slot: usize| {
-            let wrapped = (zoomed[slot] - initial[slot]).rem_euclid(period);
-            if wrapped > period * 0.5 {
-                wrapped - period
-            } else {
-                wrapped
-            }
-        };
-        assert!((shift(0) + 1.0).abs() < 8.0 * f64::EPSILON);
-        assert!((shift(1) + 3.0).abs() < 8.0 * f64::EPSILON);
+    fn cadence_lattice_edges_are_nested_world_coordinates() {
+        let coarse = WorldLevel::at_zoom(12.0);
+        let fine = WorldLevel::at_zoom(13.0);
+        for edge in -32..=32 {
+            let world = f64::from(edge) / coarse.cells_per_world();
+            let fine_coordinate = world * fine.cells_per_world();
+            assert!((fine_coordinate - f64::from(edge * 2)).abs() < f64::EPSILON);
+        }
+    }
+
+    #[test]
+    fn cadence_level_tracks_live_zoom_without_boundary_chatter() {
+        let level = WorldLevel::resolve(None, 13.4, DETAIL_HYSTERESIS_ZOOM);
+        assert_eq!(level, WorldLevel::at_zoom(13.4));
+        assert_eq!(
+            WorldLevel::resolve(Some(level), 14.04, DETAIL_HYSTERESIS_ZOOM),
+            level
+        );
+        assert_eq!(
+            WorldLevel::resolve(Some(level), 14.09, DETAIL_HYSTERESIS_ZOOM),
+            WorldLevel::at_zoom(14.09)
+        );
+        assert_eq!(
+            WorldLevel::resolve(
+                Some(WorldLevel::at_zoom(14.1)),
+                13.93,
+                DETAIL_HYSTERESIS_ZOOM
+            ),
+            WorldLevel::at_zoom(14.1)
+        );
+        assert_eq!(
+            WorldLevel::resolve(
+                Some(WorldLevel::at_zoom(14.1)),
+                13.91,
+                DETAIL_HYSTERESIS_ZOOM
+            ),
+            WorldLevel::at_zoom(13.91)
+        );
+    }
+
+    #[test]
+    fn reverse_stems_and_chords_own_world_anchored_endpoint_phases() {
+        let lattice = 256.0;
+        let reverse = GpuLaw::forge(
+            CadenceDatum::Stem {
+                datum_world: 0.2,
+                reverse: true,
+                length_world: 0.1,
+            },
+            lattice,
+        );
+        let chord = GpuLaw::forge(
+            CadenceDatum::Chord {
+                endpoint_datums_world: [0.2, 0.5],
+                length_world: 0.1,
+            },
+            lattice,
+        );
+
+        assert_eq!(
+            reverse.metrics[0].to_bits(),
+            lattice_phase(0.3, lattice).to_bits()
+        );
+        assert_eq!(reverse.metrics[2].to_bits(), (-2.0_f32).to_bits());
+        assert_eq!(
+            chord.metrics[0].to_bits(),
+            lattice_phase(0.2, lattice).to_bits()
+        );
+        assert_eq!(
+            chord.metrics[1].to_bits(),
+            lattice_phase(0.5, lattice).to_bits()
+        );
+        assert!((chord.metrics[2] - 0.05).abs() <= f32::EPSILON);
     }
 
     #[test]
@@ -2073,13 +1745,12 @@ mod tests {
             points: samples.iter().map(|sample| sample.world).collect(),
             length_world: samples[2].arc_world,
             lineage: None,
-            cadence_component: None,
             trail_class: trailgen_core::TrailClass::Path,
             mark: TrailMark::Solid,
             access: trailgen_core::Access::Open,
         };
         let mut builder = TrailMeshBuilder::default();
-        builder.push(&samples, key, &edge, 0, CadenceDatum::Solid);
+        builder.push(&samples, key, &edge, 0);
         let mesh = builder.seal();
 
         assert_eq!(mesh.vertices.len(), samples.len() * 2);
@@ -2099,7 +1770,6 @@ mod tests {
                 length_world: 0.6 / scale,
                 points,
                 lineage: None,
-                cadence_component: None,
                 trail_class: class,
                 mark: TrailMark::Solid,
                 access: trailgen_core::Access::Open,

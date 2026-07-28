@@ -216,7 +216,7 @@ impl VectorField {
         if self.armory.is_none() {
             return;
         }
-        self.cartographic_zoom = cartography.zoom.get() as f32;
+        self.cartographic_zoom = frame.zoom.get() as f32;
         let bank_revision = self.tiles.revision();
         if !self.demand_dirty
             && self
@@ -226,11 +226,9 @@ impl VectorField {
         {
             return;
         }
-        let detail = self.detail.resolve(
-            cartography.zoom.get(),
-            self.readiness.estimate(),
-            Instant::now(),
-        );
+        let detail =
+            self.detail
+                .resolve(frame.zoom.get(), self.readiness.estimate(), Instant::now());
         let cover = basemap::cover(frame, detail, self.archive_zoom);
         self.demand_cover(&cover, ctx);
         if self.presentation.as_ref().is_some_and(|stamp| {

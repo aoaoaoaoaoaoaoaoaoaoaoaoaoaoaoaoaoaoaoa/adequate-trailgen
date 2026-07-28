@@ -1,5 +1,31 @@
 use egui::{Color32, Pos2, Shape, Stroke};
 
+const WORLD_LEVEL_OFFSET: u8 = 6;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WorldLevel(u8);
+
+impl WorldLevel {
+    pub fn resolve(prior: Option<Self>, zoom: f64, hysteresis: f64) -> Self {
+        let target = Self::at_zoom(zoom);
+        let Some(prior) = prior else {
+            return target;
+        };
+        let boundary = f64::from(prior.0.saturating_sub(WORLD_LEVEL_OFFSET));
+        let retain = (target.0 > prior.0 && zoom < boundary + 1.0 + hysteresis)
+            || (target.0 < prior.0 && zoom >= boundary - hysteresis);
+        if retain { prior } else { target }
+    }
+
+    pub const fn at_zoom(zoom: f64) -> Self {
+        Self((zoom.floor() as u8).saturating_add(WORLD_LEVEL_OFFSET))
+    }
+
+    pub fn cells_per_world(self) -> f64 {
+        2.0_f64.powi(i32::from(self.0))
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Pattern {
     Dash { dash: f32, gap: f32 },
@@ -8,14 +34,6 @@ pub enum Pattern {
 }
 
 impl Pattern {
-    pub fn period(self) -> f32 {
-        match self {
-            Self::Dash { dash, gap } => dash + gap,
-            Self::DashDot { dash, gap, dot } => dash + gap.mul_add(2.0, dot),
-            Self::Dots { spacing, .. } => spacing,
-        }
-    }
-
     pub fn tessellate<I>(
         self,
         points: I,
@@ -38,58 +56,6 @@ impl Pattern {
             }
         }
     }
-
-    pub fn splice(self, start_phase: f32, end_phase: f32, length: f32) -> f32 {
-        if matches!(self, Self::Dots { .. }) || length <= f32::EPSILON {
-            return length * 0.5;
-        }
-        let period = self.period();
-        let midpoint = length * 0.5;
-        let radius = (period * 0.5).min(midpoint);
-        let start = midpoint - radius;
-        let span = radius * 2.0;
-        let candidate = |slot: u8| start + span * f32::from(slot) / 64.0;
-        let mut fallback = None;
-        for distance in 0..=32 {
-            let lower = 32 - distance;
-            let upper = 32 + distance;
-            for slot in [lower, upper]
-                .into_iter()
-                .take(if distance == 0 { 1 } else { 2 })
-            {
-                let splice = candidate(slot);
-                match splice_discontinuity(self, start_phase, end_phase, length, splice) {
-                    0 => return splice,
-                    1 if fallback.is_none() => fallback = Some(splice),
-                    _ => {}
-                }
-            }
-        }
-        fallback.unwrap_or(midpoint)
-    }
-
-    fn ink_at(self, phase: f32) -> bool {
-        let phase = phase.rem_euclid(self.period());
-        match self {
-            Self::Dash { dash, .. } => phase < dash,
-            Self::DashDot { dash, gap, dot, .. } => {
-                phase < dash || (dash + gap..dash + gap + dot).contains(&phase)
-            }
-            Self::Dots { .. } => false,
-        }
-    }
-}
-
-fn splice_discontinuity(
-    pattern: Pattern,
-    start_phase: f32,
-    end_phase: f32,
-    length: f32,
-    splice: f32,
-) -> u8 {
-    let left_ink = pattern.ink_at(start_phase + splice);
-    let right_ink = pattern.ink_at(end_phase + length - splice);
-    2 - u8::from(left_ink) - u8::from(right_ink)
 }
 
 pub fn polyline_length(points: &[Pos2]) -> f32 {
@@ -282,81 +248,6 @@ mod tests {
             &mut shapes,
         );
         assert!(shapes.is_empty());
-    }
-
-    #[test]
-    fn chord_splices_prefer_ink_over_a_doubled_gap() {
-        let pattern = Pattern::Dash {
-            dash: 6.0,
-            gap: 4.0,
-        };
-        let length = 23.0;
-        let splice = pattern.splice(8.0, 7.0, length);
-
-        assert!(pattern.ink_at(8.0 + splice));
-        assert!(pattern.ink_at(7.0 + length - splice));
-    }
-
-    #[test]
-    fn radial_splice_search_preserves_exhaustive_choice() {
-        let patterns = [
-            Pattern::Dash {
-                dash: 6.21,
-                gap: 3.772,
-            },
-            Pattern::DashDot {
-                dash: 6.21,
-                gap: 3.162,
-                dot: 0.5484,
-            },
-        ];
-        for pattern in patterns {
-            for start_slot in 0..=24 {
-                for end_slot in 0..=24 {
-                    for length in [0.25, 4.0, 9.9, 18.0, 41.0] {
-                        let start = start_slot as f32 * pattern.period() / 24.0;
-                        let end = end_slot as f32 * pattern.period() / 24.0;
-                        let radial = pattern.splice(start, end, length);
-                        let exhaustive = exhaustive_splice(pattern, start, end, length);
-                        assert_eq!(
-                            splice_discontinuity(pattern, start, end, length, radial),
-                            splice_discontinuity(pattern, start, end, length, exhaustive),
-                            "{pattern:?} start={start} end={end} length={length}"
-                        );
-                        let midpoint = length * 0.5;
-                        assert!(
-                            ((radial - midpoint).abs() - (exhaustive - midpoint).abs()).abs()
-                                <= 8.0 * f32::EPSILON * length.max(1.0),
-                            "{pattern:?} start={start} end={end} length={length}"
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    fn exhaustive_splice(pattern: Pattern, start_phase: f32, end_phase: f32, length: f32) -> f32 {
-        let period = pattern.period();
-        let midpoint = length * 0.5;
-        let radius = (period * 0.5).min(midpoint);
-        let start = midpoint - radius;
-        let span = radius * 2.0;
-        (0..=64)
-            .map(|slot| start + span * slot as f32 / 64.0)
-            .min_by(|left, right| {
-                let cost = |splice: f32| {
-                    f32::from(splice_discontinuity(
-                        pattern,
-                        start_phase,
-                        end_phase,
-                        length,
-                        splice,
-                    ))
-                    .mul_add(period, (splice - midpoint).abs())
-                };
-                cost(*left).total_cmp(&cost(*right))
-            })
-            .expect("fixed splice search is nonempty")
     }
 
     fn ink_bounds(shapes: &[Shape]) -> Vec<(i32, i32)> {

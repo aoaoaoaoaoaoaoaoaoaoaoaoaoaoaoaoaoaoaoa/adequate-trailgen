@@ -1234,7 +1234,6 @@ mod tests {
                 cartography: map::CartographicPlan {
                     zoom: frame.zoom,
                     epoch,
-                    gesture: 0,
                     moving: false,
                 },
                 stamp: Stamp {

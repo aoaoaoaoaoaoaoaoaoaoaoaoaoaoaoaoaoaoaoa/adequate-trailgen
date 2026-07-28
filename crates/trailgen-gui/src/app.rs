@@ -1161,7 +1161,7 @@ impl TrailApp {
         let cartography = self.cartography.observe(self.viewport, ui.ctx());
         let _ground = canvas.rect_filled(rect, 0.0, map::MAP_GROUND);
         let annotations = self.forge_cartography(&canvas, frame, cartography);
-        self.atlas.paint_network(&canvas, frame, cartography);
+        self.atlas.paint_network(&canvas, frame);
         if !self.regions.is_empty() || self.scribe.active() {
             live_area::paint(
                 &canvas,
@@ -1237,8 +1237,7 @@ impl TrailApp {
                     relief.annotations(frame, cartography)
                 });
         let gaps = annotations.contour_gaps();
-        self.relief
-            .paint(painter, frame, cartography, Arc::clone(&gaps));
+        self.relief.paint(painter, frame, Arc::clone(&gaps));
         self.vector.paint_strokes(painter, frame, gaps);
         annotations
     }

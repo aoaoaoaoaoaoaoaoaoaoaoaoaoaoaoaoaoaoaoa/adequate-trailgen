@@ -207,16 +207,10 @@ impl Relief {
         self.revision
     }
 
-    pub fn paint(
-        &mut self,
-        painter: &Painter,
-        frame: MapFramePlan,
-        cartography: CartographicPlan,
-        gaps: Arc<[VectorGap]>,
-    ) {
+    pub fn paint(&mut self, painter: &Painter, frame: MapFramePlan, gaps: Arc<[VectorGap]>) {
         let Some((detail, _law)) = ReliefLaw::resolve(
             self.visibility.as_ref().map(|visibility| visibility.detail),
-            cartography.zoom.get(),
+            frame.zoom.get(),
         ) else {
             return;
         };
@@ -305,7 +299,7 @@ impl Relief {
                 center_world: frame.viewport.center,
                 world_points: frame.world_points as f32,
                 viewport_points: [frame.rect.width(), frame.rect.height()],
-                view_zoom: cartography.zoom.get() as f32,
+                view_zoom: frame.zoom.get() as f32,
                 apparition_span: basemap::APPARITION_SPAN,
             },
         ));
