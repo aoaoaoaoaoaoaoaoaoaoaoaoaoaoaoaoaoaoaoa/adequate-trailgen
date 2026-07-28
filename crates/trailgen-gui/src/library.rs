@@ -8,12 +8,12 @@ use std::{
     path::{Path, PathBuf},
 };
 use trailgen_core::{
-    Access, Coord, LineString, LoopConstraints, Route, RouteMetrics, RouteShape, RoutingLaw,
+    Access, Coord, Edge, LineString, LoopConstraints, Route, RouteMetrics, RouteShape, RoutingLaw,
     SupportPoint, Terrain, Trail, TrailClass, TrailGraph, TrailMarking, TrailRealization,
     TrailStanding,
 };
 
-const SCHEMA: u32 = 3;
+const SCHEMA: u32 = 4;
 const INDEX: &str = "library/index.json";
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -36,6 +36,171 @@ impl Trailhead {
     pub const fn coord(self) -> Coord {
         self.0
     }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct SearchBoundary(Vec<Coord>);
+
+impl SearchBoundary {
+    pub fn forge(mut points: Vec<Coord>) -> Result<Self> {
+        ensure!(
+            points.iter().all(|point| {
+                point.lon.is_finite()
+                    && point.lat.is_finite()
+                    && (-180.0..=180.0).contains(&point.lon)
+                    && (-85.0..=85.0).contains(&point.lat)
+            }),
+            "search boundary contains an invalid coordinate"
+        );
+        points.dedup_by(|left, right| same_coord(*left, *right));
+        if points.len() >= 2
+            && points
+                .first()
+                .zip(points.last())
+                .is_some_and(|(first, last)| same_coord(*first, *last))
+        {
+            let _closing_duplicate = points.pop();
+        }
+        let boundary = Self(points);
+        boundary.validate()?;
+        Ok(boundary)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.0.len() >= 3,
+            "search boundary needs at least three points"
+        );
+        ensure!(
+            self.0.iter().all(|point| {
+                point.lon.is_finite()
+                    && point.lat.is_finite()
+                    && (-180.0..=180.0).contains(&point.lon)
+                    && (-85.0..=85.0).contains(&point.lat)
+            }),
+            "search boundary contains an invalid coordinate"
+        );
+        ensure!(
+            polygon_area2(&self.0).abs() > 1.0e-12,
+            "search boundary has no area"
+        );
+        Ok(())
+    }
+
+    pub fn points(&self) -> &[Coord] {
+        &self.0
+    }
+
+    pub fn contains(&self, point: Coord) -> bool {
+        ring_segments(&self.0).any(|(a, b)| point_on_segment(point, a, b))
+            || point_in_ring(point, &self.0)
+    }
+
+    pub(crate) fn edge_mask(
+        &self,
+        graph: &TrailGraph,
+        mut pulse: impl FnMut(usize, usize) -> bool,
+    ) -> Option<Vec<bool>> {
+        const PULSE_STRIDE: usize = 128;
+        let total = graph.edges.len();
+        let mut allowed = Vec::with_capacity(total);
+        for (index, edge) in graph.edges.iter().enumerate() {
+            if index.is_multiple_of(PULSE_STRIDE) && !pulse(index, total) {
+                return None;
+            }
+            allowed.push(self.allows_edge(edge));
+        }
+        pulse(total, total).then_some(allowed)
+    }
+
+    pub(crate) fn allows_edge(&self, edge: &Edge) -> bool {
+        edge.geometry
+            .points
+            .iter()
+            .all(|point| self.contains(*point))
+            && edge
+                .geometry
+                .points
+                .windows(2)
+                .all(|segment| self.contains_segment(segment[0], segment[1]))
+    }
+
+    fn contains_segment(&self, a: Coord, b: Coord) -> bool {
+        let mut cuts = vec![0.0, 1.0];
+        cuts.extend(
+            ring_segments(&self.0).filter_map(|(c, d)| segment_intersection_parameter(a, b, c, d)),
+        );
+        cuts.sort_by(f64::total_cmp);
+        cuts.dedup_by(|left, right| (*left - *right).abs() <= 1.0e-10);
+        cuts.windows(2)
+            .map(|span| a.lerp(b, (span[0] + span[1]) * 0.5))
+            .all(|point| self.contains(point))
+    }
+}
+
+const fn same_coord(left: Coord, right: Coord) -> bool {
+    left.lon.to_bits() == right.lon.to_bits() && left.lat.to_bits() == right.lat.to_bits()
+}
+
+fn polygon_area2(ring: &[Coord]) -> f64 {
+    ring_segments(ring)
+        .map(|(a, b)| a.lon.mul_add(b.lat, -(b.lon * a.lat)))
+        .sum()
+}
+
+fn point_in_ring(point: Coord, ring: &[Coord]) -> bool {
+    ring_segments(ring).fold(false, |inside, (a, b)| {
+        let crosses = (a.lat > point.lat) != (b.lat > point.lat);
+        if !crosses {
+            return inside;
+        }
+        let longitude = (b.lon - a.lon).mul_add((point.lat - a.lat) / (b.lat - a.lat), a.lon);
+        inside ^ (point.lon < longitude)
+    })
+}
+
+fn point_on_segment(point: Coord, a: Coord, b: Coord) -> bool {
+    const EPSILON: f64 = 1.0e-10;
+    let cross =
+        (b.lon - a.lon).mul_add(point.lat - a.lat, -((b.lat - a.lat) * (point.lon - a.lon)));
+    cross.abs() <= EPSILON
+        && (a.lon.min(b.lon) - EPSILON..=a.lon.max(b.lon) + EPSILON).contains(&point.lon)
+        && (a.lat.min(b.lat) - EPSILON..=a.lat.max(b.lat) + EPSILON).contains(&point.lat)
+}
+
+fn ring_segments(ring: &[Coord]) -> impl Iterator<Item = (Coord, Coord)> + '_ {
+    ring.windows(2)
+        .map(|segment| (segment[0], segment[1]))
+        .chain((ring.len() >= 2).then(|| (ring[ring.len() - 1], ring[0])))
+}
+
+fn segment_intersection_parameter(
+    start: Coord,
+    end: Coord,
+    boundary_start: Coord,
+    boundary_end: Coord,
+) -> Option<f64> {
+    const EPSILON: f64 = 1.0e-12;
+    let course = [end.lon - start.lon, end.lat - start.lat];
+    let boundary_course = [
+        boundary_end.lon - boundary_start.lon,
+        boundary_end.lat - boundary_start.lat,
+    ];
+    let cross = |left: [f64; 2], right: [f64; 2]| left[1].mul_add(-right[0], left[0] * right[1]);
+    let denominator = cross(course, boundary_course);
+    if denominator.abs() <= EPSILON {
+        return None;
+    }
+    let offset = [
+        boundary_start.lon - start.lon,
+        boundary_start.lat - start.lat,
+    ];
+    let progress = cross(offset, boundary_course) / denominator;
+    let boundary_progress = cross(offset, course) / denominator;
+    ((-EPSILON..=1.0 + EPSILON).contains(&progress)
+        && (-EPSILON..=1.0 + EPSILON).contains(&boundary_progress))
+    .then(|| progress.clamp(0.0, 1.0))
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
@@ -61,6 +226,8 @@ impl MeasureRange {
 #[serde(deny_unknown_fields)]
 pub struct SearchRecipe {
     pub trailhead: Option<Trailhead>,
+    #[serde(default)]
+    pub boundary: Option<SearchBoundary>,
     pub distance_m: MeasureRange,
     pub climb_m: MeasureRange,
     #[serde(default = "default_difficulty_target")]
@@ -76,6 +243,7 @@ impl SearchRecipe {
     pub fn from_defaults(defaults: &LoopConstraints) -> Self {
         Self {
             trailhead: None,
+            boundary: None,
             distance_m: MeasureRange {
                 min: defaults.min_distance_m,
                 max: defaults.max_distance_m,
@@ -112,6 +280,9 @@ impl SearchRecipe {
             }),
             "trailhead coordinate is invalid"
         );
+        if let Some(boundary) = &self.boundary {
+            boundary.validate()?;
+        }
         Ok(())
     }
 
@@ -290,6 +461,11 @@ impl Library {
                             .with_context(|| format!("parse {}", path.display()))?,
                         false,
                     )
+                } else if schema == 3 {
+                    let mut library = serde_json::from_slice::<Self>(&bytes)
+                        .with_context(|| format!("parse {}", path.display()))?;
+                    library.schema = SCHEMA;
+                    (library, true)
                 } else if (1..SCHEMA).contains(&schema) {
                     let legacy = serde_json::from_slice::<LegacyLibrary>(&bytes)
                         .with_context(|| format!("parse {}", path.display()))?;
@@ -678,6 +854,50 @@ mod tests {
         let mut recipe = SearchRecipe::from_defaults(&LoopConstraints::default());
         recipe.trailhead = Some(Trailhead(Coord::new(f64::NAN, 41.0)));
         assert!(recipe.validate().is_err());
+    }
+
+    #[test]
+    fn concave_search_boundary_rejects_an_excursion_between_interior_endpoints() -> Result<()> {
+        let boundary = SearchBoundary::forge(vec![
+            Coord::new(0.0, 0.0),
+            Coord::new(3.0, 0.0),
+            Coord::new(3.0, 3.0),
+            Coord::new(2.0, 3.0),
+            Coord::new(2.0, 1.0),
+            Coord::new(1.0, 1.0),
+            Coord::new(1.0, 3.0),
+            Coord::new(0.0, 3.0),
+        ])?;
+        let west = Coord::new(0.5, 2.0);
+        let east = Coord::new(2.5, 2.0);
+
+        assert!(boundary.contains(west));
+        assert!(boundary.contains(east));
+        assert!(!boundary.contains_segment(west, east));
+        assert!(boundary.contains_segment(west, Coord::new(0.5, 0.5)));
+        Ok(())
+    }
+
+    #[test]
+    fn schema_three_search_recipe_gains_an_empty_boundary() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let (graph, _) = fixture()?;
+        let path = index_path(temp.path());
+        fs::create_dir_all(path.parent().context("index parent")?)?;
+        let mut value = serde_json::to_value(Library::default())?;
+        value["schema"] = serde_json::json!(3);
+        let _boundary = value["search"]
+            .as_object_mut()
+            .context("search recipe object")?
+            .remove("boundary");
+        fs::write(&path, serde_json::to_vec_pretty(&value)?)?;
+
+        let library = Library::open(temp.path(), &graph, &LoopConstraints::default())?;
+
+        assert!(library.search().boundary.is_none());
+        let stored: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
+        assert_eq!(stored["schema"], SCHEMA);
+        Ok(())
     }
 
     #[test]

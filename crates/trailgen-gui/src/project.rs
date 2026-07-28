@@ -1,16 +1,22 @@
-use crate::library::Library;
+use crate::library::{Library, SearchBoundary};
 use anyhow::{Context as _, Result, ensure};
-use crossbeam_channel::{Receiver, Sender, bounded};
+use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use egui::Context;
 use serde::Deserialize;
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
-use trailgen_core::{LoopConstraints, Route, SearchParams, SolverKind, TrailGraph, VertexId};
+use trailgen_core::{
+    LoopConstraints, Route, SearchMonitor, SearchParams, SearchProgress, SearchScope, SearchStage,
+    SolverKind, TrailGraph, VertexId,
+};
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
@@ -95,6 +101,7 @@ fn read_optional_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Optio
 pub struct SearchRequest {
     pub serial: u64,
     pub start: VertexId,
+    pub boundary: Option<SearchBoundary>,
     pub constraints: LoopConstraints,
     pub params: SearchParams,
     pub solver: SolverKind,
@@ -107,6 +114,19 @@ impl SearchRequest {
             self.start.0 < graph.vertices.len(),
             "trailhead is outside downloaded trail data"
         );
+        if let Some(boundary) = &self.boundary {
+            boundary.validate()?;
+            ensure!(
+                boundary.contains(graph.vertices[self.start.0].coord),
+                "trailhead is outside the search area"
+            );
+            ensure!(
+                graph.adjacency[self.start.0]
+                    .iter()
+                    .any(|edge| boundary.allows_edge(&graph.edges[edge.0])),
+                "search area contains no trail leaving this trailhead"
+            );
+        }
         ensure!(
             (1..=32).contains(&self.count),
             "candidate count must be 1–32"
@@ -214,46 +234,137 @@ fn validate_constraints(constraints: &LoopConstraints) -> Result<()> {
 }
 
 pub enum SearchEvent {
+    Progress {
+        serial: u64,
+        progress: SearchProgress,
+    },
     Found {
         serial: u64,
         routes: Vec<Route>,
         elapsed: Duration,
     },
+    Stopped {
+        serial: u64,
+        elapsed: Duration,
+    },
+}
+
+struct SearchJob {
+    request: SearchRequest,
+    halt: Arc<AtomicBool>,
+}
+
+#[derive(Debug)]
+pub struct SearchHandle(Arc<AtomicBool>);
+
+impl SearchHandle {
+    pub fn stop(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+impl Drop for SearchHandle {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+struct ForgeMonitor {
+    serial: u64,
+    halt: Arc<AtomicBool>,
+    events: Sender<SearchEvent>,
+    ctx: Context,
+}
+
+impl SearchMonitor for ForgeMonitor {
+    fn cancelled(&self) -> bool {
+        self.halt.load(Ordering::Acquire)
+    }
+
+    fn report(&self, progress: SearchProgress) {
+        let _event = self.events.send(SearchEvent::Progress {
+            serial: self.serial,
+            progress,
+        });
+        self.ctx.request_repaint();
+    }
 }
 
 pub struct SearchForge {
     graph: Arc<TrailGraph>,
-    command: Sender<SearchRequest>,
+    command: Sender<SearchJob>,
     pub events: Receiver<SearchEvent>,
     _thread: thread::JoinHandle<()>,
 }
 
 impl SearchForge {
     pub fn spawn(ctx: Context, graph: Arc<TrailGraph>) -> Result<Self> {
-        let (command, commands) = bounded::<SearchRequest>(1);
-        let (events_tx, events) = bounded(2);
+        let (command, commands) = bounded::<SearchJob>(1);
+        let (events_tx, events) = unbounded();
         let worker_graph = Arc::clone(&graph);
         let worker = thread::Builder::new()
             .name("trail-search".to_owned())
             .spawn(move || {
-                while let Ok(request) = commands.recv() {
+                while let Ok(SearchJob { request, halt }) = commands.recv() {
                     let started = Instant::now();
-                    let solver = request.solver.resolve(&worker_graph);
-                    let routes = exact_matches(solver.solve(
+                    let monitor = ForgeMonitor {
+                        serial: request.serial,
+                        halt,
+                        events: events_tx.clone(),
+                        ctx: ctx.clone(),
+                    };
+                    let mask = if let Some(boundary) = &request.boundary {
+                        monitor.report(SearchProgress {
+                            stage: SearchStage::Preparing,
+                            explored: 0,
+                            limit: worker_graph.edges.len(),
+                            candidates: 0,
+                        });
+                        let Some(mask) = boundary.edge_mask(&worker_graph, |explored, limit| {
+                            monitor.report(SearchProgress {
+                                stage: SearchStage::Preparing,
+                                explored,
+                                limit,
+                                candidates: 0,
+                            });
+                            !monitor.cancelled()
+                        }) else {
+                            let _stopped = events_tx.send(SearchEvent::Stopped {
+                                serial: request.serial,
+                                elapsed: started.elapsed(),
+                            });
+                            ctx.request_repaint();
+                            continue;
+                        };
+                        Some(mask)
+                    } else {
+                        None
+                    };
+                    let scope = mask.as_deref().map_or_else(
+                        || SearchScope::all(&worker_graph),
+                        |mask| SearchScope::restricted(&worker_graph, mask),
+                    );
+                    let routes = exact_matches(request.solver.solve_scoped(
                         request.params,
-                        &worker_graph,
+                        scope,
                         request.start,
                         &request.constraints,
                         request.count,
+                        &monitor,
                     ));
-                    if events_tx
-                        .send(SearchEvent::Found {
+                    let event = if monitor.cancelled() {
+                        SearchEvent::Stopped {
+                            serial: request.serial,
+                            elapsed: started.elapsed(),
+                        }
+                    } else {
+                        SearchEvent::Found {
                             serial: request.serial,
                             routes,
                             elapsed: started.elapsed(),
-                        })
-                        .is_err()
-                    {
+                        }
+                    };
+                    if events_tx.send(event).is_err() {
                         break;
                     }
                     ctx.request_repaint();
@@ -268,11 +379,16 @@ impl SearchForge {
         })
     }
 
-    pub fn strike(&self, request: SearchRequest) -> Result<()> {
+    pub fn strike(&self, request: SearchRequest) -> Result<SearchHandle> {
         request.validate(&self.graph)?;
+        let handle = SearchHandle(Arc::new(AtomicBool::new(false)));
         self.command
-            .try_send(request)
-            .map_err(|_| anyhow::anyhow!("trail search is already running"))
+            .try_send(SearchJob {
+                request,
+                halt: Arc::clone(&handle.0),
+            })
+            .map_err(|_| anyhow::anyhow!("trail search is already running"))?;
+        Ok(handle)
     }
 }
 
@@ -313,6 +429,7 @@ mod tests {
         let request = SearchRequest {
             serial: 1,
             start: VertexId(0),
+            boundary: None,
             constraints,
             params: SearchParams::default(),
             solver: SolverKind::Auto,

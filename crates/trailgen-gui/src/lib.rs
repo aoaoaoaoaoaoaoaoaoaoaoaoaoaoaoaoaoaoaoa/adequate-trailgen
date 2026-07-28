@@ -20,6 +20,7 @@ mod profile;
 mod project;
 mod projects;
 mod relief;
+mod search_boundary;
 mod slate;
 mod trail_data;
 mod trail_map;

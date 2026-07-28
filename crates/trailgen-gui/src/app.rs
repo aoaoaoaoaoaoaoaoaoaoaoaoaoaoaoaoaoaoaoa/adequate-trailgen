@@ -6,8 +6,9 @@ use crate::{
     live_area::{self, RegionScribe, ScribeEvent},
     map::{self, Atlas, SELECTED_TRAIL_COLOR, Viewport},
     profile::ElevationProfile,
-    project::{Project, SearchEvent, SearchForge, SearchRequest},
+    project::{Project, SearchEvent, SearchForge, SearchHandle, SearchRequest},
     relief::Relief,
+    search_boundary::{self, BoundaryEvent, BoundaryScribe},
     slate::{GalleryDeck, Slate},
     trail_data::{
         Event as TrailDataEvent, Mutation as TrailDataMutation, TrailData, progress_status,
@@ -27,8 +28,8 @@ use std::{
     time::{Duration, Instant},
 };
 use trailgen_core::{
-    Coord, LoopConstraints, Route, RouteMetrics, RouteShape, SearchParams, SolverKind,
-    SupportPoint, Trail, TrailGraph, TrailRealization, TrailStanding,
+    Coord, LoopConstraints, Route, RouteMetrics, RouteShape, SearchParams, SearchProgress,
+    SearchStage, SolverKind, SupportPoint, Trail, TrailGraph, TrailRealization, TrailStanding,
 };
 use trailgen_data::SurveyRegion;
 
@@ -75,6 +76,7 @@ pub struct TrailApp {
     regions: Vec<SurveyRegion>,
     corpus: Option<TrailData>,
     scribe: RegionScribe,
+    boundary_scribe: BoundaryScribe,
     offline: bool,
     shutters: BTreeMap<String, bool>,
     inspector_scroll: f32,
@@ -233,13 +235,36 @@ enum Fit {
     None,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Debug, Default)]
 enum ForgePhase {
     #[default]
     Idle,
     Striking {
         serial: u64,
+        handle: SearchHandle,
+        progress: SearchProgress,
+        stopping: bool,
     },
+}
+
+impl ForgePhase {
+    const fn active(&self) -> bool {
+        matches!(self, Self::Striking { .. })
+    }
+
+    const fn serial(&self) -> Option<u64> {
+        match self {
+            Self::Idle => None,
+            Self::Striking { serial, .. } => Some(*serial),
+        }
+    }
+
+    const fn progress(&self) -> Option<SearchProgress> {
+        match self {
+            Self::Idle => None,
+            Self::Striking { progress, .. } => Some(*progress),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -360,6 +385,7 @@ impl TrailApp {
             regions: corpus.regions,
             corpus: corpus.task,
             scribe: RegionScribe::default(),
+            boundary_scribe: BoundaryScribe::default(),
             offline,
             shutters: slate.shutters.clone(),
             inspector_scroll: slate.inspector_scroll,
@@ -466,7 +492,9 @@ impl TrailApp {
             self.editor_panel(ui);
             return;
         }
-        let manual = ui.add(
+        let striking = self.forge_phase.active();
+        let manual = ui.add_enabled(
+            !striking,
             chrome::glyph_button("DRAW A TRAIL", false).min_size(vec2(ui.available_width(), 30.0)),
         );
         chrome::tension(ui, &manual);
@@ -479,8 +507,13 @@ impl TrailApp {
         let mut recipe = self.library.search().clone();
         let original = recipe.clone();
 
-        self.trailhead_editor(ui, &mut recipe);
-        let recipe_changed = self.search_recipe_editor(ui, &mut recipe);
+        let recipe_changed = ui
+            .add_enabled_ui(!striking, |ui| {
+                self.trailhead_editor(ui, &mut recipe);
+                self.search_boundary_editor(ui, &mut recipe);
+                self.search_recipe_editor(ui, &mut recipe)
+            })
+            .inner;
 
         if recipe_changed || recipe != original {
             *self.library.search_mut() = recipe;
@@ -488,31 +521,50 @@ impl TrailApp {
         }
 
         ui.add_space(6.0);
+        if let Some(progress) = self.forge_phase.progress() {
+            search_progress(ui, progress);
+            ui.add_space(4.0);
+        }
         let validation = self
             .search_request(self.serial.saturating_add(1))
             .and_then(|request| request.validate(&self.graph))
             .err()
             .map(|err| err.to_string());
-        let striking = matches!(self.forge_phase, ForgePhase::Striking { .. });
+        let stopping = matches!(
+            self.forge_phase,
+            ForgePhase::Striking { stopping: true, .. }
+        );
         let find = ui.add_enabled(
-            !striking && validation.is_none(),
+            if striking {
+                !stopping
+            } else {
+                validation.is_none()
+            },
             chrome::glyph_button(
                 if striking {
-                    "FINDING TRAILS…"
+                    if stopping {
+                        "STOPPING…"
+                    } else {
+                        "STOP SEARCH · ESC"
+                    }
                 } else {
                     "FIND TRAILS"
                 },
-                !striking && validation.is_none(),
+                striking || validation.is_none(),
             )
             .min_size(vec2(ui.available_width(), 36.0)),
         );
-        let find = match validation {
-            Some(fault) => find.on_disabled_hover_text(fault),
-            None => find,
+        let find = match (striking, validation) {
+            (false, Some(fault)) => find.on_disabled_hover_text(fault),
+            (true, _) | (false, None) => find,
         };
         chrome::tension(ui, &find);
         if find.clicked() {
-            self.strike();
+            if striking {
+                self.stop_search();
+            } else {
+                self.strike();
+            }
             self.water.thwack(find.rect, 0.7);
         }
     }
@@ -546,6 +598,7 @@ impl TrailApp {
                 self.placing_trailhead = !placing;
                 if self.placing_trailhead {
                     self.scribe.disarm();
+                    self.boundary_scribe.disarm();
                     self.leave_focus();
                 }
                 self.water.click(place.rect);
@@ -562,6 +615,62 @@ impl TrailApp {
         if recipe.trailhead.is_some() {
             let _set = chrome::note(ui, "TRAILHEAD SET");
         }
+    }
+
+    fn search_boundary_editor(&mut self, ui: &mut egui::Ui, recipe: &mut SearchRecipe) {
+        ui.add_space(5.0);
+        let _boundary = ui.label(chrome::eyebrow("SEARCH AREA"));
+        let _boundary_row = ui.horizontal(|ui| {
+            let drawing = self.boundary_scribe.active();
+            let draw = ui.add(
+                chrome::glyph_button(
+                    if drawing {
+                        "CANCEL DRAWING"
+                    } else if recipe.boundary.is_some() {
+                        "REDRAW ON MAP"
+                    } else {
+                        "DRAW ON MAP"
+                    },
+                    drawing,
+                )
+                .min_size(vec2(
+                    if recipe.boundary.is_some() {
+                        139.0
+                    } else {
+                        184.0
+                    },
+                    27.0,
+                )),
+            );
+            chrome::tension(ui, &draw);
+            if draw.clicked() {
+                if drawing {
+                    self.boundary_scribe.disarm();
+                } else {
+                    self.boundary_scribe.arm();
+                    self.scribe.disarm();
+                    self.placing_trailhead = false;
+                    self.leave_focus();
+                }
+                self.water.click(draw.rect);
+            }
+            if recipe.boundary.is_some() {
+                let clear = ui.add(chrome::glyph_button("CLEAR", false).min_size(vec2(48.0, 27.0)));
+                if clear.clicked() {
+                    recipe.boundary = None;
+                    self.boundary_scribe.disarm();
+                    self.water.click(clear.rect);
+                }
+            }
+        });
+        let _state = chrome::note(
+            ui,
+            if recipe.boundary.is_some() {
+                "ROUTES STAY INSIDE THE BRONZE BOUNDARY"
+            } else {
+                "NO SEARCH-AREA LIMIT"
+            },
+        );
     }
 
     fn search_recipe_editor(&mut self, ui: &mut egui::Ui, recipe: &mut SearchRecipe) -> bool {
@@ -679,7 +788,7 @@ impl TrailApp {
     fn area_panel(&mut self, ui: &mut egui::Ui) {
         let _count = chrome::note(ui, format!("{} DOWNLOADED AREA(S)", self.regions.len()));
         let selecting = self.scribe.active();
-        let mutable = self.editor.is_none() && self.corpus.is_none();
+        let mutable = self.editor.is_none() && self.corpus.is_none() && !self.forge_phase.active();
         let select = ui.add_enabled(
             !self.offline && mutable,
             chrome::glyph_button(
@@ -698,6 +807,7 @@ impl TrailApp {
                 self.scribe.disarm();
             } else {
                 self.scribe.arm();
+                self.boundary_scribe.disarm();
                 self.placing_trailhead = false;
                 self.leave_focus();
             }
@@ -783,6 +893,8 @@ impl TrailApp {
                     .unwrap_or("Updating trails…")
             } else if self.scribe.active() {
                 "Drag a rectangle across the map to download its trails. Esc cancels."
+            } else if self.boundary_scribe.active() {
+                "Draw a free-hand loop around the allowed search area. Release to finish; Esc cancels."
             } else if let Some(editor) = &self.editor {
                 if editor.support_points.is_empty() {
                     "Click a trail to place the first support point. Esc cancels."
@@ -1144,7 +1256,7 @@ impl TrailApp {
             ui,
             &response,
             rect,
-            !self.scribe.active() && !editor_dragging,
+            !self.scribe.active() && !self.boundary_scribe.active() && !editor_dragging,
         );
         if moved {
             self.fit = Fit::None;
@@ -1155,7 +1267,7 @@ impl TrailApp {
                 self.water.bump(rect);
             }
         }
-        let scribe_event = self.scribe.interact(self.viewport, ui, &response, rect);
+        let (scribe_event, boundary_event) = self.interact_scribes(ui, &response, rect);
         let canvas = ui.painter_at(rect);
         let frame = map::MapFramePlan::forge(self.viewport, rect);
         let cartography = self.cartography.observe(self.viewport, ui.ctx());
@@ -1173,6 +1285,7 @@ impl TrailApp {
         }
         self.paint_trails(&canvas, rect);
         annotations.paint(&canvas);
+        self.paint_search_boundary(&canvas, rect);
         if self.editor.is_some() {
             self.paint_support_points(&canvas, rect);
         } else if let Some(trailhead) = self.active_trailhead() {
@@ -1221,6 +1334,30 @@ impl TrailApp {
             ui.ctx().request_repaint();
         }
         self.handle_scribe(ui.ctx(), &scribe_event);
+        self.handle_boundary(boundary_event);
+    }
+
+    fn interact_scribes(
+        &mut self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        rect: egui::Rect,
+    ) -> (ScribeEvent, BoundaryEvent) {
+        (
+            self.scribe.interact(self.viewport, ui, response, rect),
+            self.boundary_scribe
+                .interact(self.viewport, ui, response, rect),
+        )
+    }
+
+    fn paint_search_boundary(&self, painter: &egui::Painter, rect: egui::Rect) {
+        search_boundary::paint(
+            painter,
+            self.viewport,
+            rect,
+            self.library.search().boundary.as_ref(),
+            self.boundary_scribe.preview(),
+        );
     }
 
     fn forge_cartography(
@@ -1414,6 +1551,22 @@ impl TrailApp {
         }
     }
 
+    fn handle_boundary(&mut self, event: BoundaryEvent) {
+        match event {
+            BoundaryEvent::None => {}
+            BoundaryEvent::Fault(fault) => {
+                self.status = fault;
+                self.boundary_scribe.arm();
+            }
+            BoundaryEvent::Committed(boundary) => {
+                self.library.search_mut().boundary = Some(boundary);
+                self.mark_library_dirty();
+                "Search area set. Routes will remain inside the bronze boundary."
+                    .clone_into(&mut self.status);
+            }
+        }
+    }
+
     fn place_trailhead(&mut self, requested: Coord, pointer: egui::Pos2) {
         let Some((vertex, distance_m)) = self.graph.nearest_vertex_with_distance(requested) else {
             "No downloaded trail is near that point.".clone_into(&mut self.status);
@@ -1536,33 +1689,65 @@ impl TrailApp {
 
     fn strike(&mut self) {
         self.serial = self.serial.saturating_add(1);
-        match self
-            .search_request(self.serial)
-            .and_then(|request| self.forge.strike(request))
-        {
-            Ok(()) => {
+        let launch = self.search_request(self.serial).and_then(|request| {
+            let progress = if request.boundary.is_some() {
+                SearchProgress {
+                    stage: SearchStage::Preparing,
+                    explored: 0,
+                    limit: self.graph.edges.len(),
+                    candidates: 0,
+                }
+            } else {
+                SearchProgress {
+                    stage: SearchStage::Exploring,
+                    explored: 0,
+                    limit: request.params.max_frontier,
+                    candidates: 0,
+                }
+            };
+            self.forge.strike(request).map(|handle| (handle, progress))
+        });
+        match launch {
+            Ok((handle, progress)) => {
                 self.forge_phase = ForgePhase::Striking {
                     serial: self.serial,
+                    handle,
+                    progress,
+                    stopping: false,
                 };
                 self.gallery = GalleryDeck::Results;
-                "Finding trails…".clone_into(&mut self.status);
+                self.status = search_progress_text(progress);
             }
             Err(err) => self.status = format!("Could not start this search: {err:#}"),
         }
     }
 
+    fn stop_search(&mut self) {
+        let ForgePhase::Striking {
+            handle, stopping, ..
+        } = &mut self.forge_phase
+        else {
+            return;
+        };
+        handle.stop();
+        *stopping = true;
+        "Stopping trail search…".clone_into(&mut self.status);
+    }
+
     fn search_request(&self, serial: u64) -> Result<SearchRequest> {
         let recipe = self.library.search();
         let trailhead = recipe.trailhead.context("place a trailhead on the map")?;
-        let (start, _) = self
+        let start = self
             .graph
             .nearest_vertex_with_distance(trailhead.coord())
+            .map(|(vertex, _)| vertex)
             .context("no downloaded trail is near this trailhead")?;
         let mut params = self.params;
         params.keep = params.keep.max(CANDIDATE_COUNT);
         Ok(SearchRequest {
             serial,
             start,
+            boundary: recipe.boundary.clone(),
             constraints: recipe.constraints(&self.defaults)?,
             params,
             solver: self.solver,
@@ -1573,11 +1758,26 @@ impl TrailApp {
     fn absorb_events(&mut self, ctx: &egui::Context) {
         while let Ok(event) = self.forge.events.try_recv() {
             match event {
+                SearchEvent::Progress { serial, progress }
+                    if self.forge_phase.serial() == Some(serial) =>
+                {
+                    if let ForgePhase::Striking {
+                        progress: current,
+                        stopping,
+                        ..
+                    } = &mut self.forge_phase
+                    {
+                        *current = progress;
+                        if !*stopping {
+                            self.status = search_progress_text(progress);
+                        }
+                    }
+                }
                 SearchEvent::Found {
                     serial,
                     routes,
                     elapsed,
-                } if self.forge_phase == ForgePhase::Striking { serial } => {
+                } if self.forge_phase.serial() == Some(serial) => {
                     self.forge_phase = ForgePhase::Idle;
                     let count = routes.len();
                     let designs = routes
@@ -1603,7 +1803,19 @@ impl TrailApp {
                     }
                     ctx.request_repaint();
                 }
-                SearchEvent::Found { .. } => {}
+                SearchEvent::Stopped { serial, elapsed }
+                    if self.forge_phase.serial() == Some(serial) =>
+                {
+                    self.forge_phase = ForgePhase::Idle;
+                    self.status = format!(
+                        "Search stopped after {}. Previous results are unchanged.",
+                        duration(elapsed)
+                    );
+                    ctx.request_repaint();
+                }
+                SearchEvent::Progress { .. }
+                | SearchEvent::Found { .. }
+                | SearchEvent::Stopped { .. } => {}
             }
         }
         self.vector.absorb();
@@ -1752,6 +1964,7 @@ impl TrailApp {
             |(name, trail)| (name, trail.shape, trail.support_points),
         );
         self.scribe.disarm();
+        self.boundary_scribe.disarm();
         self.placing_trailhead = false;
         self.fit = Fit::None;
         self.editor = Some(TrailEditor {
@@ -2054,19 +2267,27 @@ impl TrailApp {
             return;
         }
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Enter)) {
-            if self.editor.is_none() && matches!(self.forge_phase, ForgePhase::Idle) {
+            if self.editor.is_none() && !self.forge_phase.active() {
                 self.strike();
             }
             return;
         }
         let escape =
             ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        if escape && self.forge_phase.active() {
+            self.stop_search();
+            return;
+        }
         if escape && self.editor.is_some() {
             self.cancel_editor();
             return;
         }
         if escape && self.scribe.active() {
             self.scribe.disarm();
+            return;
+        }
+        if escape && self.boundary_scribe.active() {
+            self.boundary_scribe.disarm();
             return;
         }
         if escape && self.placing_trailhead {
@@ -2166,6 +2387,45 @@ fn toolbar_text(ui: &mut egui::Ui, text: impl Into<String>, color: Color32) -> e
             .size(10.5)
             .color(color),
     )
+}
+
+fn search_progress(ui: &mut egui::Ui, progress: SearchProgress) {
+    let fraction = match progress.stage {
+        SearchStage::Preparing | SearchStage::Exploring => {
+            progress.explored as f32 / progress.limit.max(1) as f32
+        }
+        SearchStage::Ranking => 1.0,
+    };
+    let _label = ui.label(
+        RichText::new(search_progress_text(progress).to_ascii_uppercase())
+            .monospace()
+            .size(10.0)
+            .color(chrome::HOT),
+    );
+    let _progress = ui.add(
+        egui::ProgressBar::new(fraction)
+            .desired_width(ui.available_width())
+            .desired_height(7.0)
+            .fill(chrome::HOT)
+            .animate(progress.stage != SearchStage::Ranking),
+    );
+}
+
+fn search_progress_text(progress: SearchProgress) -> String {
+    let percent = (progress.explored.saturating_mul(100) / progress.limit.max(1)).min(100);
+    match progress.stage {
+        SearchStage::Preparing if progress.limit > 0 => {
+            format!("Preparing search area · {percent}%")
+        }
+        SearchStage::Preparing => "Preparing search area".to_owned(),
+        SearchStage::Exploring => {
+            format!(
+                "Searching · {percent}% · {} candidates",
+                progress.candidates
+            )
+        }
+        SearchStage::Ranking => format!("Ranking · {} candidates", progress.candidates),
+    }
 }
 
 fn metrics_summary(metrics: &RouteMetrics) -> String {
@@ -2335,6 +2595,28 @@ mod tests {
         assert_eq!(frame.base(second_focus), base);
         assert_eq!(frame.pop(), Some(base));
         assert_eq!(frame.pop(), None);
+    }
+
+    #[test]
+    fn search_progress_is_bounded_and_speaks_in_user_terms() {
+        assert_eq!(
+            search_progress_text(SearchProgress {
+                stage: SearchStage::Preparing,
+                explored: 17,
+                limit: 100,
+                candidates: 0,
+            }),
+            "Preparing search area · 17%"
+        );
+        assert_eq!(
+            search_progress_text(SearchProgress {
+                stage: SearchStage::Exploring,
+                explored: usize::MAX,
+                limit: 1,
+                candidates: 3,
+            }),
+            "Searching · 100% · 3 candidates"
+        );
     }
 
     #[test]

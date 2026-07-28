@@ -7,6 +7,74 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SearchStage {
+    Preparing,
+    Exploring,
+    Ranking,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SearchProgress {
+    pub stage: SearchStage,
+    pub explored: usize,
+    pub limit: usize,
+    pub candidates: usize,
+}
+
+pub trait SearchMonitor {
+    fn cancelled(&self) -> bool;
+    fn report(&self, progress: SearchProgress);
+}
+
+impl SearchMonitor for () {
+    fn cancelled(&self) -> bool {
+        false
+    }
+
+    fn report(&self, _progress: SearchProgress) {}
+}
+
+#[derive(Clone, Copy)]
+pub struct SearchScope<'a> {
+    graph: &'a TrailGraph,
+    allowed: Option<&'a [bool]>,
+    edge_count: usize,
+}
+
+impl<'a> SearchScope<'a> {
+    #[must_use]
+    pub const fn all(graph: &'a TrailGraph) -> Self {
+        Self {
+            graph,
+            allowed: None,
+            edge_count: graph.edges.len(),
+        }
+    }
+
+    #[must_use]
+    pub fn restricted(graph: &'a TrailGraph, allowed: &'a [bool]) -> Self {
+        assert_eq!(
+            allowed.len(),
+            graph.edges.len(),
+            "search mask must cover every graph edge"
+        );
+        Self {
+            graph,
+            allowed: Some(allowed),
+            edge_count: allowed.iter().filter(|allowed| **allowed).count(),
+        }
+    }
+
+    fn fanout(self, vertex: VertexId) -> Vec<EdgeId> {
+        self.graph.adjacency[vertex.0]
+            .iter()
+            .copied()
+            .filter(|edge| self.allowed.is_none_or(|allowed| allowed[edge.0]))
+            .collect()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SearchParams {
     pub max_hops: usize,
@@ -51,8 +119,12 @@ impl SolverKind {
 
     #[must_use]
     pub const fn resolve(self, graph: &TrailGraph) -> Self {
+        self.resolve_edge_count(graph.edges.len())
+    }
+
+    const fn resolve_edge_count(self, edge_count: usize) -> Self {
         match self {
-            Self::Auto if graph.edges.len() <= Self::AUTO_EXACT_EDGE_LIMIT => Self::Exact,
+            Self::Auto if edge_count <= Self::AUTO_EXACT_EDGE_LIMIT => Self::Exact,
             Self::Auto => Self::Heuristic,
             resolved => resolved,
         }
@@ -76,13 +148,54 @@ impl SolverKind {
         constraints: &LoopConstraints,
         count: usize,
     ) -> Vec<Route> {
+        self.solve_monitored(params, graph, start, constraints, count, &())
+    }
+
+    #[must_use]
+    pub fn solve_monitored(
+        self,
+        params: SearchParams,
+        graph: &TrailGraph,
+        start: VertexId,
+        constraints: &LoopConstraints,
+        count: usize,
+        monitor: &dyn SearchMonitor,
+    ) -> Vec<Route> {
+        self.solve_scoped(
+            params,
+            SearchScope::all(graph),
+            start,
+            constraints,
+            count,
+            monitor,
+        )
+    }
+
+    #[must_use]
+    pub fn solve_scoped(
+        self,
+        params: SearchParams,
+        scope: SearchScope<'_>,
+        start: VertexId,
+        constraints: &LoopConstraints,
+        count: usize,
+        monitor: &dyn SearchMonitor,
+    ) -> Vec<Route> {
         if constraints.allowed_shapes.as_slice() == [RouteShape::OutAndBack] {
-            return support_out_and_backs(params, graph, start, constraints, count);
+            return support_out_and_backs(params, scope, start, constraints, count, monitor);
         }
-        match self.resolve(graph) {
+        match self.resolve_edge_count(scope.edge_count) {
             Self::Auto => unreachable!("auto solver must resolve to a concrete backend"),
-            Self::Heuristic => LoopHunter { params }.solve(graph, start, constraints, count),
-            Self::Exact => ExactLoopSolver { params }.solve(graph, start, constraints, count),
+            Self::Heuristic => {
+                LoopHunter { params }.solve_monitored(scope, start, constraints, count, monitor)
+            }
+            Self::Exact => ExactLoopSolver { params }.solve_monitored(
+                scope,
+                start,
+                constraints,
+                count,
+                monitor,
+            ),
         }
     }
 }
@@ -103,6 +216,51 @@ struct State {
     edges: Vec<EdgeId>,
     used: BTreeSet<EdgeId>,
     distance_m: f64,
+}
+
+struct SearchMeter<'a> {
+    monitor: &'a dyn SearchMonitor,
+    explored: usize,
+    limit: usize,
+    reported: usize,
+}
+
+impl<'a> SearchMeter<'a> {
+    const REPORT_STRIDE: usize = 32;
+
+    fn new(monitor: &'a dyn SearchMonitor, limit: usize) -> Self {
+        Self {
+            monitor,
+            explored: 0,
+            limit,
+            reported: 0,
+        }
+    }
+
+    fn advance(&mut self, candidates: usize) -> bool {
+        if self.explored >= self.limit || self.monitor.cancelled() {
+            return false;
+        }
+        self.explored += 1;
+        if self.explored == 1 || self.explored - self.reported >= Self::REPORT_STRIDE {
+            self.emit(SearchStage::Exploring, candidates);
+        }
+        true
+    }
+
+    fn finish(&mut self, candidates: usize) {
+        self.emit(SearchStage::Ranking, candidates);
+    }
+
+    fn emit(&mut self, stage: SearchStage, candidates: usize) {
+        self.reported = self.explored;
+        self.monitor.report(SearchProgress {
+            stage,
+            explored: self.explored,
+            limit: self.limit,
+            candidates,
+        });
+    }
 }
 
 pub trait RouteSolver {
@@ -126,16 +284,16 @@ impl LoopHunter {
     ) -> Vec<Route> {
         self.solve(graph, start, constraints, count)
     }
-}
 
-impl RouteSolver for LoopHunter {
-    fn solve(
+    fn solve_monitored(
         &self,
-        graph: &TrailGraph,
+        scope: SearchScope<'_>,
         start: VertexId,
         constraints: &LoopConstraints,
         count: usize,
+        monitor: &dyn SearchMonitor,
     ) -> Vec<Route> {
+        let graph = scope.graph;
         let mut stack = vec![State {
             at: start,
             edges: Vec::new(),
@@ -143,11 +301,10 @@ impl RouteSolver for LoopHunter {
             distance_m: 0.0,
         }];
         let mut routes = Vec::<Route>::new();
-        let mut expanded = 0usize;
+        let mut meter = SearchMeter::new(monitor, self.params.max_frontier);
 
         while let Some(state) = stack.pop() {
-            expanded += 1;
-            if expanded > self.params.max_frontier {
+            if !meter.advance(routes.len()) {
                 break;
             }
             if closes_allowed(constraints) && state.at != start && !state.edges.is_empty() {
@@ -161,6 +318,8 @@ impl RouteSolver for LoopHunter {
                     max_distance_m: max_return_m,
                     keep: self.params.closure_paths,
                     law: self.params.routing,
+                    monitor,
+                    allowed: scope.allowed,
                 }) {
                     let mut route_edges = state.edges.clone();
                     route_edges.extend(return_edges);
@@ -170,7 +329,7 @@ impl RouteSolver for LoopHunter {
             if state.edges.len() >= self.params.max_hops {
                 continue;
             }
-            let mut fanout = graph.adjacency[state.at.0].clone();
+            let mut fanout = scope.fanout(state.at);
             sort_heuristic_fanout(
                 graph,
                 &mut fanout,
@@ -181,6 +340,9 @@ impl RouteSolver for LoopHunter {
             );
 
             for edge_id in fanout {
+                if monitor.cancelled() {
+                    return Vec::new();
+                }
                 if state.used.contains(&edge_id) {
                     continue;
                 }
@@ -231,7 +393,23 @@ impl RouteSolver for LoopHunter {
             }
         }
 
-        finish_routes(routes, graph, constraints, count, self.params.keep)
+        if monitor.cancelled() {
+            return Vec::new();
+        }
+        meter.finish(routes.len());
+        finish_routes(routes, graph, constraints, count, self.params.keep, monitor)
+    }
+}
+
+impl RouteSolver for LoopHunter {
+    fn solve(
+        &self,
+        graph: &TrailGraph,
+        start: VertexId,
+        constraints: &LoopConstraints,
+        count: usize,
+    ) -> Vec<Route> {
+        self.solve_monitored(SearchScope::all(graph), start, constraints, count, &())
     }
 }
 
@@ -246,16 +424,16 @@ impl ExactLoopSolver {
     ) -> Vec<Route> {
         self.solve(graph, start, constraints, count)
     }
-}
 
-impl RouteSolver for ExactLoopSolver {
-    fn solve(
+    fn solve_monitored(
         &self,
-        graph: &TrailGraph,
+        scope: SearchScope<'_>,
         start: VertexId,
         constraints: &LoopConstraints,
         count: usize,
+        monitor: &dyn SearchMonitor,
     ) -> Vec<Route> {
+        let graph = scope.graph;
         let mut stack = vec![State {
             at: start,
             edges: Vec::new(),
@@ -263,22 +441,24 @@ impl RouteSolver for ExactLoopSolver {
             distance_m: 0.0,
         }];
         let mut routes = Vec::<Route>::new();
-        let mut expanded = 0usize;
+        let mut meter = SearchMeter::new(monitor, self.params.max_frontier);
 
         while let Some(state) = stack.pop() {
-            expanded += 1;
-            if expanded > self.params.max_frontier {
+            if !meter.advance(routes.len()) {
                 break;
             }
             if state.edges.len() >= self.params.max_hops {
                 continue;
             }
 
-            let mut fanout = graph.adjacency[state.at.0].clone();
+            let mut fanout = scope.fanout(state.at);
             fanout.sort();
             fanout.reverse();
 
             for edge_id in fanout {
+                if monitor.cancelled() {
+                    return Vec::new();
+                }
                 if state.used.contains(&edge_id) {
                     continue;
                 }
@@ -324,7 +504,23 @@ impl RouteSolver for ExactLoopSolver {
             }
         }
 
-        finish_routes(routes, graph, constraints, count, self.params.keep)
+        if monitor.cancelled() {
+            return Vec::new();
+        }
+        meter.finish(routes.len());
+        finish_routes(routes, graph, constraints, count, self.params.keep, monitor)
+    }
+}
+
+impl RouteSolver for ExactLoopSolver {
+    fn solve(
+        &self,
+        graph: &TrailGraph,
+        start: VertexId,
+        constraints: &LoopConstraints,
+        count: usize,
+    ) -> Vec<Route> {
+        self.solve_monitored(SearchScope::all(graph), start, constraints, count, &())
     }
 }
 
@@ -358,11 +554,13 @@ impl PartialOrd for SupportFrontier {
 
 fn support_out_and_backs(
     params: SearchParams,
-    graph: &TrailGraph,
+    scope: SearchScope<'_>,
     start: VertexId,
     constraints: &LoopConstraints,
     count: usize,
+    monitor: &dyn SearchMonitor,
 ) -> Vec<Route> {
+    let graph = scope.graph;
     let law = params.routing;
     let origin = SupportWalk {
         at: start,
@@ -376,12 +574,12 @@ fn support_out_and_backs(
     let mut predecessor = BTreeMap::<SupportWalk, (SupportWalk, EdgeId)>::new();
     let mut emitted = BTreeSet::new();
     let mut routes = Vec::new();
-    let mut expanded = 0usize;
+    let mut meter = SearchMeter::new(monitor, params.max_frontier);
     let maximum_outward_m = constraints.max_distance_m * 0.675;
     let maximum_cost = maximum_outward_m * (1.0 + law.road_aversion);
 
     while let Some(SupportFrontier { cost, walk }) = frontier.pop() {
-        if expanded >= params.max_frontier || cost > maximum_cost {
+        if cost > maximum_cost || !meter.advance(routes.len()) {
             break;
         }
         if distance
@@ -390,7 +588,6 @@ fn support_out_and_backs(
         {
             continue;
         }
-        expanded += 1;
         let path = support_path(origin, walk, &predecessor);
         let outward_m = route_distance(graph, &path);
         if walk.at != start
@@ -411,7 +608,10 @@ fn support_out_and_backs(
         if path.len() >= params.max_hops || outward_m > maximum_outward_m {
             continue;
         }
-        for edge in graph.adjacency[walk.at.0].iter().copied() {
+        for edge in scope.fanout(walk.at) {
+            if monitor.cancelled() {
+                return Vec::new();
+            }
             if !graph.turn_allowed(walk.previous, walk.at, edge) {
                 continue;
             }
@@ -442,7 +642,11 @@ fn support_out_and_backs(
             }
         }
     }
-    finish_routes(routes, graph, constraints, count, params.keep)
+    if monitor.cancelled() {
+        return Vec::new();
+    }
+    meter.finish(routes.len());
+    finish_routes(routes, graph, constraints, count, params.keep, monitor)
 }
 
 fn support_path(
@@ -494,11 +698,21 @@ fn finish_routes(
     constraints: &LoopConstraints,
     count: usize,
     keep: usize,
+    monitor: &dyn SearchMonitor,
 ) -> Vec<Route> {
+    if monitor.cancelled() {
+        return Vec::new();
+    }
     let mut seen = BTreeSet::new();
     routes.retain(|route| seen.insert(route_signature(route)));
     rank_routes(&mut routes, constraints);
-    routes = diverse_portfolio(routes, graph, graphless_limit(count, keep));
+    if monitor.cancelled() {
+        return Vec::new();
+    }
+    routes = diverse_portfolio(routes, graph, graphless_limit(count, keep), monitor);
+    if monitor.cancelled() {
+        return Vec::new();
+    }
     for (i, route) in routes.iter_mut().enumerate() {
         route.name = format!("candidate-{}", i + 1);
     }
@@ -515,7 +729,12 @@ const fn graphless_limit(count: usize, keep: usize) -> usize {
     }
 }
 
-fn diverse_portfolio(routes: Vec<Route>, graph: &TrailGraph, limit: usize) -> Vec<Route> {
+fn diverse_portfolio(
+    routes: Vec<Route>,
+    graph: &TrailGraph,
+    limit: usize,
+    monitor: &dyn SearchMonitor,
+) -> Vec<Route> {
     if routes.len() <= limit {
         return routes;
     }
@@ -526,8 +745,8 @@ fn diverse_portfolio(routes: Vec<Route>, graph: &TrailGraph, limit: usize) -> Ve
     let mut misses = routes;
     let near = misses.split_off(tier);
     let mut chosen = Vec::with_capacity(limit);
-    admit_diverse_tier(misses, graph, limit, &mut chosen);
-    admit_diverse_tier(near, graph, limit, &mut chosen);
+    admit_diverse_tier(misses, graph, limit, &mut chosen, monitor);
+    admit_diverse_tier(near, graph, limit, &mut chosen, monitor);
     chosen
 }
 
@@ -536,11 +755,12 @@ fn admit_diverse_tier(
     graph: &TrailGraph,
     limit: usize,
     chosen: &mut Vec<Route>,
+    monitor: &dyn SearchMonitor,
 ) {
     let mut pool = routes.into_iter().map(Some).collect::<Vec<_>>();
     for exclusion_radius in [0.35, 0.20, 0.08, 0.0] {
         for candidate in &mut pool {
-            if chosen.len() >= limit {
+            if chosen.len() >= limit || monitor.cancelled() {
                 break;
             }
             let admit = candidate.as_ref().is_some_and(|route| {
@@ -617,6 +837,8 @@ struct ReturnHunt<'a> {
     max_distance_m: f64,
     keep: usize,
     law: RoutingLaw,
+    monitor: &'a dyn SearchMonitor,
+    allowed: Option<&'a [bool]>,
 }
 
 fn shortest_return_paths(hunt: ReturnHunt<'_>) -> Vec<Vec<EdgeId>> {
@@ -641,6 +863,9 @@ fn shortest_return_paths(hunt: ReturnHunt<'_>) -> Vec<Vec<EdgeId>> {
     let mut paths = Vec::new();
 
     while let Some(state) = heap.pop() {
+        if hunt.monitor.cancelled() {
+            return Vec::new();
+        }
         if paths.len() >= keep || expanded >= expansion_cap {
             break;
         }
@@ -650,6 +875,9 @@ fn shortest_return_paths(hunt: ReturnHunt<'_>) -> Vec<Vec<EdgeId>> {
             continue;
         }
         for edge_id in &hunt.graph.adjacency[state.at.0] {
+            if hunt.allowed.is_some_and(|allowed| !allowed[edge_id.0]) {
+                continue;
+            }
             if state.used.contains(edge_id) {
                 continue;
             }
@@ -771,6 +999,35 @@ mod tests {
         Access, Coord, EdgeTravel, GraphBuilder, JunctionPolicy, LineString, Provenance,
         SegmentDraft, Terrain, TrailClass, TrailStanding,
     };
+    use std::cell::{Cell, RefCell};
+
+    struct RecordingMonitor {
+        cancel_after: usize,
+        checks: Cell<usize>,
+        progress: RefCell<Vec<SearchProgress>>,
+    }
+
+    impl RecordingMonitor {
+        fn patient() -> Self {
+            Self {
+                cancel_after: usize::MAX,
+                checks: Cell::new(0),
+                progress: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl SearchMonitor for RecordingMonitor {
+        fn cancelled(&self) -> bool {
+            let checks = self.checks.get().saturating_add(1);
+            self.checks.set(checks);
+            checks >= self.cancel_after
+        }
+
+        fn report(&self, progress: SearchProgress) {
+            self.progress.borrow_mut().push(progress);
+        }
+    }
 
     fn branch(points: Vec<Coord>, name: &str) -> SegmentDraft {
         SegmentDraft {
@@ -861,6 +1118,57 @@ mod tests {
     }
 
     #[test]
+    fn restricted_scope_never_leaks_a_forbidden_edge() {
+        let origin = Coord::new(0.0, 0.0);
+        let graph = GraphBuilder::default()
+            .build(&[
+                branch(
+                    vec![origin, Coord::new(0.001, 0.0), Coord::new(0.002, 0.0)],
+                    "allowed",
+                ),
+                branch(
+                    vec![origin, Coord::new(0.0, 0.001), Coord::new(0.0, 0.002)],
+                    "forbidden",
+                ),
+            ])
+            .expect("build scoped graph");
+        let allowed = graph
+            .edges
+            .iter()
+            .map(|edge| {
+                edge.geometry
+                    .points
+                    .iter()
+                    .all(|point| point.lat.abs() < f64::EPSILON)
+            })
+            .collect::<Vec<_>>();
+        let constraints = LoopConstraints {
+            min_distance_m: 100.0,
+            max_distance_m: 1_000.0,
+            max_difficulty: f64::MAX,
+            max_repeated_edge_fraction: 1.0,
+            allowed_shapes: vec![RouteShape::OutAndBack],
+            ..LoopConstraints::default()
+        };
+        let routes = SolverKind::Auto.solve_scoped(
+            SearchParams::default(),
+            SearchScope::restricted(&graph, &allowed),
+            graph.nearest_vertex(origin).expect("origin vertex"),
+            &constraints,
+            3,
+            &(),
+        );
+
+        assert!(!routes.is_empty());
+        assert!(
+            routes
+                .iter()
+                .flat_map(|route| &route.edges)
+                .all(|edge| allowed[edge.0])
+        );
+    }
+
+    #[test]
     fn diversity_never_spends_a_slot_on_a_near_miss_while_matches_remain() {
         let origin = Coord::new(0.0, 0.0);
         let graph = GraphBuilder::default()
@@ -899,5 +1207,107 @@ mod tests {
         );
         assert_eq!(routes.len(), 3);
         assert!(routes.iter().all(|route| route.verdict.satisfied));
+    }
+
+    #[test]
+    fn monitored_search_reports_monotone_effort_and_ranking() {
+        let origin = Coord::new(0.0, 0.0);
+        let graph = GraphBuilder::default()
+            .build(&[branch(
+                vec![
+                    origin,
+                    Coord::new(0.001, 0.0),
+                    Coord::new(0.002, 0.0),
+                    Coord::new(0.003, 0.0),
+                ],
+                "monitored",
+            )])
+            .expect("build monitored graph");
+        let start = graph.nearest_vertex(origin).expect("origin vertex");
+        let constraints = LoopConstraints {
+            min_distance_m: 0.0,
+            max_distance_m: 1_000.0,
+            max_difficulty: f64::MAX,
+            max_repeated_edge_fraction: 1.0,
+            allowed_shapes: vec![RouteShape::OutAndBack],
+            ..LoopConstraints::default()
+        };
+        let monitor = RecordingMonitor::patient();
+
+        let _routes = SolverKind::Auto.solve_monitored(
+            SearchParams {
+                max_frontier: 100,
+                ..SearchParams::default()
+            },
+            &graph,
+            start,
+            &constraints,
+            3,
+            &monitor,
+        );
+
+        let progress = monitor.progress.borrow();
+        assert_eq!(
+            progress.first().map(|progress| progress.stage),
+            Some(SearchStage::Exploring)
+        );
+        assert_eq!(
+            progress.last().map(|progress| progress.stage),
+            Some(SearchStage::Ranking)
+        );
+        assert!(
+            progress
+                .windows(2)
+                .all(|pair| pair[0].explored <= pair[1].explored)
+        );
+        assert!(progress.iter().all(|progress| progress.explored <= 100));
+    }
+
+    #[test]
+    fn monitored_search_obeys_cooperative_cancellation() {
+        let origin = Coord::new(0.0, 0.0);
+        let graph = GraphBuilder::default()
+            .build(&[branch(
+                vec![
+                    origin,
+                    Coord::new(0.001, 0.0),
+                    Coord::new(0.002, 0.0),
+                    Coord::new(0.003, 0.0),
+                ],
+                "cancelled",
+            )])
+            .expect("build cancellable graph");
+        let start = graph.nearest_vertex(origin).expect("origin vertex");
+        let constraints = LoopConstraints {
+            min_distance_m: 0.0,
+            max_distance_m: 1_000.0,
+            max_difficulty: f64::MAX,
+            max_repeated_edge_fraction: 1.0,
+            allowed_shapes: vec![RouteShape::OutAndBack],
+            ..LoopConstraints::default()
+        };
+        let monitor = RecordingMonitor {
+            cancel_after: 3,
+            checks: Cell::new(0),
+            progress: RefCell::new(Vec::new()),
+        };
+
+        let routes = SolverKind::Auto.solve_monitored(
+            SearchParams::default(),
+            &graph,
+            start,
+            &constraints,
+            3,
+            &monitor,
+        );
+
+        assert!(routes.is_empty());
+        assert!(
+            monitor
+                .progress
+                .borrow()
+                .iter()
+                .all(|progress| progress.stage != SearchStage::Ranking)
+        );
     }
 }

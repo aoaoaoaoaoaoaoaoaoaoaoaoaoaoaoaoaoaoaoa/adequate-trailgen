@@ -21,14 +21,14 @@ use std::{
 use wgpu::util::DeviceExt as _;
 
 const BASE_TILE_ZOOM: u8 = 12;
-const FIRST_BAND: u8 = 9;
+const FIRST_BAND: u8 = 10;
 const LAST_BAND: u8 = 14;
 const BAND_COUNT: usize = (LAST_BAND - FIRST_BAND + 1) as usize;
 const SIMPLIFICATION_ERROR_POINTS: f64 = 0.42;
-const TUBE_ONSET_ZOOM: f32 = 9.33;
-const CORE_ONSET_ZOOM: f32 = 9.77;
-const PATTERN_ONSET_ZOOM: f32 = 10.19;
-const DISCLOSURE_SPAN_ZOOM: f32 = 0.72;
+const TUBE_ONSET_ZOOM: f32 = 10.80;
+const CORE_ONSET_ZOOM: f32 = 11.05;
+const PATTERN_ONSET_ZOOM: f32 = 11.48;
+const DISCLOSURE_SPAN_ZOOM: f32 = 0.58;
 const DETAIL_HYSTERESIS_ZOOM: f64 = 0.08;
 const DETAIL_TRANSITION: std::time::Duration = std::time::Duration::from_millis(160);
 const _: () = assert!(TUBE_ONSET_ZOOM >= FIRST_BAND as f32);
@@ -1563,6 +1563,7 @@ mod tests {
     fn disclosure_schedule_is_fixed_to_harriman_cartographic_scale() {
         const HARRIMAN_LATITUDE_DEG: f64 = 41.25;
         const HARRIMAN_FILAMENT_P95_M: f64 = 182.9;
+        const REGIONAL_FRAME_ZOOM: f32 = 11.14;
         let apparent = |meters: f64, zoom: f32| {
             let parallel = EARTH_CIRCUMFERENCE_M * HARRIMAN_LATITUDE_DEG.to_radians().cos();
             meters * 256.0 * f64::from(zoom).exp2() / parallel
@@ -1571,12 +1572,20 @@ mod tests {
         let cadence = WorldLevel::at_zoom(pattern_zoom);
         let cadence_period = 2.0 * 256.0 * pattern_zoom.exp2() / cadence.cells_per_world();
 
-        assert!((apparent(HARRIMAN_FILAMENT_P95_M, TUBE_ONSET_ZOOM) - 1.0).abs() < 0.01);
-        assert!((apparent(HARRIMAN_FILAMENT_P95_M, CORE_ONSET_ZOOM) - 1.36).abs() < 0.02);
+        assert!((2.65..=2.90).contains(&apparent(HARRIMAN_FILAMENT_P95_M, TUBE_ONSET_ZOOM)));
+        assert!((3.15..=3.45).contains(&apparent(HARRIMAN_FILAMENT_P95_M, CORE_ONSET_ZOOM)));
         assert!((8.0..=16.0).contains(&cadence_period));
-        assert!((1.0..=1.25).contains(
+        assert!((1.9..=4.50).contains(
             &(apparent(1_000.0, PATTERN_ONSET_ZOOM + DISCLOSURE_SPAN_ZOOM) / cadence_period)
         ));
+
+        let apparition = |onset: f32, zoom: f32| {
+            let phase = ((zoom - onset) / DISCLOSURE_SPAN_ZOOM).clamp(0.0, 1.0);
+            phase * phase * 2.0_f32.mul_add(-phase, 3.0)
+        };
+        assert!((0.55..=0.70).contains(&apparition(TUBE_ONSET_ZOOM, REGIONAL_FRAME_ZOOM)));
+        assert!(apparition(CORE_ONSET_ZOOM, REGIONAL_FRAME_ZOOM) < 0.10);
+        assert!(apparition(PATTERN_ONSET_ZOOM, REGIONAL_FRAME_ZOOM).abs() < f32::EPSILON);
     }
 
     #[test]
