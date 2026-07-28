@@ -96,6 +96,8 @@ struct CandidateRun {
     routes: Vec<Route>,
     designs: Vec<Option<Trail>>,
     profiles: Vec<Option<ElevationProfile>>,
+    previews: Vec<gallery::CandidatePreview>,
+    overlay: map::RouteOverlay,
 }
 
 struct TrailEditor {
@@ -991,6 +993,10 @@ impl TrailApp {
         }
         if let Some((sort, rect)) = sort {
             self.sort = sort;
+            if let Some(run) = &mut self.candidates {
+                let order = gallery::order_candidates(&run.routes, sort);
+                run.overlay = map::RouteOverlay::candidates(&self.graph, &run.routes, &order);
+            }
             self.water.select(rect);
         }
         if let Some(rect) = clear {
@@ -1204,8 +1210,8 @@ impl TrailApp {
                             .is_some_and(|focus| *focus == Focus::Candidate { slot });
                         let response = gallery::candidate_tile(
                             ui,
-                            &self.graph,
                             &run.routes[slot],
+                            &run.previews[slot],
                             ordinal,
                             active,
                         );
@@ -1391,7 +1397,7 @@ impl TrailApp {
         annotations
     }
 
-    fn paint_trails(&self, painter: &egui::Painter, rect: egui::Rect) {
+    fn paint_trails(&mut self, painter: &egui::Painter, rect: egui::Rect) {
         if let Some(realization) = self
             .editor
             .as_ref()
@@ -1436,20 +1442,9 @@ impl TrailApp {
                 }
             }
             None if self.gallery == GalleryDeck::Results => {
-                if let Some(run) = &self.candidates {
-                    for (ordinal, slot) in gallery::order_candidates(&run.routes, self.sort)
-                        .into_iter()
-                        .enumerate()
-                    {
-                        map::paint_route(
-                            painter,
-                            &self.graph,
-                            &run.routes[slot],
-                            self.viewport,
-                            rect,
-                            map::candidate_color(ordinal, false),
-                        );
-                    }
+                if let Some(run) = &mut self.candidates {
+                    run.overlay
+                        .paint(painter, map::MapFramePlan::forge(self.viewport, rect));
                 }
             }
             None => {
@@ -1921,10 +1916,18 @@ impl TrailApp {
                         .iter()
                         .map(|route| ElevationProfile::forge(&self.graph, route))
                         .collect();
+                    let previews = routes
+                        .iter()
+                        .map(|route| gallery::CandidatePreview::forge(&self.graph, route))
+                        .collect();
+                    let order = gallery::order_candidates(&routes, self.sort);
+                    let overlay = map::RouteOverlay::candidates(&self.graph, &routes, &order);
                     self.candidates = Some(CandidateRun {
                         routes,
                         designs,
                         profiles,
+                        previews,
+                        overlay,
                     });
                     self.status = if count == 0 {
                         format!("No trails matched in {}.", duration(elapsed))

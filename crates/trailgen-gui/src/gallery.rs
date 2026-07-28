@@ -1,4 +1,5 @@
 use crate::{
+    cadence,
     library::SavedTrail,
     map::{
         candidate_color, frailest_standing, paint_trail_tube_at, trail_mark, trail_standing_badge,
@@ -6,13 +7,16 @@ use crate::{
     },
 };
 use dwemer_poolrooms::chrome;
-use egui::{Color32, Rect, Response, Sense, Stroke, Ui, pos2, vec2};
+use egui::{Color32, Pos2, Rect, Response, Sense, Stroke, Ui, pos2, vec2};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use trailgen_core::{LineString, Route, TrailGraph, TrailStanding};
 
 pub const TILE_SIZE: egui::Vec2 = egui::Vec2::new(224.0, 146.0);
 const PLATE_PAD: f32 = 4.0;
 const TILE_RADIUS: u8 = 2;
+const MINIATURE_SIZE: egui::Vec2 = egui::Vec2::new(192.0, 72.0);
+const MINIATURE_ERROR_POINTS: f32 = 0.24;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -68,50 +72,204 @@ pub fn order_saved(trails: &[&SavedTrail], sort: TrailSort) -> Vec<usize> {
 
 pub fn candidate_tile(
     ui: &mut Ui,
-    graph: &TrailGraph,
     route: &Route,
+    preview: &CandidatePreview,
     ordinal: usize,
     active: bool,
 ) -> Response {
-    let geometry = route.geometry(graph);
     tile_shell(
         ui,
         route.name.as_str(),
         &route.metrics,
-        frailest_standing(
-            route
-                .edges
-                .iter()
-                .map(|edge| graph.edges[edge.0].attr.standing),
-        ),
+        preview.standing,
         active,
         |ui, rect| {
             let color = candidate_color(ordinal, active);
-            let mut at = route.start;
-            let mut datum = 0.0;
-            for edge_id in &route.edges {
-                let edge = &graph.edges[edge_id.0];
-                datum += paint_miniature_leg(
-                    ui,
-                    rect,
-                    &geometry,
-                    &edge.oriented_geometry(at),
-                    color,
-                    trail_mark(
-                        edge.attr.trail_class,
-                        edge.attr.standing,
-                        edge.attr.marking,
-                        edge.attr.terrain,
-                        edge.attr.surface.as_deref(),
-                    ),
-                    datum,
-                );
-                at = edge
-                    .traverse(at)
-                    .expect("candidate edge must remain traversable");
-            }
+            preview.paint(ui, rect, color);
         },
     )
+}
+
+pub struct CandidatePreview {
+    runs: Vec<PreviewRun>,
+    standing: Option<TrailStanding>,
+}
+
+struct PreviewRun {
+    points: Arc<[Pos2]>,
+    mark: crate::map::TrailMark,
+    datum: f32,
+}
+
+impl CandidatePreview {
+    pub fn forge(graph: &TrailGraph, route: &Route) -> Self {
+        let geometry = route.geometry(graph);
+        let projection = MiniatureProjection::fit(&geometry);
+        let mut drafts = Vec::<PreviewDraft>::new();
+        let mut at = route.start;
+        let mut datum = 0.0;
+        for edge_id in &route.edges {
+            let edge = &graph.edges[edge_id.0];
+            let points = projection.project(&edge.oriented_geometry(at));
+            let advance = cadence::polyline_length(&points);
+            let mark = trail_mark(
+                edge.attr.trail_class,
+                edge.attr.standing,
+                edge.attr.marking,
+                edge.attr.terrain,
+                edge.attr.surface.as_deref(),
+            );
+            if let Some(run) = drafts.last_mut()
+                && run.mark == mark
+                && run
+                    .points
+                    .last()
+                    .zip(points.first())
+                    .is_some_and(|(left, right)| left.distance(*right) <= f32::EPSILON)
+            {
+                run.points.extend(points.iter().skip(1).copied());
+            } else {
+                drafts.push(PreviewDraft {
+                    points,
+                    mark,
+                    datum,
+                });
+            }
+            datum += advance;
+            at = edge
+                .traverse(at)
+                .expect("candidate edge must remain traversable");
+        }
+        let runs = drafts
+            .into_iter()
+            .map(|run| PreviewRun {
+                points: simplify_miniature(&run.points).into(),
+                mark: run.mark,
+                datum: run.datum,
+            })
+            .collect();
+        Self {
+            runs,
+            standing: frailest_standing(
+                route
+                    .edges
+                    .iter()
+                    .map(|edge| graph.edges[edge.0].attr.standing),
+            ),
+        }
+    }
+
+    fn paint(&self, ui: &Ui, rect: Rect, color: Color32) {
+        for run in &self.runs {
+            let points = run
+                .points
+                .iter()
+                .map(|point| rect.min + point.to_vec2())
+                .collect::<Vec<_>>();
+            let _advance =
+                paint_trail_tube_at(ui.painter(), &points, 5.4, color, run.mark, run.datum);
+        }
+    }
+}
+
+struct PreviewDraft {
+    points: Vec<Pos2>,
+    mark: crate::map::TrailMark,
+    datum: f32,
+}
+
+struct MiniatureProjection {
+    cos_lat: f64,
+    center: [f64; 2],
+    scale: f64,
+}
+
+impl MiniatureProjection {
+    fn fit(route: &LineString) -> Self {
+        let mean_lat = route.points.iter().map(|point| point.lat).sum::<f64>()
+            / route.points.len().max(1) as f64;
+        let cos_lat = mean_lat.to_radians().cos();
+        let bounds = route.points.iter().fold(
+            [
+                f64::INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+            ],
+            |mut bounds, point| {
+                let x = point.lon * cos_lat;
+                bounds[0] = bounds[0].min(x);
+                bounds[1] = bounds[1].min(point.lat);
+                bounds[2] = bounds[2].max(x);
+                bounds[3] = bounds[3].max(point.lat);
+                bounds
+            },
+        );
+        let width = (bounds[2] - bounds[0]).max(1.0e-12);
+        let height = (bounds[3] - bounds[1]).max(1.0e-12);
+        Self {
+            cos_lat,
+            center: [(bounds[0] + bounds[2]) * 0.5, (bounds[1] + bounds[3]) * 0.5],
+            scale: (f64::from(MINIATURE_SIZE.x) / width).min(f64::from(MINIATURE_SIZE.y) / height),
+        }
+    }
+
+    fn project(&self, line: &LineString) -> Vec<Pos2> {
+        line.points
+            .iter()
+            .map(|point| {
+                MINIATURE_SIZE.to_pos2() * 0.5
+                    + vec2(
+                        (point.lon.mul_add(self.cos_lat, -self.center[0]) * self.scale) as f32,
+                        (-(point.lat - self.center[1]) * self.scale) as f32,
+                    )
+            })
+            .collect()
+    }
+}
+
+fn simplify_miniature(points: &[Pos2]) -> Vec<Pos2> {
+    if points.len() <= 2 {
+        return points.to_vec();
+    }
+    let mut keep = vec![false; points.len()];
+    keep[0] = true;
+    keep[points.len() - 1] = true;
+    let mut frontier = vec![(0, points.len() - 1)];
+    while let Some((start, end)) = frontier.pop() {
+        if end <= start + 1 {
+            continue;
+        }
+        let (slot, error) = (start + 1..end)
+            .map(|slot| {
+                (
+                    slot,
+                    point_segment_distance(points[slot], points[start], points[end]),
+                )
+            })
+            .max_by(|left, right| left.1.total_cmp(&right.1))
+            .expect("a nontrivial interval has an interior point");
+        if error > MINIATURE_ERROR_POINTS {
+            keep[slot] = true;
+            frontier.extend([(start, slot), (slot, end)]);
+        }
+    }
+    points
+        .iter()
+        .copied()
+        .zip(keep)
+        .filter_map(|(point, keep)| keep.then_some(point))
+        .collect()
+}
+
+fn point_segment_distance(point: Pos2, start: Pos2, end: Pos2) -> f32 {
+    let edge = end - start;
+    let length_squared = edge.length_sq();
+    if length_squared <= f32::EPSILON {
+        return point.distance(start);
+    }
+    let progress = ((point - start).dot(edge) / length_squared).clamp(0.0, 1.0);
+    point.distance(start + edge * progress)
 }
 
 pub fn saved_tile(ui: &mut Ui, trail: &SavedTrail, active: bool) -> Response {
@@ -154,6 +312,9 @@ fn tile_shell(
     paint: impl FnOnce(&Ui, Rect),
 ) -> Response {
     let (rect, response) = ui.allocate_exact_size(TILE_SIZE, Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
     let plate = Plate::flat(rect);
     plate.paint(ui, response.hovered(), active);
     let well = plate.well;
@@ -349,5 +510,27 @@ mod tests {
             order_candidates(&routes, TrailSort::Distance),
             vec![2, 1, 0]
         );
+    }
+
+    #[test]
+    fn miniature_simplification_is_subpixel_bounded_and_endpoint_exact() {
+        let points = (0..200)
+            .map(|slot| {
+                let x = slot as f32;
+                pos2(x, (x * 0.11).sin() * 3.0)
+            })
+            .collect::<Vec<_>>();
+        let simplified = simplify_miniature(&points);
+
+        assert_eq!(simplified.first(), points.first());
+        assert_eq!(simplified.last(), points.last());
+        assert!(simplified.len() < points.len());
+        for point in points {
+            let error = simplified
+                .windows(2)
+                .map(|segment| point_segment_distance(point, segment[0], segment[1]))
+                .fold(f32::INFINITY, f32::min);
+            assert!(error <= MINIATURE_ERROR_POINTS + 1.0e-4);
+        }
     }
 }

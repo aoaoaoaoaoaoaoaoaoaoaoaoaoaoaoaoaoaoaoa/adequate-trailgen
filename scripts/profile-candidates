@@ -1,0 +1,98 @@
+#!/bin/sh
+set -eu
+
+out=${1:?usage: scripts/profile-candidates OUTPUT_DIR PROJECT}
+project=${2:?usage: scripts/profile-candidates OUTPUT_DIR PROJECT}
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+
+if [ "${TRAILGEN_PROFILE_INSIDE:-0}" != 1 ]; then
+    skill=$(readlink -f "${CODEX_HOME:-$HOME/.codex}/skills/x11-gui-testing")
+    export TRAILGEN_PROFILE_INSIDE=1
+    exec "$skill/scripts/isolated-x11" --wgpu --screen 1440x920x24 \
+        -- "$0" "$out" "$project"
+fi
+
+mkdir -p "$out"
+target=$(cargo metadata --format-version 1 --no-deps --manifest-path "$root/Cargo.toml" \
+    | jq -r .target_directory)
+app=${TRAILGEN_GUI_BIN:-$target/release/trailgen}
+if [ ! -x "$app" ]; then
+    printf 'release binary is absent; run cargo build --release -p trailgen --all-features\n' >&2
+    exit 2
+fi
+
+export TRAILGEN_PROFILE_FRAMES="$out/frames.csv"
+export TRAILGEN_PROFILE_TRAILS=1
+setsid "$app" gui "$project" --offline >"$out/app.log" 2>&1 &
+leader=$!
+cleanup() {
+    kill -- "-$leader" 2>/dev/null || true
+}
+trap cleanup EXIT HUP INT TERM
+
+window=$(timeout 30 xdotool search --sync --class '^trailgen$')
+xdotool windowmap --sync "$window"
+xdotool windowfocus --sync "$window"
+xwininfo -id "$window" >"$out/window.txt"
+
+sleep 4
+import -window "$window" "$out/ready.png"
+xdotool key --window "$window" ctrl+Return
+sleep "${TRAILGEN_PROFILE_SEARCH_WAIT_S:-20}"
+import -window "$window" "$out/results.png"
+
+start_ns=$(date +%s%N)
+printf '%s\n' "$((start_ns / 1000))" >"$out/trace-start-unix-us.txt"
+xdotool mousemove --sync --window "$window" 850 390
+xdotool mousedown 1
+i=0
+while [ "$i" -lt 40 ]; do
+    xdotool mousemove --sync --window "$window" 950 390
+    sleep 0.02
+    xdotool mousemove --sync --window "$window" 950 490
+    sleep 0.02
+    xdotool mousemove --sync --window "$window" 850 490
+    sleep 0.02
+    xdotool mousemove --sync --window "$window" 850 390
+    sleep 0.02
+    i=$((i + 1))
+done
+xdotool mouseup 1
+xdotool mousemove --sync --window "$window" 850 390
+xdotool click --repeat 8 --delay 50 4
+xdotool click --repeat 8 --delay 50 5
+end_ns=$(date +%s%N)
+printf '%s\n' "$((end_ns / 1000))" >"$out/trace-end-unix-us.txt"
+printf '%s\n' "$((end_ns - start_ns))" >"$out/trace-wall-ns.txt"
+sleep 1
+import -window "$window" "$out/after-trace.png"
+xdotool mousemove --sync --window "$window" 850 390
+xdotool click --repeat 8 --delay 50 4
+sleep 1
+import -window "$window" "$out/detail.png"
+xdotool click --repeat 8 --delay 50 5
+
+kill -- "-$leader" 2>/dev/null || true
+wait "$leader" 2>/dev/null || true
+
+start_us=$(cat "$out/trace-start-unix-us.txt")
+end_us=$(cat "$out/trace-end-unix-us.txt")
+awk -F, -v start="$start_us" -v end="$end_us" \
+    'NR > 1 && $1 >= start && $1 <= end { print $3 }' "$out/frames.csv" \
+    | sort -n >"$out/trace-paint-us.txt"
+samples=$(wc -l <"$out/trace-paint-us.txt")
+if [ "$samples" -eq 0 ]; then
+    printf 'interaction trace produced no frames\n' >&2
+    exit 3
+fi
+p50_rank=$(( (samples + 1) / 2 ))
+p95_rank=$(( (95 * samples + 99) / 100 ))
+p50=$(sed -n "${p50_rank}p" "$out/trace-paint-us.txt")
+p95=$(sed -n "${p95_rank}p" "$out/trace-paint-us.txt")
+worst=$(tail -n 1 "$out/trace-paint-us.txt")
+shapes=$(awk -F, -v start="$start_us" -v end="$end_us" \
+    'NR > 1 && $1 >= start && $1 <= end { sum += $4; n++ }
+     END { printf "%.0f", sum / n }' "$out/frames.csv")
+wall_ms=$(( $(cat "$out/trace-wall-ns.txt") / 1000000 ))
+summary="frames=$samples wall_ms=$wall_ms paint_p50_us=$p50 paint_p95_us=$p95 paint_worst_us=$worst mean_shapes=$shapes"
+printf '%s\n' "$summary" | tee "$out/summary.txt"

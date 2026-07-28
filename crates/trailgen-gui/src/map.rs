@@ -3,12 +3,12 @@ use dwemer_poolrooms::chrome;
 use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, Vec2, pos2, vec2};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     f64::consts::PI,
     time::{Duration, Instant},
 };
 use trailgen_core::{
-    Access, Coord, Route, Terrain, TrailClass, TrailGraph, TrailMarking, TrailStanding,
+    Access, Coord, EdgeId, Route, Terrain, TrailClass, TrailGraph, TrailMarking, TrailStanding,
 };
 
 const TILE_EDGE: f64 = 256.0;
@@ -348,11 +348,16 @@ pub struct Atlas {
     field: TrailField,
 }
 
+pub struct RouteOverlay {
+    field: TrailField,
+}
+
 pub struct WorldEdge {
     pub endpoints: [usize; 2],
     pub points: Vec<[f64; 2]>,
     pub length_world: f64,
     pub lineage: Option<CadenceLineage>,
+    pub color: Color32,
     pub trail_class: TrailClass,
     pub mark: TrailMark,
     pub access: Access,
@@ -409,6 +414,7 @@ impl Atlas {
                     length_world: world_polyline_length(&points),
                     points,
                     lineage: None,
+                    color: trail_class_color(edge.attr.trail_class),
                     trail_class: edge.attr.trail_class,
                     mark: trail_mark(
                         edge.attr.trail_class,
@@ -501,6 +507,69 @@ impl Atlas {
     pub fn paint_network(&mut self, painter: &Painter, frame: MapFramePlan) {
         self.field.paint(painter, frame);
     }
+}
+
+impl RouteOverlay {
+    pub fn candidates(graph: &TrailGraph, routes: &[Route], order: &[usize]) -> Self {
+        let mut edges = candidate_crown(routes, order)
+            .into_iter()
+            .map(|(edge_id, color)| {
+                let edge = &graph.edges[edge_id.0];
+                let points = edge
+                    .geometry
+                    .points
+                    .iter()
+                    .copied()
+                    .map(world_from_coord)
+                    .collect::<Vec<_>>();
+                WorldEdge {
+                    endpoints: [edge.a.0, edge.b.0],
+                    length_world: world_polyline_length(&points),
+                    points,
+                    lineage: None,
+                    color,
+                    trail_class: edge.attr.trail_class,
+                    mark: trail_mark(
+                        edge.attr.trail_class,
+                        edge.attr.standing,
+                        edge.attr.marking,
+                        edge.attr.terrain,
+                        edge.attr.surface.as_deref(),
+                    ),
+                    access: edge.attr.access,
+                }
+            })
+            .collect::<Vec<_>>();
+        weave_cadence(graph.vertices.len(), &mut edges);
+        Self {
+            field: TrailField::overlay(&edges),
+        }
+    }
+
+    pub fn paint(&mut self, painter: &Painter, frame: MapFramePlan) {
+        self.field.paint(painter, frame);
+    }
+}
+
+fn candidate_crown(routes: &[Route], order: &[usize]) -> Vec<(EdgeId, Color32)> {
+    let mut crown = BTreeMap::new();
+    let mut z = 0;
+    for (ordinal, slot) in order.iter().copied().enumerate() {
+        let color = candidate_color(ordinal, false);
+        for edge in &routes[slot].edges {
+            crown.insert(*edge, (z, color));
+            z += 1;
+        }
+    }
+    let mut crown = crown
+        .into_iter()
+        .map(|(edge, (z, color))| (z, edge, color))
+        .collect::<Vec<_>>();
+    crown.sort_unstable_by_key(|(z, _, _)| *z);
+    crown
+        .into_iter()
+        .map(|(_, edge, color)| (edge, color))
+        .collect()
 }
 
 fn weave_cadence(vertex_count: usize, edges: &mut [WorldEdge]) {
@@ -1061,6 +1130,24 @@ fn pleasant_length(target: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use trailgen_core::{ConstraintVerdict, RouteMetrics, VertexId};
+
+    fn route(edges: impl IntoIterator<Item = usize>) -> Route {
+        Route {
+            name: String::new(),
+            start: VertexId(0),
+            edges: edges.into_iter().map(EdgeId).collect(),
+            pareto_rank: 0,
+            metrics: RouteMetrics::default(),
+            verdict: ConstraintVerdict {
+                satisfied: true,
+                violations: Vec::new(),
+                audit: Vec::new(),
+                penalty: 0.0,
+            },
+            score: 0.0,
+        }
+    }
 
     #[test]
     fn cartographic_epoch_ignores_every_intermediate_camera_sample() {
@@ -1120,6 +1207,21 @@ mod tests {
             assert!([1.0, 2.0, 5.0].contains(&(length / decade)));
             assert!(length <= target);
         }
+    }
+
+    #[test]
+    fn candidate_crown_keeps_only_the_topmost_copy_of_shared_support() {
+        let routes = [route([0, 1]), route([1, 2])];
+        let crown = candidate_crown(&routes, &[0, 1]);
+
+        assert_eq!(
+            crown,
+            vec![
+                (EdgeId(0), candidate_color(0, false)),
+                (EdgeId(1), candidate_color(1, false)),
+                (EdgeId(2), candidate_color(1, false)),
+            ]
+        );
     }
 
     #[test]
@@ -1272,6 +1374,7 @@ mod tests {
             points: vec![[0.0, 0.0], [length_world, 0.0]],
             length_world,
             lineage: None,
+            color: trail_class_color(TrailClass::Path),
             trail_class: TrailClass::Path,
             mark: TrailMark::Dashed,
             access: Access::Open,

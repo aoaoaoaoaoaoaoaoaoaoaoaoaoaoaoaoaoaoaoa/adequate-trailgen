@@ -1,10 +1,7 @@
 use crate::{
     basemap::{self, TileKey},
     cadence::WorldLevel,
-    map::{
-        CadenceLineage, MapFramePlan, TrailMark, TrailSalience, WorldEdge, trail_class_color,
-        trail_core,
-    },
+    map::{CadenceLineage, MapFramePlan, TrailMark, TrailSalience, WorldEdge, trail_core},
 };
 use bytemuck::{Pod, Zeroable};
 use egui::Painter;
@@ -29,6 +26,7 @@ const TUBE_ONSET_ZOOM: f32 = 10.80;
 const CORE_ONSET_ZOOM: f32 = 11.05;
 const PATTERN_ONSET_ZOOM: f32 = 11.48;
 const DISCLOSURE_SPAN_ZOOM: f32 = 0.58;
+const OVERLAY_ONSET_ZOOM: f32 = -100.0;
 const DETAIL_HYSTERESIS_ZOOM: f64 = 0.08;
 const DETAIL_TRANSITION: std::time::Duration = std::time::Duration::from_millis(160);
 const _: () = assert!(TUBE_ONSET_ZOOM >= FIRST_BAND as f32);
@@ -45,6 +43,8 @@ pub struct TrailField {
     corpus: TrailCorpus,
     laws: Arc<[CadenceDatum]>,
     tiles: HashMap<TileKey, Arc<TrailTile>>,
+    salience: TrailSalience,
+    disclosure: [f32; 4],
     visibility: Option<Visibility>,
     transition: Option<DetailTransition>,
     cadence: Option<WorldLevel>,
@@ -64,6 +64,32 @@ struct DetailTransition {
 
 impl TrailField {
     pub fn forge(edges: &[WorldEdge]) -> Self {
+        Self::forge_as(
+            edges,
+            TrailSalience::Context,
+            [
+                TUBE_ONSET_ZOOM,
+                CORE_ONSET_ZOOM,
+                PATTERN_ONSET_ZOOM,
+                DISCLOSURE_SPAN_ZOOM,
+            ],
+        )
+    }
+
+    pub fn overlay(edges: &[WorldEdge]) -> Self {
+        Self::forge_as(
+            edges,
+            TrailSalience::Selected,
+            [
+                OVERLAY_ONSET_ZOOM,
+                CORE_ONSET_ZOOM,
+                PATTERN_ONSET_ZOOM,
+                DISCLOSURE_SPAN_ZOOM,
+            ],
+        )
+    }
+
+    fn forge_as(edges: &[WorldEdge], salience: TrailSalience, disclosure: [f32; 4]) -> Self {
         let begun = Instant::now();
         let (law_ids, laws) = cadence_laws(edges);
         let mut tiles = HashMap::<TileKey, Vec<TrailMeshBuilder>>::new();
@@ -78,7 +104,13 @@ impl TrailField {
                             .map(|_| TrailMeshBuilder::default())
                             .collect()
                     })[band.index()]
-                    .push(&fragment.points, fragment.key, edge, law_ids[edge_id]);
+                    .push(
+                        &fragment.points,
+                        fragment.key,
+                        edge,
+                        law_ids[edge_id],
+                        salience,
+                    );
                 }
             }
         }
@@ -110,6 +142,8 @@ impl TrailField {
             corpus: TrailCorpus::mint(),
             laws: laws.into(),
             tiles,
+            salience,
+            disclosure,
             visibility: None,
             transition: None,
             cadence: None,
@@ -120,6 +154,7 @@ impl TrailField {
         let Some(band) = DetailBand::resolve(
             self.visibility.as_ref().map(|visibility| visibility.band),
             frame.zoom.get(),
+            self.disclosure[0],
         ) else {
             return;
         };
@@ -198,6 +233,8 @@ impl TrailField {
                 viewport_points: [frame.rect.width(), frame.rect.height()],
                 view_zoom: frame.zoom.get() as f32,
                 cadence_cells_per_world: cadence.cells_per_world() as f32,
+                salience: self.salience,
+                disclosure: self.disclosure,
             },
         ));
     }
@@ -212,8 +249,8 @@ fn smooth_transition(phase: f32) -> f32 {
 struct DetailBand(u8);
 
 impl DetailBand {
-    fn resolve(prior: Option<Self>, zoom: f64) -> Option<Self> {
-        let target = Self::for_zoom(zoom)?;
+    fn resolve(prior: Option<Self>, zoom: f64, onset_zoom: f32) -> Option<Self> {
+        let target = Self::for_zoom(zoom, onset_zoom)?;
         let Some(prior) = prior else {
             return Some(target);
         };
@@ -224,8 +261,8 @@ impl DetailBand {
         if retain { Some(prior) } else { Some(target) }
     }
 
-    fn for_zoom(zoom: f64) -> Option<Self> {
-        (zoom > f64::from(TUBE_ONSET_ZOOM)).then(|| {
+    fn for_zoom(zoom: f64, onset_zoom: f32) -> Option<Self> {
+        (zoom > f64::from(onset_zoom)).then(|| {
             Self(
                 (zoom.floor() as u8)
                     .clamp(FIRST_BAND, LAST_BAND)
@@ -420,7 +457,14 @@ struct TrailMeshBuilder {
 }
 
 impl TrailMeshBuilder {
-    fn push(&mut self, samples: &[Sample], key: TileKey, edge: &WorldEdge, law_id: u32) {
+    fn push(
+        &mut self,
+        samples: &[Sample],
+        key: TileKey,
+        edge: &WorldEdge,
+        law_id: u32,
+        salience: TrailSalience,
+    ) {
         if samples.len() < 2 {
             return;
         }
@@ -434,9 +478,7 @@ impl TrailMeshBuilder {
                 ]
             })
             .collect::<Vec<_>>();
-        let color = TrailSalience::Context
-            .access_color(trail_class_color(edge.trail_class), edge.access)
-            .to_array();
+        let color = salience.access_color(edge.color, edge.access).to_array();
         let pattern = pattern_code(edge.mark);
         let base = u32::try_from(self.vertices.len()).expect("trail tile vertex count fits u32");
         for (slot, point) in local.iter().copied().enumerate() {
@@ -690,6 +732,8 @@ struct TrailPaint {
     viewport_points: [f32; 2],
     view_zoom: f32,
     cadence_cells_per_world: f32,
+    salience: TrailSalience,
+    disclosure: [f32; 4],
 }
 
 #[derive(Clone)]
@@ -714,6 +758,19 @@ impl CallbackTrait for TrailPaint {
         Vec::new()
     }
 
+    fn finish_prepare(
+        &self,
+        _device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        _encoder: &mut wgpu::CommandEncoder,
+        resources: &mut CallbackResources,
+    ) -> Vec<wgpu::CommandBuffer> {
+        if let Some(gpu) = resources.get_mut::<TrailMapGpu>() {
+            gpu.finish_prepare();
+        }
+        Vec::new()
+    }
+
     fn paint(
         &self,
         _info: egui::PaintCallbackInfo,
@@ -723,8 +780,11 @@ impl CallbackTrait for TrailPaint {
         let Some(gpu) = resources.get::<TrailMapGpu>() else {
             return;
         };
+        let Some(view) = gpu.views.get(&self.corpus) else {
+            return;
+        };
         pass.set_pipeline(&gpu.pipeline);
-        pass.set_bind_group(0, &gpu.camera_bind, &[]);
+        pass.set_bind_group(0, &view.bind, &[]);
         for layer in self.layers.iter() {
             for tile in layer.tiles.iter() {
                 let key = GpuKey {
@@ -927,11 +987,13 @@ fn append<T: Pod>(blade: &mut Vec<u8>, values: &[T]) -> Range<u64> {
 
 pub struct TrailMapGpu {
     pipeline: wgpu::RenderPipeline,
+    camera_layout: wgpu::BindGroupLayout,
     law_layout: wgpu::BindGroupLayout,
-    uniform: wgpu::Buffer,
-    camera_bind: wgpu::BindGroup,
+    views: HashMap<TrailCorpus, GpuView>,
     tiles: HashMap<GpuKey, GpuTrailTile>,
-    active: HashSet<GpuKey>,
+    visible: HashMap<TrailCorpus, HashSet<GpuKey>>,
+    prepared: HashSet<GpuKey>,
+    finish_pending: bool,
     order: VecDeque<(GpuKey, u64)>,
     epoch: u64,
     bytes: usize,
@@ -940,14 +1002,26 @@ pub struct TrailMapGpu {
     profile: bool,
 }
 
-impl TrailMapGpu {
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+struct GpuView {
+    uniform: wgpu::Buffer,
+    bind: wgpu::BindGroup,
+}
+
+impl GpuView {
+    fn raise(device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> Self {
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("trail-map-uniform"),
             size: size_of::<Uniform>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let bind = camera_bind(device, layout, &uniform);
+        Self { uniform, bind }
+    }
+}
+
+impl TrailMapGpu {
+    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let camera_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("trail-map-camera"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -974,7 +1048,6 @@ impl TrailMapGpu {
                 count: None,
             }],
         });
-        let camera_bind = camera_bind(device, &camera_layout, &uniform);
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("trail-map"),
             bind_group_layouts: &[Some(&camera_layout), Some(&law_layout)],
@@ -1016,11 +1089,13 @@ impl TrailMapGpu {
         });
         Self {
             pipeline,
+            camera_layout,
             law_layout,
-            uniform,
-            camera_bind,
+            views: HashMap::new(),
             tiles: HashMap::new(),
-            active: HashSet::new(),
+            visible: HashMap::new(),
+            prepared: HashSet::new(),
+            finish_pending: false,
             order: VecDeque::new(),
             epoch: 0,
             bytes: 0,
@@ -1032,7 +1107,7 @@ impl TrailMapGpu {
 
     fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, paint: &TrailPaint) {
         let begun = Instant::now();
-        let active = paint
+        let visible = paint
             .layers
             .iter()
             .flat_map(|layer| {
@@ -1043,11 +1118,13 @@ impl TrailMapGpu {
                 })
             })
             .collect::<HashSet<_>>();
-        let active_changed = self.active != active;
-        if active_changed {
+        let visible_changed = self.visible.get(&paint.corpus) != Some(&visible);
+        if visible_changed {
             self.epoch = self.epoch.saturating_add(1);
         }
-        self.active = active;
+        self.prepared.extend(visible.iter().copied());
+        self.finish_pending = true;
+        self.visible.insert(paint.corpus, visible);
         let mut uploaded = 0;
         let mut cadence_uploaded = 0;
         let mut instance_uploaded = 0;
@@ -1065,7 +1142,7 @@ impl TrailMapGpu {
                         &mut self.law_scratch,
                     );
                     instance_uploaded += resident.refresh_opacity(queue, layer.opacity);
-                    if active_changed {
+                    if visible_changed {
                         resident.touched = self.epoch;
                         self.order.push_back((key, self.epoch));
                     }
@@ -1089,14 +1166,17 @@ impl TrailMapGpu {
             }
         }
         let uniform = Uniform::forge(paint);
-        queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniform));
+        let view = self
+            .views
+            .entry(paint.corpus)
+            .or_insert_with(|| GpuView::raise(device, &self.camera_layout));
+        queue.write_buffer(&view.uniform, 0, bytemuck::bytes_of(&uniform));
         self.instances = uniform.wrap_radius.saturating_mul(2).saturating_add(1);
-        self.reap();
         if self.profile {
             eprintln!(
                 "trail-gpu prepare_us={} upload_bytes={uploaded} active_tiles={} layers={}",
                 begun.elapsed().as_micros(),
-                self.active.len(),
+                self.visible[&paint.corpus].len(),
                 paint.layers.len(),
             );
             if cadence_uploaded != 0 {
@@ -1108,6 +1188,14 @@ impl TrailMapGpu {
         }
     }
 
+    fn finish_prepare(&mut self) {
+        if !std::mem::take(&mut self.finish_pending) {
+            return;
+        }
+        self.reap();
+        self.prepared.clear();
+    }
+
     fn reap(&mut self) {
         while self.bytes > GPU_CEILING {
             let Some((key, epoch)) = self.order.pop_front() else {
@@ -1116,7 +1204,7 @@ impl TrailMapGpu {
             let Some(resident) = self.tiles.get(&key) else {
                 continue;
             };
-            if resident.touched != epoch || self.active.contains(&key) {
+            if resident.touched != epoch || self.prepared.contains(&key) {
                 continue;
             }
             let resident = self
@@ -1125,6 +1213,12 @@ impl TrailMapGpu {
                 .expect("resident trail tile survived candidate inspection");
             self.bytes = self.bytes.saturating_sub(resident.bytes);
         }
+        self.views.retain(|corpus, _| {
+            self.prepared.iter().any(|key| key.corpus == *corpus)
+                || self.tiles.keys().any(|key| key.corpus == *corpus)
+        });
+        self.visible
+            .retain(|corpus, _| self.views.contains_key(corpus));
     }
 }
 
@@ -1238,15 +1332,10 @@ impl Uniform {
             view_zoom: paint.view_zoom,
             cadence_cells_per_world: paint.cadence_cells_per_world,
             radii: [
-                TrailSalience::Context.width() * 0.5,
-                trail_core(TrailSalience::Context.width()).width * 0.5,
+                paint.salience.width() * 0.5,
+                trail_core(paint.salience.width()).width * 0.5,
             ],
-            disclosure: [
-                TUBE_ONSET_ZOOM,
-                CORE_ONSET_ZOOM,
-                PATTERN_ONSET_ZOOM,
-                DISCLOSURE_SPAN_ZOOM,
-            ],
+            disclosure: paint.disclosure,
         }
     }
 }
@@ -1516,7 +1605,7 @@ fn fragment_linear(in: VertexOut) -> @location(0) vec4f {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::EARTH_CIRCUMFERENCE_M;
+    use crate::map::{EARTH_CIRCUMFERENCE_M, trail_class_color};
     use trailgen_core::TrailClass;
 
     #[test]
@@ -1524,9 +1613,9 @@ mod tests {
         let onset = f64::from(TUBE_ONSET_ZOOM);
         let bands = [onset + 0.01, 9.9, 10.0, 11.0, 12.0, 13.0, 14.0, 23.0]
             .into_iter()
-            .filter_map(DetailBand::for_zoom)
+            .filter_map(|zoom| DetailBand::for_zoom(zoom, TUBE_ONSET_ZOOM))
             .collect::<Vec<_>>();
-        assert!(DetailBand::for_zoom(onset).is_none());
+        assert!(DetailBand::for_zoom(onset, TUBE_ONSET_ZOOM).is_none());
         assert_eq!(bands.first().copied(), Some(DetailBand(0)));
         assert!(bands.windows(2).all(|pair| pair[0].0 <= pair[1].0));
         assert_eq!(
@@ -1538,13 +1627,25 @@ mod tests {
 
     #[test]
     fn detail_band_resists_boundary_chatter_in_both_directions() {
-        let twelve = DetailBand::for_zoom(12.5).expect("z12 owns trail detail");
-        let thirteen = DetailBand::for_zoom(13.5).expect("z13 owns trail detail");
+        let twelve = DetailBand::for_zoom(12.5, TUBE_ONSET_ZOOM).expect("z12 owns trail detail");
+        let thirteen = DetailBand::for_zoom(13.5, TUBE_ONSET_ZOOM).expect("z13 owns trail detail");
 
-        assert_eq!(DetailBand::resolve(Some(twelve), 13.05), Some(twelve));
-        assert_eq!(DetailBand::resolve(Some(twelve), 13.10), Some(thirteen));
-        assert_eq!(DetailBand::resolve(Some(thirteen), 12.95), Some(thirteen));
-        assert_eq!(DetailBand::resolve(Some(thirteen), 12.90), Some(twelve));
+        assert_eq!(
+            DetailBand::resolve(Some(twelve), 13.05, TUBE_ONSET_ZOOM),
+            Some(twelve)
+        );
+        assert_eq!(
+            DetailBand::resolve(Some(twelve), 13.10, TUBE_ONSET_ZOOM),
+            Some(thirteen)
+        );
+        assert_eq!(
+            DetailBand::resolve(Some(thirteen), 12.95, TUBE_ONSET_ZOOM),
+            Some(thirteen)
+        );
+        assert_eq!(
+            DetailBand::resolve(Some(thirteen), 12.90, TUBE_ONSET_ZOOM),
+            Some(twelve)
+        );
     }
 
     #[test]
@@ -1590,9 +1691,24 @@ mod tests {
 
     #[test]
     fn deep_detail_owns_deep_spatial_tiles() {
-        assert_eq!(DetailBand::for_zoom(11.9).unwrap().spatial_zoom(), 12);
-        assert_eq!(DetailBand::for_zoom(13.2).unwrap().spatial_zoom(), 13);
-        assert_eq!(DetailBand::for_zoom(23.0).unwrap().spatial_zoom(), 14);
+        assert_eq!(
+            DetailBand::for_zoom(11.9, TUBE_ONSET_ZOOM)
+                .unwrap()
+                .spatial_zoom(),
+            12
+        );
+        assert_eq!(
+            DetailBand::for_zoom(13.2, TUBE_ONSET_ZOOM)
+                .unwrap()
+                .spatial_zoom(),
+            13
+        );
+        assert_eq!(
+            DetailBand::for_zoom(23.0, TUBE_ONSET_ZOOM)
+                .unwrap()
+                .spatial_zoom(),
+            14
+        );
     }
 
     #[test]
@@ -1754,12 +1870,13 @@ mod tests {
             points: samples.iter().map(|sample| sample.world).collect(),
             length_world: samples[2].arc_world,
             lineage: None,
+            color: trail_class_color(TrailClass::Path),
             trail_class: trailgen_core::TrailClass::Path,
             mark: TrailMark::Solid,
             access: trailgen_core::Access::Open,
         };
         let mut builder = TrailMeshBuilder::default();
-        builder.push(&samples, key, &edge, 0);
+        builder.push(&samples, key, &edge, 0, TrailSalience::Context);
         let mesh = builder.seal();
 
         assert_eq!(mesh.vertices.len(), samples.len() * 2);
@@ -1779,6 +1896,7 @@ mod tests {
                 length_world: 0.6 / scale,
                 points,
                 lineage: None,
+                color: trail_class_color(class),
                 trail_class: class,
                 mark: TrailMark::Solid,
                 access: trailgen_core::Access::Open,
