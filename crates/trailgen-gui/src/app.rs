@@ -28,8 +28,8 @@ use std::{
 };
 use trailgen_core::{
     Coord, EdgeDisposition, EdgeEdicts, EdgeIndex, LoopConstraints, Route, RouteMetrics,
-    RouteShape, SearchParams, SearchProgress, SearchStage, SolverKind, SupportPoint, Trail,
-    TrailGraph, TrailRealization, TrailStanding,
+    RouteShape, RoutingLaw, SearchParams, SearchProgress, SearchStage, SolverKind, SupportPoint,
+    Trail, TrailGraph, TrailRealization, TrailStanding, TrailgenError,
 };
 use trailgen_data::SurveyRegion;
 
@@ -40,6 +40,7 @@ const STATE_SETTLE: Duration = Duration::from_millis(400);
 const SEARCH_SETTLE: Duration = Duration::from_millis(350);
 const CANDIDATE_COUNT: usize = 12;
 const TRAILHEAD_SNAP_M: f64 = 500.0;
+const LOOP_TRAILHEAD_ROUNDING_M: f64 = 20.0;
 const UNDO_DEPTH: usize = 128;
 const SHAPES: [(RouteShape, &str); 3] = [
     (RouteShape::Loop, "LOOP"),
@@ -154,6 +155,12 @@ struct EditorReturn {
 struct TrailSketch {
     shape: RouteShape,
     support_points: Vec<SupportPoint>,
+}
+
+struct LoopClosure {
+    trailhead: SupportPoint,
+    realization: TrailRealization,
+    shift_m: f64,
 }
 
 struct RenameDraft {
@@ -309,7 +316,7 @@ impl TrailEditor {
                 self.fault = None;
             }
             Err(err) => {
-                self.fault = Some(err.to_string());
+                self.fault = Some(editor_fault(&err));
             }
         }
     }
@@ -967,16 +974,17 @@ impl TrailApp {
             let close_loop = chrome::Checkbox::new(&mut looped, "CLOSE LOOP").show(ui);
             self.water.checkbox(&close_loop);
             if close_loop.changed() {
-                self.remember_editor();
-                self.view
-                    .editor_mut()
-                    .expect("editor shape controls require an editor")
-                    .shape = if looped {
-                    RouteShape::Loop
+                if looped {
+                    self.close_editor_loop();
                 } else {
-                    RouteShape::Open
-                };
-                self.reforge_editor();
+                    self.remember_editor();
+                    self.view
+                        .editor_mut()
+                        .expect("editor shape controls require an editor")
+                        .shape = RouteShape::Open;
+                    self.reforge_editor();
+                    "Loop opened.".clone_into(&mut self.status);
+                }
             }
         }
         if !looped {
@@ -2181,6 +2189,49 @@ impl TrailApp {
         }
     }
 
+    fn close_editor_loop(&mut self) {
+        self.remember_editor();
+        let Some(editor) = self.view.editor() else {
+            return;
+        };
+        if editor.support_points.len() < 2 {
+            self.view
+                .editor_mut()
+                .expect("editor existence checked")
+                .shape = RouteShape::Loop;
+            self.reforge_editor();
+            "Loop closure armed. Add another support point.".clone_into(&mut self.status);
+            return;
+        }
+        let name = editor.name.clone();
+        let supports = editor.support_points.clone();
+        let result = close_loop_design(
+            &name,
+            &self.graph,
+            &self.manual_constraints(RouteShape::Loop),
+            &supports,
+            self.params.routing,
+        );
+        let status = match &result {
+            Ok(closure) if closure.shift_m >= 0.5 => format!(
+                "Loop closed; pin 0 snapped {:.0} m to the nearest viable junction.",
+                closure.shift_m
+            ),
+            Ok(_) => "Loop closed.".to_owned(),
+            Err(err) => editor_fault(err),
+        };
+        let editor = self.view.editor_mut().expect("editor existence checked");
+        editor.shape = RouteShape::Loop;
+        match result {
+            Ok(closure) => {
+                editor.support_points[0] = closure.trailhead;
+                editor.absorb_realization(&self.graph, Ok(closure.realization));
+            }
+            Err(err) => editor.absorb_realization(&self.graph, Err(err)),
+        }
+        self.status = status;
+    }
+
     fn schedule_revision(&mut self) {
         if self.candidates.is_none() {
             return;
@@ -3128,6 +3179,96 @@ fn gallery_empty(ui: &egui::Ui, message: &str) {
     );
 }
 
+fn close_loop_design(
+    name: &str,
+    graph: &TrailGraph,
+    constraints: &LoopConstraints,
+    supports: &[SupportPoint],
+    routing: RoutingLaw,
+) -> trailgen_core::Result<LoopClosure> {
+    let realize = |trailhead: Option<SupportPoint>| {
+        let mut supports = supports.to_vec();
+        if let Some(trailhead) = trailhead
+            && let Some(first) = supports.first_mut()
+        {
+            *first = trailhead;
+        }
+        Trail::forge(RouteShape::Loop, supports, routing)
+            .and_then(|trail| trail.realize(name.to_owned(), graph, constraints, TRAILHEAD_SNAP_M))
+    };
+    let requested = supports.first().copied();
+    let fault = match realize(None) {
+        Ok(realization) => {
+            return Ok(LoopClosure {
+                trailhead: requested.expect("a realized trail has a trailhead"),
+                realization,
+                shift_m: 0.0,
+            });
+        }
+        Err(fault) => fault,
+    };
+    if !matches!(
+        &fault,
+        TrailgenError::ShapeMismatch {
+            expected: RouteShape::Loop,
+            ..
+        }
+    ) {
+        return Err(fault);
+    }
+    let Some(requested) = requested else {
+        return Err(fault);
+    };
+    let Some(projection) = graph.project_onto_edge(requested.coord()) else {
+        return Err(fault);
+    };
+    let edge = &graph.edges[projection.edge.0];
+    let mut endpoints = [edge.a, edge.b]
+        .into_iter()
+        .map(|vertex| {
+            let trailhead = SupportPoint::forge(graph.vertices[vertex.0].coord)
+                .expect("validated graph vertices are support points");
+            let shift_m = requested.coord().haversine_m(trailhead.coord());
+            (trailhead, shift_m)
+        })
+        .filter(|(trailhead, shift_m)| {
+            *trailhead != requested && *shift_m <= LOOP_TRAILHEAD_ROUNDING_M
+        })
+        .collect::<Vec<_>>();
+    endpoints.sort_by(|left, right| left.1.total_cmp(&right.1));
+    for (trailhead, shift_m) in endpoints {
+        if let Ok(realization) = realize(Some(trailhead)) {
+            return Ok(LoopClosure {
+                trailhead,
+                realization,
+                shift_m,
+            });
+        }
+    }
+    Err(fault)
+}
+
+fn editor_fault(error: &TrailgenError) -> String {
+    match error {
+        TrailgenError::ShapeMismatch {
+            actual: RouteShape::OutAndBack,
+            expected: RouteShape::Loop,
+        } => {
+            "Closing here would double back over a trail. Move pin 0 to its junction or adjust another pin."
+                .to_owned()
+        }
+        TrailgenError::ShapeMismatch {
+            actual: RouteShape::FigureEight,
+            expected: RouteShape::Loop,
+        } => "This design revisits a junction. Move a support point until it forms one loop."
+            .to_owned(),
+        TrailgenError::ShapeMismatch { actual, expected } => {
+            format!("This design forms {actual:?}, not {expected:?}. Move a support point.")
+        }
+        _ => error.to_string(),
+    }
+}
+
 fn reverse_loop_design(
     graph: &TrailGraph,
     realization: &TrailRealization,
@@ -3216,6 +3357,64 @@ pub fn forge_water() -> Surface {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn loop_with_spur(spur_m: f64) -> anyhow::Result<(TrailGraph, Vec<SupportPoint>, Coord)> {
+        let junction = Coord::new(0.0, 0.0);
+        let east = Coord::new(0.001, 0.0);
+        let northeast = Coord::new(0.001, 0.001);
+        let north = Coord::new(0.0, 0.001);
+        let dead_end = Coord::new(0.0, -spur_m / 111_195.0);
+        let feature = |id: &str, from: Coord, to: Coord| {
+            serde_json::json!({
+                "type": "Feature",
+                "properties": {
+                    "id": id,
+                    "terrain": "trail",
+                    "access": "open"
+                },
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [[from.lon, from.lat], [to.lon, to.lat]]
+                }
+            })
+        };
+        let source = serde_json::json!({
+            "type": "FeatureCollection",
+            "features": [
+                feature("south", junction, east),
+                feature("east", east, northeast),
+                feature("north", northeast, north),
+                feature("west", north, junction)
+            ]
+        });
+        let drafts = trailgen_core::io::geojson::network_from_str(&source.to_string())?;
+        let graph = trailgen_core::GraphBuilder::default().build(&drafts)?;
+        let junction_vertex = graph.nearest_vertex(junction).expect("junction vertex");
+        let mut vertices = graph.vertices;
+        let dead_end_vertex = trailgen_core::VertexId(vertices.len());
+        vertices.push(trailgen_core::Vertex {
+            id: dead_end_vertex,
+            coord: dead_end,
+        });
+        let mut edges = graph.edges;
+        let geometry =
+            trailgen_core::LineString::new(vec![dead_end, junction]).expect("valid spur");
+        let mut attr = edges[0].attr.clone();
+        attr.length_m = geometry.length_m();
+        edges.push(trailgen_core::Edge {
+            id: trailgen_core::EdgeId(edges.len()),
+            a: dead_end_vertex,
+            b: junction_vertex,
+            attr,
+            geometry,
+        });
+        let graph = TrailGraph::new(vertices, edges);
+        let supports = [dead_end, east, northeast, north]
+            .into_iter()
+            .map(|coord| SupportPoint::forge(coord).expect("fixture coordinates are valid"))
+            .collect();
+        Ok((graph, supports, junction))
+    }
 
     #[test]
     fn cyclic_navigation_respects_gallery_order() {
@@ -3318,6 +3517,58 @@ mod tests {
         assert_eq!(editor.support_points, vec![first]);
         assert!(editor.redo());
         assert_eq!(editor.support_points, vec![second]);
+    }
+
+    #[test]
+    fn close_loop_rounds_a_tiny_terminal_spur_into_its_junction() -> anyhow::Result<()> {
+        let (graph, supports, junction) = loop_with_spur(5.0)?;
+        let constraints =
+            portfolio::manual_constraints(&LoopConstraints::default(), RouteShape::Loop);
+        let closure = close_loop_design(
+            "tiny spur",
+            &graph,
+            &constraints,
+            &supports,
+            RoutingLaw::default(),
+        )?;
+
+        assert!(
+            (4.9..=5.1).contains(&closure.shift_m),
+            "observed shift {} m",
+            closure.shift_m
+        );
+        assert!(closure.trailhead.coord().haversine_m(junction) < 0.01);
+        assert_eq!(closure.realization.route.metrics.shape, RouteShape::Loop);
+        Ok(())
+    }
+
+    #[test]
+    fn close_loop_refuses_to_round_a_distant_terminal_spur() -> anyhow::Result<()> {
+        let (graph, supports, _) = loop_with_spur(25.0)?;
+        let constraints =
+            portfolio::manual_constraints(&LoopConstraints::default(), RouteShape::Loop);
+        let Err(fault) = close_loop_design(
+            "long spur",
+            &graph,
+            &constraints,
+            &supports,
+            RoutingLaw::default(),
+        ) else {
+            panic!("rounding must remain locally bounded");
+        };
+
+        assert!(matches!(
+            fault,
+            TrailgenError::ShapeMismatch {
+                actual: RouteShape::OutAndBack,
+                expected: RouteShape::Loop
+            }
+        ));
+        assert_eq!(
+            editor_fault(&fault),
+            "Closing here would double back over a trail. Move pin 0 to its junction or adjust another pin."
+        );
+        Ok(())
     }
 
     #[test]

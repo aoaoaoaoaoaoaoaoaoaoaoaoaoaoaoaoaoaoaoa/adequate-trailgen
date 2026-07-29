@@ -100,9 +100,14 @@ provider topology.
 Support points are ordered from zero everywhere, including visible pin labels.
 For any editable `Open` or `Loop` trail, `Close Loop` changes the design between
 those topologies; `Loop` realization routes from the last support back to
-support 0. Editor provenance never removes this capability. Reversing a loop
-preserves support 0 as its trailhead and inverts the exact realized walk. Shape
-and reversal changes are ordinary undoable editor gestures.
+support 0. If support 0 lies on a terminal spur, closure may round it to the
+nearest endpoint of that same trail segment within 20 m, but only when the
+complete rounded design realizes a proper loop. The pin movement and topology
+change form one undoable gesture. Beyond that tolerance the invalid draft
+survives and directs the user to move pin 0 to the junction. Editor provenance
+never removes this capability. Reversing a loop preserves support 0 as its
+trailhead and inverts the exact realized walk. Shape and reversal changes are
+ordinary undoable editor gestures.
 
 The elevation profile and map share one route-distance cursor. Hover chooses the
 nearest represented profile distance and paints a hollow map ring at the

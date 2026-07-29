@@ -244,10 +244,10 @@ impl Trail {
         }
         let route = Route::from_edges(name, graph, start, edges, constraints);
         if route.metrics.shape != self.shape {
-            return Err(TrailgenError::InvalidData(format!(
-                "support points realize {:?}, not {:?}",
-                route.metrics.shape, self.shape
-            )));
+            return Err(TrailgenError::ShapeMismatch {
+                actual: route.metrics.shape,
+                expected: self.shape,
+            });
         }
         Ok(TrailRealization {
             trail: Self {

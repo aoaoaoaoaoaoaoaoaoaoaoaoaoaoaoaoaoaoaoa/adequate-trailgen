@@ -76,6 +76,11 @@ pub enum TrailgenError {
     InvalidGeometry(String),
     #[error("invalid data: {0}")]
     InvalidData(String),
+    #[error("support points realize {actual:?}, not {expected:?}")]
+    ShapeMismatch {
+        actual: RouteShape,
+        expected: RouteShape,
+    },
     #[error("unsupported format: {0}")]
     UnsupportedFormat(String),
     #[error("json error: {0}")]
