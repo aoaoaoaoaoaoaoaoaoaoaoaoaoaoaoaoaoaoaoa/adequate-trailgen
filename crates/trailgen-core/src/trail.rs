@@ -126,9 +126,9 @@ impl Trail {
         Ok(())
     }
 
-    /// Recovers a compact support design when shortest lawful legs reproduce
-    /// the candidate exactly. An irreducible parallel-edge ambiguity returns
-    /// `None` rather than attaching dishonest controls to the route.
+    /// Recovers a compact, lossless support design. Globally shortest spans
+    /// remain single legs; an irreducible non-shortest edge receives an
+    /// interior support so incision compels that physical segment.
     #[must_use]
     pub fn infer(graph: &TrailGraph, route: &Route, routing: RoutingLaw) -> Option<Self> {
         routing.validate().ok()?;
@@ -137,42 +137,42 @@ impl Trail {
         if n == 0 {
             return None;
         }
-        let indices = match route.metrics.shape {
+        let points = match route.metrics.shape {
             RouteShape::OutAndBack => {
                 let split = n / 2;
-                (n.is_multiple_of(2)
-                    && route.edges[..split]
-                        == route.edges[split..]
+                if !n.is_multiple_of(2)
+                    || route.edges[..split]
+                        != route.edges[split..]
                             .iter()
                             .rev()
                             .copied()
                             .collect::<Vec<_>>()
-                    && shortest_path(graph, route.start, vertices[split], None, routing, None)?
-                        == route.edges[..split])
-                    .then_some(vec![0, split])?
+                {
+                    return None;
+                }
+                let mut points = Vec::new();
+                compress_arc(graph, route, &vertices, routing, 0, split, &mut points)?;
+                points.push(vertex_support(graph, vertices[split])?);
+                points
             }
             RouteShape::Loop => {
                 if vertices[n] != route.start || n < 2 {
                     return None;
                 }
-                let mut indices = Vec::new();
+                let mut points = Vec::new();
                 let split = n / 2;
-                compress_arc(graph, route, &vertices, routing, 0, split, &mut indices)?;
-                compress_arc(graph, route, &vertices, routing, split, n, &mut indices)?;
-                indices
+                compress_arc(graph, route, &vertices, routing, 0, split, &mut points)?;
+                compress_arc(graph, route, &vertices, routing, split, n, &mut points)?;
+                points
             }
             RouteShape::Open => {
-                let mut indices = Vec::new();
-                compress_arc(graph, route, &vertices, routing, 0, n, &mut indices)?;
-                indices.push(n);
-                indices
+                let mut points = Vec::new();
+                compress_arc(graph, route, &vertices, routing, 0, n, &mut points)?;
+                points.push(vertex_support(graph, vertices[n])?);
+                points
             }
             RouteShape::FigureEight => return None,
         };
-        let points = indices
-            .into_iter()
-            .map(|index| SupportPoint::forge(graph.vertices[vertices[index].0].coord))
-            .collect::<Option<Vec<_>>>()?;
         Self::forge(route.metrics.shape, points, routing).ok()
     }
 
@@ -284,21 +284,31 @@ fn compress_arc(
     routing: RoutingLaw,
     lo: usize,
     hi: usize,
-    supports: &mut Vec<usize>,
+    supports: &mut Vec<SupportPoint>,
 ) -> Option<()> {
     let previous = lo.checked_sub(1).map(|index| route.edges[index]);
-    if shortest_path(graph, vertices[lo], vertices[hi], previous, routing, None)?
-        == route.edges[lo..hi]
+    if shortest_path(graph, vertices[lo], vertices[hi], previous, routing, None)
+        .is_some_and(|shortest| shortest == route.edges[lo..hi])
     {
-        supports.push(lo);
+        supports.push(vertex_support(graph, vertices[lo])?);
         return Some(());
     }
     if hi - lo <= 1 {
-        return None;
+        supports.push(vertex_support(graph, vertices[lo])?);
+        let edge = &graph.edges[route.edges[lo].0];
+        supports.push(SupportPoint::forge(line_coord_at(
+            &edge.geometry,
+            edge.geometry.length_m() * 0.5,
+        ))?);
+        return Some(());
     }
     let split = lo + (hi - lo) / 2;
     compress_arc(graph, route, vertices, routing, lo, split, supports)?;
     compress_arc(graph, route, vertices, routing, split, hi, supports)
+}
+
+fn vertex_support(graph: &TrailGraph, vertex: VertexId) -> Option<SupportPoint> {
+    SupportPoint::forge(graph.vertices[vertex.0].coord)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -835,6 +845,75 @@ mod tests {
             .expect("realize recovered loop");
         assert_eq!(realized.route.edges, route.edges);
         assert!(trail.support_points.len() >= 2);
+    }
+
+    #[test]
+    fn non_shortest_candidate_edges_recover_lossless_interior_supports() {
+        let a = Coord::new(0.0, 0.0);
+        let b = Coord::new(0.002, 0.0);
+        let c = Coord::new(0.001, 0.000_4);
+        let draft = |name: &str, from: Coord, to: Coord, road_exposure| SegmentDraft {
+            geometry: LineString::new(vec![from, to]).expect("valid segment"),
+            junctions: JunctionPolicy::Planar,
+            turn_ref: None,
+            turn_restrictions: Vec::new(),
+            trail_class: TrailClass::Path,
+            standing: TrailStanding::Established,
+            marking: crate::TrailMarking::default(),
+            terrain: Terrain::Trail,
+            terrain_confidence: Some(1.0),
+            surface: Some("dirt".to_owned()),
+            access: Access::Open,
+            travel: EdgeTravel::Both,
+            road_exposure,
+            confidence: 1.0,
+            provenance: vec![Provenance::fixture(name)],
+        };
+        let graph = GraphBuilder::default()
+            .build(&[
+                draft("direct", a, b, 1.0),
+                draft("detour-a", a, c, 0.0),
+                draft("detour-b", c, b, 0.0),
+            ])
+            .expect("build triangle");
+        let vertex = |coord: Coord| {
+            graph
+                .vertices
+                .iter()
+                .find(|vertex| vertex.coord.planar_distance2(coord) < 1.0e-16)
+                .expect("coordinate vertex")
+                .id
+        };
+        let edge = |from: VertexId, to: VertexId| {
+            graph.adjacency[from.0]
+                .iter()
+                .copied()
+                .find(|edge| graph.edges[edge.0].other(from) == Some(to))
+                .expect("adjacent vertices")
+        };
+        let va = vertex(a);
+        let vb = vertex(b);
+        let vc = vertex(c);
+        let original = vec![edge(va, vb), edge(vb, vc), edge(vc, va)];
+        let constraints = LoopConstraints {
+            min_distance_m: 0.0,
+            max_distance_m: f64::MAX,
+            max_repeated_edge_fraction: 0.0,
+            allowed_shapes: vec![RouteShape::Loop],
+            ..LoopConstraints::default()
+        };
+        let route = Route::from_edges("non-shortest", &graph, va, original, &constraints);
+        let trail = Trail::infer(&graph, &route, RoutingLaw::default())
+            .expect("non-shortest edge gains an interior support");
+        assert!(
+            trail.support_points.len() >= 3,
+            "interior support should make the direct road edge compulsory"
+        );
+        let realized = trail
+            .realize("recovered", &graph, &constraints, 1.0)
+            .expect("realize inferred controls");
+        assert_eq!(realized.route.metrics.shape, RouteShape::Loop);
+        assert!((realized.route.metrics.distance_m - route.metrics.distance_m).abs() < 0.01);
     }
 
     #[test]

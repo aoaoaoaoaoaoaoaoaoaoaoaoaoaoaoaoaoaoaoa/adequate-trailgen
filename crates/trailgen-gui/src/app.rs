@@ -5,7 +5,7 @@ use crate::{
     library::{Library, SavedTrail, SearchRecipe, TrailId, Trailhead},
     live_area::{self, RegionScribe, ScribeEvent},
     map::{self, Atlas, SELECTED_TRAIL_COLOR, Viewport},
-    portfolio::{self, CandidatePortfolio},
+    portfolio::{self, CandidatePortfolio, CandidateWarmth},
     profile::ElevationProfile,
     project::{Project, SearchEvent, SearchForge, SearchHandle, SearchRequest},
     relief::Relief,
@@ -29,8 +29,9 @@ use std::{
     time::{Duration, Instant},
 };
 use trailgen_core::{
-    Coord, LoopConstraints, RouteMetrics, RouteShape, SearchParams, SearchProgress, SearchStage,
-    SolverKind, SupportPoint, Trail, TrailGraph, TrailRealization, TrailStanding,
+    Coord, EdgeDisposition, EdgeEdicts, EdgeIndex, LoopConstraints, RouteMetrics, RouteShape,
+    SearchParams, SearchProgress, SearchStage, SolverKind, SupportPoint, Trail, TrailGraph,
+    TrailRealization, TrailStanding,
 };
 use trailgen_data::SurveyRegion;
 
@@ -38,6 +39,7 @@ const PROFILE_HEIGHT: f32 = 178.0;
 const GALLERY_HEIGHT: f32 = 190.0;
 const TOOLBAR_HEIGHT: f32 = 44.0;
 const STATE_SETTLE: Duration = Duration::from_millis(400);
+const SEARCH_SETTLE: Duration = Duration::from_millis(350);
 const CANDIDATE_COUNT: usize = 12;
 const TRAILHEAD_SNAP_M: f64 = 500.0;
 const UNDO_DEPTH: usize = 128;
@@ -51,6 +53,7 @@ pub struct TrailApp {
     root: PathBuf,
     name: String,
     graph: Arc<TrailGraph>,
+    edge_index: EdgeIndex,
     atlas: Atlas,
     forge: SearchForge,
     defaults: LoopConstraints,
@@ -60,6 +63,8 @@ pub struct TrailApp {
     committed_library: Library,
     library_dirty: Option<Instant>,
     candidates: Option<CandidatePortfolio>,
+    edicts: EdgeEdicts,
+    search_due: Option<Instant>,
     focus: Option<Focus>,
     sort: TrailSort,
     gallery: GalleryDeck,
@@ -350,6 +355,7 @@ impl TrailApp {
             zoom: 2.0,
         });
         let forge = SearchForge::spawn(ctx.clone(), Arc::clone(&graph))?;
+        let edge_index = EdgeIndex::forge(&graph);
         let atlas = Atlas::forge(&graph);
         let cartography = map::CartographicClock::new(viewport);
         let status = if library.search().trailhead.is_some() {
@@ -363,6 +369,7 @@ impl TrailApp {
             root,
             name: config.name,
             graph,
+            edge_index,
             atlas,
             forge,
             defaults: config.constraints,
@@ -372,6 +379,8 @@ impl TrailApp {
             committed_library,
             library_dirty: None,
             candidates: None,
+            edicts: EdgeEdicts::default(),
+            search_due: None,
             focus: None,
             sort: slate.sort,
             gallery: slate.gallery,
@@ -433,6 +442,7 @@ impl TrailApp {
                 self.water.heave(ui.ctx(), scroll.state.offset.y);
             });
         let _center = egui::CentralPanel::default().show_inside(ui, |ui| self.arena(ui));
+        self.tend_search(ui.ctx());
         self.tend_library(ui.ctx());
         self.tend_slate(ui.ctx());
         self.workspace_signal.take()
@@ -516,17 +526,26 @@ impl TrailApp {
         let mut recipe = self.library.search().clone();
         let original = recipe.clone();
 
-        let recipe_changed = ui
-            .add_enabled_ui(!striking, |ui| {
-                self.trailhead_editor(ui, &mut recipe);
-                self.search_boundary_editor(ui, &mut recipe);
-                self.search_recipe_editor(ui, &mut recipe)
-            })
-            .inner;
+        self.trailhead_editor(ui, &mut recipe);
+        self.search_boundary_editor(ui, &mut recipe);
+        let recipe_changed = self.search_recipe_editor(ui, &mut recipe);
 
         if recipe_changed || recipe != original {
             *self.library.search_mut() = recipe;
             self.mark_library_dirty();
+            self.schedule_revision();
+        }
+
+        if self.candidates.is_some() {
+            let _edicts = chrome::note(
+                ui,
+                format!(
+                    "{} REQUIRED · {} EXCLUDED",
+                    self.edicts.required_count(),
+                    self.edicts.forbidden_count()
+                ),
+            );
+            let _help = chrome::note(ui, "CLICK TRAIL TO REQUIRE · SHIFT+CLICK TO EXCLUDE");
         }
 
         ui.add_space(6.0);
@@ -989,7 +1008,12 @@ impl TrailApp {
             self.water.select(rect);
         }
         if let Some(rect) = clear {
+            if self.forge_phase.active() {
+                self.stop_search();
+            }
             self.candidates = None;
+            self.edicts.clear();
+            self.search_due = None;
             "Search results cleared. Saved trails are untouched.".clone_into(&mut self.status);
             self.water.click(rect);
         }
@@ -1034,13 +1058,7 @@ impl TrailApp {
             }
             match &self.focus {
                 Some(Focus::Candidate { .. }) => {
-                    let edit = chrome::glyph_enabled(
-                        ui,
-                        self.focus_design().is_some(),
-                        "EDIT TRAIL",
-                        false,
-                    )
-                    .on_disabled_hover_text("This candidate has no canonical support-point form");
+                    let edit = chrome::glyph(ui, "EDIT TRAIL", false);
                     if edit.clicked() {
                         action = Some(FocusAction::Edit(edit.rect));
                     }
@@ -1201,7 +1219,7 @@ impl TrailApp {
                             ui,
                             &run.routes[slot],
                             &run.previews[slot],
-                            slot,
+                            run.identities[slot],
                             active,
                         );
                         if response.hovered() {
@@ -1239,7 +1257,7 @@ impl TrailApp {
                     .candidates
                     .as_ref()
                     .and_then(|run| run.profiles.get(*slot))
-                    .and_then(Option::as_ref),
+                    .and_then(Option::as_deref),
                 Some(Focus::Saved(_)) => saved_profile.as_ref(),
                 None => None,
             }
@@ -1308,6 +1326,7 @@ impl TrailApp {
             );
         }
         self.paint_trails(&canvas, rect);
+        self.paint_edicts(&canvas, rect);
         annotations.paint(&canvas);
         self.paint_search_boundary(&canvas, rect);
         if self.editor.is_some() {
@@ -1450,6 +1469,29 @@ impl TrailApp {
         }
     }
 
+    fn paint_edicts(&self, painter: &egui::Painter, rect: egui::Rect) {
+        for edge in self.edicts.required() {
+            map::paint_edict(
+                painter,
+                &self.graph,
+                edge,
+                EdgeDisposition::Required,
+                self.viewport,
+                rect,
+            );
+        }
+        for edge in self.edicts.forbidden() {
+            map::paint_edict(
+                painter,
+                &self.graph,
+                edge,
+                EdgeDisposition::Forbidden,
+                self.viewport,
+                rect,
+            );
+        }
+    }
+
     fn settle_map_gestures(
         &mut self,
         ui: &egui::Ui,
@@ -1495,6 +1537,18 @@ impl TrailApp {
             && let Some(pointer) = response.interact_pointer_pos()
         {
             self.place_trailhead(map::coord_at(self.viewport, rect, pointer), pointer);
+        } else if response.clicked_by(egui::PointerButton::Primary)
+            && !trailhead.captured
+            && self.editor.is_none()
+            && self.candidates.is_some()
+            && !self.scribe.active()
+            && !self.boundary_scribe.active()
+            && let Some(pointer) = pointer
+        {
+            self.edict_segment(
+                map::coord_at(self.viewport, rect, pointer),
+                ui.input(|input| input.modifiers.shift),
+            );
         }
     }
 
@@ -1502,7 +1556,6 @@ impl TrailApp {
         self.editor.is_none()
             && self.focus.is_none()
             && self.corpus.is_none()
-            && !self.forge_phase.active()
             && !self.scribe.active()
             && !self.boundary_scribe.active()
     }
@@ -1677,6 +1730,7 @@ impl TrailApp {
             BoundaryEvent::Committed(boundary) => {
                 self.library.search_mut().boundary = Some(boundary);
                 self.mark_library_dirty();
+                self.schedule_revision();
                 "Search area set. Routes will remain inside the boundary."
                     .clone_into(&mut self.status);
             }
@@ -1701,6 +1755,7 @@ impl TrailApp {
         self.placing_trailhead = false;
         self.trailhead_drag = None;
         self.flush_library();
+        self.schedule_revision();
         self.status = if distance_m < 20.0 {
             "Trailhead set.".to_owned()
         } else {
@@ -1804,7 +1859,65 @@ impl TrailApp {
         }
     }
 
+    fn schedule_revision(&mut self) {
+        if self.candidates.is_none() {
+            return;
+        }
+        if matches!(self.focus, Some(Focus::Candidate { .. })) {
+            self.leave_focus();
+            self.gallery = GalleryDeck::Results;
+        }
+        self.search_due = Some(Instant::now() + SEARCH_SETTLE);
+        if self.forge_phase.active() {
+            self.stop_search();
+        }
+    }
+
+    fn tend_search(&mut self, ctx: &egui::Context) {
+        let Some(due) = self.search_due else {
+            return;
+        };
+        let remaining = due.saturating_duration_since(Instant::now());
+        if !remaining.is_zero() || self.forge_phase.active() {
+            ctx.request_repaint_after(if remaining.is_zero() {
+                Duration::from_millis(20)
+            } else {
+                remaining
+            });
+            return;
+        }
+        self.strike();
+    }
+
+    fn edict_segment(&mut self, requested: Coord, forbidden: bool) {
+        let Some(projection) = self.edge_index.project(&self.graph, requested) else {
+            return;
+        };
+        if projection.distance_m > map::meters_per_point(self.viewport) * 11.0 {
+            "Click closer to a trail segment.".clone_into(&mut self.status);
+            return;
+        }
+        if forbidden {
+            self.edicts.toggle_forbidden(projection.edge);
+        } else {
+            self.edicts.toggle_required(projection.edge);
+        }
+        let disposition = self.edicts.disposition(projection.edge);
+        self.focus = None;
+        self.focus_frame = FocusFrame::default();
+        self.fit = Fit::None;
+        self.gallery = GalleryDeck::Results;
+        match disposition {
+            EdgeDisposition::Required => "Segment required. Revising trails…",
+            EdgeDisposition::Forbidden => "Segment excluded. Revising trails…",
+            EdgeDisposition::Free => "Segment rule removed. Revising trails…",
+        }
+        .clone_into(&mut self.status);
+        self.schedule_revision();
+    }
+
     fn strike(&mut self) {
+        self.search_due = None;
         self.serial = self.serial.saturating_add(1);
         let launch = self.search_request(self.serial).and_then(|request| {
             let progress = if request.boundary.is_some() {
@@ -1861,6 +1974,15 @@ impl TrailApp {
             .context("no downloaded trail is near this trailhead")?;
         let mut params = self.params;
         params.keep = params.keep.max(CANDIDATE_COUNT);
+        let warmth = self
+            .candidates
+            .as_ref()
+            .map_or_else(CandidateWarmth::default, CandidatePortfolio::warmth);
+        if !warmth.routes().is_empty() {
+            params.seed = params
+                .seed
+                .wrapping_add(serial.wrapping_mul(0x9e37_79b9_7f4a_7c15));
+        }
         Ok(SearchRequest {
             serial,
             start,
@@ -1870,6 +1992,8 @@ impl TrailApp {
             solver: self.solver,
             count: CANDIDATE_COUNT,
             manual_defaults: self.defaults.clone(),
+            edicts: self.edicts.clone(),
+            warmth,
         })
     }
 
@@ -2018,7 +2142,7 @@ impl TrailApp {
             .candidates
             .as_ref()
             .and_then(|run| run.designs.get(slot))
-            .and_then(Clone::clone);
+            .map(|design| design.as_ref().clone());
         let result = if let Some(design) = design {
             let constraints = self.manual_constraints(design.shape);
             design
@@ -2050,7 +2174,7 @@ impl TrailApp {
                 .candidates
                 .as_ref()
                 .and_then(|run| run.designs.get(*slot))
-                .and_then(Clone::clone),
+                .map(|design| design.as_ref().clone()),
             Some(Focus::Saved(id)) => self.library.trail(id).and_then(SavedTrail::design),
             None => None,
         }
@@ -2364,8 +2488,13 @@ impl TrailApp {
             self.save_editor();
             return;
         }
-        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Enter)) {
-            if self.editor.is_none() && !self.forge_phase.active() {
+        let find = ctx.input_mut(|input| {
+            input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+                || input.consume_key(egui::Modifiers::CTRL, egui::Key::Enter)
+        });
+        if find {
+            let search_open = self.shutters.get("search").copied().unwrap_or(true);
+            if search_open && self.editor.is_none() && !self.forge_phase.active() {
                 self.strike();
             }
             return;

@@ -46,12 +46,13 @@ pub use milp::{
 };
 pub use model::{
     Access, CoverageGap, CoverageGapKind, CrossingEvidence, CrossingKind, Edge, EdgeAttr, EdgeId,
-    EdgeProjection, EdgeTravel, GradeDistribution, Provenance, RouteCoverage, RouteSnapStats,
-    Terrain, TrailClass, TrailGraph, TrailMarking, TrailStanding, TurnBan, Vertex, VertexId,
+    EdgeIndex, EdgeProjection, EdgeTravel, GradeDistribution, Provenance, RouteCoverage,
+    RouteSnapStats, Terrain, TrailClass, TrailGraph, TrailMarking, TrailStanding, TurnBan, Vertex,
+    VertexId,
 };
 pub use optimizer::{
-    ExactLoopSolver, LoopHunter, RouteSolver, SearchMonitor, SearchParams, SearchProgress,
-    SearchScope, SearchStage, SolverKind,
+    EdgeDisposition, EdgeEdicts, ExactLoopSolver, LoopHunter, RouteSolver, SearchMonitor,
+    SearchParams, SearchProgress, SearchScope, SearchStage, SolverKind,
 };
 pub use overlay::{
     AccessOverlay, AccessWindow, ContextOverlay, DailyTimeWindow, MonthDay, OverlayGeometry,

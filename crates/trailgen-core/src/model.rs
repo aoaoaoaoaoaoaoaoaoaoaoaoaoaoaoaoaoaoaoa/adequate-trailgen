@@ -584,6 +584,31 @@ struct EdgeEnvelope {
     bounds: AABB<[f64; 2]>,
 }
 
+pub struct EdgeIndex {
+    tree: RTree<EdgeEnvelope>,
+}
+
+impl EdgeIndex {
+    #[must_use]
+    pub fn forge(graph: &TrailGraph) -> Self {
+        Self {
+            tree: edge_spatial_index(&graph.edges),
+        }
+    }
+
+    #[must_use]
+    pub fn project(&self, graph: &TrailGraph, coord: Coord) -> Option<EdgeProjection> {
+        let (edge, distance_m) = indexed_nearest_edge(&graph.edges, &self.tree, coord)?;
+        let (_, progress_m, coord) = line_projection(&graph.edges[edge.0].geometry, coord)?;
+        Some(EdgeProjection {
+            edge,
+            coord,
+            progress_m,
+            distance_m,
+        })
+    }
+}
+
 impl RTreeObject for EdgeEnvelope {
     type Envelope = AABB<[f64; 2]>;
 

@@ -351,9 +351,17 @@ pub struct StrokePoint {
 pub struct Label {
     pub world: [f64; 2],
     pub text: Arc<str>,
+    pub kind: LabelKind,
     pub rank: u16,
     pub size: f32,
     pub onset_zoom: f32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LabelKind {
+    Place,
+    Lake,
+    Peak,
 }
 
 #[derive(Clone, Debug)]
@@ -1230,7 +1238,7 @@ fn decode_tile(key: TileKey, bytes: &[u8]) -> Result<VectorTile> {
             "boundaries" => forge.boundary_layer(layer)?,
             "roads" => forge.road_layer(layer)?,
             "places" => forge.label_layer(layer)?,
-            "pois" => forge.parking_layer(layer)?,
+            "pois" => forge.poi_layer(layer)?,
             _ => {}
         }
     }
@@ -1360,6 +1368,22 @@ impl Forge {
                         },
                     );
                 }
+                MvtGeometry::Point(point) => {
+                    if let (Some(name), Some(style)) =
+                        (tags.name, water_label_style(tags.kind, tags.min_zoom))
+                    {
+                        self.push_label(point, extent, name, style, LabelKind::Lake);
+                    }
+                }
+                MvtGeometry::MultiPoint(points) => {
+                    if let (Some(name), Some(style)) =
+                        (tags.name, water_label_style(tags.kind, tags.min_zoom))
+                    {
+                        for point in points {
+                            self.push_label(point, extent, name, style, LabelKind::Lake);
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -1429,36 +1453,50 @@ impl Forge {
         }
     }
 
-    fn parking_layer(&mut self, layer: fast_mvt::MvtLayerRef<'_>) -> Result<()> {
+    fn poi_layer(&mut self, layer: fast_mvt::MvtLayerRef<'_>) -> Result<()> {
         let extent = layer.extent();
         for feature in layer.features() {
             let tags = FeatureTags::read(feature)?;
-            if tags.kind != Some("parking") || !public_access(tags.access) {
-                continue;
-            }
-            let name = tags.name.map(Arc::from);
-            // The provider's generic POI priority is immaterial after VectorField
-            // reclassifies this as public parking abutting a trail.
-            let onset_zoom = trailhead_parking_onset(tags.min_zoom);
             match feature.geometry()? {
-                MvtGeometry::Point(point) => self.parking.push(Parking {
-                    world: world64(self.key, extent, point.0),
-                    name,
-                    onset_zoom,
-                }),
+                MvtGeometry::Point(point) => self.push_poi(point, extent, tags),
                 MvtGeometry::MultiPoint(points) => {
                     for point in points {
-                        self.parking.push(Parking {
-                            world: world64(self.key, extent, point.0),
-                            name: name.clone(),
-                            onset_zoom,
-                        });
+                        self.push_poi(point, extent, tags);
                     }
                 }
                 _ => {}
             }
         }
         Ok(())
+    }
+
+    fn push_poi(&mut self, point: Point<i32>, extent: u32, tags: FeatureTags<'_>) {
+        match tags.kind {
+            Some("parking") if public_access(tags.access) => {
+                // Generic POI priority is immaterial after VectorField
+                // reclassifies this as public parking abutting a trail.
+                self.parking.push(Parking {
+                    world: world64(self.key, extent, point.0),
+                    name: tags.name.map(Arc::from),
+                    onset_zoom: trailhead_parking_onset(tags.min_zoom),
+                });
+            }
+            Some("peak") => {
+                let Some(name) = tags.name else { return };
+                let text = tags.elevation_m.map_or_else(
+                    || format!("△ {name}"),
+                    |elevation| format!("△ {name} · {elevation:.0} m"),
+                );
+                self.push_label(
+                    point,
+                    extent,
+                    &text,
+                    peak_label_style(tags.min_zoom),
+                    LabelKind::Peak,
+                );
+            }
+            _ => {}
+        }
     }
 
     fn label_layer(&mut self, layer: fast_mvt::MvtLayerRef<'_>) -> Result<()> {
@@ -1473,10 +1511,12 @@ impl Forge {
             };
             let geometry = feature.geometry()?;
             match geometry {
-                MvtGeometry::Point(point) => self.push_label(point, extent, name, style),
+                MvtGeometry::Point(point) => {
+                    self.push_label(point, extent, name, style, LabelKind::Place);
+                }
                 MvtGeometry::MultiPoint(points) => {
                     for point in points {
-                        self.push_label(point, extent, name, style);
+                        self.push_label(point, extent, name, style, LabelKind::Place);
                     }
                 }
                 _ => {}
@@ -1485,10 +1525,18 @@ impl Forge {
         Ok(())
     }
 
-    fn push_label(&mut self, point: Point<i32>, extent: u32, text: &str, style: LabelStyle) {
+    fn push_label(
+        &mut self,
+        point: Point<i32>,
+        extent: u32,
+        text: &str,
+        style: LabelStyle,
+        kind: LabelKind,
+    ) {
         self.labels.push(Label {
             world: world64(self.key, extent, point.0),
             text: Arc::from(text),
+            kind,
             rank: style.rank,
             size: style.size,
             onset_zoom: style.onset_zoom,
@@ -1715,6 +1763,28 @@ struct LabelStyle {
     onset_zoom: f32,
 }
 
+fn water_label_style(kind: Option<&str>, min_zoom: Option<f64>) -> Option<LabelStyle> {
+    let (rank, size, onset) = match kind {
+        Some("lake" | "reservoir") => (650, 11.8, 9.5),
+        Some("pond") => (760, 10.8, 12.0),
+        Some("water") | None => (700, 11.2, 10.5),
+        Some(_) => return None,
+    };
+    Some(LabelStyle {
+        rank,
+        size,
+        onset_zoom: disclosure_onset(min_zoom, onset),
+    })
+}
+
+fn peak_label_style(min_zoom: Option<f64>) -> LabelStyle {
+    LabelStyle {
+        rank: 620,
+        size: 11.4,
+        onset_zoom: disclosure_onset(min_zoom, 10.5),
+    }
+}
+
 fn label_style(
     kind: Option<&str>,
     detail: Option<&str>,
@@ -1763,7 +1833,7 @@ fn disclosure_onset(provider: Option<f64>, style: f64) -> f32 {
     provider.unwrap_or(style).max(style) as f32
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 struct FeatureTags<'a> {
     kind: Option<&'a str>,
     detail: Option<&'a str>,
@@ -1771,6 +1841,7 @@ struct FeatureTags<'a> {
     population_rank: Option<f64>,
     min_zoom: Option<f64>,
     access: Option<&'a str>,
+    elevation_m: Option<f64>,
 }
 
 impl<'a> FeatureTags<'a> {
@@ -1788,6 +1859,7 @@ impl<'a> FeatureTags<'a> {
                 ("population_rank", value) => tags.population_rank = numeric(value),
                 ("min_zoom", value) => tags.min_zoom = numeric(value),
                 ("access", MvtValueRef::String(value)) => tags.access = Some(value),
+                ("ele", value) => tags.elevation_m = numeric(value),
                 _ => {}
             }
         }
@@ -2431,6 +2503,18 @@ mod tests {
         assert!(arterial.size > local.size);
         assert!(arterial.onset_zoom < local.onset_zoom);
         assert!(road_label_style(Some("path"), Some("footway"), Some(14.0)).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn lake_and_peak_labels_enter_at_terrain_reading_scale() -> Result<()> {
+        let lake = water_label_style(Some("lake"), Some(9.0)).context("lake label")?;
+        let pond = water_label_style(Some("pond"), None).context("pond label")?;
+        let peak = peak_label_style(Some(10.0));
+        assert!(lake.onset_zoom < pond.onset_zoom);
+        assert!(lake.size > pond.size);
+        assert!(peak.size >= 11.0);
+        assert!(water_label_style(Some("river"), None).is_none());
         Ok(())
     }
 

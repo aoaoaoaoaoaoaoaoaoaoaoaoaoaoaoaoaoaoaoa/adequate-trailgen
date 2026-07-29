@@ -90,11 +90,13 @@ pub fn candidate_tile(
     )
 }
 
+#[derive(Clone)]
 pub struct CandidatePreview {
     runs: Vec<PreviewRun>,
     standing: Option<TrailStanding>,
 }
 
+#[derive(Clone)]
 struct PreviewRun {
     points: Arc<[Pos2]>,
     mark: crate::map::TrailMark,

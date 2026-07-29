@@ -1,6 +1,6 @@
 use crate::{
     library::{Library, SearchBoundary},
-    portfolio::CandidatePortfolio,
+    portfolio::{CandidatePortfolio, CandidateWarmth},
 };
 use anyhow::{Context as _, Result, ensure};
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
@@ -17,8 +17,8 @@ use std::{
     time::{Duration, Instant},
 };
 use trailgen_core::{
-    LoopConstraints, Route, SearchMonitor, SearchParams, SearchProgress, SearchScope, SearchStage,
-    SolverKind, TrailGraph, VertexId,
+    EdgeEdicts, LoopConstraints, Route, SearchMonitor, SearchParams, SearchProgress, SearchScope,
+    SearchStage, SolverKind, TrailGraph, VertexId,
 };
 
 #[derive(Clone, Debug, Deserialize)]
@@ -110,6 +110,8 @@ pub struct SearchRequest {
     pub solver: SolverKind,
     pub count: usize,
     pub manual_defaults: LoopConstraints,
+    pub edicts: EdgeEdicts,
+    pub warmth: CandidateWarmth,
 }
 
 impl SearchRequest {
@@ -118,6 +120,7 @@ impl SearchRequest {
             self.start.0 < graph.vertices.len(),
             "trailhead is outside downloaded trail data"
         );
+        self.edicts.validate(graph)?;
         if let Some(boundary) = &self.boundary {
             boundary.validate()?;
             ensure!(
@@ -129,6 +132,12 @@ impl SearchRequest {
                     .iter()
                     .any(|edge| boundary.allows_edge(&graph.edges[edge.0])),
                 "search area contains no trail leaving this trailhead"
+            );
+            ensure!(
+                self.edicts
+                    .required()
+                    .all(|edge| boundary.allows_edge(&graph.edges[edge.0])),
+                "a required segment lies outside the search area"
             );
         }
         ensure!(
@@ -389,12 +398,14 @@ fn forge_search(
         || SearchScope::all(graph),
         |mask| SearchScope::restricted(graph, mask),
     );
-    let routes = exact_matches(request.solver.solve_scoped(
+    let routes = exact_matches(request.solver.revise_scoped(
         request.params,
         scope,
         request.start,
         &request.constraints,
         request.count,
+        &request.edicts,
+        request.warmth.routes(),
         &monitor,
     ));
     let search_elapsed = started.elapsed();
@@ -424,6 +435,7 @@ fn forge_search(
         routes,
         request.params.routing,
         &request.manual_defaults,
+        &request.warmth,
         || monitor.cancelled(),
     );
     let event = if monitor.cancelled() {
@@ -495,6 +507,8 @@ mod tests {
             solver: SolverKind::Auto,
             count: 1,
             manual_defaults: LoopConstraints::default(),
+            edicts: EdgeEdicts::default(),
+            warmth: CandidateWarmth::default(),
         };
         assert!(request.validate(&graph).is_err());
         Ok(())

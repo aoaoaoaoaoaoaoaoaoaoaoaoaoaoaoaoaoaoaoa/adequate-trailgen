@@ -40,6 +40,7 @@ impl SearchMonitor for () {
 pub struct SearchScope<'a> {
     graph: &'a TrailGraph,
     allowed: Option<&'a [bool]>,
+    edicts: Option<&'a EdgeEdicts>,
     edge_count: usize,
 }
 
@@ -49,6 +50,7 @@ impl<'a> SearchScope<'a> {
         Self {
             graph,
             allowed: None,
+            edicts: None,
             edge_count: graph.edges.len(),
         }
     }
@@ -63,20 +65,128 @@ impl<'a> SearchScope<'a> {
         Self {
             graph,
             allowed: Some(allowed),
+            edicts: None,
             edge_count: allowed.iter().filter(|allowed| **allowed).count(),
         }
+    }
+
+    #[must_use]
+    pub fn obeying(mut self, edicts: &'a EdgeEdicts) -> Self {
+        self.edicts = Some(edicts);
+        self.edge_count = self
+            .graph
+            .edges
+            .iter()
+            .filter(|edge| self.allows(edge.id))
+            .count();
+        self
     }
 
     fn fanout(self, vertex: VertexId) -> Vec<EdgeId> {
         self.graph.adjacency[vertex.0]
             .iter()
             .copied()
-            .filter(|edge| self.allowed.is_none_or(|allowed| allowed[edge.0]))
+            .filter(|edge| self.allows(*edge))
             .collect()
     }
 
     fn allows(self, edge: EdgeId) -> bool {
         self.allowed.is_none_or(|allowed| allowed[edge.0])
+            && self
+                .edicts
+                .is_none_or(|edicts| !edicts.forbidden.contains(&edge))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EdgeDisposition {
+    Free,
+    Required,
+    Forbidden,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EdgeEdicts {
+    required: BTreeSet<EdgeId>,
+    forbidden: BTreeSet<EdgeId>,
+}
+
+impl EdgeEdicts {
+    #[must_use]
+    pub fn disposition(&self, edge: EdgeId) -> EdgeDisposition {
+        if self.required.contains(&edge) {
+            EdgeDisposition::Required
+        } else if self.forbidden.contains(&edge) {
+            EdgeDisposition::Forbidden
+        } else {
+            EdgeDisposition::Free
+        }
+    }
+
+    pub fn toggle_required(&mut self, edge: EdgeId) {
+        if !self.required.remove(&edge) {
+            self.forbidden.remove(&edge);
+            self.required.insert(edge);
+        }
+    }
+
+    pub fn toggle_forbidden(&mut self, edge: EdgeId) {
+        if !self.forbidden.remove(&edge) {
+            self.required.remove(&edge);
+            self.forbidden.insert(edge);
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.required.clear();
+        self.forbidden.clear();
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.required.is_empty() && self.forbidden.is_empty()
+    }
+
+    #[must_use]
+    pub fn required_count(&self) -> usize {
+        self.required.len()
+    }
+
+    #[must_use]
+    pub fn forbidden_count(&self) -> usize {
+        self.forbidden.len()
+    }
+
+    pub fn required(&self) -> impl Iterator<Item = EdgeId> + '_ {
+        self.required.iter().copied()
+    }
+
+    pub fn forbidden(&self) -> impl Iterator<Item = EdgeId> + '_ {
+        self.forbidden.iter().copied()
+    }
+
+    #[must_use]
+    pub fn admits(&self, route: &Route) -> bool {
+        self.required.iter().all(|edge| route.edges.contains(edge))
+            && route
+                .edges
+                .iter()
+                .all(|edge| !self.forbidden.contains(edge))
+    }
+
+    pub fn validate(&self, graph: &TrailGraph) -> crate::Result<()> {
+        if let Some(edge) = self
+            .required
+            .iter()
+            .chain(&self.forbidden)
+            .find(|edge| edge.0 >= graph.edges.len())
+        {
+            return Err(crate::TrailgenError::InvalidData(format!(
+                "segment edict references missing edge {}",
+                edge.0
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -202,6 +312,77 @@ impl SolverKind {
                 monitor,
             ),
         }
+    }
+
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn revise_scoped(
+        self,
+        mut params: SearchParams,
+        scope: SearchScope<'_>,
+        start: VertexId,
+        constraints: &LoopConstraints,
+        count: usize,
+        edicts: &EdgeEdicts,
+        incumbents: &[Route],
+        monitor: &dyn SearchMonitor,
+    ) -> Vec<Route> {
+        if edicts.validate(scope.graph).is_err() {
+            return Vec::new();
+        }
+        let scope = scope.obeying(edicts);
+        let amplification = usize::from(edicts.required_count() == 0 && !incumbents.is_empty()) + 1;
+        let hunt = count
+            .max(1)
+            .saturating_mul(amplification)
+            .min(params.max_frontier.max(count));
+        params.keep = params.keep.max(hunt);
+        let mut routes = incumbents
+            .iter()
+            .filter(|route| {
+                route.start == start
+                    && route.edges.iter().all(|edge| scope.allows(*edge))
+                    && edicts.admits(route)
+                    && scope.graph.walk_edges(start, &route.edges).is_some()
+            })
+            .map(|route| {
+                Route::from_edges(
+                    route.name.clone(),
+                    scope.graph,
+                    start,
+                    route.edges.clone(),
+                    constraints,
+                )
+            })
+            .filter(|route| constraints.allows_shape(route.metrics.shape))
+            .collect::<Vec<_>>();
+        if !monitor.cancelled() {
+            if edicts.required_count() == 0 || !constraints.allows_shape(RouteShape::Loop) {
+                routes.extend(
+                    self.solve_scoped(params, scope, start, constraints, hunt, monitor)
+                        .into_iter()
+                        .filter(|route| edicts.admits(route)),
+                );
+            } else {
+                routes.extend(support_loop_portfolio_obeying(
+                    params,
+                    scope,
+                    start,
+                    constraints,
+                    hunt,
+                    monitor,
+                    edicts,
+                ));
+            }
+        }
+        finish_routes(
+            routes,
+            scope.graph,
+            constraints,
+            count,
+            params.keep,
+            monitor,
+        )
     }
 }
 
@@ -660,8 +841,43 @@ fn support_loop_portfolio(
     count: usize,
     monitor: &dyn SearchMonitor,
 ) -> Vec<Route> {
+    support_loop_portfolio_obeying(
+        params,
+        scope,
+        start,
+        constraints,
+        count,
+        monitor,
+        &EdgeEdicts::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn support_loop_portfolio_obeying(
+    params: SearchParams,
+    scope: SearchScope<'_>,
+    start: VertexId,
+    constraints: &LoopConstraints,
+    count: usize,
+    monitor: &dyn SearchMonitor,
+    edicts: &EdgeEdicts,
+) -> Vec<Route> {
     let graph = scope.graph;
-    let skeleton = RoutingSkeleton::forge(scope, start, params.routing);
+    let skeleton =
+        RoutingSkeleton::forge_preserving(scope, start, params.routing, edicts.required());
+    let compulsory = edicts
+        .required()
+        .map(|edge| {
+            skeleton
+                .arcs
+                .iter()
+                .find(|arc| arc.edges.as_slice() == [edge])
+                .map(|arc| arc.id)
+        })
+        .collect::<Option<Vec<_>>>();
+    let Some(compulsory) = compulsory else {
+        return Vec::new();
+    };
     let radial = radial_distances(&skeleton, start, constraints.max_distance_m * 0.55, monitor);
     if monitor.cancelled() {
         return Vec::new();
@@ -681,12 +897,25 @@ fn support_loop_portfolio(
         monitor,
         outbound: vec![None; graph.vertices.len()],
     };
-    for design in designs.into_iter().take(limit) {
+    for (attempt, design) in designs.into_iter().take(limit).enumerate() {
         if !meter.advance(routes.len()) {
             break;
         }
-        if let Some(edges) =
-            forge.loop_through(&design.supports, &mut workspace, &mut banned, &mut barred)
+        let mut compulsory_order = compulsory.clone();
+        if compulsory_order.len() > 1 {
+            let width = compulsory_order.len();
+            compulsory_order.rotate_left(attempt % width);
+            if attempt / width % 2 == 1 {
+                compulsory_order.reverse();
+            }
+        }
+        if let Some(edges) = forge.loop_through(
+            &compulsory_order,
+            &design.supports,
+            &mut workspace,
+            &mut banned,
+            &mut barred,
+        ) && edicts.required().all(|edge| edges.contains(&edge))
         {
             push_allowed_route(&mut routes, graph, start, edges, constraints);
         }
@@ -913,10 +1142,19 @@ struct RoutingSkeleton<'graph> {
 }
 
 impl<'graph> RoutingSkeleton<'graph> {
-    fn forge(scope: SearchScope<'graph>, start: VertexId, law: RoutingLaw) -> Self {
+    fn forge_preserving(
+        scope: SearchScope<'graph>,
+        start: VertexId,
+        law: RoutingLaw,
+        compulsory: impl IntoIterator<Item = EdgeId>,
+    ) -> Self {
         let graph = scope.graph;
         let incidence = routing_incidence(scope, law);
-        let preserved = preserved_vertices(graph, &incidence, start);
+        let mut preserved = preserved_vertices(graph, &incidence, start);
+        for edge in compulsory {
+            preserved[graph.edges[edge.0].a.0] = true;
+            preserved[graph.edges[edge.0].b.0] = true;
+        }
         let arcs = skeleton_arcs(graph, &incidence, &preserved, law);
         let adjacency = arc_adjacency(graph.vertices.len(), &arcs);
         Self {
@@ -1152,6 +1390,7 @@ struct SupportForge<'graph, 'constraint, 'monitor> {
 impl SupportForge<'_, '_, '_> {
     fn loop_through(
         &mut self,
+        compulsory: &[ArcId],
         supports: &[VertexId],
         workspace: &mut ArcWorkspace,
         banned: &mut [bool],
@@ -1159,11 +1398,61 @@ impl SupportForge<'_, '_, '_> {
     ) -> Option<Vec<EdgeId>> {
         banned.fill(false);
         barred.fill(false);
+        for arc in compulsory {
+            barred[arc.0] = true;
+        }
         banned[self.start.0] = true;
         let maximum_m = self.constraints.max_distance_m;
         let mut arcs = Vec::new();
         let mut at = self.start;
         let mut spent_m = 0.0;
+        for exact in compulsory {
+            let arc = &self.skeleton.arcs[exact.0];
+            let approach_budget = maximum_m - spent_m - arc.distance_m;
+            let mut approaches = [(arc.a, arc.forward), (arc.b, arc.backward)]
+                .into_iter()
+                .filter(|(target, traversable)| {
+                    *traversable && (*target == at || !banned[target.0])
+                })
+                .filter_map(|(target, _)| {
+                    shortest_path_avoiding(
+                        AvoidanceHunt {
+                            skeleton: self.skeleton,
+                            from: at,
+                            target,
+                            previous: arcs.last().copied(),
+                            banned,
+                            barred,
+                            max_distance_m: approach_budget,
+                            monitor: self.monitor,
+                        },
+                        workspace,
+                    )
+                    .map(|path| (target, path))
+                })
+                .collect::<Vec<_>>();
+            approaches.sort_by(|left, right| left.1.distance_m.total_cmp(&right.1.distance_m));
+            let (target, path) = approaches.into_iter().next()?;
+            ban_internal_vertices(self.skeleton, at, &path.arcs, banned);
+            for connector in &path.arcs {
+                barred[connector.0] = true;
+            }
+            if at != self.start {
+                banned[at.0] = true;
+            }
+            spent_m += path.distance_m;
+            arcs.extend(path.arcs);
+            at = target;
+            if !self.skeleton.turn_allowed(arcs.last().copied(), at, *exact) {
+                return None;
+            }
+            at = arc.traverse(at)?;
+            arcs.push(*exact);
+            spent_m += arc.distance_m;
+            if spent_m > maximum_m {
+                return None;
+            }
+        }
         for target in supports.iter().copied().chain(std::iter::once(self.start)) {
             let hunt = AvoidanceHunt {
                 skeleton: self.skeleton,
@@ -2343,8 +2632,12 @@ mod tests {
             .build(&[branch(points, "fine-ring")])
             .expect("build fine ring");
         let start = graph.nearest_vertex(corners[0]).expect("ring origin");
-        let skeleton =
-            RoutingSkeleton::forge(SearchScope::all(&graph), start, RoutingLaw::default());
+        let skeleton = RoutingSkeleton::forge_preserving(
+            SearchScope::all(&graph),
+            start,
+            RoutingLaw::default(),
+            std::iter::empty(),
+        );
 
         assert_eq!(graph.edges.len(), 160);
         assert_eq!(skeleton.arcs.len(), 3);
@@ -2356,6 +2649,71 @@ mod tests {
                 .sum::<usize>(),
             graph.edges.len()
         );
+    }
+
+    #[test]
+    fn warmed_revisions_obey_required_and_forbidden_segments() {
+        let ring = [
+            Coord::new(0.0, 0.0),
+            Coord::new(0.002, 0.0),
+            Coord::new(0.002, 0.002),
+            Coord::new(0.0, 0.002),
+            Coord::new(0.0, 0.0),
+        ];
+        let graph = GraphBuilder::default()
+            .build(&[branch(ring.to_vec(), "ring")])
+            .expect("build ring");
+        let start = graph.nearest_vertex(ring[0]).expect("ring origin");
+        let constraints = LoopConstraints {
+            min_distance_m: 0.0,
+            max_distance_m: 10_000.0,
+            max_difficulty: f64::MAX,
+            max_repeated_edge_fraction: 0.0,
+            allowed_shapes: vec![RouteShape::Loop],
+            ..LoopConstraints::default()
+        };
+        let params = SearchParams {
+            max_frontier: 1_000,
+            keep: 12,
+            ..SearchParams::default()
+        };
+        let incumbents = SolverKind::Auto.solve(params, &graph, start, &constraints, 3);
+        let incumbent = incumbents.first().expect("ring yields a loop");
+        let compulsory = incumbent.edges[0];
+        let mut edicts = EdgeEdicts::default();
+        edicts.toggle_required(compulsory);
+        let revised = SolverKind::Auto.revise_scoped(
+            params,
+            SearchScope::all(&graph),
+            start,
+            &constraints,
+            3,
+            &edicts,
+            &[],
+            &(),
+        );
+        assert!(!revised.is_empty());
+        assert!(revised.iter().all(|route| edicts.admits(route)));
+
+        edicts.toggle_forbidden(compulsory);
+        assert_eq!(edicts.disposition(compulsory), EdgeDisposition::Forbidden);
+        let revised = SolverKind::Auto.revise_scoped(
+            params,
+            SearchScope::all(&graph),
+            start,
+            &constraints,
+            3,
+            &edicts,
+            &incumbents,
+            &(),
+        );
+        assert!(
+            revised
+                .iter()
+                .all(|route| !route.edges.contains(&compulsory))
+        );
+        edicts.toggle_forbidden(compulsory);
+        assert_eq!(edicts.disposition(compulsory), EdgeDisposition::Free);
     }
 
     #[test]

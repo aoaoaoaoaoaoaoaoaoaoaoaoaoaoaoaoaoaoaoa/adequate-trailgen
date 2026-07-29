@@ -393,6 +393,7 @@ impl VectorField {
             .map(|label| annotation::PointLabel {
                 world: label.world,
                 text: label.text.as_ref(),
+                kind: label.kind,
                 rank: label.rank,
                 size: label.size,
                 onset_zoom: label.onset_zoom,

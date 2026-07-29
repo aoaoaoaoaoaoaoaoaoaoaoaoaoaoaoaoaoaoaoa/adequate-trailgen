@@ -16,6 +16,7 @@ const PARKING_LABEL_LAG: f32 = 1.25;
 pub struct PointLabel<'a> {
     pub world: [f64; 2],
     pub text: &'a str,
+    pub kind: basemap::LabelKind,
     pub rank: u16,
     pub size: f32,
     pub onset_zoom: f32,
@@ -683,9 +684,29 @@ fn prepare_points<'a>(
             Color32::PLACEHOLDER,
         );
         let footprint = Rect::from_center_size(anchor, galley.size()).expand(3.0);
+        let (identity_kind, ink, halo) = match label.kind {
+            basemap::LabelKind::Place => (
+                2,
+                Color32::from_black_alpha((225.0 * maturity) as u8),
+                Some(Halo {
+                    color: Color32::from_white_alpha((92.0 * maturity) as u8),
+                    width: 1.0,
+                }),
+            ),
+            basemap::LabelKind::Lake => (
+                3,
+                Color32::from_rgb(25, 82, 112).gamma_multiply(maturity),
+                None,
+            ),
+            basemap::LabelKind::Peak => (
+                4,
+                Color32::from_rgb(49, 39, 28).gamma_multiply(maturity),
+                None,
+            ),
+        };
         if rect.contains_rect(footprint) {
             prepared.push(Prepared {
-                id: Identity::forge(2, label.text, label.world),
+                id: Identity::forge(identity_kind, label.text, label.world),
                 text: label.text.to_owned(),
                 rank: label.rank,
                 birth_zoom: label.onset_zoom,
@@ -696,11 +717,8 @@ fn prepare_points<'a>(
                 angle: 0.0,
                 footprint,
                 galley,
-                ink: Color32::from_black_alpha((225.0 * maturity) as u8),
-                halo: Some(Halo {
-                    color: Color32::from_white_alpha((92.0 * maturity) as u8),
-                    width: 1.0,
-                }),
+                ink,
+                halo,
                 repeatable: false,
                 break_line: false,
                 patron: None,
@@ -1114,6 +1132,7 @@ mod tests {
                 [PointLabel {
                     world: fine.center,
                     text: "NEW BUT STRONGER",
+                    kind: basemap::LabelKind::Place,
                     rank: 1,
                     size: 12.0,
                     onset_zoom: 11.0,
@@ -1143,6 +1162,7 @@ mod tests {
                 [PointLabel {
                     world: home.center,
                     text: "FIXED",
+                    kind: basemap::LabelKind::Place,
                     rank: 500,
                     size: 12.0,
                     onset_zoom: 0.0,
@@ -1163,6 +1183,7 @@ mod tests {
                 [PointLabel {
                     world: away.center,
                     text: "FIXED",
+                    kind: basemap::LabelKind::Place,
                     rank: 500,
                     size: 12.0,
                     onset_zoom: 0.0,
@@ -1178,6 +1199,7 @@ mod tests {
                 [PointLabel {
                     world: home.center,
                     text: "FIXED",
+                    kind: basemap::LabelKind::Place,
                     rank: 500,
                     size: 12.0,
                     onset_zoom: 0.0,
@@ -1284,6 +1306,7 @@ mod tests {
                 [PointLabel {
                     world: camera.center,
                     text: "NEW BUT STRONGER",
+                    kind: basemap::LabelKind::Place,
                     rank: 1,
                     size: 12.0,
                     onset_zoom: 0.0,
