@@ -24,6 +24,11 @@ pub struct CandidateWarmth {
 
 impl CandidatePortfolio {
     #[must_use]
+    pub fn slot(&self, identity: usize) -> Option<usize> {
+        self.identities.iter().position(|known| *known == identity)
+    }
+
+    #[must_use]
     pub fn warmth(&self) -> CandidateWarmth {
         CandidateWarmth {
             routes: Arc::clone(&self.routes),
@@ -315,6 +320,7 @@ mod tests {
                 })
                 .expect("route survived revision");
             assert_eq!(second.identities[slot], first.identities[prior]);
+            assert_eq!(second.slot(first.identities[prior]), Some(slot));
             assert!(Arc::ptr_eq(&second.previews[slot], &first.previews[prior]));
         }
         Ok(())

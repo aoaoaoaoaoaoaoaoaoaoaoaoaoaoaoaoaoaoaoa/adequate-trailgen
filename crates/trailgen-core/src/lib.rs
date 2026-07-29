@@ -66,7 +66,8 @@ pub use route::{
 };
 pub use seed::{SeedRoute, artifact_key};
 pub use trail::{
-    DEFAULT_ROAD_AVERSION, RoutingLaw, SupportBinding, SupportPoint, Trail, TrailRealization,
+    DEFAULT_ROAD_AVERSION, RoutingLaw, SupportBinding, SupportInsertion, SupportPoint, Trail,
+    TrailRealization,
 };
 
 #[derive(Debug, thiserror::Error)]

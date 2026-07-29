@@ -193,6 +193,7 @@ impl Trail {
         let graph = incised.as_deref().unwrap_or(graph);
         let start = bindings[0].vertex;
         let mut edges = Vec::new();
+        let mut support_offsets = vec![0];
         let mut previous = None;
         for targets in bindings.windows(2) {
             let leg = shortest_path(
@@ -210,6 +211,7 @@ impl Trail {
             })?;
             previous = leg.last().copied().or(previous);
             edges.extend(leg);
+            support_offsets.push(edges.len());
         }
         match self.shape {
             RouteShape::Open => {}
@@ -256,6 +258,7 @@ impl Trail {
             bindings,
             route,
             incised,
+            support_offsets,
         })
     }
 }
@@ -326,12 +329,49 @@ pub struct TrailRealization {
     pub bindings: Vec<SupportBinding>,
     pub route: Route,
     incised: Option<Arc<TrailGraph>>,
+    support_offsets: Vec<usize>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SupportInsertion {
+    pub slot: usize,
+    pub distance_m: f64,
 }
 
 impl TrailRealization {
     #[must_use]
     pub fn graph<'a>(&'a self, source: &'a TrailGraph) -> &'a TrailGraph {
         self.incised.as_deref().unwrap_or(source)
+    }
+
+    /// Locates a new support in the design order of the realized walk. Loops
+    /// admit their closing arc after the final explicit support; out-and-backs
+    /// index only their outward spine because the return is its exact reverse.
+    #[must_use]
+    pub fn support_insertion(
+        &self,
+        source: &TrailGraph,
+        requested: Coord,
+    ) -> Option<SupportInsertion> {
+        let graph = self.graph(source);
+        let routed = if self.trail.shape == RouteShape::OutAndBack {
+            *self.support_offsets.last()?
+        } else {
+            self.route.edges.len()
+        };
+        let (edge_slot, distance_m) = self
+            .route
+            .edges
+            .iter()
+            .take(routed)
+            .enumerate()
+            .filter_map(|(slot, edge)| {
+                crate::model::line_projection(&graph.edges[edge.0].geometry, requested)
+                    .map(|(distance_m, _, _)| (slot, distance_m))
+            })
+            .min_by(|left, right| left.1.total_cmp(&right.1))?;
+        let slot = self.support_offsets[1..].partition_point(|offset| *offset <= edge_slot) + 1;
+        Some(SupportInsertion { slot, distance_m })
     }
 }
 
@@ -845,6 +885,58 @@ mod tests {
             .expect("realize recovered loop");
         assert_eq!(realized.route.edges, route.edges);
         assert!(trail.support_points.len() >= 2);
+    }
+
+    #[test]
+    fn support_insertion_follows_realized_leg_order() {
+        let graph = graph();
+        let constraints = LoopConstraints {
+            min_distance_m: 0.0,
+            max_distance_m: f64::MAX,
+            max_repeated_edge_fraction: 0.0,
+            allowed_shapes: vec![RouteShape::Loop],
+            ..LoopConstraints::default()
+        };
+        let route = crate::ExactLoopSolver::default()
+            .enumerate(&graph, VertexId(0), &constraints, 1)
+            .into_iter()
+            .next()
+            .expect("fixture has a loop");
+        let trail = Trail::infer(&graph, &route, RoutingLaw::default())
+            .expect("loop has an exact support design");
+        let realized = trail
+            .realize("editable", &graph, &constraints, 1.0)
+            .expect("realize recovered loop");
+        let routed = realized.graph(&graph);
+
+        for slot in 1..realized.support_offsets.len() {
+            let first = realized.support_offsets[slot - 1];
+            let limit = realized.support_offsets[slot];
+            if first == limit {
+                continue;
+            }
+            let edge = &routed.edges[realized.route.edges[first].0];
+            let insertion = realized
+                .support_insertion(
+                    &graph,
+                    line_coord_at(&edge.geometry, edge.geometry.length_m() / 2.0),
+                )
+                .expect("route edge admits insertion");
+            assert_eq!(insertion.slot, slot);
+            assert!(insertion.distance_m < 0.01);
+        }
+
+        let closure = *realized.support_offsets.last().expect("support offset");
+        if closure < realized.route.edges.len() {
+            let edge = &routed.edges[realized.route.edges[closure].0];
+            let insertion = realized
+                .support_insertion(
+                    &graph,
+                    line_coord_at(&edge.geometry, edge.geometry.length_m() / 2.0),
+                )
+                .expect("closure edge admits insertion");
+            assert_eq!(insertion.slot, realized.bindings.len());
+        }
     }
 
     #[test]

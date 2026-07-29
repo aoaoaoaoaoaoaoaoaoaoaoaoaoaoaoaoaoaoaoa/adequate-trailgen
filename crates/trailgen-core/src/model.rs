@@ -1319,7 +1319,7 @@ fn line_progress_m(line: &LineString, point: Coord) -> f64 {
     line_projection(line, point).map_or(0.0, |projection| projection.1)
 }
 
-fn line_projection(line: &LineString, point: Coord) -> Option<(f64, f64, Coord)> {
+pub(crate) fn line_projection(line: &LineString, point: Coord) -> Option<(f64, f64, Coord)> {
     let mut traversed_m = 0.0;
     let mut nearest = None::<(f64, f64, Coord)>;
     for segment in line.points.windows(2) {

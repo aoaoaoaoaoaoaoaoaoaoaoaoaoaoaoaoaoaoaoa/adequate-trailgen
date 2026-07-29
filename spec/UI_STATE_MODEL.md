@@ -1,0 +1,146 @@
+# Workbench State Model
+
+The workbench state is a product of four independent axes:
+
+1. one primary `WorkbenchView`;
+2. at most one map tool;
+3. background operations;
+4. durable project and workbench state.
+
+Only the primary view chooses the toolbar, lower panel, privileged trail
+overlay, and ordinary map-click meaning. Background work never becomes a view.
+Stored candidates never confer visibility by their presence alone.
+
+## Names
+
+- A `Trail` is a user-owned support-point design.
+- A `Candidate` is a transient generated route with an exact editable design.
+- `Search` is an operation. Its retained output is the Results deck.
+- `Focus` is full-map inspection of one candidate or saved trail.
+- `Edit` is one support-point editor. Its origin determines save and return
+  behavior; it does not create separate rendering implementations.
+- `Browse` is the base workbench, showing either the Library or Results deck.
+
+“Find mode” therefore means `Browse(Results)` or `Focus(Candidate)`, optionally
+with a search worker running. `Edit(Candidate)` is an editor, not Find mode.
+
+## Primary View
+
+`WorkbenchView` is a closed sum:
+
+```text
+Browse
+Focus(Candidate(identity) | Saved(trail_id))
+Edit(origin, draft, return_frame)
+```
+
+`origin` is `New`, `Candidate`, or `Saved(trail_id)`. A generated and a manually
+started editor share routing, interaction, rendering, undo, profile, and save
+machinery. Their only differences are initial supports, save destination, and
+return target.
+
+The navigation stack has depth at most three:
+
+```text
+Browse(base viewport)
+  └─ Focus(item, detail viewport)
+       └─ Edit(draft, editor viewport)
+```
+
+`FocusFrame` owns the Browse viewport while Focus is active.
+`EditorReturn` owns the exact view and viewport that opened Edit. Cancel pops
+one frame. Leaving Focus pops the remaining frame. Entering another focused
+item replaces the top item without changing the stored Browse viewport.
+Candidate focus stores the portfolio’s stable identity, never its mutable
+ranking slot. A warmed portfolio may reorder a retained candidate without
+changing Focus. If it removes that identity, Focus returns to Results; an
+editor opened from that candidate instead changes its return target to Results.
+
+Saving Edit enters `Focus(Saved)`. A new manual trail establishes its
+pre-editor viewport as the Browse return frame. Editing a candidate or saved
+trail preserves the existing Browse return frame.
+
+## Presentation
+
+| View | Privileged map content | Lower panel | Search artifacts |
+| --- | --- | --- | --- |
+| `Browse(Library)` | saved trails | library tiles | hidden |
+| `Browse(Results)` | candidate portfolio | result tiles | boundary and segment edicts |
+| `Focus(Candidate)` | one candidate | its elevation profile | boundary and segment edicts |
+| `Focus(Saved)` | one saved trail | its elevation profile | hidden |
+| `Edit(*)` | editor realization and support pins | editor elevation profile | hidden |
+
+The editor row is absolute: an invalid draft must not fall through to Results,
+Library, Focus, segment edicts, or search-boundary rendering. The last valid
+editor realization and profile remain visible while an intermediate draft is
+invalid; the fault is shown and Save is disabled. A subsequent valid edit
+atomically replaces both projections.
+
+A click on the current realized trail inserts a support at that routed leg.
+A click away from it appends a new destination. Dragging replaces one existing
+support. These operations alter the ordered support design; they never mutate
+provider topology.
+
+## Map Tools
+
+The map-tool lane is subordinate to `Browse`:
+
+```text
+Idle | SelectMapArea | DrawSearchBoundary | PlaceTrailhead | DragTrailhead
+```
+
+Arming one tool disarms every other tool and leaves Focus. Edit owns primary
+click and pin dragging, so no map tool may be armed there. Segment edicts own
+plain and Shift-click only in Find mode. Alt-click owns trailhead placement
+only when neither Edit, Focus, nor a scribe has the pointer.
+
+The present scribe implementations retain their own gesture data, so exclusivity
+is enforced at their arming boundary rather than by one enum. The invariant is
+still singular: two active tools are a bug.
+
+## Background Lanes
+
+Search, trail-data mutation, vector acquisition, relief preparation, and
+debounced persistence are orthogonal workers.
+
+- Search is `Idle` or `Striking(serial, progress, stopping)`.
+- A new search may keep the previous portfolio visible.
+- Only events matching the active serial may publish.
+- Stopping preserves the previous portfolio.
+- Parameter or segment-edict changes schedule a warmed replacement search.
+- Search completion installs a prepared portfolio; it does not force Focus.
+- Trail-data replacement requests a project reload and invalidates all
+  graph-bound session state at the workspace boundary.
+
+Worker progress may change status text and repaint demand. It may not change
+the primary view implicitly or perform graph-scale work on the event loop.
+
+## Persistence
+
+The project owns its library, search recipe, downloaded regions, and graph.
+XDG state owns the base Browse viewport, deck, sorting, inspector position, and
+section shutters. Candidates, focus, editor drafts, undo history, map gestures,
+worker progress, and navigation frames are session state.
+
+Only the base Browse viewport is persisted. Focus and Edit may pan or zoom
+without corrupting the viewport to which Back or Cancel returns.
+
+## Transition Laws
+
+| Event | From | To |
+| --- | --- | --- |
+| open candidate tile | `Browse(Results)` | `Focus(Candidate)` |
+| open saved tile | `Browse(Library)` | `Focus(Saved)` |
+| Back / Escape | `Focus(*)` | prior `Browse` viewport |
+| Edit Trail | `Focus(*)` | `Edit(*)` with exact return frame |
+| Draw a Trail | `Browse(*)` | `Edit(New)` |
+| Cancel / Escape | `Edit(*)` | exact opening view and viewport |
+| Save | `Edit(*)` | `Focus(Saved)` |
+| previous / next | `Focus(kind)` | adjacent `Focus(kind)` |
+| parameter change | Find mode | prior results remain; warmed search scheduled |
+| click / Shift-click segment | Find mode | edict toggled; warmed search scheduled |
+| Clear Results | `Browse(Results)` | `Browse(Results)` with no portfolio or edicts |
+
+No transition may discard a return viewport, expose another view’s overlays,
+publish a stale worker generation, or enable saving a draft whose visible
+supports do not realize the saved route.

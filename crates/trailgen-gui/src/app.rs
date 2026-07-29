@@ -65,7 +65,7 @@ pub struct TrailApp {
     candidates: Option<CandidatePortfolio>,
     edicts: EdgeEdicts,
     search_due: Option<Instant>,
-    focus: Option<Focus>,
+    view: WorkbenchView,
     sort: TrailSort,
     gallery: GalleryDeck,
     viewport: Viewport,
@@ -77,7 +77,6 @@ pub struct TrailApp {
     forge_phase: ForgePhase,
     placing_trailhead: bool,
     trailhead_drag: Option<TrailheadDrag>,
-    editor: Option<TrailEditor>,
     vector: VectorField,
     relief: Relief,
     regions: Vec<SurveyRegion>,
@@ -101,7 +100,7 @@ pub struct TrailApp {
 struct TrailEditor {
     name: String,
     origin: EditorOrigin,
-    return_focus: Option<Focus>,
+    return_to: EditorReturn,
     shape: RouteShape,
     support_points: Vec<SupportPoint>,
     realization: Option<TrailRealization>,
@@ -110,6 +109,44 @@ struct TrailEditor {
     undo: VecDeque<TrailSketch>,
     redo: VecDeque<TrailSketch>,
     drag: Option<PinDrag>,
+}
+
+enum WorkbenchView {
+    Browse,
+    Focus(Focus),
+    Edit(Box<TrailEditor>),
+}
+
+impl WorkbenchView {
+    const fn editor(&self) -> Option<&TrailEditor> {
+        match self {
+            Self::Edit(editor) => Some(editor),
+            Self::Browse | Self::Focus(_) => None,
+        }
+    }
+
+    const fn editor_mut(&mut self) -> Option<&mut TrailEditor> {
+        match self {
+            Self::Edit(editor) => Some(editor),
+            Self::Browse | Self::Focus(_) => None,
+        }
+    }
+
+    const fn focus(&self) -> Option<&Focus> {
+        match self {
+            Self::Focus(focus) => Some(focus),
+            Self::Browse | Self::Edit(_) => None,
+        }
+    }
+
+    const fn is_editing(&self) -> bool {
+        matches!(self, Self::Edit(_))
+    }
+}
+
+struct EditorReturn {
+    focus: Option<Focus>,
+    viewport: Viewport,
 }
 
 #[derive(Clone, PartialEq)]
@@ -136,6 +173,10 @@ struct TrailheadGesture {
 }
 
 impl TrailEditor {
+    const fn ready(&self) -> bool {
+        self.fault.is_none() && self.realization.is_some()
+    }
+
     fn sketch(&self) -> TrailSketch {
         TrailSketch {
             support_points: self.support_points.clone(),
@@ -197,6 +238,24 @@ impl TrailEditor {
     fn restore(&mut self, target: TrailSketch) {
         self.support_points = target.support_points;
     }
+
+    fn absorb_realization(
+        &mut self,
+        graph: &TrailGraph,
+        result: trailgen_core::Result<TrailRealization>,
+    ) {
+        match result {
+            Ok(realization) => {
+                self.profile =
+                    ElevationProfile::forge(realization.graph(graph), &realization.route);
+                self.realization = Some(realization);
+                self.fault = None;
+            }
+            Err(err) => {
+                self.fault = Some(err.to_string());
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -208,7 +267,7 @@ enum EditorOrigin {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Focus {
-    Candidate { slot: usize },
+    Candidate { identity: usize },
     Saved(TrailId),
 }
 
@@ -243,7 +302,9 @@ impl FocusFrame {
 enum Fit {
     #[default]
     Graph,
-    Candidate(usize),
+    Candidate {
+        identity: usize,
+    },
     Saved(TrailId),
     None,
 }
@@ -381,7 +442,7 @@ impl TrailApp {
             candidates: None,
             edicts: EdgeEdicts::default(),
             search_due: None,
-            focus: None,
+            view: WorkbenchView::Browse,
             sort: slate.sort,
             gallery: slate.gallery,
             viewport,
@@ -397,7 +458,6 @@ impl TrailApp {
             forge_phase: ForgePhase::Idle,
             placing_trailhead: false,
             trailhead_drag: None,
-            editor: None,
             vector,
             relief,
             regions: corpus.regions,
@@ -465,7 +525,7 @@ impl TrailApp {
         let _name = ui.label(chrome::title(self.name.to_ascii_uppercase()));
         ui.add_space(3.0);
         let projects = ui
-            .add_enabled_ui(self.editor.is_none(), |ui| {
+            .add_enabled_ui(!self.view.is_editing(), |ui| {
                 ui.add_sized(
                     [ui.available_width(), 27.0],
                     chrome::glyph_button("PROJECTS · CTRL+O", false),
@@ -479,7 +539,7 @@ impl TrailApp {
             self.water.click(projects.rect);
         }
         ui.add_space(3.0);
-        let search_title = if self.editor.is_some() {
+        let search_title = if self.view.is_editing() {
             "trail editor"
         } else {
             "find trails"
@@ -507,7 +567,7 @@ impl TrailApp {
     }
 
     fn search_panel(&mut self, ui: &mut egui::Ui) {
-        if self.editor.is_some() {
+        if self.view.is_editing() {
             self.editor_panel(ui);
             return;
         }
@@ -536,7 +596,7 @@ impl TrailApp {
             self.schedule_revision();
         }
 
-        if self.candidates.is_some() {
+        if self.shows_search_context() && self.candidates.is_some() {
             let _edicts = chrome::note(
                 ui,
                 format!(
@@ -744,11 +804,11 @@ impl TrailApp {
     }
 
     fn editor_panel(&mut self, ui: &mut egui::Ui) {
-        let Some(editor) = &self.editor else {
+        let Some(editor) = self.view.editor() else {
             return;
         };
         let count = editor.support_points.len();
-        let ready = editor.realization.is_some();
+        let ready = editor.ready();
         let fault = editor.fault.clone();
         let _mode = chrome::note(ui, format!("{count} SUPPORT POINT(S)"));
         ui.add_space(5.0);
@@ -766,12 +826,12 @@ impl TrailApp {
         ui.add_space(5.0);
         let _undo_row = ui.horizontal(|ui| {
             let can_undo = self
-                .editor
-                .as_ref()
+                .view
+                .editor()
                 .is_some_and(|editor| !editor.undo.is_empty());
             let can_redo = self
-                .editor
-                .as_ref()
+                .view
+                .editor()
                 .is_some_and(|editor| !editor.redo.is_empty());
             let undo = ui.add_enabled(
                 can_undo,
@@ -796,7 +856,7 @@ impl TrailApp {
         );
         if clear.clicked() {
             self.remember_editor();
-            if let Some(editor) = &mut self.editor {
+            if let Some(editor) = self.view.editor_mut() {
                 editor.support_points.clear();
             }
             self.reforge_editor();
@@ -824,7 +884,8 @@ impl TrailApp {
     fn area_panel(&mut self, ui: &mut egui::Ui) {
         let _count = chrome::note(ui, format!("{} DOWNLOADED AREA(S)", self.regions.len()));
         let selecting = self.scribe.active();
-        let mutable = self.editor.is_none() && self.corpus.is_none() && !self.forge_phase.active();
+        let mutable =
+            !self.view.is_editing() && self.corpus.is_none() && !self.forge_phase.active();
         let select = ui.add_enabled(
             !self.offline && mutable,
             chrome::glyph_button(
@@ -897,17 +958,13 @@ impl TrailApp {
         let _counsel = egui::Panel::bottom("trail-counsel")
             .exact_size(42.0)
             .show_inside(ui, |ui| self.counsel(ui));
-        if self.editor.is_some() {
-            if self
-                .editor
-                .as_ref()
-                .is_some_and(|editor| editor.profile.is_some())
-            {
+        if let Some(editor) = self.view.editor() {
+            if editor.profile.is_some() {
                 let _profile = egui::Panel::bottom("trail-profile")
                     .exact_size(PROFILE_HEIGHT)
                     .show_inside(ui, |ui| self.profile(ui));
             }
-        } else if self.focus.is_some() {
+        } else if self.view.focus().is_some() {
             if self.has_profile() {
                 let _profile = egui::Panel::bottom("trail-profile")
                     .exact_size(PROFILE_HEIGHT)
@@ -932,7 +989,7 @@ impl TrailApp {
                 "Drag a rectangle across the map to download its trails. Esc cancels."
             } else if self.boundary_scribe.active() {
                 "Draw a free-hand loop around the allowed search area. Release to finish; Esc cancels."
-            } else if let Some(editor) = &self.editor {
+            } else if let Some(editor) = self.view.editor() {
                 if editor.support_points.is_empty() {
                     "Click a trail to place the first support point. Esc cancels."
                 } else {
@@ -955,9 +1012,9 @@ impl TrailApp {
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         ui.add_space(8.0);
-        if self.editor.is_some() {
+        if self.view.is_editing() {
             self.editor_toolbar(ui);
-        } else if self.focus.is_some() {
+        } else if self.view.focus().is_some() {
             self.focus_toolbar(ui);
         } else {
             self.gallery_toolbar(ui);
@@ -1056,7 +1113,7 @@ impl TrailApp {
                     );
                 }
             }
-            match &self.focus {
+            match self.view.focus() {
                 Some(Focus::Candidate { .. }) => {
                     let edit = chrome::glyph(ui, "EDIT TRAIL", false);
                     if edit.clicked() {
@@ -1090,13 +1147,14 @@ impl TrailApp {
     }
 
     fn editor_toolbar(&self, ui: &mut egui::Ui) {
-        let Some(editor) = &self.editor else {
+        let Some(editor) = self.view.editor() else {
             return;
         };
         let name = editor.name.to_ascii_uppercase();
         let summary = editor
-            .realization
-            .as_ref()
+            .ready()
+            .then_some(editor)
+            .and_then(|editor| editor.realization.as_ref())
             .map(|realization| metrics_summary(&realization.route.metrics));
         let _row = ui.horizontal(|ui| {
             let _name = toolbar_text(ui, name, chrome::TEXT);
@@ -1211,30 +1269,31 @@ impl TrailApp {
                 let _rack = ui.horizontal(|ui| {
                     ui.add_space(6.0);
                     for slot in order.iter().copied() {
+                        let identity = run.identities[slot];
                         let active = self
-                            .focus
-                            .as_ref()
-                            .is_some_and(|focus| *focus == Focus::Candidate { slot });
+                            .view
+                            .focus()
+                            .is_some_and(|focus| *focus == Focus::Candidate { identity });
                         let response = gallery::candidate_tile(
                             ui,
                             &run.routes[slot],
                             &run.previews[slot],
-                            run.identities[slot],
+                            identity,
                             active,
                         );
                         if response.hovered() {
                             self.water.hover(("candidate", slot), response.rect);
                         }
                         if response.clicked() {
-                            opened = Some((slot, response.rect));
+                            opened = Some((identity, response.rect));
                         }
                     }
                     ui.add_space(6.0);
                 });
             });
         self.water.heave(ui.ctx(), scroll.state.offset.x);
-        if let Some((slot, rect)) = opened {
-            self.enter_focus(Focus::Candidate { slot });
+        if let Some((identity, rect)) = opened {
+            self.enter_focus(Focus::Candidate { identity });
             self.water.click(rect);
         }
     }
@@ -1242,21 +1301,21 @@ impl TrailApp {
     fn profile(&mut self, ui: &mut egui::Ui) {
         ui.add_space(5.0);
         let _label = ui.label(chrome::eyebrow("ELEVATION · TERRAIN · GRADE"));
-        let saved_profile = match &self.focus {
+        let saved_profile = match self.view.focus() {
             Some(Focus::Saved(id)) => self
                 .library
                 .trail(id)
                 .and_then(ElevationProfile::forge_saved),
             _ => None,
         };
-        let profile = if let Some(editor) = &self.editor {
+        let profile = if let Some(editor) = self.view.editor() {
             editor.profile.as_ref()
         } else {
-            match &self.focus {
-                Some(Focus::Candidate { slot }) => self
+            match self.view.focus() {
+                Some(Focus::Candidate { identity }) => self
                     .candidates
                     .as_ref()
-                    .and_then(|run| run.profiles.get(*slot))
+                    .and_then(|run| run.slot(*identity).and_then(|slot| run.profiles.get(slot)))
                     .and_then(Option::as_deref),
                 Some(Focus::Saved(_)) => saved_profile.as_ref(),
                 None => None,
@@ -1285,8 +1344,8 @@ impl TrailApp {
         }
         let trailhead_gesture = self.interact_trailhead(ui, rect);
         let editor_dragging = self
-            .editor
-            .as_ref()
+            .view
+            .editor()
             .and_then(|editor| editor.drag.as_ref())
             .is_some();
         let before = self.viewport;
@@ -1326,10 +1385,14 @@ impl TrailApp {
             );
         }
         self.paint_trails(&canvas, rect);
-        self.paint_edicts(&canvas, rect);
+        if self.shows_search_context() {
+            self.paint_edicts(&canvas, rect);
+        }
         annotations.paint(&canvas);
-        self.paint_search_boundary(&canvas, rect);
-        if self.editor.is_some() {
+        if self.shows_search_context() {
+            self.paint_search_boundary(&canvas, rect);
+        }
+        if self.view.is_editing() {
             self.paint_support_points(&canvas, rect);
         } else if let Some(trailhead) = self.active_trailhead() {
             let (coord, seized) = self
@@ -1406,27 +1469,24 @@ impl TrailApp {
     }
 
     fn paint_trails(&mut self, painter: &egui::Painter, rect: egui::Rect) {
-        if let Some(realization) = self
-            .editor
-            .as_ref()
-            .and_then(|editor| editor.realization.as_ref())
-        {
-            map::paint_route(
-                painter,
-                realization.graph(&self.graph),
-                &realization.route,
-                self.viewport,
-                rect,
-                map::SELECTED_TRAIL_COLOR,
-            );
-            return;
-        }
-        match &self.focus {
-            Some(Focus::Candidate { slot }) => {
+        match &self.view {
+            WorkbenchView::Edit(editor) => {
+                if let Some(realization) = &editor.realization {
+                    map::paint_route(
+                        painter,
+                        realization.graph(&self.graph),
+                        &realization.route,
+                        self.viewport,
+                        rect,
+                        map::SELECTED_TRAIL_COLOR,
+                    );
+                }
+            }
+            WorkbenchView::Focus(Focus::Candidate { identity }) => {
                 if let Some(route) = self
                     .candidates
                     .as_ref()
-                    .and_then(|run| run.routes.get(*slot))
+                    .and_then(|run| run.slot(*identity).and_then(|slot| run.routes.get(slot)))
                 {
                     map::paint_route(
                         painter,
@@ -1438,7 +1498,7 @@ impl TrailApp {
                     );
                 }
             }
-            Some(Focus::Saved(id)) => {
+            WorkbenchView::Focus(Focus::Saved(id)) => {
                 if let Some(trail) = self.library.trail(id) {
                     map::paint_saved_trail(
                         painter,
@@ -1449,13 +1509,13 @@ impl TrailApp {
                     );
                 }
             }
-            None if self.gallery == GalleryDeck::Results => {
+            WorkbenchView::Browse if self.gallery == GalleryDeck::Results => {
                 if let Some(run) = &mut self.candidates {
                     run.overlay
                         .paint(painter, map::MapFramePlan::forge(self.viewport, rect));
                 }
             }
-            None => {
+            WorkbenchView::Browse => {
                 for trail in self.library.trails() {
                     map::paint_saved_trail(
                         painter,
@@ -1492,6 +1552,16 @@ impl TrailApp {
         }
     }
 
+    const fn shows_search_context(&self) -> bool {
+        matches!(
+            (&self.view, self.gallery),
+            (
+                WorkbenchView::Browse | WorkbenchView::Focus(Focus::Candidate { .. }),
+                GalleryDeck::Results
+            )
+        )
+    }
+
     fn settle_map_gestures(
         &mut self,
         ui: &egui::Ui,
@@ -1503,8 +1573,8 @@ impl TrailApp {
     ) {
         if let Some(pointer) = pointer
             && let Some((slot, grab)) = self
-                .editor
-                .as_ref()
+                .view
+                .editor()
                 .and_then(|editor| editor.drag.as_ref())
                 .map(|drag| (drag.slot, drag.grab))
         {
@@ -1527,7 +1597,7 @@ impl TrailApp {
         if alt_click && let Some(pointer) = pointer {
             self.place_trailhead(map::coord_at(self.viewport, rect, pointer), pointer);
         } else if response.clicked()
-            && self.editor.is_some()
+            && self.view.is_editing()
             && support_under_pointer.is_none()
             && let Some(pointer) = pointer
         {
@@ -1539,8 +1609,9 @@ impl TrailApp {
             self.place_trailhead(map::coord_at(self.viewport, rect, pointer), pointer);
         } else if response.clicked_by(egui::PointerButton::Primary)
             && !trailhead.captured
-            && self.editor.is_none()
+            && !self.view.is_editing()
             && self.candidates.is_some()
+            && self.shows_search_context()
             && !self.scribe.active()
             && !self.boundary_scribe.active()
             && let Some(pointer) = pointer
@@ -1553,8 +1624,8 @@ impl TrailApp {
     }
 
     const fn trailhead_input_available(&self) -> bool {
-        self.editor.is_none()
-            && self.focus.is_none()
+        !self.view.is_editing()
+            && self.view.focus().is_none()
             && self.corpus.is_none()
             && !self.scribe.active()
             && !self.boundary_scribe.active()
@@ -1629,7 +1700,8 @@ impl TrailApp {
         slot: Option<usize>,
         rect: egui::Rect,
     ) {
-        let (Some(pointer), Some(slot), Some(editor)) = (pointer, slot, &mut self.editor) else {
+        let (Some(pointer), Some(slot), Some(editor)) = (pointer, slot, self.view.editor_mut())
+        else {
             return;
         };
         let anchor = map::screen_at(
@@ -1647,8 +1719,8 @@ impl TrailApp {
     fn paint_map_header(&self, painter: &egui::Painter, rect: egui::Rect) {
         let text = if self.scribe.active() {
             "DRAW A MAP AREA".to_owned()
-        } else if self.editor.is_some() {
-            "MANUAL TRAIL EDITOR".to_owned()
+        } else if self.view.is_editing() {
+            "TRAIL EDITOR".to_owned()
         } else if self.placing_trailhead {
             "CLICK A TRAIL TO PLACE THE TRAILHEAD".to_owned()
         } else if let Some((name, _)) = self.focus_summary() {
@@ -1765,8 +1837,8 @@ impl TrailApp {
     }
 
     fn editor_support_at(&self, pointer: egui::Pos2, rect: egui::Rect) -> Option<usize> {
-        self.editor
-            .as_ref()?
+        self.view
+            .editor()?
             .support_points
             .iter()
             .enumerate()
@@ -1781,7 +1853,7 @@ impl TrailApp {
     }
 
     fn paint_support_points(&self, painter: &egui::Painter, rect: egui::Rect) {
-        let Some(editor) = &self.editor else {
+        let Some(editor) = self.view.editor() else {
             return;
         };
         for (slot, support) in editor.support_points.iter().enumerate() {
@@ -1807,18 +1879,28 @@ impl TrailApp {
             return;
         };
         if projection.distance_m > TRAILHEAD_SNAP_M {
-            if let Some(editor) = &mut self.editor {
+            if let Some(editor) = self.view.editor_mut() {
                 editor.fault = Some("Move closer to a downloaded trail.".to_owned());
             }
             return;
         }
         let support = SupportPoint::forge(projection.coord)
             .expect("edge projections contain valid coordinates");
-        let Some(editor) = &self.editor else {
+        let insertion = slot.is_none().then(|| {
+            self.view
+                .editor()
+                .and_then(|editor| editor.realization.as_ref())
+                .and_then(|realization| realization.support_insertion(&self.graph, requested))
+                .filter(|insertion| {
+                    insertion.distance_m <= map::meters_per_point(self.viewport) * 11.0
+                })
+                .map(|insertion| insertion.slot)
+        });
+        let Some(editor) = self.view.editor() else {
             return;
         };
         if slot.map_or_else(
-            || editor.support_points.last() == Some(&support),
+            || editor.support_points.contains(&support),
             |slot| editor.support_points.get(slot) == Some(&support),
         ) {
             return;
@@ -1826,35 +1908,36 @@ impl TrailApp {
         if remember {
             self.remember_editor();
         }
-        let editor = self.editor.as_mut().expect("editor existence checked");
+        let editor = self.view.editor_mut().expect("editor existence checked");
         if let Some(slot) = slot {
             editor.support_points[slot] = support;
         } else {
-            editor.support_points.push(support);
+            let slot = insertion.flatten().unwrap_or(editor.support_points.len());
+            editor.support_points.insert(slot, support);
         }
         self.reforge_editor();
     }
 
     fn remember_editor(&mut self) {
-        if let Some(editor) = &mut self.editor {
+        if let Some(editor) = self.view.editor_mut() {
             editor.checkpoint();
         }
     }
 
     fn finish_editor_drag(&mut self) {
-        if let Some(editor) = &mut self.editor {
+        if let Some(editor) = self.view.editor_mut() {
             editor.finish_drag();
         }
     }
 
     fn undo_editor(&mut self) {
-        if self.editor.as_mut().is_some_and(TrailEditor::undo) {
+        if self.view.editor_mut().is_some_and(TrailEditor::undo) {
             self.reforge_editor();
         }
     }
 
     fn redo_editor(&mut self) {
-        if self.editor.as_mut().is_some_and(TrailEditor::redo) {
+        if self.view.editor_mut().is_some_and(TrailEditor::redo) {
             self.reforge_editor();
         }
     }
@@ -1863,7 +1946,7 @@ impl TrailApp {
         if self.candidates.is_none() {
             return;
         }
-        if matches!(self.focus, Some(Focus::Candidate { .. })) {
+        if matches!(self.view, WorkbenchView::Focus(Focus::Candidate { .. })) {
             self.leave_focus();
             self.gallery = GalleryDeck::Results;
         }
@@ -1903,7 +1986,7 @@ impl TrailApp {
             self.edicts.toggle_required(projection.edge);
         }
         let disposition = self.edicts.disposition(projection.edge);
-        self.focus = None;
+        self.view = WorkbenchView::Browse;
         self.focus_frame = FocusFrame::default();
         self.fit = Fit::None;
         self.gallery = GalleryDeck::Results;
@@ -2023,6 +2106,7 @@ impl TrailApp {
                     self.forge_phase = ForgePhase::Idle;
                     let count = portfolio.routes.len();
                     self.candidates = Some(*portfolio);
+                    self.reconcile_candidate_focus();
                     self.status = if count == 0 {
                         format!("No trails matched in {}.", duration(elapsed))
                     } else {
@@ -2072,6 +2156,39 @@ impl TrailApp {
         }
         self.vector.absorb();
         self.relief.absorb();
+    }
+
+    fn reconcile_candidate_focus(&mut self) {
+        let alive = |identity| {
+            self.candidates
+                .as_ref()
+                .is_some_and(|run| run.slot(identity).is_some())
+        };
+        let focused_missing = matches!(
+            self.view.focus(),
+            Some(Focus::Candidate { identity }) if !alive(*identity)
+        );
+        if focused_missing {
+            self.leave_focus();
+            self.gallery = GalleryDeck::Results;
+            return;
+        }
+        let returning_missing = self
+            .view
+            .editor()
+            .and_then(|editor| editor.return_to.focus.as_ref())
+            .is_some_and(
+                |focus| matches!(focus, Focus::Candidate { identity } if !alive(*identity)),
+            );
+        if returning_missing {
+            let viewport = self.focus_frame.pop();
+            if let Some(editor) = self.view.editor_mut() {
+                editor.return_to.focus = None;
+                if let Some(viewport) = viewport {
+                    editor.return_to.viewport = viewport;
+                }
+            }
+        }
     }
 
     fn strike_corpus(&mut self, ctx: &egui::Context, mutation: TrailDataMutation) -> Result<()> {
@@ -2127,7 +2244,10 @@ impl TrailApp {
     }
 
     fn save_focused_candidate(&mut self) {
-        let Some(Focus::Candidate { slot }) = self.focus.clone() else {
+        let Some(Focus::Candidate { identity }) = self.view.focus().cloned() else {
+            return;
+        };
+        let Some(slot) = self.candidates.as_ref().and_then(|run| run.slot(identity)) else {
             return;
         };
         let Some(route) = self
@@ -2169,11 +2289,11 @@ impl TrailApp {
     }
 
     fn focus_design(&self) -> Option<Trail> {
-        match &self.focus {
-            Some(Focus::Candidate { slot }) => self
+        match self.view.focus() {
+            Some(Focus::Candidate { identity }) => self
                 .candidates
                 .as_ref()
-                .and_then(|run| run.designs.get(*slot))
+                .and_then(|run| run.slot(*identity).and_then(|slot| run.designs.get(slot)))
                 .map(|design| design.as_ref().clone()),
             Some(Focus::Saved(id)) => self.library.trail(id).and_then(SavedTrail::design),
             None => None,
@@ -2188,7 +2308,7 @@ impl TrailApp {
         let Some((name, _)) = self.focus_summary() else {
             return;
         };
-        let origin = match self.focus.as_ref() {
+        let origin = match self.view.focus() {
             Some(Focus::Candidate { .. }) => EditorOrigin::Candidate,
             Some(Focus::Saved(id)) => EditorOrigin::Saved(id.clone()),
             None => return,
@@ -2197,7 +2317,14 @@ impl TrailApp {
     }
 
     fn begin_editor(&mut self, origin: EditorOrigin, seed: Option<(String, Trail)>) {
-        let return_focus = self.focus.take();
+        let return_focus = match std::mem::replace(&mut self.view, WorkbenchView::Browse) {
+            WorkbenchView::Browse => None,
+            WorkbenchView::Focus(focus) => Some(focus),
+            WorkbenchView::Edit(editor) => {
+                self.view = WorkbenchView::Edit(editor);
+                return;
+            }
+        };
         let (name, shape, support_points) = seed.map_or_else(
             || ("manual trail".to_owned(), RouteShape::Open, Vec::new()),
             |(name, trail)| (name, trail.shape, trail.support_points),
@@ -2207,10 +2334,13 @@ impl TrailApp {
         self.placing_trailhead = false;
         self.trailhead_drag = None;
         self.fit = Fit::None;
-        self.editor = Some(TrailEditor {
+        self.view = WorkbenchView::Edit(Box::new(TrailEditor {
             name,
             origin,
-            return_focus,
+            return_to: EditorReturn {
+                focus: return_focus,
+                viewport: self.viewport,
+            },
             shape,
             support_points,
             realization: None,
@@ -2219,9 +2349,9 @@ impl TrailApp {
             undo: VecDeque::new(),
             redo: VecDeque::new(),
             drag: None,
-        });
+        }));
         self.reforge_editor();
-        "Manual editor ready. Place support points on the map.".clone_into(&mut self.status);
+        "Trail editor ready. Place support points on the map.".clone_into(&mut self.status);
     }
 
     fn manual_constraints(&self, shape: RouteShape) -> LoopConstraints {
@@ -2229,14 +2359,14 @@ impl TrailApp {
     }
 
     fn reforge_editor(&mut self) {
-        let Some(editor) = &self.editor else {
+        let Some(editor) = self.view.editor() else {
             return;
         };
         let name = editor.name.clone();
         let shape = editor.shape;
         let support_points = editor.support_points.clone();
         if support_points.len() < 2 {
-            if let Some(editor) = &mut self.editor {
+            if let Some(editor) = self.view.editor_mut() {
                 editor.realization = None;
                 editor.profile = None;
                 editor.fault = None;
@@ -2251,32 +2381,21 @@ impl TrailApp {
                 TRAILHEAD_SNAP_M,
             )
         });
-        if let Some(editor) = &mut self.editor {
-            match result {
-                Ok(realization) => {
-                    editor.profile =
-                        ElevationProfile::forge(realization.graph(&self.graph), &realization.route);
-                    editor.realization = Some(realization);
-                    editor.fault = None;
-                }
-                Err(err) => {
-                    editor.realization = None;
-                    editor.profile = None;
-                    editor.fault = Some(err.to_string());
-                }
-            }
+        if let Some(editor) = self.view.editor_mut() {
+            editor.absorb_realization(&self.graph, result);
         }
     }
 
     fn save_editor(&mut self) {
-        let Some(editor) = &self.editor else {
+        let Some(editor) = self.view.editor().filter(|editor| editor.ready()) else {
             return;
         };
         let Some(realization) = editor.realization.clone() else {
             return;
         };
         let origin = editor.origin.clone();
-        let had_focus = editor.return_focus.is_some();
+        let had_focus = editor.return_to.focus.is_some();
+        let return_viewport = editor.return_to.viewport;
         let result = match &origin {
             EditorOrigin::New | EditorOrigin::Candidate => {
                 self.library.promote_realization(&self.graph, &realization)
@@ -2288,11 +2407,10 @@ impl TrailApp {
         };
         match result {
             Ok(id) => {
-                self.editor = None;
                 if !had_focus {
-                    self.focus_frame.push(self.viewport);
+                    self.focus_frame.push(return_viewport);
                 }
-                self.focus = Some(Focus::Saved(id.clone()));
+                self.view = WorkbenchView::Focus(Focus::Saved(id.clone()));
                 self.fit = Fit::Saved(id);
                 self.gallery = GalleryDeck::Library;
                 self.flush_library();
@@ -2303,16 +2421,24 @@ impl TrailApp {
     }
 
     fn cancel_editor(&mut self) {
-        let Some(editor) = self.editor.take() else {
-            return;
+        let editor = match std::mem::replace(&mut self.view, WorkbenchView::Browse) {
+            WorkbenchView::Edit(editor) => editor,
+            other => {
+                self.view = other;
+                return;
+            }
         };
-        self.focus = editor.return_focus;
+        self.viewport = editor.return_to.viewport;
+        self.view = editor
+            .return_to
+            .focus
+            .map_or(WorkbenchView::Browse, WorkbenchView::Focus);
         self.fit = Fit::None;
-        "Manual edit cancelled.".clone_into(&mut self.status);
+        "Trail edit cancelled.".clone_into(&mut self.status);
     }
 
     fn delete_focused_trail(&mut self) {
-        let Some(Focus::Saved(id)) = self.focus.clone() else {
+        let Some(Focus::Saved(id)) = self.view.focus().cloned() else {
             return;
         };
         if self.library.remove_trail(&id) {
@@ -2323,11 +2449,11 @@ impl TrailApp {
     }
 
     fn focus_summary(&self) -> Option<(String, RouteMetrics)> {
-        match &self.focus {
-            Some(Focus::Candidate { slot }) => self
+        match self.view.focus() {
+            Some(Focus::Candidate { identity }) => self
                 .candidates
                 .as_ref()
-                .and_then(|run| run.routes.get(*slot))
+                .and_then(|run| run.slot(*identity).and_then(|slot| run.routes.get(slot)))
                 .map(|route| (route.name.clone(), route.metrics.clone())),
             Some(Focus::Saved(id)) => self
                 .library
@@ -2338,11 +2464,11 @@ impl TrailApp {
     }
 
     fn focus_standing(&self) -> Option<TrailStanding> {
-        match &self.focus {
-            Some(Focus::Candidate { slot }) => self
+        match self.view.focus() {
+            Some(Focus::Candidate { identity }) => self
                 .candidates
                 .as_ref()
-                .and_then(|run| run.routes.get(*slot))
+                .and_then(|run| run.slot(*identity).and_then(|slot| run.routes.get(slot)))
                 .and_then(|route| {
                     map::frailest_standing(
                         route
@@ -2359,7 +2485,7 @@ impl TrailApp {
     }
 
     fn focus_count(&self) -> usize {
-        match &self.focus {
+        match self.view.focus() {
             Some(Focus::Candidate { .. }) => {
                 self.candidates.as_ref().map_or(0, |run| run.routes.len())
             }
@@ -2369,11 +2495,11 @@ impl TrailApp {
     }
 
     fn has_profile(&self) -> bool {
-        match &self.focus {
-            Some(Focus::Candidate { slot }) => self
+        match self.view.focus() {
+            Some(Focus::Candidate { identity }) => self
                 .candidates
                 .as_ref()
-                .and_then(|run| run.profiles.get(*slot))
+                .and_then(|run| run.slot(*identity).and_then(|slot| run.profiles.get(slot)))
                 .is_some_and(Option::is_some),
             Some(Focus::Saved(id)) => self
                 .library
@@ -2385,16 +2511,21 @@ impl TrailApp {
     }
 
     fn step_focus(&mut self, delta: isize) {
-        let next = match self.focus.clone() {
-            Some(Focus::Candidate { slot }) => {
+        let next = match self.view.focus().cloned() {
+            Some(Focus::Candidate { identity }) => {
                 let Some(run) = &self.candidates else {
+                    return;
+                };
+                let Some(slot) = run.slot(identity) else {
                     return;
                 };
                 let order = gallery::order_candidates(&run.routes, self.sort);
                 let Some(next) = cyclic_step(&order, slot, delta) else {
                     return;
                 };
-                Focus::Candidate { slot: next }
+                Focus::Candidate {
+                    identity: run.identities[next],
+                }
             }
             Some(Focus::Saved(id)) => {
                 let trails = self.library.trails().iter().collect::<Vec<_>>();
@@ -2414,23 +2545,30 @@ impl TrailApp {
             None => return,
         };
         self.fit = match &next {
-            Focus::Candidate { slot } => Fit::Candidate(*slot),
+            Focus::Candidate { identity } => Fit::Candidate {
+                identity: *identity,
+            },
             Focus::Saved(id) => Fit::Saved(id.clone()),
         };
-        self.focus = Some(next);
+        self.view = WorkbenchView::Focus(next);
     }
 
     fn enter_focus(&mut self, focus: Focus) {
         self.focus_frame.push(self.viewport);
         self.fit = match &focus {
-            Focus::Candidate { slot } => Fit::Candidate(*slot),
+            Focus::Candidate { identity } => Fit::Candidate {
+                identity: *identity,
+            },
             Focus::Saved(id) => Fit::Saved(id.clone()),
         };
-        self.focus = Some(focus);
+        self.view = WorkbenchView::Focus(focus);
     }
 
     fn leave_focus(&mut self) {
-        self.focus = None;
+        if !matches!(self.view, WorkbenchView::Focus(_)) {
+            return;
+        }
+        self.view = WorkbenchView::Browse;
         if let Some(viewport) = self.focus_frame.pop() {
             self.viewport = viewport;
         }
@@ -2440,10 +2578,10 @@ impl TrailApp {
     fn apply_fit(&mut self, rect: egui::Rect) {
         let viewport = match &self.fit {
             Fit::Graph => Some(Viewport::fit_graph(&self.graph, rect)),
-            Fit::Candidate(slot) => self
+            Fit::Candidate { identity } => self
                 .candidates
                 .as_ref()
-                .and_then(|run| run.routes.get(*slot))
+                .and_then(|run| run.slot(*identity).and_then(|slot| run.routes.get(slot)))
                 .map(|route| Viewport::fit_route(&self.graph, route, rect)),
             Fit::Saved(id) => self
                 .library
@@ -2469,21 +2607,18 @@ impl TrailApp {
             input.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Z)
                 || input.consume_key(egui::Modifiers::CTRL, egui::Key::Y)
         });
-        if redo && self.editor.is_some() {
+        if redo && self.view.is_editing() {
             self.redo_editor();
             return;
         }
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Z))
-            && self.editor.is_some()
+            && self.view.is_editing()
         {
             self.undo_editor();
             return;
         }
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::S))
-            && self
-                .editor
-                .as_ref()
-                .is_some_and(|editor| editor.realization.is_some())
+            && self.view.editor().is_some_and(TrailEditor::ready)
         {
             self.save_editor();
             return;
@@ -2494,7 +2629,7 @@ impl TrailApp {
         });
         if find {
             let search_open = self.shutters.get("search").copied().unwrap_or(true);
-            if search_open && self.editor.is_none() && !self.forge_phase.active() {
+            if search_open && !self.view.is_editing() && !self.forge_phase.active() {
                 self.strike();
             }
             return;
@@ -2505,7 +2640,7 @@ impl TrailApp {
             self.stop_search();
             return;
         }
-        if escape && self.editor.is_some() {
+        if escape && self.view.is_editing() {
             self.cancel_editor();
             return;
         }
@@ -2525,10 +2660,10 @@ impl TrailApp {
             self.placing_trailhead = false;
             return;
         }
-        if escape && self.focus.is_some() {
+        if escape && self.view.focus().is_some() {
             self.leave_focus();
         }
-        if self.focus.is_none() {
+        if self.view.focus().is_none() {
             return;
         }
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft)) {
@@ -2571,9 +2706,17 @@ impl TrailApp {
     }
 
     fn snapshot(&self) -> Slate {
+        let viewport = match &self.view {
+            WorkbenchView::Edit(editor) if editor.return_to.focus.is_none() => {
+                editor.return_to.viewport
+            }
+            WorkbenchView::Browse | WorkbenchView::Focus(_) | WorkbenchView::Edit(_) => {
+                self.focus_frame.base(self.viewport)
+            }
+        };
         Slate {
             project: self.root.clone(),
-            viewport: Some(self.focus_frame.base(self.viewport)),
+            viewport: Some(viewport),
             shutters: self.shutters.clone(),
             inspector_scroll: self.inspector_scroll,
             sort: self.sort,
@@ -2857,7 +3000,13 @@ mod tests {
         let mut editor = TrailEditor {
             name: "test".to_owned(),
             origin: EditorOrigin::New,
-            return_focus: None,
+            return_to: EditorReturn {
+                focus: None,
+                viewport: Viewport {
+                    center: [0.5, 0.5],
+                    zoom: 2.0,
+                },
+            },
             shape: RouteShape::OutAndBack,
             support_points: vec![first],
             realization: None,
@@ -2887,5 +3036,74 @@ mod tests {
         assert_eq!(editor.support_points, vec![first]);
         assert!(editor.redo());
         assert_eq!(editor.support_points, vec![second]);
+    }
+
+    #[test]
+    fn invalid_editor_draft_retains_last_valid_route_and_profile() -> anyhow::Result<()> {
+        let graph = trailgen_core::GraphBuilder::default().build(
+            &trailgen_core::io::geojson::network_from_str(include_str!(
+                "../../trailgen-core/tests/fixtures/mini_network.geojson"
+            ))?,
+        )?;
+        let constraints = LoopConstraints {
+            min_distance_m: 0.0,
+            max_distance_m: 20_000.0,
+            ..LoopConstraints::default()
+        };
+        let route = SolverKind::Exact
+            .solve(
+                SearchParams::default(),
+                &graph,
+                trailgen_core::VertexId(0),
+                &constraints,
+                1,
+            )
+            .into_iter()
+            .next()
+            .expect("fixture has a loop");
+        let trail = Trail::infer(&graph, &route, trailgen_core::RoutingLaw::default())
+            .expect("fixture route has an exact design");
+        let realization = trail.realize("candidate", &graph, &constraints, 1.0)?;
+        let profile = ElevationProfile::forge(&graph, &route).expect("fixture has elevation");
+        let expected_edges = realization.route.edges.clone();
+        let mut editor = TrailEditor {
+            name: "candidate".to_owned(),
+            origin: EditorOrigin::Candidate,
+            return_to: EditorReturn {
+                focus: Some(Focus::Candidate { identity: 0 }),
+                viewport: Viewport {
+                    center: [0.5, 0.5],
+                    zoom: 14.0,
+                },
+            },
+            shape: RouteShape::Loop,
+            support_points: trail.support_points,
+            realization: Some(realization),
+            profile: Some(profile),
+            fault: None,
+            undo: VecDeque::new(),
+            redo: VecDeque::new(),
+            drag: None,
+        };
+
+        editor.absorb_realization(
+            &graph,
+            Err(trailgen_core::TrailgenError::InvalidData(
+                "transient unroutable draft".to_owned(),
+            )),
+        );
+
+        assert!(!editor.ready(), "an invalid draft cannot be saved");
+        assert!(editor.profile.is_some(), "the last valid profile remains");
+        assert_eq!(
+            editor
+                .realization
+                .as_ref()
+                .expect("last valid route remains")
+                .route
+                .edges,
+            expected_edges
+        );
+        Ok(())
     }
 }
