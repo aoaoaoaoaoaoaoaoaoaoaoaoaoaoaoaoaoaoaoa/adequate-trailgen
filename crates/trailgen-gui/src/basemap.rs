@@ -1369,16 +1369,18 @@ impl Forge {
                     );
                 }
                 MvtGeometry::Point(point) => {
-                    if let (Some(name), Some(style)) =
-                        (tags.name, water_label_style(tags.kind, tags.min_zoom))
-                    {
+                    if let (Some(name), Some(style)) = (
+                        tags.name,
+                        water_label_style(tags.kind, tags.detail, tags.min_zoom),
+                    ) {
                         self.push_label(point, extent, name, style, LabelKind::Lake);
                     }
                 }
                 MvtGeometry::MultiPoint(points) => {
-                    if let (Some(name), Some(style)) =
-                        (tags.name, water_label_style(tags.kind, tags.min_zoom))
-                    {
+                    if let (Some(name), Some(style)) = (
+                        tags.name,
+                        water_label_style(tags.kind, tags.detail, tags.min_zoom),
+                    ) {
                         for point in points {
                             self.push_label(point, extent, name, style, LabelKind::Lake);
                         }
@@ -1493,6 +1495,16 @@ impl Forge {
                     &text,
                     peak_label_style(tags.min_zoom),
                     LabelKind::Peak,
+                );
+            }
+            Some("lake" | "pond" | "reservoir") => {
+                let Some(name) = tags.name else { return };
+                self.push_label(
+                    point,
+                    extent,
+                    name,
+                    pond_label_style(tags.min_zoom),
+                    LabelKind::Lake,
                 );
             }
             _ => {}
@@ -1763,25 +1775,40 @@ struct LabelStyle {
     onset_zoom: f32,
 }
 
-fn water_label_style(kind: Option<&str>, min_zoom: Option<f64>) -> Option<LabelStyle> {
+const LANDMARK_DISCLOSURE_LEAD: f64 = 0.75;
+
+fn water_label_style(
+    kind: Option<&str>,
+    detail: Option<&str>,
+    min_zoom: Option<f64>,
+) -> Option<LabelStyle> {
+    let kind = detail.or(kind);
     let (rank, size, onset) = match kind {
         Some("lake" | "reservoir") => (650, 11.8, 9.5),
-        Some("pond") => (760, 10.8, 12.0),
+        Some("pond") => return Some(pond_label_style(min_zoom)),
         Some("water") | None => (700, 11.2, 10.5),
         Some(_) => return None,
     };
     Some(LabelStyle {
         rank,
         size,
-        onset_zoom: disclosure_onset(min_zoom, onset),
+        onset_zoom: landmark_onset(min_zoom, onset),
     })
+}
+
+fn pond_label_style(min_zoom: Option<f64>) -> LabelStyle {
+    LabelStyle {
+        rank: 760,
+        size: 10.8,
+        onset_zoom: landmark_onset(min_zoom, 11.25),
+    }
 }
 
 fn peak_label_style(min_zoom: Option<f64>) -> LabelStyle {
     LabelStyle {
         rank: 620,
         size: 11.4,
-        onset_zoom: disclosure_onset(min_zoom, 10.5),
+        onset_zoom: landmark_onset(min_zoom, 9.75),
     }
 }
 
@@ -1833,6 +1860,10 @@ fn disclosure_onset(provider: Option<f64>, style: f64) -> f32 {
     provider.unwrap_or(style).max(style) as f32
 }
 
+fn landmark_onset(provider: Option<f64>, style: f64) -> f32 {
+    disclosure_onset(provider.map(|zoom| zoom - LANDMARK_DISCLOSURE_LEAD), style)
+}
+
 #[derive(Clone, Copy, Default)]
 struct FeatureTags<'a> {
     kind: Option<&'a str>,
@@ -1859,7 +1890,7 @@ impl<'a> FeatureTags<'a> {
                 ("population_rank", value) => tags.population_rank = numeric(value),
                 ("min_zoom", value) => tags.min_zoom = numeric(value),
                 ("access", MvtValueRef::String(value)) => tags.access = Some(value),
-                ("ele", value) => tags.elevation_m = numeric(value),
+                ("ele" | "elevation", value) => tags.elevation_m = numeric(value),
                 _ => {}
             }
         }
@@ -2507,14 +2538,45 @@ mod tests {
     }
 
     #[test]
-    fn lake_and_peak_labels_enter_at_terrain_reading_scale() -> Result<()> {
-        let lake = water_label_style(Some("lake"), Some(9.0)).context("lake label")?;
-        let pond = water_label_style(Some("pond"), None).context("pond label")?;
-        let peak = peak_label_style(Some(10.0));
-        assert!(lake.onset_zoom < pond.onset_zoom);
+    fn natural_landmarks_preempt_provider_disclosure_by_three_quarters() -> Result<()> {
+        let lake =
+            water_label_style(Some("water"), Some("lake"), Some(13.0)).context("lake label")?;
+        let pond =
+            water_label_style(Some("water"), Some("pond"), Some(13.0)).context("pond label")?;
+        let peak = peak_label_style(Some(13.0));
+        assert!((lake.onset_zoom - 12.25).abs() < f32::EPSILON);
+        assert!((pond.onset_zoom - 12.25).abs() < f32::EPSILON);
+        assert!((peak.onset_zoom - 12.25).abs() < f32::EPSILON);
+        assert!(lake.rank < pond.rank);
         assert!(lake.size > pond.size);
         assert!(peak.size >= 11.0);
-        assert!(water_label_style(Some("river"), None).is_none());
+        assert!((pond_label_style(None).onset_zoom - 11.25).abs() < f32::EPSILON);
+        assert!((peak_label_style(None).onset_zoom - 9.75).abs() < f32::EPSILON);
+        assert!(water_label_style(Some("water"), Some("river"), None).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn compact_water_pois_become_early_pond_labels() -> Result<()> {
+        let mut forge = Forge::new(TileKey {
+            zoom: 12,
+            x: 1_198,
+            y: 1_527,
+        });
+        forge.push_poi(
+            Point::new(2_048, 2_048),
+            4_096,
+            FeatureTags {
+                kind: Some("reservoir"),
+                name: Some("Gillman Pond"),
+                min_zoom: Some(13.0),
+                ..FeatureTags::default()
+            },
+        );
+        let label = forge.labels.first().context("pond label")?;
+        assert_eq!(label.kind, LabelKind::Lake);
+        assert_eq!(&*label.text, "Gillman Pond");
+        assert!((label.onset_zoom - 12.25).abs() < f32::EPSILON);
         Ok(())
     }
 
