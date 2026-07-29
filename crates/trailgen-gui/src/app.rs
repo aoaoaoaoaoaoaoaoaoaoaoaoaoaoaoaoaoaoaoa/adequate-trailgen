@@ -1483,7 +1483,7 @@ impl TrailApp {
 
     fn profile(&mut self, ui: &mut egui::Ui) {
         ui.add_space(5.0);
-        let _label = ui.label(chrome::eyebrow("ELEVATION · TERRAIN · GRADE"));
+        let _label = ui.label(chrome::eyebrow("ELEVATION · TERRAIN"));
         let profile_owner = self.profile_owner();
         self.profile_cursor.bind(profile_owner);
         let profile = if let Some(editor) = self.view.editor() {
