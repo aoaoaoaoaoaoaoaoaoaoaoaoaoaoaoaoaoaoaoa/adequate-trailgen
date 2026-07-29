@@ -27,9 +27,9 @@ use std::{
     time::{Duration, Instant},
 };
 use trailgen_core::{
-    Coord, EdgeDisposition, EdgeEdicts, EdgeIndex, LoopConstraints, Route, RouteMetrics,
-    RouteShape, RoutingLaw, SearchParams, SearchProgress, SearchStage, SolverKind, SupportPoint,
-    Trail, TrailGraph, TrailRealization, TrailStanding, TrailgenError,
+    Coord, EdgeDisposition, EdgeEdicts, EdgeIndex, LoopConstraints, RouteMetrics, RouteShape,
+    RoutingLaw, SearchParams, SearchProgress, SearchStage, SolverKind, SupportPoint, Trail,
+    TrailGraph, TrailRealization, TrailStanding, TrailgenError,
 };
 use trailgen_data::SurveyRegion;
 
@@ -2250,18 +2250,40 @@ impl TrailApp {
             .and_then(|editor| editor.realization.as_ref())
             .context("reverse direction requires a realized loop")
             .and_then(|realization| {
-                reverse_loop_design(realization.graph(&self.graph), realization, &constraints)
+                realization
+                    .reverse_loop(realization.graph(&self.graph), &constraints)
+                    .map_err(Into::into)
             });
         match reversed {
-            Ok(trail) => {
+            Ok(reversal) => {
                 self.remember_editor();
                 let editor = self.view.editor_mut().expect("editor existence checked");
-                editor.shape = trail.shape;
-                editor.support_points = trail.support_points;
+                editor.shape = reversal.trail.shape;
+                editor.support_points = reversal.trail.support_points;
                 self.reforge_editor();
-                "Loop direction reversed.".clone_into(&mut self.status);
+                let notice = match reversal.added_supports {
+                    0 => "Loop direction reversed.".to_owned(),
+                    1 => "Loop direction reversed; added 1 pin to preserve the exact route."
+                        .to_owned(),
+                    count => format!(
+                        "Loop direction reversed; added {count} pins to preserve the exact route."
+                    ),
+                };
+                if reversal.added_supports > 0 {
+                    self.view
+                        .editor_mut()
+                        .expect("editor existence checked")
+                        .notice = Some(notice.clone());
+                }
+                self.status = notice;
             }
-            Err(err) => self.status = format!("Could not reverse this loop: {err:#}"),
+            Err(err) => {
+                let notice = format!("Could not reverse this loop: {err:#}");
+                if let Some(editor) = self.view.editor_mut() {
+                    editor.notice = Some(notice.clone());
+                }
+                self.status = notice;
+            }
         }
     }
 
@@ -3365,28 +3387,6 @@ fn editor_fault(error: &TrailgenError) -> String {
     }
 }
 
-fn reverse_loop_design(
-    graph: &TrailGraph,
-    realization: &TrailRealization,
-    constraints: &LoopConstraints,
-) -> Result<Trail> {
-    anyhow::ensure!(
-        realization.route.metrics.shape == RouteShape::Loop,
-        "only loops have a reversible direction"
-    );
-    let mut edges = realization.route.edges.clone();
-    edges.reverse();
-    let reversed = Route::from_edges(
-        realization.route.name.clone(),
-        graph,
-        realization.route.start,
-        edges,
-        constraints,
-    );
-    Trail::infer(graph, &reversed, realization.trail.routing)
-        .context("the reverse traversal is not lawful on this trail network")
-}
-
 fn cyclic_step(order: &[usize], current: usize, delta: isize) -> Option<usize> {
     let slot = order.iter().position(|slot| *slot == current)?;
     let next = (slot.cast_signed() + delta)
@@ -3714,7 +3714,9 @@ mod tests {
         let trail = Trail::infer(&graph, &route, trailgen_core::RoutingLaw::default())
             .expect("fixture loop is inferable");
         let realization = trail.realize("candidate", &graph, &constraints, 1.0)?;
-        let reversed = reverse_loop_design(&graph, &realization, &constraints)?;
+        let reversal = realization.reverse_loop(&graph, &constraints)?;
+        assert_eq!(reversal.added_supports, 0);
+        let reversed = reversal.trail;
         assert_eq!(reversed.support_points[0], trail.support_points[0]);
         let reversed = reversed.realize("candidate", &graph, &constraints, 1.0)?;
         assert_eq!(

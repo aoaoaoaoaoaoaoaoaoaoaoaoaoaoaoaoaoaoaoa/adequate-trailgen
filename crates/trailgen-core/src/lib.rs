@@ -67,7 +67,7 @@ pub use route::{
 pub use seed::{SeedRoute, artifact_key};
 pub use trail::{
     DEFAULT_ROAD_AVERSION, RoutingLaw, SupportBinding, SupportInsertion, SupportPoint, Trail,
-    TrailRealization,
+    TrailRealization, TrailReversal,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -81,6 +81,12 @@ pub enum TrailgenError {
         actual: RouteShape,
         expected: RouteShape,
     },
+    #[error("this loop uses a one-way segment")]
+    OneWayReversal,
+    #[error("the reversed walk violates a turn restriction")]
+    TurnRestrictedReversal,
+    #[error("the reversed walk cannot be encoded as support points")]
+    UnrepresentableReversal,
     #[error("unsupported format: {0}")]
     UnsupportedFormat(String),
     #[error("json error: {0}")]

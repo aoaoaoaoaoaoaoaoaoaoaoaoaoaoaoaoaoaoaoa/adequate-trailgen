@@ -332,6 +332,12 @@ pub struct TrailRealization {
     support_offsets: Vec<usize>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrailReversal {
+    pub trail: Trail,
+    pub added_supports: usize,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SupportInsertion {
     pub slot: usize,
@@ -342,6 +348,87 @@ impl TrailRealization {
     #[must_use]
     pub fn graph<'a>(&'a self, source: &'a TrailGraph) -> &'a TrailGraph {
         self.incised.as_deref().unwrap_or(source)
+    }
+
+    /// Inverts a loop's exact physical walk while retaining every existing
+    /// support. The support tail is reversed; compact repairs are inserted
+    /// only where that program would otherwise select another path.
+    pub fn reverse_loop(
+        &self,
+        graph: &TrailGraph,
+        constraints: &LoopConstraints,
+    ) -> crate::Result<TrailReversal> {
+        if self.route.metrics.shape != RouteShape::Loop {
+            return Err(TrailgenError::ShapeMismatch {
+                actual: self.route.metrics.shape,
+                expected: RouteShape::Loop,
+            });
+        }
+        if self.route.edges.iter().any(|edge| {
+            graph
+                .edges
+                .get(edge.0)
+                .is_none_or(|edge| edge.attr.travel != crate::EdgeTravel::Both)
+        }) {
+            return Err(TrailgenError::OneWayReversal);
+        }
+
+        let mut edges = self.route.edges.clone();
+        edges.reverse();
+        if graph.walk_edges(self.route.start, &edges) != Some(self.route.start) {
+            return Err(TrailgenError::TurnRestrictedReversal);
+        }
+        let reversed = Route::from_edges(
+            self.route.name.clone(),
+            graph,
+            self.route.start,
+            edges,
+            constraints,
+        );
+        let vertices =
+            route_vertices(graph, &reversed).ok_or(TrailgenError::TurnRestrictedReversal)?;
+        let edge_count = reversed.edges.len();
+        debug_assert_eq!(self.support_offsets.len(), self.trail.support_points.len());
+
+        let fixed = std::iter::once((0, self.trail.support_points[0]))
+            .chain((1..self.trail.support_points.len()).rev().map(|slot| {
+                (
+                    edge_count - self.support_offsets[slot],
+                    self.trail.support_points[slot],
+                )
+            }))
+            .collect::<Vec<_>>();
+        let mut support_points = Vec::with_capacity(fixed.len());
+        support_points.push(fixed[0].1);
+        let mut added_supports = 0;
+        for slot in 0..fixed.len() {
+            let lo = fixed[slot].0;
+            let hi = fixed.get(slot + 1).map_or(edge_count, |next| next.0);
+            if lo < hi {
+                let mut incision = Vec::new();
+                compress_arc(
+                    graph,
+                    &reversed,
+                    &vertices,
+                    self.trail.routing,
+                    lo,
+                    hi,
+                    &mut incision,
+                )
+                .ok_or(TrailgenError::UnrepresentableReversal)?;
+                debug_assert_eq!(incision.first(), Some(&fixed[slot].1));
+                added_supports += incision.len() - 1;
+                support_points.extend(incision.into_iter().skip(1));
+            }
+            if let Some(next) = fixed.get(slot + 1) {
+                support_points.push(next.1);
+            }
+        }
+
+        Ok(TrailReversal {
+            trail: Trail::forge(RouteShape::Loop, support_points, self.trail.routing)?,
+            added_supports,
+        })
     }
 
     /// Locates a new support in the design order of the realized walk. Loops
@@ -766,6 +853,53 @@ mod tests {
             .expect("build fixture")
     }
 
+    fn draft(name: &str, from: Coord, to: Coord) -> SegmentDraft {
+        SegmentDraft {
+            geometry: LineString::new(vec![from, to]).expect("valid line"),
+            junctions: JunctionPolicy::Planar,
+            turn_ref: None,
+            turn_restrictions: Vec::new(),
+            trail_class: TrailClass::Path,
+            standing: TrailStanding::Established,
+            marking: crate::TrailMarking::default(),
+            terrain: Terrain::Trail,
+            terrain_confidence: Some(1.0),
+            surface: Some("dirt".to_owned()),
+            access: Access::Open,
+            travel: EdgeTravel::Both,
+            road_exposure: 0.0,
+            confidence: 1.0,
+            provenance: vec![Provenance::fixture(name)],
+        }
+    }
+
+    fn vertex_at(graph: &TrailGraph, coord: Coord) -> VertexId {
+        graph
+            .vertices
+            .iter()
+            .find(|vertex| vertex.coord.planar_distance2(coord) < 1.0e-16)
+            .expect("coordinate vertex")
+            .id
+    }
+
+    fn edge_between(graph: &TrailGraph, from: VertexId, to: VertexId) -> EdgeId {
+        graph.adjacency[from.0]
+            .iter()
+            .copied()
+            .find(|edge| graph.edges[edge.0].other(from) == Some(to))
+            .expect("adjacent vertices")
+    }
+
+    fn loop_constraints() -> LoopConstraints {
+        LoopConstraints {
+            min_distance_m: 0.0,
+            max_distance_m: f64::MAX,
+            max_repeated_edge_fraction: 0.0,
+            allowed_shapes: vec![RouteShape::Loop],
+            ..LoopConstraints::default()
+        }
+    }
+
     #[test]
     fn out_and_back_is_a_shortest_spine_reversed_by_construction() {
         let graph = graph();
@@ -866,13 +1000,7 @@ mod tests {
     #[test]
     fn loop_candidates_recover_exact_support_designs() {
         let graph = graph();
-        let constraints = LoopConstraints {
-            min_distance_m: 0.0,
-            max_distance_m: f64::MAX,
-            max_repeated_edge_fraction: 0.0,
-            allowed_shapes: vec![RouteShape::Loop],
-            ..LoopConstraints::default()
-        };
+        let constraints = loop_constraints();
         let route = crate::ExactLoopSolver::default()
             .enumerate(&graph, VertexId(0), &constraints, 1)
             .into_iter()
@@ -885,6 +1013,103 @@ mod tests {
             .expect("realize recovered loop");
         assert_eq!(realized.route.edges, route.edges);
         assert!(trail.support_points.len() >= 2);
+    }
+
+    #[test]
+    fn reversal_retains_pins_and_repairs_only_ambiguous_spans() {
+        let trailhead = Coord::new(0.0, 0.0);
+        let east = Coord::new(0.001, 0.0);
+        let far_east = Coord::new(0.002, 0.0);
+        let turn = Coord::new(0.002, 0.001);
+        let detour = Coord::new(0.001, 0.001);
+        let mut graph = GraphBuilder::default()
+            .build(&[
+                draft("head-east", trailhead, east),
+                draft("east-far", east, far_east),
+                draft("far-turn", far_east, turn),
+                draft("turn-head", turn, trailhead),
+                draft("turn-detour", turn, detour),
+                draft("detour-head", detour, trailhead),
+            ])
+            .expect("build pentagonal network");
+        let head_vertex = vertex_at(&graph, trailhead);
+        let far_vertex = vertex_at(&graph, far_east);
+        let turn_vertex = vertex_at(&graph, turn);
+        graph.turn_bans.push(TurnBan {
+            via: turn_vertex,
+            from: edge_between(&graph, far_vertex, turn_vertex),
+            to: edge_between(&graph, turn_vertex, head_vertex),
+            provenance: Provenance::fixture("force-detour"),
+        });
+        graph.validate().expect("valid turn ban");
+
+        let supports = [trailhead, far_east, turn]
+            .map(|coord| SupportPoint::forge(coord).expect("valid support"))
+            .to_vec();
+        let trail = Trail::forge(RouteShape::Loop, supports.clone(), RoutingLaw::default())
+            .expect("valid loop design");
+        let constraints = loop_constraints();
+        let realized = trail
+            .realize("detour", &graph, &constraints, 1.0)
+            .expect("turn ban creates a lawful loop");
+        let reversal = realized
+            .reverse_loop(&graph, &constraints)
+            .expect("bidirectional loop is reversible");
+
+        assert_eq!(reversal.added_supports, 1);
+        assert!(
+            supports
+                .iter()
+                .all(|support| reversal.trail.support_points.contains(support))
+        );
+        let reversed = reversal
+            .trail
+            .realize("detour", &graph, &constraints, 1.0)
+            .expect("repaired controls realize");
+        assert_eq!(
+            reversed.route.edges,
+            realized
+                .route
+                .edges
+                .iter()
+                .rev()
+                .copied()
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn reversal_rejects_a_loop_containing_a_one_way_segment() {
+        let a = Coord::new(0.0, 0.0);
+        let b = Coord::new(0.001, 0.0);
+        let c = Coord::new(0.0005, 0.001);
+        let mut graph = GraphBuilder::default()
+            .build(&[draft("ab", a, b), draft("bc", b, c), draft("ca", c, a)])
+            .expect("build triangle");
+        let va = vertex_at(&graph, a);
+        let vb = vertex_at(&graph, b);
+        let ab = edge_between(&graph, va, vb);
+        graph.edges[ab.0].attr.travel = if graph.edges[ab.0].a == va {
+            EdgeTravel::Forward
+        } else {
+            EdgeTravel::Backward
+        };
+        graph.rebuild_adjacency();
+
+        let supports = [a, b, c]
+            .map(|coord| SupportPoint::forge(coord).expect("valid support"))
+            .to_vec();
+        let trail = Trail::forge(RouteShape::Loop, supports, RoutingLaw::default())
+            .expect("valid loop design");
+        let constraints = loop_constraints();
+        let realized = trail
+            .realize("one-way", &graph, &constraints, 1.0)
+            .expect("forward direction is lawful");
+
+        assert!(matches!(
+            realized.reverse_loop(&graph, &constraints),
+            Err(TrailgenError::OneWayReversal)
+        ));
     }
 
     #[test]

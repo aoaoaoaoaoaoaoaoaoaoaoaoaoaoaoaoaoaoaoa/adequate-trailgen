@@ -111,7 +111,11 @@ exact nor rounded design forms a loop, the toggle remains off and the prior
 trail, pins, profile, and Save state remain unchanged while an actionable
 notice explains the rejection. Editor provenance never removes this capability.
 Reversing a loop preserves support 0 as its trailhead and inverts the exact
-realized walk. Shape and reversal changes are ordinary undoable editor gestures.
+realized walk. It first reverses the existing support tail. Where those controls
+would select another walk, it retains them and adds a compact set of visible
+supports that compels the exact reversal; the editor reports the added count.
+Any one-way segment rejects reversal without changing the draft. Shape and
+reversal changes are ordinary undoable editor gestures.
 
 The elevation profile and map share one route-distance cursor. Hover chooses the
 nearest represented profile distance and paints a hollow map ring at the
