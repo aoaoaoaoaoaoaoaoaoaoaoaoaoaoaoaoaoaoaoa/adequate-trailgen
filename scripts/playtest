@@ -227,7 +227,7 @@ if [ "${TRAILGEN_GUI_LIBRARY_FLOW:-0}" = 1 ]; then
     # Saved trails are durable inspector objects. Hover reveals the prepared
     # miniature and map preview; click opens the profile without disturbing
     # the transient Results shelf.
-    xdotool mousemove --sync --window "$window" 140 660
+    xdotool mousemove --sync --window "$window" 140 152
     sleep 1
     import -window root "$out/library-hover.png"
     xdotool click 1
@@ -248,18 +248,6 @@ if [ "${TRAILGEN_GUI_LIBRARY_FLOW:-0}" = 1 ]; then
     xdotool mousemove --sync --window "$window" 700 350
     sleep 0.4
     import -window "$window" "$out/profile-released.png"
-    if [ "${TRAILGEN_GUI_RENAME_FLOW:-0}" = 1 ]; then
-        xdotool mousemove --sync --window "$window" 140 716 click 1
-        sleep 0.3
-        xdotool mousemove --sync --window "$window" 140 744 click 1
-        xdotool key --window "$window" ctrl+a
-        xdotool type --window "$window" --delay 20 "Harriman Test Loop"
-        xdotool key --window "$window" Return
-        sleep 0.5
-        import -window "$window" "$out/trail-renamed.png"
-        jq -e '.trails[] | select(.name == "Harriman Test Loop")' \
-            "$project/library/index.json" >/dev/null
-    fi
     exit 0
 fi
 

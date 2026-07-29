@@ -108,6 +108,7 @@ struct TrailEditor {
     realization: Option<TrailRealization>,
     profile: Option<ElevationProfile>,
     fault: Option<String>,
+    notice: Option<String>,
     undo: VecDeque<TrailSketch>,
     redo: VecDeque<TrailSketch>,
     drag: Option<PinDrag>,
@@ -166,6 +167,7 @@ struct LoopClosure {
 struct RenameDraft {
     trail: TrailId,
     text: String,
+    seize_focus: bool,
 }
 
 struct SavedProjection {
@@ -314,11 +316,19 @@ impl TrailEditor {
                     ElevationProfile::forge(realization.graph(graph), &realization.route);
                 self.realization = Some(realization);
                 self.fault = None;
+                self.notice = None;
             }
             Err(err) => {
                 self.fault = Some(editor_fault(&err));
+                self.notice = None;
             }
         }
+    }
+
+    fn reject_loop_closure(&mut self, error: &TrailgenError) -> String {
+        let notice = editor_fault(error);
+        self.notice = Some(notice.clone());
+        notice
     }
 }
 
@@ -341,6 +351,12 @@ enum FocusAction {
     Save(egui::Rect),
     Edit(egui::Rect),
     Delete(egui::Rect),
+}
+
+enum RenameAction {
+    Begin(TrailId, egui::Rect),
+    Commit,
+    Cancel,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -620,8 +636,8 @@ impl TrailApp {
         } else {
             "find trails"
         };
-        self.section(ui, "search", search_title, true, Self::search_panel);
         self.section(ui, "library", "saved trails", true, Self::library_panel);
+        self.section(ui, "search", search_title, true, Self::search_panel);
         self.section(ui, "areas", "map areas", true, Self::area_panel);
     }
 
@@ -890,6 +906,7 @@ impl TrailApp {
         let count = editor.support_points.len();
         let ready = editor.ready();
         let fault = editor.fault.clone();
+        let notice = editor.notice.clone();
         let _mode = chrome::note(ui, format!("{count} SUPPORT POINT(S)"));
         ui.add_space(5.0);
         let _help = chrome::note(
@@ -902,6 +919,8 @@ impl TrailApp {
         );
         if let Some(fault) = fault {
             let _fault = ui.colored_label(chrome::HOT, chrome::muted(fault));
+        } else if let Some(notice) = notice {
+            let _notice = ui.colored_label(chrome::HOT, chrome::muted(notice));
         }
         ui.add_space(5.0);
         self.editor_shape_controls(ui);
@@ -985,6 +1004,11 @@ impl TrailApp {
                     self.reforge_editor();
                     "Loop opened.".clone_into(&mut self.status);
                 }
+                looped = self
+                    .view
+                    .editor()
+                    .is_some_and(|editor| editor.shape == RouteShape::Loop);
+                ui.ctx().request_repaint();
             }
         }
         if !looped {
@@ -1064,58 +1088,39 @@ impl TrailApp {
             self.rename = None;
             return;
         };
-        let Some(trail) = self.library.trail(&id) else {
+        if self.library.trail(&id).is_none() {
             self.rename = None;
             return;
-        };
-        if self.rename.as_ref().is_none_or(|draft| draft.trail != id) {
-            let rename = ui.add(
-                chrome::command_button("RENAME", false).min_size(vec2(ui.available_width(), 24.0)),
-            );
-            chrome::tension(ui, &rename);
-            if rename.clicked() {
-                self.rename = Some(RenameDraft {
-                    trail: id,
-                    text: trail.name.clone(),
-                });
-                self.water.click(rename.rect);
-            }
-            return;
         }
-
-        let _label = ui.label(chrome::eyebrow("TRAIL NAME"));
-        let draft = self.rename.as_mut().expect("rename draft checked");
-        let edit = ui.add_sized(
-            [ui.available_width(), 28.0],
-            egui::TextEdit::singleline(&mut draft.text).text_color(chrome::TEXT),
+        if self.rename.as_ref().is_some_and(|draft| draft.trail != id) {
+            self.rename = None;
+        }
+        let active = self.rename.is_some();
+        let rename = ui.add(
+            chrome::command_button("RENAME · F2", active)
+                .min_size(vec2(ui.available_width(), 24.0)),
         );
-        chrome::tension(ui, &edit);
-        let valid = {
-            let name = draft.text.trim();
-            !name.is_empty()
-                && name.chars().count() <= 80
-                && name.chars().all(|character| !character.is_control())
-        };
-        let enter = edit.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-        let mut save = false;
-        let mut cancel = false;
-        let _actions = ui.horizontal(|ui| {
-            let apply = ui.add_enabled(
-                valid,
-                chrome::command_button("SAVE NAME", valid).min_size(vec2(118.0, 24.0)),
-            );
-            chrome::tension(ui, &apply);
-            save = apply.clicked();
-            let abandon =
-                ui.add(chrome::command_button("CANCEL", false).min_size(vec2(94.0, 24.0)));
-            chrome::tension(ui, &abandon);
-            cancel = abandon.clicked();
-        });
-        if save || (valid && enter) {
-            self.commit_rename();
-        } else if cancel {
-            self.rename = None;
+        chrome::tension(ui, &rename);
+        if rename.clicked() {
+            self.begin_rename(id);
+            self.water.click(rename.rect);
+            ui.ctx().request_repaint();
         }
+    }
+
+    fn begin_rename(&mut self, id: TrailId) {
+        if let Some(draft) = self.rename.as_mut().filter(|draft| draft.trail == id) {
+            draft.seize_focus = true;
+            return;
+        }
+        let Some(trail) = self.library.trail(&id) else {
+            return;
+        };
+        self.rename = Some(RenameDraft {
+            trail: id,
+            text: trail.name.clone(),
+            seize_focus: true,
+        });
     }
 
     fn commit_rename(&mut self) {
@@ -1314,7 +1319,12 @@ impl TrailApp {
 
     fn focus_toolbar(&mut self, ui: &mut egui::Ui) {
         let summary = self.focus_summary();
+        let saved_id = match self.view.focus() {
+            Some(Focus::Saved(id)) => Some(id.clone()),
+            Some(Focus::Candidate { .. }) | None => None,
+        };
         let mut action = None;
+        let mut rename_action = None;
         let _row = ui.horizontal(|ui| {
             let back = chrome::command(ui, "← BACK", false);
             if back.clicked() {
@@ -1332,7 +1342,7 @@ impl TrailApp {
             }
             if let Some((name, metrics)) = &summary {
                 ui.separator();
-                let _name = toolbar_text(ui, name.to_ascii_uppercase(), chrome::TEXT);
+                rename_action = self.focus_name_control(ui, saved_id.as_ref(), name);
                 let _metrics = toolbar_text(ui, metrics_summary(metrics), chrome::MUTED);
                 if let Some(standing) = self
                     .focus_standing()
@@ -1379,7 +1389,73 @@ impl TrailApp {
                 None => {}
             }
         });
+        let reconcile = rename_action.is_some() || action.is_some();
+        self.enact_rename_action(rename_action);
         self.enact_focus_action(action.as_ref());
+        if reconcile {
+            ui.ctx().request_repaint();
+        }
+    }
+
+    fn focus_name_control(
+        &mut self,
+        ui: &mut egui::Ui,
+        saved_id: Option<&TrailId>,
+        name: &str,
+    ) -> Option<RenameAction> {
+        let renaming =
+            saved_id.is_some_and(|id| self.rename.as_ref().is_some_and(|draft| &draft.trail == id));
+        if !renaming {
+            let _name = toolbar_text(ui, name.to_ascii_uppercase(), chrome::TEXT);
+            let id = saved_id?;
+            let rename =
+                chrome::command(ui, "✎", false).on_hover_text("Rename this saved trail · F2");
+            return rename
+                .clicked()
+                .then(|| RenameAction::Begin(id.clone(), rename.rect));
+        }
+
+        let draft = self.rename.as_mut().expect("rename draft checked");
+        let edit = ui.add_sized(
+            [190.0, 24.0],
+            egui::TextEdit::singleline(&mut draft.text)
+                .font(egui::TextStyle::Monospace)
+                .text_color(chrome::TEXT)
+                .char_limit(80),
+        );
+        if draft.seize_focus {
+            edit.request_focus();
+            draft.seize_focus = false;
+            ui.ctx().request_repaint_after(Duration::from_millis(16));
+        }
+        let valid = trail_name_is_valid(&draft.text);
+        let (enter, escape) = ui.input(|input| {
+            (
+                edit.has_focus() && input.key_pressed(egui::Key::Enter),
+                edit.has_focus() && input.key_pressed(egui::Key::Escape),
+            )
+        });
+        let save = chrome::command_enabled(ui, valid, "SAVE", true);
+        let cancel = chrome::command(ui, "CANCEL", false);
+        if valid && (enter || save.clicked()) {
+            Some(RenameAction::Commit)
+        } else if escape || cancel.clicked() {
+            Some(RenameAction::Cancel)
+        } else {
+            None
+        }
+    }
+
+    fn enact_rename_action(&mut self, action: Option<RenameAction>) {
+        match action {
+            Some(RenameAction::Begin(id, rect)) => {
+                self.begin_rename(id);
+                self.water.click(rect);
+            }
+            Some(RenameAction::Commit) => self.commit_rename(),
+            Some(RenameAction::Cancel) => self.rename = None,
+            None => {}
+        }
     }
 
     fn editor_toolbar(&self, ui: &mut egui::Ui) {
@@ -2190,7 +2266,6 @@ impl TrailApp {
     }
 
     fn close_editor_loop(&mut self) {
-        self.remember_editor();
         let Some(editor) = self.view.editor() else {
             return;
         };
@@ -2198,9 +2273,7 @@ impl TrailApp {
             self.view
                 .editor_mut()
                 .expect("editor existence checked")
-                .shape = RouteShape::Loop;
-            self.reforge_editor();
-            "Loop closure armed. Add another support point.".clone_into(&mut self.status);
+                .notice = Some("Add another pin before closing the loop.".to_owned());
             return;
         }
         let name = editor.name.clone();
@@ -2212,24 +2285,32 @@ impl TrailApp {
             &supports,
             self.params.routing,
         );
-        let status = match &result {
-            Ok(closure) if closure.shift_m >= 0.5 => format!(
-                "Loop closed; pin 0 snapped {:.0} m to the nearest viable junction.",
-                closure.shift_m
-            ),
-            Ok(_) => "Loop closed.".to_owned(),
-            Err(err) => editor_fault(err),
-        };
-        let editor = self.view.editor_mut().expect("editor existence checked");
-        editor.shape = RouteShape::Loop;
         match result {
             Ok(closure) => {
+                self.remember_editor();
+                let status = if closure.shift_m >= 0.5 {
+                    format!(
+                        "Loop closed; pin 0 snapped {:.0} m to the nearest viable junction.",
+                        closure.shift_m
+                    )
+                } else {
+                    "Loop closed.".to_owned()
+                };
+                let editor = self.view.editor_mut().expect("editor existence checked");
+                editor.shape = RouteShape::Loop;
                 editor.support_points[0] = closure.trailhead;
                 editor.absorb_realization(&self.graph, Ok(closure.realization));
+                self.status = status;
             }
-            Err(err) => editor.absorb_realization(&self.graph, Err(err)),
+            Err(err) => {
+                let notice = self
+                    .view
+                    .editor_mut()
+                    .expect("editor existence checked")
+                    .reject_loop_closure(&err);
+                self.status = notice;
+            }
         }
-        self.status = status;
     }
 
     fn schedule_revision(&mut self) {
@@ -2632,6 +2713,7 @@ impl TrailApp {
             realization: None,
             profile: None,
             fault: None,
+            notice: None,
             undo: VecDeque::new(),
             redo: VecDeque::new(),
             drag: None,
@@ -2656,6 +2738,7 @@ impl TrailApp {
                 editor.realization = None;
                 editor.profile = None;
                 editor.fault = None;
+                editor.notice = None;
             }
             return;
         }
@@ -2891,6 +2974,12 @@ impl TrailApp {
             }
             return;
         }
+        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::F2))
+            && let Some(Focus::Saved(id)) = self.view.focus().cloned()
+        {
+            self.begin_rename(id);
+            return;
+        }
         if ctx.text_edit_focused() {
             return;
         }
@@ -3064,6 +3153,13 @@ fn toolbar_text(ui: &mut egui::Ui, text: impl Into<String>, color: Color32) -> e
             .size(10.5)
             .color(color),
     )
+}
+
+fn trail_name_is_valid(name: &str) -> bool {
+    let name = name.trim();
+    !name.is_empty()
+        && name.chars().count() <= 80
+        && name.chars().all(|character| !character.is_control())
 }
 
 fn search_progress(ui: &mut egui::Ui, progress: SearchProgress) {
@@ -3358,6 +3454,14 @@ pub fn forge_water() -> Surface {
 mod tests {
     use super::*;
 
+    #[test]
+    fn trail_name_gate_rejects_void_oversize_and_control_text() {
+        assert!(trail_name_is_valid(" Harriman South Lows "));
+        assert!(!trail_name_is_valid(" \n "));
+        assert!(!trail_name_is_valid(&"x".repeat(81)));
+        assert!(!trail_name_is_valid("Cedar\0Pond"));
+    }
+
     fn loop_with_spur(spur_m: f64) -> anyhow::Result<(TrailGraph, Vec<SupportPoint>, Coord)> {
         let junction = Coord::new(0.0, 0.0);
         let east = Coord::new(0.001, 0.0);
@@ -3485,6 +3589,7 @@ mod tests {
             realization: None,
             profile: None,
             fault: None,
+            notice: None,
             undo: VecDeque::new(),
             redo: VecDeque::new(),
             drag: None,
@@ -3662,10 +3767,27 @@ mod tests {
             realization: Some(realization),
             profile: Some(profile),
             fault: None,
+            notice: None,
             undo: VecDeque::new(),
             redo: VecDeque::new(),
             drag: None,
         };
+
+        let accepted = editor.sketch();
+        let notice = editor.reject_loop_closure(&TrailgenError::ShapeMismatch {
+            actual: RouteShape::OutAndBack,
+            expected: RouteShape::Loop,
+        });
+        assert!(
+            editor.ready(),
+            "a rejected toggle preserves the valid draft"
+        );
+        assert!(editor.sketch() == accepted);
+        assert_eq!(
+            notice,
+            "Closing here would double back over a trail. Move pin 0 to its junction or adjust another pin."
+        );
+        editor.notice = None;
 
         editor.absorb_realization(
             &graph,

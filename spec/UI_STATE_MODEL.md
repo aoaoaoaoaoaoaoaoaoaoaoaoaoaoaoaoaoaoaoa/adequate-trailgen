@@ -67,13 +67,16 @@ The left inspector is durable project memory: saved trails, search intent, and
 downloaded map areas. The bottom is transient working memory: search results,
 the focused trail’s profile, editor profile, status, and contextual help.
 Durable objects must not require switching the bottom shelf into an alternate
-deck.
+deck. The inspector presents Saved Trails before Find Trails, followed by Map
+Areas.
 
 The Library is one projection of the project’s canonical saved-trail store, not
 a second collection. Hovering a Library row exposes its prepared miniature and
 temporarily previews that trail on the map. Clicking enters `Focus(Saved)`.
-Renaming changes metadata in place; deleting removes the canonical trail.
-Neither operation changes route identity or transient Results.
+The Library’s Rename action and the pencil beside a focused trail’s name open
+the same inline rename transaction; `F2` is its keyboard entrance. Renaming
+changes metadata in place; deleting removes the canonical trail. Neither
+operation changes route identity or transient Results.
 Library navigation is inert while Edit owns an unsaved draft; only Save or
 Cancel may leave that editor.
 
@@ -103,11 +106,12 @@ those topologies; `Loop` realization routes from the last support back to
 support 0. If support 0 lies on a terminal spur, closure may round it to the
 nearest endpoint of that same trail segment within 20 m, but only when the
 complete rounded design realizes a proper loop. The pin movement and topology
-change form one undoable gesture. Beyond that tolerance the invalid draft
-survives and directs the user to move pin 0 to the junction. Editor provenance
-never removes this capability. Reversing a loop preserves support 0 as its
-trailhead and inverts the exact realized walk. Shape and reversal changes are
-ordinary undoable editor gestures.
+change form one undoable gesture. Closure is transactional: if neither the
+exact nor rounded design forms a loop, the toggle remains off and the prior
+trail, pins, profile, and Save state remain unchanged while an actionable
+notice explains the rejection. Editor provenance never removes this capability.
+Reversing a loop preserves support 0 as its trailhead and inverts the exact
+realized walk. Shape and reversal changes are ordinary undoable editor gestures.
 
 The elevation profile and map share one route-distance cursor. Hover chooses the
 nearest represented profile distance and paints a hollow map ring at the
