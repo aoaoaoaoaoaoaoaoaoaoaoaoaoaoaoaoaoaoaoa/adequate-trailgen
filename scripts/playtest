@@ -223,6 +223,34 @@ if [ "${TRAILGEN_GUI_CARTOGRAPHY:-0}" = 1 ]; then
     exit 0
 fi
 
+if [ "${TRAILGEN_GUI_RENAME_FLOW:-0}" = 1 ]; then
+    renamed=${TRAILGEN_GUI_RENAME_TO:-Harriman Rename QA}
+    xdotool mousemove --sync --window "$window" 140 152 click 1
+    sleep 0.5
+    xdotool key --window "$window" F2
+    sleep 0.5
+    import -window "$window" "$out/trail-rename-open.png"
+    xdotool windowfocus --sync "$window"
+    xdotool mousemove --sync --window "$window" 520 30 click 1
+    xdotool key ctrl+a
+    xdotool type --clearmodifiers --delay 20 "$renamed"
+    xdotool key Return
+    attempts=0
+    while ! jq -e --arg renamed "$renamed" \
+        '.trails[0].name == $renamed' "$project/library/index.json" >/dev/null; do
+        attempts=$((attempts + 1))
+        if [ "$attempts" -ge 100 ]; then
+            import -window "$window" "$out/trail-rename-timeout.png"
+            printf 'timed out renaming the first saved trail\n' >&2
+            exit 1
+        fi
+        sleep 0.1
+    done
+    sleep 0.5
+    import -window "$window" "$out/trail-renamed.png"
+    exit 0
+fi
+
 if [ "${TRAILGEN_GUI_LIBRARY_FLOW:-0}" = 1 ]; then
     # Saved trails are durable inspector objects. Hover reveals the prepared
     # miniature and map preview; click opens the profile without disturbing

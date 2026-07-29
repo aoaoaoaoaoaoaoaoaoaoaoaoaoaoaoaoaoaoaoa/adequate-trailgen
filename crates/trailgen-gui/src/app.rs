@@ -1429,12 +1429,7 @@ impl TrailApp {
             ui.ctx().request_repaint_after(Duration::from_millis(16));
         }
         let valid = trail_name_is_valid(&draft.text);
-        let (enter, escape) = ui.input(|input| {
-            (
-                edit.has_focus() && input.key_pressed(egui::Key::Enter),
-                edit.has_focus() && input.key_pressed(egui::Key::Escape),
-            )
-        });
+        let (enter, escape) = rename_shortcuts(ui, &edit);
         let save = chrome::command_enabled(ui, valid, "SAVE", true);
         let cancel = chrome::command(ui, "CANCEL", false);
         if valid && (enter || save.clicked()) {
@@ -3184,6 +3179,18 @@ fn trail_name_is_valid(name: &str) -> bool {
         && name.chars().all(|character| !character.is_control())
 }
 
+fn rename_shortcuts(ui: &egui::Ui, edit: &egui::Response) -> (bool, bool) {
+    // Response focus queries lock egui's context; keep them outside input closures.
+    let focused = edit.has_focus();
+    let relinquished = edit.lost_focus();
+    ui.input(|input| {
+        (
+            (focused || relinquished) && input.key_pressed(egui::Key::Enter),
+            focused && input.key_pressed(egui::Key::Escape),
+        )
+    })
+}
+
 fn search_progress(ui: &mut egui::Ui, progress: SearchProgress) {
     let fraction = match progress.stage {
         SearchStage::Preparing | SearchStage::Exploring => {
@@ -3460,6 +3467,30 @@ mod tests {
         assert!(!trail_name_is_valid(" \n "));
         assert!(!trail_name_is_valid(&"x".repeat(81)));
         assert!(!trail_name_is_valid("Cedar\0Pond"));
+    }
+
+    #[test]
+    fn rename_shortcuts_do_not_reenter_egui_input_lock() {
+        let context = egui::Context::default();
+        let mut name = "Harriman South Lows".to_owned();
+        let _output = context.run_ui(egui::RawInput::default(), |ui| {
+            let edit = ui.text_edit_singleline(&mut name);
+            edit.request_focus();
+            assert_eq!(rename_shortcuts(ui, &edit), (false, false));
+        });
+
+        let mut enter = egui::RawInput::default();
+        enter.events.push(egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: Some(egui::Key::Enter),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let _output = context.run_ui(enter, |ui| {
+            let edit = ui.text_edit_singleline(&mut name);
+            assert_eq!(rename_shortcuts(ui, &edit), (true, false));
+        });
     }
 
     fn loop_with_spur(spur_m: f64) -> anyhow::Result<(TrailGraph, Vec<SupportPoint>, Coord)> {
