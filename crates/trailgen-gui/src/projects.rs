@@ -205,6 +205,24 @@ impl Workbench {
             WorkbenchMode::Limbo => unreachable!("workbench transition escaped its frame"),
         }
     }
+
+    #[cfg(feature = "egui-test")]
+    pub(crate) fn witness_state(&self, text_edit_focused: bool) -> crate::witness::State {
+        match &self.mode {
+            WorkbenchMode::Project { workspace, .. } => match workspace {
+                ProjectWorkspace::Trail(app) => app.witness_state(text_edit_focused),
+                ProjectWorkspace::Survey(_) => {
+                    crate::witness::State::empty("survey", "browse", text_edit_focused)
+                }
+            },
+            WorkbenchMode::Projects(_) => {
+                crate::witness::State::empty("projects", "projects", text_edit_focused)
+            }
+            WorkbenchMode::Limbo => {
+                crate::witness::State::empty("limbo", "transition", text_edit_focused)
+            }
+        }
+    }
 }
 
 impl ProjectWorkspace {

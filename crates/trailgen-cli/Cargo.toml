@@ -10,6 +10,9 @@ readme = "../../README.md"
 keywords = ["gis", "hiking", "routing", "geojson", "gpx"]
 categories = ["command-line-utilities", "science::geo"]
 
+[features]
+egui-test = ["trailgen-gui/egui-test"]
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true

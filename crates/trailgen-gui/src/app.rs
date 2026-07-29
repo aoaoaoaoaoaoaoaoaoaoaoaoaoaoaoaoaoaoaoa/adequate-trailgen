@@ -604,6 +604,60 @@ impl TrailApp {
         &self.root
     }
 
+    #[cfg(feature = "egui-test")]
+    pub(crate) fn witness_state(&self, text_edit_focused: bool) -> crate::witness::State {
+        let (view, focused_trail) = match &self.view {
+            WorkbenchView::Browse => ("browse", None),
+            WorkbenchView::Focus(Focus::Candidate { .. }) => ("focus-candidate", None),
+            WorkbenchView::Focus(Focus::Saved(id)) => ("focus-saved", Some(id.as_str().to_owned())),
+            WorkbenchView::Edit(_) => ("edit", None),
+        };
+        let editor = self
+            .view
+            .editor()
+            .map(|editor| crate::witness::EditorState {
+                ready: editor.ready(),
+                dragging_support: editor.drag.as_ref().map(|drag| drag.slot),
+                support_points: editor
+                    .support_points
+                    .iter()
+                    .map(|support| {
+                        let coord = support.coord();
+                        [coord.lon, coord.lat]
+                    })
+                    .collect(),
+                route_distance_m: editor
+                    .realization
+                    .as_ref()
+                    .map(|realization| realization.route.metrics.distance_m),
+                route_signature: editor.realization.as_ref().map(|realization| {
+                    realization.route.edges.iter().fold(
+                        (realization.route.start.0 as u64)
+                            ^ (realization.route.edges.len() as u64).rotate_left(29),
+                        |signature, edge| {
+                            signature.rotate_left(11)
+                                ^ (edge.0 as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                        },
+                    )
+                }),
+            });
+        crate::witness::State {
+            workspace: "trail",
+            view,
+            focused_trail,
+            rename_active: self.rename.is_some(),
+            text_edit_focused,
+            map: self.map_rect.is_positive().then(|| {
+                crate::witness::MapState::forge(
+                    self.map_rect,
+                    self.viewport.center,
+                    map::world_pixels(self.viewport),
+                )
+            }),
+            editor,
+        }
+    }
+
     pub fn water_frame(
         &mut self,
         ctx: &egui::Context,
@@ -969,6 +1023,7 @@ impl TrailApp {
             chrome::command_button("SAVE TRAIL · CTRL+S", ready)
                 .min_size(vec2(ui.available_width(), 34.0)),
         );
+        crate::witness::anchor(ui, "editor.save", save.rect);
         chrome::tension(ui, &save);
         if save.clicked() {
             self.save_editor();
@@ -1050,6 +1105,12 @@ impl TrailApp {
                 chrome::command_button(trail.name.to_ascii_uppercase(), selected)
                     .min_size(vec2(ui.available_width(), 27.0)),
             );
+            #[cfg(feature = "egui-test")]
+            crate::witness::anchor(
+                ui,
+                format!("library.trail/{}", trail.id.as_str()),
+                response.rect,
+            );
             let hovered = response.hovered();
             if hovered {
                 if let Some(projection) = self.saved_projections.get(&trail.id) {
@@ -1100,6 +1161,7 @@ impl TrailApp {
             chrome::command_button("RENAME · F2", active)
                 .min_size(vec2(ui.available_width(), 24.0)),
         );
+        crate::witness::anchor(ui, "library.rename", rename.rect);
         chrome::tension(ui, &rename);
         if rename.clicked() {
             self.begin_rename(id);
@@ -1362,6 +1424,7 @@ impl TrailApp {
             match self.view.focus() {
                 Some(Focus::Candidate { .. }) => {
                     let edit = chrome::command(ui, "EDIT TRAIL", false);
+                    crate::witness::anchor(ui, "focus.edit", edit.rect);
                     if edit.clicked() {
                         action = Some(FocusAction::Edit(edit.rect));
                     }
@@ -1378,6 +1441,7 @@ impl TrailApp {
                         false,
                     )
                     .on_disabled_hover_text("This legacy trail has no support points");
+                    crate::witness::anchor(ui, "focus.edit", edit.rect);
                     if edit.clicked() {
                         action = Some(FocusAction::Edit(edit.rect));
                     }
@@ -1410,6 +1474,7 @@ impl TrailApp {
             let id = saved_id?;
             let rename =
                 chrome::command(ui, "✎", false).on_hover_text("Rename this saved trail · F2");
+            crate::witness::anchor(ui, "focus.rename", rename.rect);
             return rename
                 .clicked()
                 .then(|| RenameAction::Begin(id.clone(), rename.rect));
@@ -1423,6 +1488,7 @@ impl TrailApp {
                 .text_color(chrome::TEXT)
                 .char_limit(80),
         );
+        crate::witness::anchor(ui, "focus.rename.field", edit.rect);
         if draft.seize_focus {
             edit.request_focus();
             draft.seize_focus = false;
@@ -1431,6 +1497,7 @@ impl TrailApp {
         let valid = trail_name_is_valid(&draft.text);
         let (enter, escape) = rename_shortcuts(ui, &edit);
         let save = chrome::command_enabled(ui, valid, "SAVE", true);
+        crate::witness::anchor(ui, "focus.rename.save", save.rect);
         let cancel = chrome::command(ui, "CANCEL", false);
         if valid && (enter || save.clicked()) {
             Some(RenameAction::Commit)
@@ -1619,6 +1686,7 @@ impl TrailApp {
     fn map(&mut self, ui: &mut egui::Ui) {
         let (rect, response) =
             ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
+        crate::witness::anchor(ui, "map.canvas", response.rect);
         self.map_rect = rect;
         self.water.begin(Domain::shelf(rect));
         self.apply_fit(rect);
@@ -2158,6 +2226,12 @@ impl TrailApp {
                 painter,
                 anchor,
                 editor.drag.as_ref().is_some_and(|drag| drag.slot == slot),
+            );
+            #[cfg(feature = "egui-test")]
+            crate::witness::rect(
+                painter.ctx(),
+                format!("editor.support/{slot}"),
+                crate::forge::pin_grip(anchor),
             );
             painter.text(
                 crate::forge::pin_bulb(anchor),

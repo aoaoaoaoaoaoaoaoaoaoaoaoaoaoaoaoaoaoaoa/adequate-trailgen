@@ -20,6 +20,13 @@ const INDEX: &str = "library/index.json";
 #[serde(transparent)]
 pub struct TrailId(String);
 
+impl TrailId {
+    #[cfg(feature = "egui-test")]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct Trailhead(Coord);
@@ -719,7 +726,8 @@ impl Library {
             .unwrap_or_default();
         let mut library = Self::forge(defaults);
         for route in routes {
-            let trail = SavedTrail::capture(graph, &route)?;
+            let design = Trail::infer(graph, &route, RoutingLaw::default());
+            let trail = SavedTrail::capture_design(graph, &route, design.as_ref())?;
             if library.trail(&trail.id).is_none() {
                 library.trails.push(trail);
             }
@@ -859,6 +867,10 @@ mod tests {
         )?;
         let mut library = Library::open(temp.path(), &graph, &LoopConstraints::default())?;
         assert_eq!(library.trails.len(), 1);
+        assert!(
+            !library.trails[0].support_points.is_empty(),
+            "migrated generated routes must remain editable"
+        );
         library.trails.clear();
         library.save(temp.path())?;
         assert!(

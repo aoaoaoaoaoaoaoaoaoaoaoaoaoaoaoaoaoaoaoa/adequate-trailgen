@@ -28,6 +28,7 @@ mod trail_data;
 mod trail_map;
 mod vector_field;
 mod vector_map;
+mod witness;
 
 use anyhow::Result;
 use std::path::PathBuf;

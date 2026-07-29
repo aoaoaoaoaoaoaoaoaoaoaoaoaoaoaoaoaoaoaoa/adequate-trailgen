@@ -1,5 +1,11 @@
 [workspace]
-members = ["crates/trailgen-core", "crates/trailgen-data", "crates/trailgen-cli", "crates/trailgen-gui"]
+members = [
+  "crates/trailgen-acceptance",
+  "crates/trailgen-core",
+  "crates/trailgen-data",
+  "crates/trailgen-cli",
+  "crates/trailgen-gui",
+]
 resolver = "2"
 
 [workspace.package]
@@ -18,6 +24,8 @@ dwemer_poolrooms = "0.7.0"
 egui = "=0.34.3"
 egui-wgpu = "=0.34.3"
 egui-winit = "=0.34.3"
+egui-tester = { git = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester", rev = "2e9746514828e7b943b0892c060835bd5b72e3e8", version = "0.2.0" }
+egui-tester-witness = { git = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester", rev = "2e9746514828e7b943b0892c060835bd5b72e3e8", version = "0.2.0" }
 fast-mvt = { version = "0.6.1", default-features = false, features = ["reader"] }
 futures-util = "0.3.31"
 geo-types = "0.7.19"

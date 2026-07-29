@@ -30,6 +30,8 @@ pub fn run(ctx: egui::Context, app: Workbench) -> Result<()> {
     event_loop.set_control_flow(ControlFlow::Wait);
     let alarm = Alarm::default();
     arm_repaints(&ctx, Arc::clone(&alarm), event_loop.create_proxy());
+    #[cfg(feature = "egui-test")]
+    let witness = egui_tester_witness::Publisher::from_env().context("arm egui-tester witness")?;
     event_loop
         .run_app(&mut Boiler {
             ctx,
@@ -38,6 +40,8 @@ pub fn run(ctx: egui::Context, app: Workbench) -> Result<()> {
             rig: None,
             force_redraw: false,
             frames: FrameLedger::from_env(),
+            #[cfg(feature = "egui-test")]
+            witness,
         })
         .context("run event loop")
 }
@@ -70,6 +74,8 @@ struct Boiler {
     rig: Option<Rig>,
     force_redraw: bool,
     frames: FrameLedger,
+    #[cfg(feature = "egui-test")]
+    witness: Option<egui_tester_witness::Publisher>,
 }
 
 impl Boiler {
@@ -78,11 +84,18 @@ impl Boiler {
         let Some(rig) = self.rig.as_mut() else {
             return;
         };
+        #[cfg(feature = "egui-test")]
+        crate::witness::reset(&self.ctx);
         let raw_input = rig.input.take_egui_input(&rig.window);
         let output = self.ctx.run_ui(raw_input, |ui| self.app.pulse(ui));
         rig.input
             .handle_platform_output(&rig.window, output.platform_output);
         let shape_count = output.shapes.len();
+        #[cfg(feature = "egui-test")]
+        let observed = self
+            .witness
+            .as_ref()
+            .map(|_| egui_tester_witness::ProductInstant::now());
         let primitives = self.ctx.tessellate(output.shapes, output.pixels_per_point);
         let tooltip_rects = tooltip_rects(&self.ctx);
         let water = self
@@ -91,12 +104,29 @@ impl Boiler {
         if water.wants_repaint() {
             rig.window.request_redraw();
         }
-        rig.render(
+        let presented = rig.render(
             &primitives,
             &output.textures_delta,
             output.pixels_per_point,
             &water,
         );
+        #[cfg(not(feature = "egui-test"))]
+        let _ = presented;
+        #[cfg(feature = "egui-test")]
+        if presented && let (Some(publisher), Some(observed)) = (&mut self.witness, observed) {
+            let presentation = egui_tester_witness::ProductInstant::now();
+            let pending = crate::witness::stage(
+                &self.ctx,
+                observed,
+                self.ctx.cumulative_frame_nr(),
+                output.pixels_per_point,
+                self.app.witness_state(self.ctx.text_edit_focused()),
+            )
+            .unwrap_or_else(|err| panic!("could not stage egui-tester witness: {err}"));
+            let _presentation = publisher
+                .present_at(pending, presentation)
+                .unwrap_or_else(|err| panic!("could not publish egui-tester witness: {err}"));
+        }
         self.frames.finish(begun, shape_count, primitives.len());
         if self.app.settle() {
             self.force_redraw = true;
@@ -367,7 +397,7 @@ impl Rig {
         delta: &egui::TexturesDelta,
         pixels_per_point: f32,
         water: &dwemer_poolrooms::water::Frame,
-    ) {
+    ) -> bool {
         let screen = ScreenDescriptor {
             size_in_pixels: [self.config.width, self.config.height],
             pixels_per_point,
@@ -396,17 +426,17 @@ impl Rig {
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
             wgpu::CurrentSurfaceTexture::Timeout => {
                 self.window.request_redraw();
-                return;
+                return false;
             }
-            wgpu::CurrentSurfaceTexture::Occluded => return,
+            wgpu::CurrentSurfaceTexture::Occluded => return false,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                 self.surface.configure(&self.gpu.device, &self.config);
                 self.window.request_redraw();
-                return;
+                return false;
             }
             wgpu::CurrentSurfaceTexture::Validation => {
                 eprintln!("surface texture validation failure");
-                return;
+                return false;
             }
         };
         let surface_view = frame
@@ -470,5 +500,6 @@ impl Rig {
         for id in &delta.free {
             renderer.free_texture(id);
         }
+        true
     }
 }

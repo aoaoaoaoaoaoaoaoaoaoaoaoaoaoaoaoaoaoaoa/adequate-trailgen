@@ -21,6 +21,7 @@ Useful verification gates:
 cargo fmt --all -- --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+scripts/test-gui
 ```
 
 The shared trail-data engine uses Overpass, USGS National Digital Trails, and spatially applicable
