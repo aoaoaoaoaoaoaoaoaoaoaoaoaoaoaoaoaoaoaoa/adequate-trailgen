@@ -842,14 +842,15 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "dwemer_poolrooms"
-version = "0.2.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d222242a9335eba0f22e53398807343e9dee52644eb2fad9635add628970f834"
+checksum = "163460f6715bc0f6d791c98b4d0580ca47ee1644b16d694f746007ce27246b21"
 dependencies = [
  "anyhow",
  "bytemuck",
  "egui",
  "egui-wgpu",
+ "web-time",
 ]
 
 [[package]]

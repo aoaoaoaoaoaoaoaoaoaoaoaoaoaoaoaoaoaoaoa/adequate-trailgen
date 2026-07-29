@@ -1,3 +1,4 @@
+use crate::chrome;
 use crate::{
     cadence,
     library::SavedTrail,
@@ -6,7 +7,6 @@ use crate::{
         trail_standing_color,
     },
 };
-use dwemer_poolrooms::chrome;
 use egui::{Color32, Pos2, Rect, Response, Sense, Stroke, Ui, pos2, vec2};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -174,6 +174,79 @@ impl CandidatePreview {
     }
 }
 
+#[derive(Clone)]
+pub struct SavedPreview {
+    runs: Vec<PreviewRun>,
+    standing: Option<TrailStanding>,
+}
+
+impl SavedPreview {
+    pub fn forge(trail: &SavedTrail) -> Self {
+        let geometry = trail.geometry();
+        let projection = MiniatureProjection::fit(&geometry);
+        let mut drafts = Vec::<PreviewDraft>::new();
+        let mut datum = 0.0;
+        for leg in &trail.legs {
+            let points = projection.project(&leg.geometry);
+            let advance = cadence::polyline_length(&points);
+            let mark = trail_mark(
+                leg.trail_class,
+                leg.standing,
+                leg.marking,
+                leg.terrain,
+                leg.surface.as_deref(),
+            );
+            if let Some(run) = drafts.last_mut()
+                && run.mark == mark
+                && run
+                    .points
+                    .last()
+                    .zip(points.first())
+                    .is_some_and(|(left, right)| left.distance(*right) <= f32::EPSILON)
+            {
+                run.points.extend(points.iter().skip(1).copied());
+            } else {
+                drafts.push(PreviewDraft {
+                    points,
+                    mark,
+                    datum,
+                });
+            }
+            datum += advance;
+        }
+        let runs = drafts
+            .into_iter()
+            .map(|run| PreviewRun {
+                points: simplify_miniature(&run.points).into(),
+                mark: run.mark,
+                datum: run.datum,
+            })
+            .collect();
+        Self {
+            runs,
+            standing: frailest_standing(trail.legs.iter().map(|leg| leg.standing)),
+        }
+    }
+
+    fn paint(&self, ui: &Ui, rect: Rect) {
+        for run in &self.runs {
+            let points = run
+                .points
+                .iter()
+                .map(|point| rect.min + point.to_vec2())
+                .collect::<Vec<_>>();
+            let _advance = paint_trail_tube_at(
+                ui.painter(),
+                &points,
+                5.4,
+                crate::map::SELECTED_TRAIL_COLOR,
+                run.mark,
+                run.datum,
+            );
+        }
+    }
+}
+
 struct PreviewDraft {
     points: Vec<Pos2>,
     mark: crate::map::TrailMark,
@@ -274,35 +347,15 @@ fn point_segment_distance(point: Pos2, start: Pos2, end: Pos2) -> f32 {
     point.distance(start + edge * progress)
 }
 
-pub fn saved_tile(ui: &mut Ui, trail: &SavedTrail, active: bool) -> Response {
-    let geometry = trail.geometry();
-    tile_shell(
+pub fn saved_preview(ui: &mut Ui, trail: &SavedTrail, preview: &SavedPreview) {
+    let _tile = tile_shell(
         ui,
         trail.name.as_str(),
         &trail.metrics,
-        frailest_standing(trail.legs.iter().map(|leg| leg.standing)),
-        active,
-        |ui, rect| {
-            let mut datum = 0.0;
-            for leg in &trail.legs {
-                datum += paint_miniature_leg(
-                    ui,
-                    rect,
-                    &geometry,
-                    &leg.geometry,
-                    crate::map::SELECTED_TRAIL_COLOR,
-                    trail_mark(
-                        leg.trail_class,
-                        leg.standing,
-                        leg.marking,
-                        leg.terrain,
-                        leg.surface.as_deref(),
-                    ),
-                    datum,
-                );
-            }
-        },
-    )
+        preview.standing,
+        false,
+        |ui, rect| preview.paint(ui, rect),
+    );
 }
 
 fn tile_shell(
@@ -421,58 +474,6 @@ fn paint_grid(ui: &Ui, rect: Rect) {
             Stroke::new(0.5_f32, chrome::EDGE.gamma_multiply(0.24)),
         );
     }
-}
-
-fn paint_miniature_leg(
-    ui: &Ui,
-    rect: Rect,
-    route: &LineString,
-    leg: &LineString,
-    color: Color32,
-    mark: crate::map::TrailMark,
-    datum: f32,
-) -> f32 {
-    let points = miniature_points(rect, route, leg);
-    paint_trail_tube_at(ui.painter(), &points, 5.4, color, mark, datum)
-}
-
-fn miniature_points(rect: Rect, route: &LineString, line: &LineString) -> Vec<egui::Pos2> {
-    let mean_lat =
-        route.points.iter().map(|point| point.lat).sum::<f64>() / route.points.len().max(1) as f64;
-    let cos_lat = mean_lat.to_radians().cos();
-    let bounds = route.points.iter().fold(
-        [
-            f64::INFINITY,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::NEG_INFINITY,
-        ],
-        |mut bounds, point| {
-            let x = point.lon * cos_lat;
-            bounds[0] = bounds[0].min(x);
-            bounds[1] = bounds[1].min(point.lat);
-            bounds[2] = bounds[2].max(x);
-            bounds[3] = bounds[3].max(point.lat);
-            bounds
-        },
-    );
-    if !bounds.into_iter().all(f64::is_finite) {
-        return Vec::new();
-    }
-    let width = (bounds[2] - bounds[0]).max(1.0e-12);
-    let height = (bounds[3] - bounds[1]).max(1.0e-12);
-    let scale = (f64::from(rect.width()) / width).min(f64::from(rect.height()) / height);
-    let center = [(bounds[0] + bounds[2]) * 0.5, (bounds[1] + bounds[3]) * 0.5];
-    line.points
-        .iter()
-        .map(|point| {
-            rect.center()
-                + vec2(
-                    (point.lon.mul_add(cos_lat, -center[0]) * scale) as f32,
-                    (-(point.lat - center[1]) * scale) as f32,
-                )
-        })
-        .collect()
 }
 
 #[cfg(test)]

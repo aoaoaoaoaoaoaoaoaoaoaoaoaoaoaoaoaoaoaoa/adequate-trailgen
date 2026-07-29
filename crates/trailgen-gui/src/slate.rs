@@ -7,14 +7,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum GalleryDeck {
-    #[default]
-    Library,
-    Results,
-}
-
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default)]
 pub struct Slate {
@@ -23,7 +15,6 @@ pub struct Slate {
     pub shutters: BTreeMap<String, bool>,
     pub inspector_scroll: f32,
     pub sort: TrailSort,
-    pub gallery: GalleryDeck,
 }
 
 impl Default for Slate {
@@ -34,7 +25,6 @@ impl Default for Slate {
             shutters: BTreeMap::new(),
             inspector_scroll: 0.0,
             sort: TrailSort::default(),
-            gallery: GalleryDeck::default(),
         }
     }
 }
@@ -59,7 +49,7 @@ impl Slate {
         slate.inspector_scroll = slate.inspector_scroll.max(0.0);
         slate
             .shutters
-            .retain(|section, _| matches!(section.as_str(), "search" | "areas"));
+            .retain(|section, _| matches!(section.as_str(), "search" | "library" | "areas"));
         slate
     }
 
@@ -101,7 +91,6 @@ mod tests {
             center: [0.29, 0.37],
             zoom: 15.5,
         });
-        slate.gallery = GalleryDeck::Results;
         slate.shutters.insert("areas".to_owned(), true);
         slate.save(&path)?;
         assert_eq!(Slate::load(&path, &alpha), slate);
@@ -120,7 +109,7 @@ mod tests {
         std::fs::write(
             &path,
             format!(
-                "project = {:?}\nactive_family = 7\n[shutters]\nlibrary = true\nsearch = false\n",
+                "project = {:?}\ngallery = \"library\"\nactive_family = 7\n[shutters]\nfamilies = true\nsearch = false\n",
                 project.to_string_lossy()
             ),
         )?;

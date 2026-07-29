@@ -543,6 +543,29 @@ impl Library {
         true
     }
 
+    pub fn rename_trail(&mut self, id: &TrailId, name: &str) -> Result<bool> {
+        let name = name.trim();
+        ensure!(!name.is_empty(), "trail name must not be empty");
+        ensure!(
+            name.chars().count() <= 80,
+            "trail name must not exceed 80 characters"
+        );
+        ensure!(
+            name.chars().all(|character| !character.is_control()),
+            "trail name must not contain control characters"
+        );
+        let trail = self
+            .trails
+            .iter_mut()
+            .find(|trail| &trail.id == id)
+            .context("trail no longer exists")?;
+        if trail.name == name {
+            return Ok(false);
+        }
+        name.clone_into(&mut trail.name);
+        Ok(true)
+    }
+
     pub fn promote(&mut self, graph: &TrailGraph, route: &Route) -> Result<TrailId> {
         let trail = SavedTrail::capture(graph, route)?;
         let id = trail.id.clone();
@@ -771,6 +794,20 @@ mod tests {
         assert_eq!(library.trails()[0].id, trail);
         assert!(library.remove_trail(&trail));
         assert!(library.trails().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn trail_renaming_preserves_geometry_identity_and_rejects_void_names() -> Result<()> {
+        let (graph, route) = fixture()?;
+        let mut library = Library::default();
+        let id = library.promote(&graph, &route)?;
+        assert!(library.rename_trail(&id, "  Seven Hills  ")?);
+        let renamed = library.trail(&id).context("renamed trail")?;
+        assert_eq!(renamed.id, id);
+        assert_eq!(renamed.name, "Seven Hills");
+        assert!(!library.rename_trail(&id, "Seven Hills")?);
+        assert!(library.rename_trail(&id, " \n ").is_err());
         Ok(())
     }
 

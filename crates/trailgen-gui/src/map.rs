@@ -1,5 +1,5 @@
+use crate::chrome;
 use crate::{cadence, forge, library::SavedTrail, trail_map::TrailField};
-use dwemer_poolrooms::chrome;
 use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, Vec2, pos2, vec2};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -9,8 +9,8 @@ use std::{
     time::{Duration, Instant},
 };
 use trailgen_core::{
-    Access, Coord, EdgeDisposition, EdgeId, Route, Terrain, TrailClass, TrailGraph, TrailMarking,
-    TrailStanding,
+    Access, Coord, EdgeDisposition, EdgeId, Route, RouteShape, Terrain, TrailClass, TrailGraph,
+    TrailMarking, TrailStanding,
 };
 
 const TILE_EDGE: f64 = 256.0;
@@ -661,6 +661,51 @@ impl RouteOverlay {
         }
     }
 
+    pub fn saved(trail: &SavedTrail) -> Self {
+        let last = trail.legs.len().saturating_sub(1);
+        let mut edges = trail
+            .legs
+            .iter()
+            .enumerate()
+            .map(|(slot, leg)| {
+                let points = leg
+                    .geometry
+                    .points
+                    .iter()
+                    .copied()
+                    .map(world_from_coord)
+                    .collect::<Vec<_>>();
+                WorldEdge {
+                    endpoints: [
+                        slot,
+                        if slot == last && trail.metrics.shape == RouteShape::Loop {
+                            0
+                        } else {
+                            slot + 1
+                        },
+                    ],
+                    length_world: world_polyline_length(&points),
+                    points,
+                    lineage: None,
+                    color: SELECTED_TRAIL_COLOR,
+                    trail_class: leg.trail_class,
+                    mark: trail_mark(
+                        leg.trail_class,
+                        leg.standing,
+                        leg.marking,
+                        leg.terrain,
+                        leg.surface.as_deref(),
+                    ),
+                    access: leg.access,
+                }
+            })
+            .collect::<Vec<_>>();
+        weave_cadence(trail.legs.len() + 1, &mut edges);
+        Self {
+            field: TrailField::overlay(&edges),
+        }
+    }
+
     pub fn paint(&mut self, painter: &Painter, frame: MapFramePlan) {
         self.field.paint(painter, frame);
     }
@@ -908,44 +953,6 @@ pub fn paint_edict(
         color,
         TrailMark::Solid,
     );
-}
-
-pub fn paint_saved_trail(
-    painter: &Painter,
-    trail: &SavedTrail,
-    view: Viewport,
-    rect: Rect,
-    color: Color32,
-) {
-    let strokes = trail
-        .legs
-        .iter()
-        .map(|leg| {
-            let world = leg
-                .geometry
-                .points
-                .iter()
-                .copied()
-                .map(world_from_coord)
-                .collect::<Vec<_>>();
-            SelectedStroke {
-                length_world: world_polyline_length(&world),
-                points: world
-                    .into_iter()
-                    .map(|world| screen_at(view, rect, world))
-                    .collect(),
-                color: TrailSalience::Selected.access_color(color, leg.access),
-                mark: trail_mark(
-                    leg.trail_class,
-                    leg.standing,
-                    leg.marking,
-                    leg.terrain,
-                    leg.surface.as_deref(),
-                ),
-            }
-        })
-        .collect::<Vec<_>>();
-    paint_selected_strokes(painter, &strokes, view);
 }
 
 struct SelectedStroke {

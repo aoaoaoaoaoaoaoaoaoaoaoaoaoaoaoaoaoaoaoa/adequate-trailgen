@@ -1,5 +1,5 @@
+use crate::chrome;
 use crate::map::{self, Viewport};
-use dwemer_poolrooms::chrome;
 use egui::{Color32, CursorIcon, Painter, Pos2, Rect, Response, Stroke, Ui, pos2, vec2};
 use trailgen_core::{Coord, source::GeoBounds};
 use trailgen_data::SurveyRegion;
@@ -121,7 +121,7 @@ pub fn paint(
         painter.text(
             plate.center(),
             egui::Align2::CENTER_CENTER,
-            (slot + 1).to_string(),
+            slot.to_string(),
             egui::FontId::monospace(10.0),
             chrome::HOT,
         );

@@ -1,17 +1,24 @@
+use crate::chrome;
 use crate::{
     library::SavedTrail,
     map::{terrain_color, terrain_label},
 };
-use dwemer_poolrooms::chrome;
 use egui::{Color32, Rect, Response, Sense, Shape, Stroke, Ui, pos2, vec2};
 use trailgen_core::{LineString, Route, Terrain, TrailGraph};
 
 pub struct ElevationProfile {
+    path: Vec<PathSample>,
     samples: Vec<Sample>,
     spans: Vec<Span>,
     distance_m: f64,
     minimum_m: f64,
     maximum_m: f64,
+}
+
+#[derive(Clone, Copy)]
+struct PathSample {
+    distance_m: f64,
+    coord: trailgen_core::Coord,
 }
 
 #[derive(Clone, Copy)]
@@ -26,6 +33,11 @@ struct Span {
     to_m: f64,
     terrain: Terrain,
     grade: f64,
+}
+
+pub struct ProfileResponse {
+    pub response: Response,
+    pub hovered_m: Option<f64>,
 }
 
 impl ElevationProfile {
@@ -64,6 +76,7 @@ impl ElevationProfile {
         legs: impl IntoIterator<Item = (&'a LineString, Terrain, f64)>,
         measured_distance_m: f64,
     ) -> Option<Self> {
+        let mut path = Vec::new();
         let mut samples = Vec::new();
         let mut spans = Vec::new();
         let mut raw_distance_m = 0.0;
@@ -73,6 +86,10 @@ impl ElevationProfile {
                 if slot > 0 {
                     raw_distance_m += line.points[slot - 1].haversine_m(coord);
                 }
+                path.push(PathSample {
+                    distance_m: raw_distance_m,
+                    coord,
+                });
                 if let Some(elevation_m) = coord.ele.filter(|value| value.is_finite()) {
                     samples.push(Sample {
                         distance_m: raw_distance_m,
@@ -94,6 +111,9 @@ impl ElevationProfile {
         for sample in &mut samples {
             sample.distance_m *= rescale;
         }
+        for sample in &mut path {
+            sample.distance_m *= rescale;
+        }
         for span in &mut spans {
             span.from_m *= rescale;
             span.to_m *= rescale;
@@ -107,6 +127,7 @@ impl ElevationProfile {
             .map(|sample| sample.elevation_m)
             .fold(f64::NEG_INFINITY, f64::max);
         Some(Self {
+            path,
             samples,
             spans,
             distance_m: measured_distance_m,
@@ -115,9 +136,9 @@ impl ElevationProfile {
         })
     }
 
-    pub fn show(&self, ui: &mut Ui, height: f32) -> Response {
+    pub fn show(&self, ui: &mut Ui, height: f32, locked_m: Option<f64>) -> ProfileResponse {
         let (rect, response) =
-            ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+            ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click());
         let painter = ui.painter_at(rect);
         let _ground = painter.rect_filled(rect, 1.0, chrome::CONTROL);
         let _edge = painter.rect_stroke(
@@ -130,8 +151,14 @@ impl ElevationProfile {
         self.paint_grid(&painter, plot);
         self.paint_terrain(&painter, plot);
         self.paint_elevation(&painter, plot);
-        self.paint_hover(ui, &painter, plot, &response);
-        response
+        let hovered_m = self.hovered_distance(plot, &response);
+        if let Some(distance_m) = locked_m.or(hovered_m) {
+            self.paint_probe(ui, &painter, plot, distance_m);
+        }
+        ProfileResponse {
+            response,
+            hovered_m,
+        }
     }
 
     fn paint_grid(&self, painter: &egui::Painter, plot: Rect) {
@@ -230,14 +257,22 @@ impl ElevationProfile {
         ));
     }
 
-    fn paint_hover(&self, ui: &Ui, canvas: &egui::Painter, plot: Rect, response: &Response) {
-        let Some(pointer) = response
+    fn hovered_distance(&self, plot: Rect, response: &Response) -> Option<f64> {
+        let pointer = response
             .hover_pos()
-            .filter(|pointer| plot.contains(*pointer))
-        else {
-            return;
-        };
+            .filter(|pointer| plot.contains(*pointer))?;
         let distance_m = f64::from((pointer.x - plot.left()) / plot.width()) * self.distance_m;
+        self.samples
+            .iter()
+            .min_by(|a, b| {
+                (a.distance_m - distance_m)
+                    .abs()
+                    .total_cmp(&(b.distance_m - distance_m).abs())
+            })
+            .map(|sample| sample.distance_m)
+    }
+
+    fn paint_probe(&self, ui: &Ui, canvas: &egui::Painter, plot: Rect, distance_m: f64) {
         let Some(sample) = self.samples.iter().min_by(|a, b| {
             (a.distance_m - distance_m)
                 .abs()
@@ -255,7 +290,7 @@ impl ElevationProfile {
         let terrain = self
             .spans
             .iter()
-            .find(|span| distance_m >= span.from_m && distance_m <= span.to_m)
+            .find(|span| sample.distance_m >= span.from_m && sample.distance_m <= span.to_m)
             .map_or(Terrain::Unknown, |span| span.terrain);
         let text = format!(
             "{:.2} KM  ·  {:.0} M  ·  {}",
@@ -281,6 +316,26 @@ impl ElevationProfile {
         canvas.galley(label.min + vec2(5.0, 3.0), galley, chrome::TEXT);
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(50));
+    }
+
+    pub fn coord_at(&self, distance_m: f64) -> Option<trailgen_core::Coord> {
+        let distance_m = distance_m.clamp(0.0, self.distance_m);
+        let east = self
+            .path
+            .partition_point(|sample| sample.distance_m <= distance_m);
+        let Some(west) = east.checked_sub(1).and_then(|west| self.path.get(west)) else {
+            return self.path.first().map(|sample| sample.coord);
+        };
+        let Some(east) = self.path.get(east) else {
+            return Some(west.coord);
+        };
+        let span_m = east.distance_m - west.distance_m;
+        let t = if span_m <= f64::EPSILON {
+            0.0
+        } else {
+            (distance_m - west.distance_m) / span_m
+        };
+        Some(west.coord.lerp(east.coord, t.clamp(0.0, 1.0)))
     }
 
     fn x(&self, plot: Rect, distance_m: f64) -> f32 {
@@ -355,6 +410,12 @@ mod tests {
             (profile.samples.last().expect("sample").distance_m - routes[0].metrics.distance_m)
                 .abs()
                 < 1.0e-6
+        );
+        let geometry = routes[0].geometry(&graph);
+        assert_eq!(profile.coord_at(0.0), Some(geometry.start()));
+        assert_eq!(
+            profile.coord_at(routes[0].metrics.distance_m),
+            Some(geometry.end())
         );
         Ok(())
     }

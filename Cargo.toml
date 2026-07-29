@@ -14,7 +14,7 @@ bytemuck = { version = "1.24.0", features = ["derive"] }
 clap = { version = "4.5.40", features = ["derive"] }
 crossbeam-channel = "0.5.15"
 directories = "6.0.0"
-dwemer_poolrooms = "0.2.0"
+dwemer_poolrooms = "0.7.0"
 egui = "=0.34.3"
 egui-wgpu = "=0.34.3"
 egui-winit = "=0.34.3"

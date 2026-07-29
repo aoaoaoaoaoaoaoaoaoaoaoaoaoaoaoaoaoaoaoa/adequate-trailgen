@@ -2,6 +2,7 @@ use crate::{
     ProjectIntent,
     app::{Action as TrailAction, TrailApp, forge_water},
     basemap::Source as BasemapSource,
+    chrome,
     habitat::{Habitat, ProjectPlace, create_project},
     live_area::{self, RegionScribe, ScribeEvent},
     map::{self, Viewport},
@@ -12,10 +13,7 @@ use crate::{
     vector_field::VectorField,
 };
 use anyhow::{Context as _, Result, ensure};
-use dwemer_poolrooms::{
-    chrome,
-    water::{Frame as WaterFrame, Surface},
-};
+use dwemer_poolrooms::water::{Frame as WaterFrame, Surface};
 use egui::{Color32, RichText, Stroke, vec2};
 use std::{
     path::{Path, PathBuf},
@@ -347,7 +345,7 @@ impl SurveyWorkbench {
         ui.add_space(3.0);
         let projects = ui.add_sized(
             [ui.available_width(), 27.0],
-            chrome::glyph_button("PROJECTS · CTRL+O", false),
+            chrome::command_button("PROJECTS · CTRL+O", false),
         );
         chrome::tension(ui, &projects);
         if projects.clicked() {
@@ -359,7 +357,7 @@ impl SurveyWorkbench {
         let selecting = self.scribe.active();
         let select = ui.add_enabled(
             !self.offline && self.corpus.is_none(),
-            chrome::glyph_button(
+            chrome::command_button(
                 if selecting {
                     "CANCEL DRAWING"
                 } else {
@@ -383,11 +381,11 @@ impl SurveyWorkbench {
         let mut excision = None;
         for (slot, region) in self.regions.iter().enumerate() {
             let _region = ui.horizontal(|ui| {
-                let _area = ui.label(chrome::muted(format!("AREA {:02}", slot + 1)));
+                let _area = ui.label(chrome::muted(format!("AREA {slot:02}")));
                 let remove = ui
                     .add_enabled(
                         self.corpus.is_none(),
-                        chrome::glyph_button("REMOVE", false).min_size(vec2(60.0, 24.0)),
+                        chrome::command_button("REMOVE", false).min_size(vec2(60.0, 24.0)),
                     )
                     .on_hover_text("Remove this downloaded area and update trails.");
                 if remove.clicked() {
@@ -407,7 +405,7 @@ impl SurveyWorkbench {
             ui.add_space(6.0);
             let refresh = ui.add_enabled(
                 !self.offline && self.corpus.is_none(),
-                chrome::glyph_button("REFRESH TRAILS", false)
+                chrome::command_button("REFRESH TRAILS", false)
                     .min_size(vec2(ui.available_width(), 27.0)),
             );
             chrome::tension(ui, &refresh);
@@ -451,7 +449,7 @@ impl SurveyWorkbench {
             if self.corpus.is_none() && !self.scribe.active() {
                 let select = ui.add_enabled(
                     !self.offline,
-                    chrome::glyph_button("ADD MAP AREA", true).min_size(vec2(164.0, 29.0)),
+                    chrome::command_button("ADD MAP AREA", true).min_size(vec2(164.0, 29.0)),
                 );
                 chrome::tension(ui, &select);
                 if select.clicked() {
@@ -744,7 +742,7 @@ impl ProjectDeck {
                     .text_color(chrome::TEXT),
             );
             chrome::tension(ui, &edit);
-            let browse = ui.add_sized([142.0, 28.0], chrome::glyph_button("BROWSE…", false));
+            let browse = ui.add_sized([142.0, 28.0], chrome::command_button("BROWSE…", false));
             chrome::tension(ui, &browse);
             if browse.clicked()
                 && let Some(parent) = self.pick_parent()
@@ -758,7 +756,7 @@ impl ProjectDeck {
         let ready = target.is_some();
         let create = ui.add_enabled(
             ready,
-            chrome::glyph_button("CREATE PROJECT", true).min_size(vec2(245.0, 34.0)),
+            chrome::command_button("CREATE PROJECT", true).min_size(vec2(245.0, 34.0)),
         );
         let create =
             create.on_disabled_hover_text("Enter a project name and choose a parent folder.");
@@ -791,7 +789,7 @@ impl ProjectDeck {
             if edit.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
                 *action = Some(ProjectAction::Open(PathBuf::from(self.open_root.trim())));
             }
-            let browse = ui.add_sized([142.0, 28.0], chrome::glyph_button("BROWSE…", false));
+            let browse = ui.add_sized([142.0, 28.0], chrome::command_button("BROWSE…", false));
             chrome::tension(ui, &browse);
             if browse.clicked()
                 && let Some(root) = self.pick_project()
@@ -804,7 +802,7 @@ impl ProjectDeck {
         let _actions = ui.horizontal(|ui| {
             let open = ui.add_enabled(
                 !self.open_root.trim().is_empty(),
-                chrome::glyph_button("OPEN PROJECT", true).min_size(vec2(210.0, 34.0)),
+                chrome::command_button("OPEN PROJECT", true).min_size(vec2(210.0, 34.0)),
             );
             let open = open.on_disabled_hover_text("Choose a project folder first.");
             chrome::tension(ui, &open);
@@ -813,7 +811,7 @@ impl ProjectDeck {
             }
             if self.return_workspace.is_some() {
                 let back =
-                    ui.add(chrome::glyph_button("←  BACK", false).min_size(vec2(150.0, 34.0)));
+                    ui.add(chrome::command_button("←  BACK", false).min_size(vec2(150.0, 34.0)));
                 chrome::tension(ui, &back);
                 if back.clicked() {
                     *action = Some(ProjectAction::Back);
@@ -836,7 +834,7 @@ impl ProjectDeck {
             let response = ui
                 .add_sized(
                     [ui.available_width(), 31.0],
-                    chrome::glyph_button(project.name.to_ascii_uppercase(), false),
+                    chrome::command_button(project.name.to_ascii_uppercase(), false),
                 )
                 .on_hover_text(project.root.display().to_string());
             chrome::tension(ui, &response);

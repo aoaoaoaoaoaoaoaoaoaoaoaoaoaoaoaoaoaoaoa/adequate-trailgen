@@ -10,6 +10,7 @@ mod app;
 mod basemap;
 mod boiler;
 mod cadence;
+mod chrome;
 mod forge;
 mod gallery;
 mod habitat;

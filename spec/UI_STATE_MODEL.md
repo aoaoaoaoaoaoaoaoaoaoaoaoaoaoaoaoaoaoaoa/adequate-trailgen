@@ -7,22 +7,23 @@ The workbench state is a product of four independent axes:
 3. background operations;
 4. durable project and workbench state.
 
-Only the primary view chooses the toolbar, lower panel, privileged trail
+Only the primary view chooses the toolbar, working shelf, privileged trail
 overlay, and ordinary map-click meaning. Background work never becomes a view.
-Stored candidates never confer visibility by their presence alone.
+Stored candidates never confer focus by their presence alone.
 
 ## Names
 
 - A `Trail` is a user-owned support-point design.
 - A `Candidate` is a transient generated route with an exact editable design.
-- `Search` is an operation. Its retained output is the Results deck.
+- `Search` is an operation. Its retained output is the Results shelf.
 - `Focus` is full-map inspection of one candidate or saved trail.
 - `Edit` is one support-point editor. Its origin determines save and return
   behavior; it does not create separate rendering implementations.
-- `Browse` is the base workbench, showing either the Library or Results deck.
+- `Browse` is the base workbench. The inspector always owns the saved-trail
+  Library; the lower shelf always owns transient Results.
 
-“Find mode” therefore means `Browse(Results)` or `Focus(Candidate)`, optionally
-with a search worker running. `Edit(Candidate)` is an editor, not Find mode.
+“Find mode” therefore means `Browse` or `Focus(Candidate)`, optionally with a
+search worker running. `Edit(Candidate)` is an editor, not Find mode.
 
 ## Primary View
 
@@ -60,12 +61,27 @@ Saving Edit enters `Focus(Saved)`. A new manual trail establishes its
 pre-editor viewport as the Browse return frame. Editing a candidate or saved
 trail preserves the existing Browse return frame.
 
+## Spatial Ownership
+
+The left inspector is durable project memory: saved trails, search intent, and
+downloaded map areas. The bottom is transient working memory: search results,
+the focused trail’s profile, editor profile, status, and contextual help.
+Durable objects must not require switching the bottom shelf into an alternate
+deck.
+
+The Library is one projection of the project’s canonical saved-trail store, not
+a second collection. Hovering a Library row exposes its prepared miniature and
+temporarily previews that trail on the map. Clicking enters `Focus(Saved)`.
+Renaming changes metadata in place; deleting removes the canonical trail.
+Neither operation changes route identity or transient Results.
+Library navigation is inert while Edit owns an unsaved draft; only Save or
+Cancel may leave that editor.
+
 ## Presentation
 
-| View | Privileged map content | Lower panel | Search artifacts |
+| View | Privileged map content | Working shelf | Search artifacts |
 | --- | --- | --- | --- |
-| `Browse(Library)` | saved trails | library tiles | hidden |
-| `Browse(Results)` | candidate portfolio | result tiles | boundary and segment edicts |
+| `Browse` | hovered saved trail, otherwise candidate portfolio | result tiles | boundary and segment edicts |
 | `Focus(Candidate)` | one candidate | its elevation profile | boundary and segment edicts |
 | `Focus(Saved)` | one saved trail | its elevation profile | hidden |
 | `Edit(*)` | editor realization and support pins | editor elevation profile | hidden |
@@ -80,6 +96,20 @@ A click on the current realized trail inserts a support at that routed leg.
 A click away from it appends a new destination. Dragging replaces one existing
 support. These operations alter the ordered support design; they never mutate
 provider topology.
+
+Support points are ordered from zero everywhere, including visible pin labels.
+For any editable `Open` or `Loop` trail, `Close Loop` changes the design between
+those topologies; `Loop` realization routes from the last support back to
+support 0. Editor provenance never removes this capability. Reversing a loop
+preserves support 0 as its trailhead and inverts the exact realized walk. Shape
+and reversal changes are ordinary undoable editor gestures.
+
+The elevation profile and map share one route-distance cursor. Hover chooses the
+nearest represented profile distance and paints a hollow map ring at the
+corresponding route coordinate. Primary click locks that distance; another
+primary click moves the lock; secondary click releases it and immediately
+restores hover-following. A lock belongs to one focused trail or editor and is
+discarded when that owner changes.
 
 ## Map Tools
 
@@ -118,9 +148,9 @@ the primary view implicitly or perform graph-scale work on the event loop.
 ## Persistence
 
 The project owns its library, search recipe, downloaded regions, and graph.
-XDG state owns the base Browse viewport, deck, sorting, inspector position, and
-section shutters. Candidates, focus, editor drafts, undo history, map gestures,
-worker progress, and navigation frames are session state.
+XDG state owns the base Browse viewport, result sorting, inspector position,
+and section shutters. Candidates, focus, editor drafts, undo history, profile
+cursor, map gestures, worker progress, and navigation frames are session state.
 
 Only the base Browse viewport is persisted. Focus and Edit may pan or zoom
 without corrupting the viewport to which Back or Cancel returns.
@@ -129,17 +159,19 @@ without corrupting the viewport to which Back or Cancel returns.
 
 | Event | From | To |
 | --- | --- | --- |
-| open candidate tile | `Browse(Results)` | `Focus(Candidate)` |
-| open saved tile | `Browse(Library)` | `Focus(Saved)` |
+| open candidate tile | `Browse` | `Focus(Candidate)` |
+| open saved Library row | `Browse` | `Focus(Saved)` |
 | Back / Escape | `Focus(*)` | prior `Browse` viewport |
 | Edit Trail | `Focus(*)` | `Edit(*)` with exact return frame |
-| Draw a Trail | `Browse(*)` | `Edit(New)` |
+| Draw a Trail | `Browse` | `Edit(New)` |
 | Cancel / Escape | `Edit(*)` | exact opening view and viewport |
 | Save | `Edit(*)` | `Focus(Saved)` |
 | previous / next | `Focus(kind)` | adjacent `Focus(kind)` |
 | parameter change | Find mode | prior results remain; warmed search scheduled |
 | click / Shift-click segment | Find mode | edict toggled; warmed search scheduled |
-| Clear Results | `Browse(Results)` | `Browse(Results)` with no portfolio or edicts |
+| Close Loop | `Edit(*)` with `Open | Loop` shape | same editor, shape changed and re-realized |
+| Reverse Direction | `Edit(Loop)` | same editor with exact walk inverted |
+| Clear Results | `Browse` | `Browse` with no portfolio or edicts |
 
 No transition may discard a return viewport, expose another view’s overlays,
 publish a stale worker generation, or enable saving a draft whose visible
