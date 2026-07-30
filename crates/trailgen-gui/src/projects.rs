@@ -214,12 +214,12 @@ impl Workbench {
                 ProjectWorkspace::Trail(app) => app.witness_state(text_edit_focused),
                 ProjectWorkspace::Survey(project) => project.witness_state(text_edit_focused),
             },
-            WorkbenchMode::Projects(_) => {
-                crate::witness::State::empty("projects", "projects", text_edit_focused)
-            }
-            WorkbenchMode::Limbo => {
-                crate::witness::State::empty("limbo", "transition", text_edit_focused)
-            }
+            WorkbenchMode::Projects(_) => crate::witness::State::empty(
+                trailgen_contract::Workspace::Projects,
+                trailgen_contract::View::Projects,
+                text_edit_focused,
+            ),
+            WorkbenchMode::Limbo => unreachable!("workbench transition escaped its witness"),
         }
     }
 }
@@ -570,7 +570,11 @@ impl SurveyWorkbench {
 
     #[cfg(feature = "egui-test")]
     fn witness_state(&self, text_edit_focused: bool) -> crate::witness::State {
-        let mut state = crate::witness::State::empty("survey", "browse", text_edit_focused);
+        let mut state = crate::witness::State::empty(
+            trailgen_contract::Workspace::Survey,
+            trailgen_contract::View::Browse,
+            text_edit_focused,
+        );
         state.map = self.map_rect.is_positive().then(|| {
             crate::witness::MapState::forge(
                 self.map_rect,
@@ -582,8 +586,6 @@ impl SurveyWorkbench {
             regions: self.regions.len(),
             acquiring: self.corpus.is_some(),
             drawing: self.scribe.active(),
-            status: self.corpus_status.clone(),
-            fault: self.fault.clone(),
         });
         state
     }

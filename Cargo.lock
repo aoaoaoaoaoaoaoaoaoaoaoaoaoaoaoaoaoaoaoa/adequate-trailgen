@@ -883,8 +883,8 @@ dependencies = [
 
 [[package]]
 name = "egui-tester"
-version = "0.4.0"
-source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester?rev=88d4e7c8aff4365c5bd750da44d5604cc97ae9a4#88d4e7c8aff4365c5bd750da44d5604cc97ae9a4"
+version = "0.5.0"
+source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester?rev=b99d44cd7eb41db66a406d00f563538c72d6dec2#b99d44cd7eb41db66a406d00f563538c72d6dec2"
 dependencies = [
  "bitflags 2.13.1",
  "egui-tester-witness",
@@ -900,8 +900,8 @@ dependencies = [
 
 [[package]]
 name = "egui-tester-witness"
-version = "0.4.0"
-source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester?rev=88d4e7c8aff4365c5bd750da44d5604cc97ae9a4#88d4e7c8aff4365c5bd750da44d5604cc97ae9a4"
+version = "0.5.0"
+source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester?rev=b99d44cd7eb41db66a406d00f563538c72d6dec2#b99d44cd7eb41db66a406d00f563538c72d6dec2"
 dependencies = [
  "egui",
  "rustix 1.1.4",
@@ -4011,12 +4011,16 @@ dependencies = [
  "png",
  "serde",
  "serde_json",
+ "toml",
  "trailgen-contract",
 ]
 
 [[package]]
 name = "trailgen-contract"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "trailgen-core"

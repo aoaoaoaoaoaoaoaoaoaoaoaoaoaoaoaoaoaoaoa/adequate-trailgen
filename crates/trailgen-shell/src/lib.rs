@@ -48,8 +48,8 @@ pub trait NativeApp {
     /// Build one ordinary product UI frame.
     fn draw(&mut self, ui: &mut egui::Ui);
 
-    /// Commit work deliberately deferred until the frame boundary.
-    fn commit_frame(&mut self) -> bool;
+    /// Commit work deliberately deferred until a successful surface present.
+    fn after_present(&mut self) -> bool;
 
     /// Describe Poolrooms water composition for the frame.
     fn water(
@@ -63,7 +63,7 @@ pub trait NativeApp {
     fn register_gpu(renderer: &mut Renderer, device: &wgpu::Device, format: wgpu::TextureFormat);
 
     #[cfg(feature = "egui-test")]
-    type Observation: Serialize;
+    type Observation: Serialize + Send + 'static;
 
     /// Project the smallest useful one-way acceptance observation.
     #[cfg(feature = "egui-test")]
@@ -84,7 +84,8 @@ pub fn run<A: NativeApp>(ctx: egui::Context, app: A) -> Result<()> {
     let alarm = Alarm::default();
     arm_repaints(&ctx, Arc::clone(&alarm), event_loop.create_proxy());
     #[cfg(feature = "egui-test")]
-    let witness = egui_tester_witness::Publisher::from_env().context("arm egui-tester witness")?;
+    let witness: Option<egui_tester_witness::Publisher<A::Observation>> =
+        egui_tester_witness::Publisher::from_env().context("arm egui-tester witness")?;
     #[cfg(feature = "egui-test")]
     if witness.is_some() {
         install_witness(&ctx);
@@ -100,6 +101,10 @@ pub fn run<A: NativeApp>(ctx: egui::Context, app: A) -> Result<()> {
         witness,
     };
     event_loop.run_app(&mut shell).context("run event loop")?;
+    #[cfg(feature = "egui-test")]
+    if let Some(witness) = &shell.witness {
+        witness.flush().context("flush egui-tester witness")?;
+    }
     shell.fault.map_or(Ok(()), Err)
 }
 
@@ -124,7 +129,7 @@ fn lock_alarm(alarm: &Alarm) -> MutexGuard<'_, Option<Instant>> {
     }
 }
 
-struct Shell<A> {
+struct Shell<A: NativeApp> {
     ctx: egui::Context,
     app: A,
     alarm: Alarm,
@@ -132,7 +137,7 @@ struct Shell<A> {
     force_redraw: bool,
     fault: Option<anyhow::Error>,
     #[cfg(feature = "egui-test")]
-    witness: Option<egui_tester_witness::Publisher>,
+    witness: Option<egui_tester_witness::Publisher<A::Observation>>,
 }
 
 impl<A: NativeApp> Shell<A> {
@@ -149,8 +154,6 @@ impl<A: NativeApp> Shell<A> {
         let output = self.ctx.run_ui(raw_input, |ui| self.app.draw(ui));
         rig.input
             .handle_platform_output(&rig.window, output.platform_output);
-        #[cfg(feature = "egui-test")]
-        let observed = pulse.map(egui_tester_witness::FramePulse::observe);
         let primitives = self.ctx.tessellate(output.shapes, output.pixels_per_point);
         let tooltip_rects = tooltip_rects(&self.ctx);
         let water = self
@@ -159,6 +162,19 @@ impl<A: NativeApp> Shell<A> {
         if water.wants_repaint() {
             rig.window.request_redraw();
         }
+        #[cfg(feature = "egui-test")]
+        let pending = pulse
+            .map(|pulse| {
+                stage_witness(
+                    &self.ctx,
+                    pulse,
+                    self.ctx.cumulative_frame_nr(),
+                    output.pixels_per_point,
+                    self.app.observe(self.ctx.text_edit_focused()),
+                )
+            })
+            .transpose()
+            .context("stage egui-tester witness")?;
         let presented = rig.render(
             &primitives,
             &output.textures_delta,
@@ -168,21 +184,13 @@ impl<A: NativeApp> Shell<A> {
         #[cfg(not(feature = "egui-test"))]
         let _ = presented;
         #[cfg(feature = "egui-test")]
-        if presented && let (Some(publisher), Some(observed)) = (&mut self.witness, observed) {
-            let presentation = egui_tester_witness::ProductInstant::now();
-            let pending = stage_witness(
-                &self.ctx,
-                observed,
-                self.ctx.cumulative_frame_nr(),
-                output.pixels_per_point,
-                self.app.observe(self.ctx.text_edit_focused()),
-            )
-            .context("stage egui-tester witness")?;
-            let _presentation = publisher
-                .present_at(pending, presentation)
+        if presented && let (Some(publisher), Some(pending)) = (&mut self.witness, pending) {
+            let surface_presented = egui_tester_witness::ProductInstant::now();
+            let _surface_sequence = publisher
+                .surface_present_at(pending, surface_presented)
                 .context("publish egui-tester witness")?;
         }
-        if self.app.commit_frame() {
+        if presented && self.app.after_present() {
             self.force_redraw = true;
         }
         if let Some(viewport) = output.viewport_output.get(&egui::ViewportId::ROOT) {
@@ -413,16 +421,22 @@ impl Rig {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
             wgpu::CurrentSurfaceTexture::Timeout => {
+                self.free_textures(delta);
                 self.window.request_redraw();
                 return Ok(false);
             }
-            wgpu::CurrentSurfaceTexture::Occluded => return Ok(false),
+            wgpu::CurrentSurfaceTexture::Occluded => {
+                self.free_textures(delta);
+                return Ok(false);
+            }
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                self.free_textures(delta);
                 self.surface.configure(&self.gpu.device, &self.config);
                 self.window.request_redraw();
                 return Ok(false);
             }
             wgpu::CurrentSurfaceTexture::Validation => {
+                self.free_textures(delta);
                 bail!("surface texture validation failure");
             }
         };
@@ -481,15 +495,17 @@ impl Rig {
         {
             self.window.request_redraw();
         }
+        self.free_textures(delta);
         self.window.pre_present_notify();
         frame.present();
-        {
-            let mut renderer = self.gpu.renderer.write();
-            for id in &delta.free {
-                renderer.free_texture(id);
-            }
-        }
         Ok(true)
+    }
+
+    fn free_textures(&self, delta: &egui::TexturesDelta) {
+        let mut renderer = self.gpu.renderer.write();
+        for id in &delta.free {
+            renderer.free_texture(id);
+        }
     }
 }
 
@@ -507,7 +523,7 @@ fn install_witness(ctx: &egui::Context) {
 #[cfg(feature = "egui-test")]
 fn stage_witness<T: Serialize>(
     ctx: &egui::Context,
-    observed: egui_tester_witness::FrameObservation,
+    pulse: egui_tester_witness::FramePulse,
     frame: u64,
     pixels_per_point: f32,
     state: T,
@@ -530,6 +546,7 @@ fn stage_witness<T: Serialize>(
             )
         })
         .collect::<egui_tester_witness::Result<Vec<_>>>()?;
+    let observed = pulse.observe();
     egui_tester_witness::PendingFrame::forge_at(
         observed,
         frame,

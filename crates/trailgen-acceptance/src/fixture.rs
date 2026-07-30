@@ -4,7 +4,7 @@ use std::{
     os::unix::net::{UnixListener, UnixStream},
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
@@ -38,7 +38,7 @@ impl FixtureWorld {
         })
     }
 
-    pub fn online(command: AppCommand) -> AppCommand {
+    pub fn admit(command: AppCommand) -> AppCommand {
         command
             .env("TRAILGEN_OVERPASS_ENDPOINT", provider_url("overpass"))
             .env("TRAILGEN_USGS_TRAILS_ENDPOINT", provider_url("usgs"))
@@ -47,6 +47,11 @@ impl FixtureWorld {
     }
 
     pub fn assert_harvested(&self) -> Result<()> {
+        if let Some(fault) = self.server.fault()? {
+            return Err(Error::Verdict {
+                detail: format!("private provider failed: {fault}"),
+            });
+        }
         egui_tester::demand(
             self.server.overpass.load(Ordering::Acquire) != 0
                 && self.server.usgs.load(Ordering::Acquire) != 0
@@ -63,6 +68,7 @@ struct FixtureServer {
     overpass: Arc<AtomicUsize>,
     usgs: Arc<AtomicUsize>,
     terrain: Arc<AtomicUsize>,
+    fault: Arc<Mutex<Option<String>>>,
 }
 
 impl FixtureServer {
@@ -81,11 +87,13 @@ impl FixtureServer {
         let overpass = Arc::new(AtomicUsize::new(0));
         let usgs = Arc::new(AtomicUsize::new(0));
         let terrain = Arc::new(AtomicUsize::new(0));
+        let fault = Arc::new(Mutex::new(None));
         let worker = {
             let shutdown = Arc::clone(&shutdown);
             let overpass = Arc::clone(&overpass);
             let usgs = Arc::clone(&usgs);
             let terrain = Arc::clone(&terrain);
+            let fault = Arc::clone(&fault);
             let socket = socket.clone();
             thread::Builder::new()
                 .name("trailgen-acceptance-provider".to_owned())
@@ -94,12 +102,19 @@ impl FixtureServer {
                     while !shutdown.load(Ordering::Acquire) {
                         match listener.accept() {
                             Ok((stream, _)) => {
-                                serve(stream, &terrain_png, &overpass, &usgs, &terrain);
+                                if let Err(error) =
+                                    serve(stream, &terrain_png, &overpass, &usgs, &terrain)
+                                {
+                                    lodge_fault(&fault, error);
+                                }
                             }
                             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                                 thread::sleep(Duration::from_millis(2));
                             }
-                            Err(_) => break,
+                            Err(error) => {
+                                lodge_fault(&fault, format!("accept request: {error}"));
+                                break;
+                            }
                         }
                     }
                     let _removed = std::fs::remove_file(socket);
@@ -117,7 +132,17 @@ impl FixtureServer {
             overpass,
             usgs,
             terrain,
+            fault,
         })
+    }
+
+    fn fault(&self) -> Result<Option<String>> {
+        self.fault
+            .lock()
+            .map(|fault| fault.clone())
+            .map_err(|_| Error::Verdict {
+                detail: "private provider fault lock was poisoned".to_owned(),
+            })
     }
 }
 
@@ -141,15 +166,24 @@ fn serve(
     overpass: &AtomicUsize,
     usgs: &AtomicUsize,
     terrain: &AtomicUsize,
-) {
+) -> std::result::Result<(), String> {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .map_err(|error| format!("set request timeout: {error}"))?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .map_err(|error| format!("set response timeout: {error}"))?;
     let mut reader = BufReader::new(stream);
     let mut request = String::new();
-    if reader.read_line(&mut request).is_err() {
-        return;
-    }
+    reader
+        .read_line(&mut request)
+        .map_err(|error| format!("read request line: {error}"))?;
     loop {
         let mut header = String::new();
-        if reader.read_line(&mut header).is_err() || matches!(header.as_str(), "\r\n" | "\n" | "") {
+        reader
+            .read_line(&mut header)
+            .map_err(|error| format!("read request header: {error}"))?;
+        if matches!(header.as_str(), "\r\n" | "\n" | "") {
             break;
         }
     }
@@ -167,13 +201,34 @@ fn serve(
         ("404 Not Found", "text/plain", b"not found")
     };
     let stream = reader.get_mut();
-    let _response = write!(
+    write!(
         stream,
         "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
-    );
-    let _body = stream.write_all(body);
-    let _flush = stream.flush();
+    )
+    .map_err(|error| format!("write response header: {error}"))?;
+    stream
+        .write_all(body)
+        .map_err(|error| format!("write response body: {error}"))?;
+    stream
+        .flush()
+        .map_err(|error| format!("flush response: {error}"))
+}
+
+fn lodge_fault(fault: &Mutex<Option<String>>, detail: String) {
+    match fault.lock() {
+        Ok(mut fault) => {
+            if fault.is_none() {
+                *fault = Some(detail);
+            }
+        }
+        Err(poisoned) => {
+            let mut fault = poisoned.into_inner();
+            if fault.is_none() {
+                *fault = Some(detail);
+            }
+        }
+    }
 }
 
 fn terrain_tile() -> Vec<u8> {

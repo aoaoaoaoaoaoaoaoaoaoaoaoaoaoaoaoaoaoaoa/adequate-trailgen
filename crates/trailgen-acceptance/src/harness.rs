@@ -1,12 +1,12 @@
 use std::{
-    env, fs,
+    env,
     path::{Path, PathBuf},
     time::Duration,
 };
 
 use egui_tester::{
-    Anchor, AppCommand, Application, Error, Graphics, Network, PerformanceBudget, ProbeFrame,
-    Result, Story, Testbed, WindowQuery,
+    Anchor, AppCommand, Application, Error, Graphics, Network, ProbeFrame, ReactionBudget, Result,
+    Story, Testbed, WindowQuery,
 };
 use num_traits::ToPrimitive as _;
 use serde_json::Value;
@@ -19,7 +19,19 @@ pub const TITLE: &str = "trailgen · trail workbench";
 
 pub type TrailStory<'app, 'bed> = Story<'app, 'bed, Observation>;
 pub type TrailFrame = ProbeFrame<Observation>;
-pub use trailgen_contract::Target as Control;
+pub use trailgen_contract::{Target, TargetClass};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DataMode {
+    Offline,
+    FixtureProviders,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RunClass {
+    Functional,
+    Performance,
+}
 
 pub struct Harness<'a> {
     pub testbed: &'a Testbed,
@@ -84,45 +96,65 @@ impl<'a> Harness<'a> {
         }
     }
 
-    pub fn gui(&self, project: Option<&str>, offline: bool) -> AppCommand {
+    pub fn gui(&self, project: Option<&str>, data: DataMode, run: RunClass) -> AppCommand {
         let mut args = vec!["gui"];
         if let Some(project) = project {
             args.push(project);
         }
-        if offline {
+        if data == DataMode::Offline {
             args.push("--offline");
         }
-        AppCommand::new(self.binary)
+        let command = AppCommand::new(self.binary)
             .args(args)
             .env("TRAILGEN_BASEMAP_ARCHIVE", "/test/fixtures/empty.pmtiles")
-            .graphics(Graphics::Host)
+            .graphics(match run {
+                RunClass::Functional => Graphics::Software,
+                RunClass::Performance => Graphics::Host,
+            })
             .network(Network::Deny)
-            .witness("probes/trailgen.json")
-            .runtime(Duration::from_mins(3))
+            .witness("probes/trailgen.observations")
+            .runtime(Duration::from_mins(3));
+        match data {
+            DataMode::Offline => command,
+            DataMode::FixtureProviders => FixtureWorld::admit(command),
+        }
     }
 
     pub fn launch_gui(
         &self,
         project: Option<&str>,
-        offline: bool,
-        online: bool,
+        data: DataMode,
+        run: RunClass,
     ) -> Result<Application<'a>> {
-        let command = self.gui(project, offline);
-        self.testbed.launch(if online {
-            FixtureWorld::online(command)
-        } else {
-            command
-        })
+        self.testbed.launch(self.gui(project, data, run))
     }
 
-    pub fn story<'app>(&'a self, app: &'app Application<'a>) -> Result<TrailStory<'app, 'a>> {
+    pub fn launch_uninstrumented_smoke(&self) -> Result<Application<'a>> {
+        self.testbed.launch(
+            AppCommand::new(self.binary)
+                .args(["gui", "--offline"])
+                .env("TRAILGEN_BASEMAP_ARCHIVE", "/test/fixtures/empty.pmtiles")
+                .graphics(Graphics::Software)
+                .network(Network::Deny)
+                .runtime(Duration::from_secs(45)),
+        )
+    }
+
+    pub fn story<'app>(
+        &'a self,
+        app: &'app Application<'a>,
+        run: RunClass,
+    ) -> Result<TrailStory<'app, 'a>> {
         let mut story: TrailStory<'app, 'a> = Story::bind(
             self.testbed,
             app,
             WindowQuery::title_exact(TITLE),
-            instant_budget(),
+            match run {
+                RunClass::Functional => ReactionBudget::functional(Duration::from_secs(30)),
+                RunClass::Performance => instant_budget(),
+            },
         )?;
-        let frame = story.ready(Duration::from_secs(10))?;
+        let frame = story.ready(Duration::from_secs(30))?;
         demand(
             frame.state.contract == trailgen_contract::UI_FINGERPRINT,
             format!(
@@ -135,11 +167,15 @@ impl<'a> Harness<'a> {
     }
 }
 
-pub fn first_anchor(frame: &TrailFrame, prefix: &str, missing: &'static str) -> Result<Anchor> {
+pub fn first_anchor(
+    frame: &TrailFrame,
+    class: TargetClass,
+    missing: &'static str,
+) -> Result<Anchor> {
     frame
         .anchors
         .iter()
-        .find(|anchor| anchor.name.starts_with(prefix))
+        .find(|anchor| anchor.name.starts_with(class.prefix()))
         .cloned()
         .ok_or_else(|| verdict(missing))
 }
@@ -150,11 +186,7 @@ pub fn map_pixel(frame: &TrailFrame, coordinate: [f64; 2]) -> Result<(i16, i16)>
         .map
         .as_ref()
         .ok_or_else(|| verdict("witness omitted map transform"))?;
-    let ppp = f64::from(
-        frame
-            .ppp
-            .ok_or_else(|| verdict("sealed witness omitted pixels per point"))?,
-    );
+    let ppp = f64::from(frame.ppp);
     let world = world_from_coord(coordinate);
     let [x0, y0, x1, y1] = map.rect.map(f64::from);
     let center = [(x0 + x1) * 0.5, (y0 + y1) * 0.5];
@@ -176,33 +208,30 @@ pub fn screen_point([x, y]: [f64; 2]) -> Result<(i16, i16)> {
     ))
 }
 
-pub fn read_json(path: &Path) -> Result<Value> {
-    let bytes = fs::read(path).map_err(|source| Error::Io {
-        operation: "read acceptance oracle",
-        path: path.to_owned(),
-        source,
-    })?;
+pub fn read_json(testbed: &Testbed, relative: impl AsRef<Path>) -> Result<Value> {
+    let relative = relative.as_ref();
+    let bytes = testbed.read_private(relative)?;
     serde_json::from_slice(&bytes).map_err(|error| Error::Probe {
-        path: path.to_owned(),
+        path: relative.to_owned(),
         detail: error.to_string(),
     })
 }
 
-pub fn instant_budget() -> PerformanceBudget {
-    PerformanceBudget::new(Duration::from_millis(300))
-        .through_presentation()
+pub fn instant_budget() -> ReactionBudget {
+    ReactionBudget::performance(Duration::from_millis(300))
+        .through_surface_present()
         .timeout(Duration::from_secs(6))
 }
 
-pub fn durable_budget() -> PerformanceBudget {
-    PerformanceBudget::new(Duration::from_millis(650))
-        .through_presentation()
+pub fn durable_budget() -> ReactionBudget {
+    ReactionBudget::performance(Duration::from_millis(650))
+        .through_surface_present()
         .timeout(Duration::from_secs(10))
 }
 
-pub fn search_reaction_budget() -> PerformanceBudget {
-    PerformanceBudget::new(Duration::from_millis(450))
-        .through_presentation()
+pub fn search_reaction_budget() -> ReactionBudget {
+    ReactionBudget::performance(Duration::from_millis(450))
+        .through_surface_present()
         .timeout(Duration::from_secs(8))
 }
 

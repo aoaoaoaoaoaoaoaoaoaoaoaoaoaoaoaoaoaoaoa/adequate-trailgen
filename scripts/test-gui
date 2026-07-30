@@ -4,6 +4,11 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
+cargo build --release --bin trailgen
+cargo run --release --package trailgen-acceptance -- --smoke
 cargo build --release --bin trailgen --features egui-test
-cargo run --release --package trailgen-acceptance -- \
-  "${TRAILGEN_ACCEPTANCE_ARTIFACTS:-/tmp/trailgen-acceptance-artifacts}"
+for story in discover refine compare manual; do
+  cargo run --release --package trailgen-acceptance -- \
+    --story "$story" \
+    --artifacts "${TRAILGEN_ACCEPTANCE_ARTIFACTS:-/tmp/trailgen-acceptance-artifacts}"
+done

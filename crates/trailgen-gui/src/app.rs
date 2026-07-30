@@ -616,17 +616,18 @@ impl TrailApp {
 
     #[cfg(feature = "egui-test")]
     pub(crate) fn witness_state(&self, text_edit_focused: bool) -> crate::witness::State {
-        let (view, focused_trail) = match &self.view {
-            WorkbenchView::Browse => ("browse", None),
-            WorkbenchView::Focus(Focus::Candidate { .. }) => ("focus-candidate", None),
-            WorkbenchView::Focus(Focus::Saved(id)) => ("focus-saved", Some(id.as_str().to_owned())),
-            WorkbenchView::Edit(_) => ("edit", None),
+        let view = match &self.view {
+            WorkbenchView::Browse => trailgen_contract::View::Browse,
+            WorkbenchView::Focus(Focus::Candidate { .. }) => {
+                trailgen_contract::View::FocusCandidate
+            }
+            WorkbenchView::Focus(Focus::Saved(_)) => trailgen_contract::View::FocusSaved,
+            WorkbenchView::Edit(_) => trailgen_contract::View::Edit,
         };
         crate::witness::State {
             contract: trailgen_contract::UI_FINGERPRINT,
-            workspace: "trail",
+            workspace: trailgen_contract::Workspace::Trail,
             view,
-            focused_trail,
             rename_active: self.rename.is_some(),
             text_edit_focused,
             saved_trails: self.library.trails().len(),
@@ -654,11 +655,11 @@ impl TrailApp {
             .editor()
             .map(|editor| crate::witness::EditorState {
                 origin: match &editor.origin {
-                    EditorOrigin::New => "new",
-                    EditorOrigin::Candidate => "candidate",
-                    EditorOrigin::Saved(_) => "saved",
+                    EditorOrigin::New => trailgen_contract::EditorOrigin::New,
+                    EditorOrigin::Candidate => trailgen_contract::EditorOrigin::Candidate,
+                    EditorOrigin::Saved(_) => trailgen_contract::EditorOrigin::Saved,
                 },
-                shape: route_shape_name(editor.shape),
+                shape: contract_route_shape(editor.shape),
                 ready: editor.ready(),
                 dragging_support: editor.drag.as_ref().map(|drag| drag.slot),
                 support_points: editor
@@ -669,10 +670,6 @@ impl TrailApp {
                         [coord.lon, coord.lat]
                     })
                     .collect(),
-                route_distance_m: editor
-                    .realization
-                    .as_ref()
-                    .map(|realization| realization.route.metrics.distance_m),
                 route_signature: editor.realization.as_ref().map(|realization| {
                     realization.route.edges.iter().fold(
                         (realization.route.start.0 as u64)
@@ -683,41 +680,20 @@ impl TrailApp {
                         },
                     )
                 }),
-                undo_depth: editor.undo.len(),
                 redo_depth: editor.redo.len(),
-                fault: editor.fault.clone().or_else(|| editor.notice.clone()),
             })
     }
 
     #[cfg(feature = "egui-test")]
     fn witness_search(&self) -> crate::witness::SearchState {
-        let (serial, progress, stopping) = match &self.forge_phase {
-            ForgePhase::Idle => (None, None, false),
-            ForgePhase::Striking {
-                serial,
-                progress,
-                stopping,
-                ..
-            } => (Some(*serial), Some(*progress), *stopping),
-        };
         let recipe = self.library.search();
-        let trailhead = recipe.trailhead.as_ref().map(|trailhead| {
-            let coord = trailhead.coord();
-            [coord.lon, coord.lat]
-        });
         crate::witness::SearchState {
             phase: if self.forge_phase.active() {
-                "striking"
+                trailgen_contract::SearchPhase::Running
             } else {
-                "idle"
+                trailgen_contract::SearchPhase::Idle
             },
-            serial,
-            stage: progress.map(|progress| search_stage_name(progress.stage)),
-            explored: progress.map_or(0, |progress| progress.explored),
-            limit: progress.map_or(0, |progress| progress.limit),
-            discovered: progress.map_or(0, |progress| progress.candidates),
-            stopping,
-            trailhead,
+            trailhead: recipe.trailhead.is_some(),
             boundary: recipe.boundary.is_some(),
             required: self.edicts.required_count(),
             forbidden: self.edicts.forbidden_count(),
@@ -733,11 +709,8 @@ impl TrailApp {
                 .editor()
                 .is_some_and(|editor| editor.profile.is_some())
                 || (self.view.focus().is_some() && self.has_profile()),
-            locked_distance_m: self.profile_cursor.locked_m,
-            marker: self
-                .profile_cursor
-                .marker
-                .map(|coord| [coord.lon, coord.lat]),
+            locked: self.profile_cursor.locked_m.is_some(),
+            marker: self.profile_cursor.marker.is_some(),
         }
     }
 
@@ -2357,7 +2330,7 @@ impl TrailApp {
             #[cfg(feature = "egui-test")]
             crate::witness::rect(
                 painter.ctx(),
-                format!("editor.support/{slot}"),
+                Target::Support(slot),
                 crate::forge::pin_grip(anchor),
             );
             painter.text(
@@ -3460,20 +3433,22 @@ fn search_progress_text(progress: SearchProgress) -> String {
     }
 }
 
-const fn search_stage_name(stage: SearchStage) -> &'static str {
-    match stage {
-        SearchStage::Preparing => "preparing",
-        SearchStage::Exploring => "exploring",
-        SearchStage::Ranking => "ranking",
-    }
-}
-
 const fn route_shape_name(shape: RouteShape) -> &'static str {
     match shape {
         RouteShape::Loop => "loop",
         RouteShape::OutAndBack => "out-and-back",
         RouteShape::FigureEight => "figure-eight",
         RouteShape::Open => "open",
+    }
+}
+
+#[cfg(feature = "egui-test")]
+const fn contract_route_shape(shape: RouteShape) -> trailgen_contract::RouteShape {
+    match shape {
+        RouteShape::Loop => trailgen_contract::RouteShape::Loop,
+        RouteShape::OutAndBack => trailgen_contract::RouteShape::OutAndBack,
+        RouteShape::FigureEight => trailgen_contract::RouteShape::FigureEight,
+        RouteShape::Open => trailgen_contract::RouteShape::Open,
     }
 }
 

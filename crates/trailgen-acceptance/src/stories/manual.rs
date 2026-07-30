@@ -3,7 +3,8 @@ use std::time::Duration;
 use egui_tester::{Key, Modifiers, Result, demand};
 
 use crate::harness::{
-    Control, Harness, TrailFrame, TrailStory, durable_budget, first_anchor, read_json, verdict,
+    DataMode, Harness, RunClass, Target, TargetClass, TrailFrame, TrailStory, first_anchor,
+    read_json, verdict,
 };
 use crate::interactions::{add_support, exercise_profile};
 use crate::observation::{EditorOrigin, RouteShape, View, shows};
@@ -22,9 +23,8 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
     harness
         .testbed
         .retain_on_failure("manual/library/index.json")?;
-    let app = harness.launch_gui(Some(ROOT), true, false)?;
-    let mut story = harness.story(&app)?;
-    let _ready = story.ready(Duration::from_secs(30))?;
+    let app = harness.launch_gui(Some(ROOT), DataMode::Offline, RunClass::Functional)?;
+    let mut story = harness.story(&app, RunClass::Functional)?;
 
     let (before_signature, trailhead) = draw_open_route(&mut story)?;
     close_reverse_and_save(&mut story, before_signature, trailhead)?;
@@ -42,7 +42,7 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
 }
 
 fn draw_open_route(story: &mut TrailStory<'_, '_>) -> Result<(u64, [f64; 2])> {
-    let _editor = story.click(Control::Manual)?.expect(
+    let _editor = story.click(Target::Manual)?.until(
         shows::view(View::Edit) & shows::editor_origin(EditorOrigin::New) & shows::supports(0),
     )?;
     let _first = add_support(story, SUPPORTS[0], 1)?;
@@ -53,10 +53,10 @@ fn draw_open_route(story: &mut TrailStory<'_, '_>) -> Result<(u64, [f64; 2])> {
     )?;
     let _undone = story
         .chord(Modifiers::CTRL, Key::Character('z'))?
-        .expect(shows::supports(1) & shows::redoable())?;
+        .until(shows::supports(1) & shows::redoable())?;
     let _redone = story
         .chord(Modifiers::CTRL, Key::Character('y'))?
-        .expect(shows::supports(2) & shows::support(1, SUPPORTS[1]))?;
+        .until(shows::supports(2) & shows::support(1, SUPPORTS[1]))?;
     for (slot, coordinate) in SUPPORTS.iter().copied().enumerate().skip(2) {
         let _added = add_support(story, coordinate, slot + 1)?;
     }
@@ -73,13 +73,13 @@ fn close_reverse_and_save(
     before_signature: u64,
     trailhead: [f64; 2],
 ) -> Result<()> {
-    let _closed = story.click(Control::CloseLoop)?.expect(
+    let _closed = story.click(Target::CloseLoop)?.until(
         shows::shape(RouteShape::Loop) & shows::editor_ready() & shows::support(0, trailhead),
     )?;
     let closed = story.frame()?;
     let closed_signature =
         signature(&closed).ok_or_else(|| verdict("closed loop omitted its route signature"))?;
-    let _reversed = story.click(Control::Reverse)?.expect(
+    let _reversed = story.click(Target::Reverse)?.until(
         shows::shape(RouteShape::Loop)
             & shows::editor_ready()
             & shows::changed_signature(closed_signature)
@@ -92,14 +92,13 @@ fn close_reverse_and_save(
 
     exercise_profile(story)?;
     let _saved = story
-        .click(Control::EditorSave)?
-        .within(durable_budget())
-        .expect(shows::view(View::FocusSaved) & shows::library(1))?;
+        .click(Target::EditorSave)?
+        .until(shows::view(View::FocusSaved) & shows::library(1))?;
     Ok(())
 }
 
 fn verify_saved(harness: &Harness<'_>) -> Result<()> {
-    let library = read_json(&harness.testbed.private_path("manual/library/index.json")?)?;
+    let library = read_json(harness.testbed, "manual/library/index.json")?;
     let trails = library["trails"]
         .as_array()
         .ok_or_else(|| verdict("manual Library omitted its trails"))?;
@@ -119,12 +118,12 @@ fn verify_saved(harness: &Harness<'_>) -> Result<()> {
 }
 
 fn verify_restart(harness: &Harness<'_>) -> Result<()> {
-    let restarted = harness.launch_gui(Some(ROOT), true, false)?;
-    let mut story = harness.story(&restarted)?;
+    let restarted = harness.launch_gui(Some(ROOT), DataMode::Offline, RunClass::Functional)?;
+    let mut story = harness.story(&restarted, RunClass::Functional)?;
     let restored = story.wait_within(Duration::from_secs(30), shows::library(1))?;
     let _trail = first_anchor(
         &restored,
-        "library.trail/",
+        TargetClass::LibraryTrail,
         "restarted Library omitted its manual loop",
     )?;
     restarted.terminate()

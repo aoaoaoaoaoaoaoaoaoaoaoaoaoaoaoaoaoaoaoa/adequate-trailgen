@@ -1,13 +1,55 @@
-//! Dependency-free product vocabulary shared across the GUI boundary.
+//! Tester-independent vocabulary shared across Trailgen's GUI boundary.
 //!
-//! This crate names identity only. It contains no product behavior, witness
-//! state, fixtures, or tester dependency.
+//! This crate owns stable semantic names and wire encodings. It contains no
+//! product behavior, fixture authority, or testing-framework dependency.
 
-use std::fmt;
+use std::{borrow::Cow, fmt};
 
-pub const APPLICATION_ID: &str = "trailgen";
-pub const UI_SCHEMA: u32 = 1;
-pub const UI_FINGERPRINT: &str = "trailgen.ui/1";
+use serde::{Deserialize, Serialize};
+
+pub const UI_FINGERPRINT: &str = "trailgen.ui/2";
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Workspace {
+    Projects,
+    Survey,
+    Trail,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum View {
+    Projects,
+    Browse,
+    FocusCandidate,
+    FocusSaved,
+    Edit,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EditorOrigin {
+    New,
+    Candidate,
+    Saved,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RouteShape {
+    Loop,
+    OutAndBack,
+    FigureEight,
+    Open,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SearchPhase {
+    Idle,
+    Running,
+}
 
 /// Stable recipient of a native user gesture.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -32,12 +74,36 @@ pub enum Target {
     CloseLoop,
     Reverse,
     Profile,
+    Support(usize),
 }
 
 impl Target {
+    pub const STATIC: [Self; 20] = [
+        Self::ProjectName,
+        Self::ProjectParent,
+        Self::ProjectCreate,
+        Self::SurveyAddArea,
+        Self::SurveyMap,
+        Self::Map,
+        Self::Manual,
+        Self::Boundary,
+        Self::Find,
+        Self::Stop,
+        Self::DistanceMax,
+        Self::FocusBack,
+        Self::FocusEdit,
+        Self::FocusSave,
+        Self::FocusRename,
+        Self::RenameField,
+        Self::EditorSave,
+        Self::CloseLoop,
+        Self::Reverse,
+        Self::Profile,
+    ];
+
     #[must_use]
-    pub const fn wire(self) -> &'static str {
-        match self {
+    pub fn wire(self) -> Cow<'static, str> {
+        let static_name = match self {
             Self::ProjectName => "projects.new.name",
             Self::ProjectParent => "projects.new.parent",
             Self::ProjectCreate => "projects.new.create",
@@ -58,58 +124,55 @@ impl Target {
             Self::CloseLoop => "editor.close-loop",
             Self::Reverse => "editor.reverse",
             Self::Profile => "profile.canvas",
-        }
-    }
-}
-
-impl AsRef<str> for Target {
-    fn as_ref(&self) -> &str {
-        self.wire()
+            Self::Support(slot) => return Cow::Owned(format!("editor.support/{slot}")),
+        };
+        Cow::Borrowed(static_name)
     }
 }
 
 impl fmt::Display for Target {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.wire())
+        formatter.write_str(&self.wire())
+    }
+}
+
+/// Stable namespace whose concrete members are product data.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TargetClass {
+    LibraryTrail,
+    Candidate,
+}
+
+impl TargetClass {
+    #[must_use]
+    pub const fn prefix(self) -> &'static str {
+        match self {
+            Self::LibraryTrail => "library.trail/",
+            Self::Candidate => "results.candidate/",
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::collections::BTreeSet;
 
+    use super::*;
+
     #[test]
-    fn target_wire_identity_is_injective() {
-        let targets = [
-            Target::ProjectName,
-            Target::ProjectParent,
-            Target::ProjectCreate,
-            Target::SurveyAddArea,
-            Target::SurveyMap,
-            Target::Map,
-            Target::Manual,
-            Target::Boundary,
-            Target::Find,
-            Target::Stop,
-            Target::DistanceMax,
-            Target::FocusBack,
-            Target::FocusEdit,
-            Target::FocusSave,
-            Target::FocusRename,
-            Target::RenameField,
-            Target::EditorSave,
-            Target::CloseLoop,
-            Target::Reverse,
-            Target::Profile,
-        ];
+    fn static_target_wire_identity_is_injective() {
         assert_eq!(
-            targets.len(),
-            targets
+            Target::STATIC.len(),
+            Target::STATIC
                 .into_iter()
                 .map(Target::wire)
                 .collect::<BTreeSet<_>>()
                 .len()
         );
+    }
+
+    #[test]
+    fn support_targets_are_indexed_without_raw_string_construction() {
+        assert_eq!(Target::Support(17).wire(), "editor.support/17");
     }
 }

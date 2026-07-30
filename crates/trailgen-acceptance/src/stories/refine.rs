@@ -1,15 +1,17 @@
-use std::{fs, path::Path, time::Duration};
+use std::time::Duration;
 
-use egui_tester::{Key, Modifiers, Result, Timed, demand};
+use egui_tester::{Key, Modifiers, Result, Testbed, Timed, demand};
 use serde_json::Value;
 
 use crate::harness::{
-    Control, Harness, TrailFrame, TrailStory, durable_budget, first_anchor, read_json, verdict,
+    DataMode, Harness, RunClass, Target, TargetClass, TrailFrame, TrailStory, first_anchor,
+    read_json, verdict,
 };
 use crate::interactions::drag_support;
 use crate::observation::{View, shows};
 
 const ROOT: &str = "/test/refine";
+const INDEX: &str = "refine/library/index.json";
 const RENAMED: &str = "Acceptance Ridge";
 const TARGET: [f64; 2] = [-105.0, 40.012];
 
@@ -18,20 +20,14 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
     harness
         .testbed
         .retain_on_failure("refine/library/index.json")?;
-    let index = harness.testbed.private_path("refine/library/index.json")?;
-    let app = harness.launch_gui(Some(ROOT), true, false)?;
-    let mut story = harness.story(&app)?;
-    let _ready = story.ready(Duration::from_secs(30))?;
+    let app = harness.launch_gui(Some(ROOT), DataMode::Offline, RunClass::Functional)?;
+    let mut story = harness.story(&app, RunClass::Functional)?;
 
     open_saved(&mut story)?;
-    rename(&mut story, &index)?;
-    let baseline = fs::read(&index).map_err(|source| egui_tester::Error::Io {
-        operation: "read renamed trail baseline",
-        path: index.clone(),
-        source,
-    })?;
-    cancel_refinement(&mut story, &index, &baseline)?;
-    save_refinement(&mut story, &index)?;
+    rename(&mut story, harness.testbed)?;
+    let baseline = harness.testbed.read_private(INDEX)?;
+    cancel_refinement(&mut story, harness.testbed, &baseline)?;
+    save_refinement(&mut story, harness.testbed, &baseline)?;
 
     if let Some(artifacts) = harness.artifacts {
         story
@@ -44,7 +40,11 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
     verify_restart(harness)
 }
 
-fn cancel_refinement(story: &mut TrailStory<'_, '_>, index: &Path, baseline: &[u8]) -> Result<()> {
+fn cancel_refinement(
+    story: &mut TrailStory<'_, '_>,
+    testbed: &Testbed,
+    baseline: &[u8],
+) -> Result<()> {
     let editor = enter_editor(story)?;
     let before = editor
         .value()
@@ -62,15 +62,17 @@ fn cancel_refinement(story: &mut TrailStory<'_, '_>, index: &Path, baseline: &[u
 
     let _dragged = drag_support(story, editor.value(), 1, TARGET, before_signature)?;
     demand(
-        fs::read(index).is_ok_and(|bytes| bytes == baseline),
+        testbed
+            .read_private(INDEX)
+            .is_ok_and(|bytes| bytes == baseline),
         "dragging mutated the Library before Save",
     )?;
-    let _undone = story.chord(Modifiers::CTRL, Key::Character('z'))?.expect(
+    let _undone = story.chord(Modifiers::CTRL, Key::Character('z'))?.until(
         shows::signature(before_signature) & shows::support(1, before_support) & shows::redoable(),
     )?;
     let redone = story
         .chord(Modifiers::CTRL, Key::Character('y'))?
-        .expect(shows::changed_signature(before_signature) & shows::support(1, TARGET))?;
+        .until(shows::changed_signature(before_signature) & shows::support(1, TARGET))?;
     demand(
         redone
             .value()
@@ -82,23 +84,31 @@ fn cancel_refinement(story: &mut TrailStory<'_, '_>, index: &Path, baseline: &[u
     )?;
     let _cancelled = story
         .key(Key::Escape)?
-        .expect(shows::view(View::FocusSaved))?;
+        .until(shows::view(View::FocusSaved))?;
     demand(
-        fs::read(index).is_ok_and(|bytes| bytes == baseline),
+        testbed
+            .read_private(INDEX)
+            .is_ok_and(|bytes| bytes == baseline),
         "Cancel persisted an unsaved refinement",
     )
 }
 
-fn save_refinement(story: &mut TrailStory<'_, '_>, index: &Path) -> Result<()> {
+fn save_refinement(
+    story: &mut TrailStory<'_, '_>,
+    testbed: &Testbed,
+    baseline: &[u8],
+) -> Result<()> {
+    let baseline = serde_json::from_slice::<Value>(baseline)
+        .map_err(|error| verdict(format!("decode refinement baseline: {error}")))?;
+    let baseline_legs = only_trail(&baseline)?["legs"].clone();
     let editor = enter_editor(story)?;
     let before_signature = signature(editor.value())
         .ok_or_else(|| verdict("reopened editor omitted its route signature"))?;
     let _dragged = drag_support(story, editor.value(), 1, TARGET, before_signature)?;
     let _saved = story
-        .click(Control::EditorSave)?
-        .within(durable_budget())
-        .expect(shows::view(View::FocusSaved))?;
-    let durable = read_json(index)?;
+        .click(Target::EditorSave)?
+        .until(shows::view(View::FocusSaved))?;
+    let durable = read_json(testbed, INDEX)?;
     let trail = only_trail(&durable)?;
     demand(
         trail["name"] == RENAMED,
@@ -107,16 +117,20 @@ fn save_refinement(story: &mut TrailStory<'_, '_>, index: &Path) -> Result<()> {
     demand(
         support_json(trail, 1).is_some_and(|point| near(point, TARGET)),
         "saved refinement omitted the dragged support point",
+    )?;
+    demand(
+        trail["legs"] != baseline_legs,
+        "saved support drag did not alter durable route geometry",
     )
 }
 
 fn verify_restart(harness: &Harness<'_>) -> Result<()> {
-    let restarted = harness.launch_gui(Some(ROOT), true, false)?;
-    let mut story = harness.story(&restarted)?;
+    let restarted = harness.launch_gui(Some(ROOT), DataMode::Offline, RunClass::Functional)?;
+    let mut story = harness.story(&restarted, RunClass::Functional)?;
     let restored = story.wait_within(Duration::from_secs(30), shows::library(1))?;
     let _trail = first_anchor(
         &restored,
-        "library.trail/",
+        TargetClass::LibraryTrail,
         "restarted Library omitted its saved trail",
     )?;
     demand(
@@ -128,32 +142,35 @@ fn verify_restart(harness: &Harness<'_>) -> Result<()> {
 
 fn open_saved(story: &mut TrailStory<'_, '_>) -> Result<()> {
     let library = story.wait_within(Duration::from_secs(15), shows::library(1))?;
-    let saved = first_anchor(&library, "library.trail/", "saved Library row vanished")?;
+    let saved = first_anchor(
+        &library,
+        TargetClass::LibraryTrail,
+        "saved Library row vanished",
+    )?;
     let _focused = story
         .click_anchor(&saved)?
-        .expect(shows::view(View::FocusSaved))?;
+        .until(shows::view(View::FocusSaved))?;
     Ok(())
 }
 
-fn rename(story: &mut TrailStory<'_, '_>, index: &Path) -> Result<()> {
+fn rename(story: &mut TrailStory<'_, '_>, testbed: &Testbed) -> Result<()> {
     let _opened = story
-        .click(Control::FocusRename)?
-        .expect(shows::rename(true) & shows::text_focused())?;
+        .click(Target::FocusRename)?
+        .until(shows::rename(true) & shows::text_focused())?;
     let _typed = story
-        .replace_text(Control::RenameField, RENAMED, shows::text_focused())?
-        .presented()?;
+        .replace_text(Target::RenameField, RENAMED, shows::text_focused())?
+        .next_frame()?;
     let _renamed = story
         .key(Key::Return)?
-        .within(durable_budget())
-        .expect(shows::view(View::FocusSaved) & shows::rename(false))?;
+        .until(shows::view(View::FocusSaved) & shows::rename(false))?;
     demand(
-        only_trail(&read_json(index)?)?["name"] == RENAMED,
+        only_trail(&read_json(testbed, INDEX)?)?["name"] == RENAMED,
         "rename witness advanced before durable state",
     )
 }
 
 fn enter_editor(story: &mut TrailStory<'_, '_>) -> Result<Timed<TrailFrame>> {
-    story.click(Control::FocusEdit)?.expect(
+    story.click(Target::FocusEdit)?.until(
         shows::view(View::Edit)
             & shows::editor_ready()
             & shows::supports_at_least(2)

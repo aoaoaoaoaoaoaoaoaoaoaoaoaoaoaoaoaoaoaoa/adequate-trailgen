@@ -5,13 +5,65 @@ mod refine;
 
 use egui_tester::Result;
 
-use crate::harness::Harness;
+use crate::harness::{Harness, TITLE, demand};
 
-pub fn run(harness: &Harness<'_>) -> Result<()> {
-    discover::run(harness)?;
-    refine::run(harness)?;
-    compare::run(harness)?;
-    manual::run(harness)?;
-    println!("trailgen acceptance passed: 4 user stories");
+type UserStory = for<'a> fn(&Harness<'a>) -> Result<()>;
+
+pub fn smoke(harness: &Harness<'_>) -> Result<()> {
+    let app = harness.launch_uninstrumented_smoke()?;
+    let session = harness.testbed.x11_session(
+        &app,
+        egui_tester::WindowQuery::title_exact(TITLE),
+        std::time::Duration::from_secs(30),
+    )?;
+    session.focus()?;
+    let first = session.capture()?;
+    let visible = |frame: &egui_tester::Frame| {
+        frame
+            .rgba()
+            .chunks_exact(4)
+            .any(|pixel| pixel[..3] != [0, 0, 0])
+    };
+    if !visible(&first) {
+        let _first_product_pixels =
+            session.wait_changed(&first, 0.001, 2, std::time::Duration::from_secs(30))?;
+    }
+    let frame = session.wait_quiet(egui_tester::Quiet {
+        timeout: std::time::Duration::from_secs(12),
+        ..egui_tester::Quiet::default()
+    })?;
+    demand(
+        visible(&frame),
+        "uninstrumented Trailgen rendered only black pixels",
+    )?;
+    app.terminate()
+}
+
+pub fn run(harness: &Harness<'_>, selected: Option<&str>) -> Result<()> {
+    let stories: [(&str, UserStory); 4] = [
+        ("discover", discover::run),
+        ("refine", refine::run),
+        ("compare", compare::run),
+        ("manual", manual::run),
+    ];
+    let mut ran = 0;
+    for (name, story) in stories {
+        if selected.is_none_or(|selected| selected == name) {
+            story(harness)?;
+            ran += 1;
+        }
+    }
+    if ran == 0 {
+        return Err(egui_tester::Error::Verdict {
+            detail: format!(
+                "unknown Trailgen story `{}`; expected discover, refine, compare, or manual",
+                selected.unwrap_or_default()
+            ),
+        });
+    }
+    println!(
+        "trailgen acceptance passed: {ran} user stor{}",
+        if ran == 1 { "y" } else { "ies" }
+    );
     Ok(())
 }

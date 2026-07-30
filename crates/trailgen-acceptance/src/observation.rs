@@ -1,49 +1,7 @@
 use egui_tester::{Condition, field};
 use serde::Deserialize;
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-pub enum Workspace {
-    Projects,
-    Limbo,
-    Survey,
-    Trail,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-pub enum View {
-    Projects,
-    Transition,
-    Browse,
-    FocusCandidate,
-    FocusSaved,
-    Edit,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-pub enum EditorOrigin {
-    New,
-    Candidate,
-    Saved,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-pub enum RouteShape {
-    Loop,
-    OutAndBack,
-    FigureEight,
-    Open,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-pub enum SearchPhase {
-    Idle,
-    Striking,
-}
+pub use trailgen_contract::{EditorOrigin, RouteShape, SearchPhase, View, Workspace};
 
 #[derive(Debug, Deserialize)]
 pub struct Observation {
@@ -82,7 +40,7 @@ pub struct EditorState {
 #[derive(Debug, Deserialize)]
 pub struct SearchState {
     pub phase: SearchPhase,
-    pub trailhead: Option<[f64; 2]>,
+    pub trailhead: bool,
     pub boundary: bool,
     pub required: usize,
     pub forbidden: usize,
@@ -99,8 +57,8 @@ pub struct SurveyState {
 #[derive(Debug, Deserialize)]
 pub struct ProfileState {
     pub visible: bool,
-    pub locked_distance_m: Option<f64>,
-    pub marker: Option<[f64; 2]>,
+    pub locked: bool,
+    pub marker: bool,
 }
 
 pub mod shows {
@@ -188,10 +146,7 @@ pub mod shows {
 
     pub fn trailhead() -> Condition<Observation> {
         condition("a placed trailhead", |state| {
-            state
-                .search
-                .as_ref()
-                .is_some_and(|search| search.trailhead.is_some())
+            state.search.as_ref().is_some_and(|search| search.trailhead)
         })
     }
 
@@ -204,7 +159,7 @@ pub mod shows {
     pub fn revision() -> Condition<Observation> {
         condition("a scheduled or active search revision", |state| {
             state.search.as_ref().is_some_and(|search| {
-                search.revision_scheduled || search.phase == SearchPhase::Striking
+                search.revision_scheduled || search.phase == SearchPhase::Running
             })
         })
     }
@@ -340,9 +295,10 @@ pub mod shows {
 
     pub fn profile_hovering() -> Condition<Observation> {
         condition("an unlocked profile marker", |state| {
-            state.profile.as_ref().is_some_and(|profile| {
-                profile.marker.is_some() && profile.locked_distance_m.is_none()
-            })
+            state
+                .profile
+                .as_ref()
+                .is_some_and(|profile| profile.marker && !profile.locked)
         })
     }
 
@@ -357,7 +313,7 @@ pub mod shows {
                 state
                     .profile
                     .as_ref()
-                    .is_some_and(|profile| profile.locked_distance_m.is_some() == locked)
+                    .is_some_and(|profile| profile.locked == locked)
             },
         )
     }

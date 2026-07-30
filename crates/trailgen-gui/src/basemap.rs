@@ -58,7 +58,7 @@ pub struct Source {
     archive: PathBuf,
     forge_regions: Option<Vec<GeoBounds>>,
     forge_zoom: u8,
-    roaming_cache: PathBuf,
+    roaming_cache: Option<PathBuf>,
 }
 
 impl Source {
@@ -69,7 +69,7 @@ impl Source {
                 archive: override_path.into(),
                 forge_regions: None,
                 forge_zoom: MAX_SOURCE_ZOOM,
-                roaming_cache,
+                roaming_cache: None,
             });
         }
         let forge_regions = if regions.is_empty() {
@@ -87,7 +87,7 @@ impl Source {
             archive,
             forge_regions: Some(forge_regions),
             forge_zoom: MAX_SOURCE_ZOOM,
-            roaming_cache,
+            roaming_cache: Some(roaming_cache),
         })
     }
 
@@ -98,14 +98,14 @@ impl Source {
                 archive: override_path.into(),
                 forge_regions: None,
                 forge_zoom: MAX_SOURCE_ZOOM,
-                roaming_cache,
+                roaming_cache: None,
             });
         }
         Ok(Self {
             archive: roaming_cache.join("bootstrap-us.pmtiles"),
             forge_regions: Some(vec![GeoBounds::new(-125.0, 24.0, -66.0, 50.0)]),
             forge_zoom: 4,
-            roaming_cache,
+            roaming_cache: Some(roaming_cache),
         })
     }
 }
@@ -647,12 +647,12 @@ fn armory(
     }
     ctx.request_repaint();
     let (roaming_tx, roaming_rx) = bounded(256);
-    let nomad = if online {
-        spawn_nomad(ctx, &source.roaming_cache, roaming_rx, &events)
-    } else {
-        drop(roaming_rx);
-        None
-    };
+    let nomad = source
+        .roaming_cache
+        .as_deref()
+        .filter(|_| online)
+        .and_then(|cache| spawn_nomad(ctx, cache, roaming_rx.clone(), &events));
+    drop(roaming_rx);
     let mut workers = Vec::with_capacity(worker_count);
     for slot in 0..worker_count {
         let worker_ctx = ctx.clone();

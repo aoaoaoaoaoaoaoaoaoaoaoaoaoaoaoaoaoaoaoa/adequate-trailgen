@@ -49,22 +49,22 @@ thiserror = "2.0.12"
 tiff = "0.11.3"
 tokio = { version = "1.48.0", features = ["rt"] }
 toml = "0.8.23"
-trailgen-core = { path = "crates/trailgen-core" }
-trailgen-contract = { path = "crates/trailgen-contract" }
-trailgen-data = { path = "crates/trailgen-data" }
-trailgen-gui = { path = "crates/trailgen-gui" }
-trailgen-shell = { path = "crates/trailgen-shell" }
+trailgen-core = { path = "crates/trailgen-core", version = "0.1.0" }
+trailgen-contract = { path = "crates/trailgen-contract", version = "0.1.0" }
+trailgen-data = { path = "crates/trailgen-data", version = "0.1.0" }
+trailgen-gui = { path = "crates/trailgen-gui", version = "0.1.0" }
+trailgen-shell = { path = "crates/trailgen-shell", version = "0.1.0" }
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 
 [workspace.dependencies.egui-tester]
 git = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester"
-rev = "88d4e7c8aff4365c5bd750da44d5604cc97ae9a4"
-version = "0.4.0"
+rev = "b99d44cd7eb41db66a406d00f563538c72d6dec2"
+version = "0.5.0"
 
 [workspace.dependencies.egui-tester-witness]
 git = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester"
-rev = "88d4e7c8aff4365c5bd750da44d5604cc97ae9a4"
-version = "0.4.0"
+rev = "b99d44cd7eb41db66a406d00f563538c72d6dec2"
+version = "0.5.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

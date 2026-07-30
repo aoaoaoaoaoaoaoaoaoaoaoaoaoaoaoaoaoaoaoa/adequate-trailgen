@@ -13,7 +13,7 @@ impl NativeApp for Workbench {
         self.pulse(ui);
     }
 
-    fn commit_frame(&mut self) -> bool {
+    fn after_present(&mut self) -> bool {
         self.settle()
     }
 

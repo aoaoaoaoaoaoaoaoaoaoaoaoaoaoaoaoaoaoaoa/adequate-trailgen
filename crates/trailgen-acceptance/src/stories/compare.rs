@@ -1,10 +1,10 @@
 use std::time::Duration;
 
-use egui_tester::{Button, Key, Modifiers, PerformanceBudget, Result, demand};
+use egui_tester::{Button, Key, Modifiers, PixelRegion, ReactionBudget, Result, demand};
 
 use crate::harness::{
-    Control, Harness, TrailFrame, TrailStory, durable_budget, first_anchor, map_pixel,
-    search_reaction_budget,
+    DataMode, Harness, RunClass, Target, TargetClass, TrailFrame, TrailStory, durable_budget,
+    first_anchor, map_pixel, read_json, search_reaction_budget,
 };
 use crate::observation::{SearchPhase, View, shows};
 use crate::performance::{pan_during_search, stress_portfolio};
@@ -16,36 +16,39 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
     harness
         .testbed
         .retain_on_failure("compare/library/index.json")?;
-    let app = harness.launch_gui(Some(ROOT), true, false)?;
-    let mut story = harness.story(&app)?;
-    let _ready = story.ready(Duration::from_secs(30))?;
+    let app = harness.launch_gui(Some(ROOT), DataMode::Offline, RunClass::Performance)?;
+    let mut story = harness.story(&app, RunClass::Performance)?;
     let frames = app.frames()?;
 
     let frame = story.wait_within(Duration::from_secs(15), shows::map())?;
     let trailhead = map_pixel(&frame, [-105.0, 40.0])?;
     let _placed = story
         .modified_click_at(trailhead, Button::Primary, Modifiers::ALT)?
-        .expect(shows::trailhead())?;
+        .until(shows::trailhead())?;
 
     let mut strike = story.key(Key::Return)?;
+    let strike_receipt = strike.receipt().clone();
     let progress = strike
         .within(search_reaction_budget())
-        .expect(shows::search(SearchPhase::Striking))?;
-    pan_during_search(strike.session(), &frames, progress.value())?;
+        .until(shows::search(SearchPhase::Running))?;
+    let progress = progress.into_value();
+    drop(strike);
+    pan_during_search(story.session(), &frames, &progress)?;
+    let mut strike = story.reaction(strike_receipt);
     let eager = strike
         .within(
-            PerformanceBudget::new(Duration::from_secs(2))
-                .through_presentation()
+            ReactionBudget::performance(Duration::from_secs(2))
+                .through_surface_present()
                 .timeout(Duration::from_secs(12)),
         )
-        .expect(shows::candidates_at_least(1))?;
+        .until(shows::candidates_at_least(1))?;
     demand(
         eager
             .value()
             .state
             .search
             .as_ref()
-            .is_some_and(|search| search.phase == SearchPhase::Striking)
+            .is_some_and(|search| search.phase == SearchPhase::Running)
             || eager.value().state.candidates == 12,
         "first candidate was not promoted until after an incomplete search ended",
     )?;
@@ -66,6 +69,9 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
             .save_png(artifacts.join("story-3-compare.png"))?;
     }
     app.terminate()?;
+    drop(story);
+    drop(app);
+    verify_restart(harness)?;
     println!(
         "comparison cadence: pan p50={:?} p95={:?} worst={:?}; zoom p50={:?} p95={:?} worst={:?}",
         report.pan.p50,
@@ -87,16 +93,16 @@ fn choose_and_save(story: &mut TrailStory<'_, '_>) -> Result<()> {
     )?;
     let candidate = first_anchor(
         &final_results,
-        "results.candidate/",
+        TargetClass::Candidate,
         "candidate portfolio omitted its first tile",
     )?;
     let _focused = story
         .click_anchor(&candidate)?
-        .expect(shows::view(View::FocusCandidate))?;
+        .until(shows::view(View::FocusCandidate))?;
     let _saved = story
-        .click(Control::FocusSave)?
+        .click(Target::FocusSave)?
         .within(durable_budget())
-        .expect(shows::view(View::FocusSaved) & shows::library(1))?;
+        .until(shows::view(View::FocusSaved) & shows::library(1))?;
     Ok(())
 }
 
@@ -105,17 +111,23 @@ fn focus_and_return(story: &mut TrailStory<'_, '_>, browse: &TrailFrame) -> Resu
         .state
         .map
         .ok_or_else(|| crate::harness::verdict("portfolio browse omitted its viewport"))?;
+    let map = browse
+        .anchor(&Target::Map.to_string())
+        .ok_or_else(|| crate::harness::verdict("portfolio browse omitted its map target"))?;
+    let region = PixelRegion::anchor(map);
+    let baseline_pixels = neutral_capture(story)?;
     let candidate = first_anchor(
         browse,
-        "results.candidate/",
+        TargetClass::Candidate,
         "candidate portfolio omitted its first tile",
     )?;
     let _focused = story
         .click_anchor(&candidate)?
-        .expect(shows::view(View::FocusCandidate))?;
+        .until(shows::view(View::FocusCandidate))?;
+    let focused_pixels = neutral_capture(story)?;
     let returned = story
-        .click(Control::FocusBack)?
-        .expect(shows::view(View::Browse))?;
+        .click(Target::FocusBack)?
+        .until(shows::view(View::Browse))?;
     let restored = returned
         .value()
         .state
@@ -126,21 +138,38 @@ fn focus_and_return(story: &mut TrailStory<'_, '_>, browse: &TrailFrame) -> Resu
             && (restored.world_points - baseline.world_points).abs() <= 1.0e-6,
         format!("focus return changed viewport from {baseline:?} to {restored:?}"),
     )?;
+    let restored_pixels = neutral_capture(story)?;
+    let focused_difference = baseline_pixels.difference_region(&focused_pixels, region, 8)?;
+    let restored_difference = baseline_pixels.difference_region(&restored_pixels, region, 8)?;
+    demand(
+        restored_difference <= 0.05 && restored_difference + 0.02 <= focused_difference,
+        format!(
+            "focus return differs by {:.2}% of map pixels; focused control differs by {:.2}%",
+            restored_difference * 100.0,
+            focused_difference * 100.0,
+        ),
+    )?;
     Ok(returned.into_value())
+}
+
+fn neutral_capture(story: &mut TrailStory<'_, '_>) -> Result<egui_tester::Frame> {
+    let motion = story.session().move_to(4, 4)?;
+    let _neutral = story.reaction(motion).next_frame()?;
+    story.capture()
 }
 
 fn revise_and_stop(story: &mut TrailStory<'_, '_>) -> Result<()> {
     let _typed = story
-        .replace_text(Control::DistanceMax, "11.0", shows::text_focused())?
-        .presented()?;
+        .replace_text(Target::DistanceMax, "11.0", shows::text_focused())?
+        .next_frame()?;
     let _scheduled = story
         .key(Key::Return)?
         .within(
-            PerformanceBudget::new(Duration::from_millis(700))
-                .through_presentation()
+            ReactionBudget::performance(Duration::from_millis(700))
+                .through_surface_present()
                 .timeout(Duration::from_secs(8)),
         )
-        .expect(shows::revision())?;
+        .until(shows::revision())?;
     let _revised = story.wait_within(
         Duration::from_secs(30),
         shows::candidates_at_least(1) & shows::search(SearchPhase::Idle),
@@ -149,27 +178,46 @@ fn revise_and_stop(story: &mut TrailStory<'_, '_>) -> Result<()> {
     let require = map_pixel(&story.frame()?, [-104.997, 40.0])?;
     let _required = story
         .click_at(require, Button::Primary)?
-        .expect(shows::required(1))?;
+        .until(shows::required(1))?;
     let striking = story.wait_within(
         Duration::from_secs(8),
-        shows::candidates_at_least(1) & shows::search(SearchPhase::Striking),
+        shows::candidates_at_least(1) & shows::search(SearchPhase::Running),
     )?;
     let retained = striking.state.candidates;
     let stopped = story
-        .click(Control::Stop)?
+        .click(Target::Stop)?
         .within(
-            PerformanceBudget::new(Duration::from_millis(500))
-                .through_presentation()
+            ReactionBudget::performance(Duration::from_millis(500))
+                .through_surface_present()
                 .timeout(Duration::from_secs(8)),
         )
-        .expect(shows::candidates_at_least(retained) & shows::search(SearchPhase::Idle))?
+        .until(shows::candidates_at_least(retained) & shows::search(SearchPhase::Idle))?
         .into_value();
 
     let forbid = map_pixel(&stopped, [-105.0, 40.003])?;
     let _forbidden = story
         .modified_click_at(forbid, Button::Primary, Modifiers::SHIFT)?
-        .expect(shows::forbidden(1))?;
+        .until(shows::forbidden(1))?;
     Ok(())
+}
+
+fn verify_restart(harness: &Harness<'_>) -> Result<()> {
+    let library = read_json(harness.testbed, "compare/library/index.json")?;
+    demand(
+        library["trails"]
+            .as_array()
+            .is_some_and(|trails| trails.len() == 1),
+        "comparison story did not durably save its chosen candidate",
+    )?;
+    let restarted = harness.launch_gui(Some(ROOT), DataMode::Offline, RunClass::Functional)?;
+    let mut story = harness.story(&restarted, RunClass::Functional)?;
+    let restored = story.wait_within(Duration::from_secs(30), shows::library(1))?;
+    let _trail = first_anchor(
+        &restored,
+        TargetClass::LibraryTrail,
+        "restarted comparison omitted its saved trail",
+    )?;
+    restarted.terminate()
 }
 
 fn near_map(left: [f64; 2], right: [f64; 2]) -> bool {

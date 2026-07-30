@@ -1,9 +1,11 @@
+use std::fmt::Display;
+
 use egui::{Rect, Ui};
 
 #[inline]
-pub fn anchor(ui: &Ui, name: impl AsRef<str>, rect: Rect) {
+pub fn anchor(ui: &Ui, name: impl Display, rect: Rect) {
     #[cfg(feature = "egui-test")]
-    egui_tester_witness::egui::record(ui, name.as_ref().to_owned(), rect);
+    egui_tester_witness::egui::record(ui, name.to_string(), rect);
     #[cfg(not(feature = "egui-test"))]
     {
         let _ = (ui, rect);
@@ -13,8 +15,8 @@ pub fn anchor(ui: &Ui, name: impl AsRef<str>, rect: Rect) {
 
 #[cfg(feature = "egui-test")]
 #[inline]
-pub fn rect(ctx: &egui::Context, name: impl AsRef<str>, rect: Rect) {
-    egui_tester_witness::egui::record_rect(ctx, name.as_ref().to_owned(), rect);
+pub fn rect(ctx: &egui::Context, name: impl Display, rect: Rect) {
+    egui_tester_witness::egui::record_rect(ctx, name.to_string(), rect);
 }
 
 #[cfg(feature = "egui-test")]
@@ -24,13 +26,13 @@ pub use active::*;
 mod active {
     use egui::Rect;
     use serde::Serialize;
+    use trailgen_contract::{EditorOrigin, RouteShape, SearchPhase, View, Workspace};
 
     #[derive(Serialize)]
     pub struct State {
         pub contract: &'static str,
-        pub workspace: &'static str,
-        pub view: &'static str,
-        pub focused_trail: Option<String>,
+        pub workspace: Workspace,
+        pub view: View,
         pub rename_active: bool,
         pub text_edit_focused: bool,
         pub saved_trails: usize,
@@ -43,16 +45,11 @@ mod active {
     }
 
     impl State {
-        pub const fn empty(
-            workspace: &'static str,
-            view: &'static str,
-            text_edit_focused: bool,
-        ) -> Self {
+        pub const fn empty(workspace: Workspace, view: View, text_edit_focused: bool) -> Self {
             Self {
                 contract: trailgen_contract::UI_FINGERPRINT,
                 workspace,
                 view,
-                focused_trail: None,
                 rename_active: false,
                 text_edit_focused,
                 saved_trails: 0,
@@ -85,28 +82,19 @@ mod active {
 
     #[derive(Serialize)]
     pub struct EditorState {
-        pub origin: &'static str,
-        pub shape: &'static str,
+        pub origin: EditorOrigin,
+        pub shape: RouteShape,
         pub ready: bool,
         pub dragging_support: Option<usize>,
         pub support_points: Vec<[f64; 2]>,
-        pub route_distance_m: Option<f64>,
         pub route_signature: Option<u64>,
-        pub undo_depth: usize,
         pub redo_depth: usize,
-        pub fault: Option<String>,
     }
 
     #[derive(Serialize)]
     pub struct SearchState {
-        pub phase: &'static str,
-        pub serial: Option<u64>,
-        pub stage: Option<&'static str>,
-        pub explored: usize,
-        pub limit: usize,
-        pub discovered: usize,
-        pub stopping: bool,
-        pub trailhead: Option<[f64; 2]>,
+        pub phase: SearchPhase,
+        pub trailhead: bool,
         pub boundary: bool,
         pub required: usize,
         pub forbidden: usize,
@@ -118,14 +106,12 @@ mod active {
         pub regions: usize,
         pub acquiring: bool,
         pub drawing: bool,
-        pub status: String,
-        pub fault: Option<String>,
     }
 
     #[derive(Serialize)]
     pub struct ProfileState {
         pub visible: bool,
-        pub locked_distance_m: Option<f64>,
-        pub marker: Option<[f64; 2]>,
+        pub locked: bool,
+        pub marker: bool,
     }
 }

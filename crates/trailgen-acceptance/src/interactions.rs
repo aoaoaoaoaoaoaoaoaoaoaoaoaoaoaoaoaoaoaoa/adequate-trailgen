@@ -1,9 +1,9 @@
 use std::time::Duration;
 
-use egui_tester::{Button, PerformanceBudget, Result, Stroke, Timed};
+use egui_tester::{Button, PixelRegion, Result, Stroke, Timed};
 
 use crate::{
-    harness::{Control, TrailFrame, TrailStory, map_pixel, screen_point, verdict},
+    harness::{Target, TrailFrame, TrailStory, demand, map_pixel, screen_point, verdict},
     observation::shows,
 };
 
@@ -17,7 +17,7 @@ pub fn add_support(
     if expected >= 2 {
         effect = effect & shows::editor_ready();
     }
-    story.click_at(target, Button::Primary)?.expect(effect)
+    story.click_at(target, Button::Primary)?.until(effect)
 }
 
 pub fn drag_support(
@@ -41,7 +41,7 @@ pub fn drag_support(
     )?;
     let target_pixel = map_pixel(frame, target)?;
     let grip = frame
-        .anchor(&format!("editor.support/{slot}"))
+        .anchor(&Target::Support(slot).to_string())
         .ok_or_else(|| verdict(format!("editor omitted draggable support {slot}")))?
         .center();
     let destination = (
@@ -58,29 +58,22 @@ pub fn drag_support(
         .button_down(grip.0, grip.1, Button::Primary)?;
     let _acquired = story
         .reaction(press)
-        .expect(shows::dragging_support(Some(slot)))?;
+        .until(shows::dragging_support(Some(slot)))?;
     let motion = story.session().move_to(destination.0, destination.1)?;
-    let reforged = story
-        .reaction(motion)
-        .within(
-            PerformanceBudget::new(Duration::from_millis(240))
-                .through_presentation()
-                .timeout(Duration::from_secs(6)),
-        )
-        .expect(
-            shows::editor_ready()
-                & shows::changed_signature(before_signature)
-                & shows::support(slot, target),
-        )?;
+    let reforged = story.reaction(motion).until(
+        shows::editor_ready()
+            & shows::changed_signature(before_signature)
+            & shows::support(slot, target),
+    )?;
     let release = story.session().button_up(Button::Primary)?;
     let _released = story
         .reaction(release)
-        .expect(shows::dragging_support(None))?;
+        .until(shows::dragging_support(None))?;
     Ok(reforged)
 }
 
 pub fn lasso_boundary(story: &mut TrailStory<'_, '_>, inset: f32) -> Result<Timed<TrailFrame>> {
-    let [x0, y0, x1, y1] = story.anchor(Control::Map)?.rect;
+    let [x0, y0, x1, y1] = story.anchor(Target::Map)?.rect;
     let inset_x = (x1 - x0) * inset;
     let inset_y = (y1 - y0) * inset;
     let point = |x, y| screen_point([f64::from(x), f64::from(y)]);
@@ -95,27 +88,42 @@ pub fn lasso_boundary(story: &mut TrailStory<'_, '_>, inset: f32) -> Result<Time
         .stroke(
             &knots,
             Stroke {
-                steps_per_leg: 5,
-                leg_duration: Duration::from_millis(45),
+                steps_per_leg: 6,
+                leg_duration: Duration::from_millis(120),
+                knot_dwell: Duration::from_millis(120),
                 ..Stroke::default()
             },
         )?
-        .expect(shows::boundary())
+        .until(shows::boundary())
 }
 
 pub fn exercise_profile(story: &mut TrailStory<'_, '_>) -> Result<()> {
-    let [x0, y0, x1, y1] = story.anchor(Control::Profile)?.rect;
+    let profile = story.anchor(Target::Profile)?;
+    let [x0, y0, x1, y1] = profile.rect;
+    let region = PixelRegion::anchor(&profile);
+    let baseline = story.capture()?;
     let target = screen_point([
         f64::from((x1 - x0).mul_add(0.62, x0)),
         f64::from(f32::midpoint(y0, y1)),
     ])?;
     let hover = story.session().move_to(target.0, target.1)?;
-    let _hovered = story.reaction(hover).expect(shows::profile_hovering())?;
+    let _hovered = story.reaction(hover).until(shows::profile_hovering())?;
+    let hovered = story.session().wait_changed_region(
+        &baseline,
+        region,
+        0.000_5,
+        2,
+        Duration::from_secs(4),
+    )?;
+    demand(
+        baseline.difference_region(&hovered, region, 2)? >= 0.000_5,
+        "profile witness moved without a rendered elevation cursor",
+    )?;
     let _locked = story
         .click_at(target, Button::Primary)?
-        .expect(shows::profile_locked(true))?;
+        .until(shows::profile_locked(true))?;
     let _released = story
         .click_at(target, Button::Secondary)?
-        .expect(shows::profile_locked(false))?;
+        .until(shows::profile_locked(false))?;
     Ok(())
 }

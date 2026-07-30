@@ -3,7 +3,7 @@ use std::time::Duration;
 use egui_tester::{CadenceBudget, CadenceReport, FrameProbe, Result, Stroke, Wheel, X11Session};
 
 use crate::{
-    harness::{TrailFrame, TrailStory, verdict},
+    harness::{Target, TrailFrame, TrailStory, verdict},
     observation::MapState,
 };
 
@@ -19,7 +19,7 @@ pub fn pan_during_search(
     frame: &TrailFrame,
 ) -> Result<()> {
     let (cx, cy) = frame
-        .anchor("map.canvas")
+        .anchor(&Target::Map.to_string())
         .ok_or_else(|| verdict("search progress omitted the map"))?
         .center();
     let knots = [
@@ -51,7 +51,7 @@ pub fn stress_portfolio(
     frame: &TrailFrame,
 ) -> Result<PortfolioReport> {
     let (cx, cy) = frame
-        .anchor("map.canvas")
+        .anchor(&Target::Map.to_string())
         .ok_or_else(|| verdict("portfolio omitted the map canvas"))?
         .center();
     let mut knots = Vec::with_capacity(21);

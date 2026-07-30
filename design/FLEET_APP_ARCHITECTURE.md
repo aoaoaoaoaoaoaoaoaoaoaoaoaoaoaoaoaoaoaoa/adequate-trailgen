@@ -107,11 +107,12 @@ No common contract-language crate should be published before two products
 demonstrate the same vocabulary. A product-specific contract may incubate
 locally before that extraction.
 
-`trailgen-contract` is that first incubation. It has no dependencies and owns
-only application identity, schema fingerprint, and typed Target wire names.
-`egui-tester::Target` accepts any `AsRef<str>`, so the contract does not know
-the tester; the GUI and acceptance executable nevertheless consume the same
-type. Commands, coordinate descriptors, latency classes, derives, and a shared
+`trailgen-contract` is that first incubation. It depends only on Serde and owns
+application identity, schema fingerprint, typed Target wire names, and the
+small UI-state enums shared across the observation boundary. Tester gesture
+methods accept any `Display` value, so the contract does not know the tester;
+the GUI and acceptance executable nevertheless consume the same vocabulary.
+Commands, coordinate descriptors, latency classes, derives, and a shared
 contract-language crate remain deferred until repeated use gives them a
 natural shape.
 
@@ -155,32 +156,29 @@ The `egui-tester` hard kernel survives:
 - cgroup and process lifecycle;
 - declared network authority;
 - native input and action receipts;
-- causal frame and presentation fencing;
+- temporally eligible observation and surface-present fencing;
 - screenshot and external-oracle machinery;
 - reaction and sustained-cadence budgets;
 - transcripts and failure artifacts.
 
 The first porcelain layer uses ordinary Rust:
 
-1. `Story<O, T>` owns the application, session, probe, default budgets, and
-   artifacts.
+1. `Story<O>` binds the application, session, probe, and default reaction
+   budget.
 2. Acceptance-local typed Observations remove raw JSON navigation.
 3. Target identity removes duplicated anchor strings.
 4. Predicate combinators are values with structured failure diagnostics.
 5. Gesture methods own receipt creation, fresh-frame waits, and budget
    adjudication.
 6. File and pixel proof must be as cheap to express as witness predicates.
-7. The atomic witness serves current state and hit testing; a lossless,
-   launch-sealed observation journal preserves every presented semantic frame
-   for earliest-causal reaction verdicts.
+7. One launch-sealed observation journal preserves every semantic frame in
+   order; `Probe` retains its own newest complete frame for targeting.
 
-The original Trailgen stories contained 1,396 lines. The handwritten
-porcelain contracts their four bodies to 711 lines, plus a 17-line dispatcher,
-without weakening a gesture, oracle, restart check, or performance
-obligation. The provisional 650-line target was missed by about 12%; the
-material 48% contraction still validates the runtime seam while arguing
-against premature macro work. The remaining ceremony must be compared against
-a second product before it can define a language.
+The handwritten porcelain materially contracts Trailgen's four stories
+without weakening their gestures, oracles, restart checks, or performance
+obligations. Exact line-count targets are rejected as architectural evidence:
+the remaining ceremony must be compared against a second product before it can
+define a language.
 
 A proc-macro story language becomes justified only after this runtime has at
 least two substantial consumers and repeated residual syntax remains. The
@@ -193,7 +191,7 @@ Every accepted story retains the law:
 
 ```text
 native gesture
-    → causally fresh presented observation
+    → temporally eligible surface-submitted observation
     → rendered or external oracle
 ```
 
@@ -212,11 +210,10 @@ destabilize the proven vertical.
 
 ## Shell Boundary
 
-Trailgen now contains the unpublished `trailgen-shell` incubation. Its generic
-host is 540 lines and Trailgen's entire product adapter is 49 lines; the former
-432-line local `boiler.rs` has been deleted. All four release-mode X11 stories
-and the dense host-GPU cadence contract pass through this seam. The crate name
-and repository remain provisional until HRRR supplies the second consumer.
+Trailgen now contains the unpublished `trailgen-shell` incubation. The former
+local `boiler.rs` has been deleted; all standing release-mode X11 stories and
+the dense host-GPU cadence contract cross the shell seam. Its crate name and
+repository remain provisional until HRRR supplies the second consumer.
 
 The incubation includes only mechanics already reproduced across the
 applications:
@@ -228,7 +225,7 @@ applications:
 - Poolrooms water composition and final presentation;
 - application GPU-resource registration;
 - fatal-error propagation;
-- optional post-presentation witness publication;
+- optional post-surface-present observation enqueue;
 - ordinary close disposition.
 
 The shell should expose one small application trait or an equivalently bounded
@@ -315,14 +312,14 @@ Trailgen closed two original defects during this incubation:
 
 - provider fixtures now speak ordinary HTTP over a filesystem Unix socket
   inside the disposable test root while the product retains `Network::Deny`;
-- `egui-tester-witness` now appends every semantic frame to a lossless
-  observation journal, and reaction waits adjudicate the earliest causal
-  match rather than the latest polled snapshot.
+- `egui-tester-witness` now appends every semantic frame to one lossless
+  observation journal, and reaction waits select the earliest temporally
+  eligible match rather than the latest polled snapshot.
 
-The dependency-free `trailgen-contract` also proves the first shared
-vocabulary: the GUI and acceptance executable consume one Target enum and
-verify `trailgen.ui/1` before the first input. These closures are evidence for
-the present boundary, not permission to expand it.
+The tester-independent `trailgen-contract` also proves the first shared
+vocabulary: the GUI and acceptance executable consume one Target enum plus
+wire-state enums and verify `trailgen.ui/2` before the first input. These
+closures are evidence for the present boundary, not permission to expand it.
 
 ## Promotion Law
 

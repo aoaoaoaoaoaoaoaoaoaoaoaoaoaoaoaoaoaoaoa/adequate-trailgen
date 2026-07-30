@@ -116,9 +116,13 @@ scripts/test-gui
 Story 3 forges a deterministic dense graph, obtains twelve candidates, pans
 while search is active, then sustains pan and zoom across the full portfolio.
 Its lossless frame journal records frame begin, semantic observation,
-presentation, and post-present retirement. `CadenceBudget` removes witness tax
-and rejects median, p95, worst, and p95 paint regressions. The story also
-focuses one candidate and proves Back restores the settled viewport exactly.
+and surface-present return. `CadenceBudget` uses those raw product timestamps
+and rejects median, p95, worst, and p95 paint regressions; no guessed
+instrumentation multiplier or post-hoc witness correction is admissible.
+Witness serialization runs asynchronously after surface present. The story
+also focuses one candidate and proves Back restores the settled viewport
+exactly in semantic state; pointer-normalized map pixels must return near the
+baseline and decisively away from the focused-view control.
 
 The canonical host-GPU contract is p50 cadence ≤ 40 ms, p95 cadence ≤ 50 ms,
 worst cadence ≤ 180 ms, and p95 product frame work ≤ 40 ms. A passing run prints
