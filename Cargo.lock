@@ -883,8 +883,8 @@ dependencies = [
 
 [[package]]
 name = "egui-tester"
-version = "0.3.0"
-source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester?rev=87d5d3548be054f0ccbe26de07687544bd12546a#87d5d3548be054f0ccbe26de07687544bd12546a"
+version = "0.4.0"
+source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester?rev=88d4e7c8aff4365c5bd750da44d5604cc97ae9a4#88d4e7c8aff4365c5bd750da44d5604cc97ae9a4"
 dependencies = [
  "bitflags 2.13.1",
  "egui-tester-witness",
@@ -900,8 +900,8 @@ dependencies = [
 
 [[package]]
 name = "egui-tester-witness"
-version = "0.3.0"
-source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester?rev=87d5d3548be054f0ccbe26de07687544bd12546a#87d5d3548be054f0ccbe26de07687544bd12546a"
+version = "0.4.0"
+source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester?rev=88d4e7c8aff4365c5bd750da44d5604cc97ae9a4#88d4e7c8aff4365c5bd750da44d5604cc97ae9a4"
 dependencies = [
  "egui",
  "rustix 1.1.4",
@@ -4011,7 +4011,12 @@ dependencies = [
  "png",
  "serde",
  "serde_json",
+ "trailgen-contract",
 ]
+
+[[package]]
+name = "trailgen-contract"
+version = "0.1.0"
 
 [[package]]
 name = "trailgen-core"
@@ -4059,13 +4064,11 @@ dependencies = [
  "egui",
  "egui-tester-witness",
  "egui-wgpu",
- "egui-winit",
  "fast-mvt",
  "futures-util",
  "geo-types",
  "lyon_tessellation",
  "pmtiles",
- "pollster",
  "rfd",
  "serde",
  "serde_json",
@@ -4073,8 +4076,24 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "trailgen-contract",
  "trailgen-core",
  "trailgen-data",
+ "trailgen-shell",
+]
+
+[[package]]
+name = "trailgen-shell"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dwemer_poolrooms",
+ "egui",
+ "egui-tester-witness",
+ "egui-wgpu",
+ "egui-winit",
+ "pollster",
+ "serde",
 ]
 
 [[package]]

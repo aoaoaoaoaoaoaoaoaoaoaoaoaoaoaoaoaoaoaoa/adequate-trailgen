@@ -1,328 +1,169 @@
 use std::{fs, time::Duration};
 
-use egui_tester::{Button, Drag, Key, Modifiers, PerformanceBudget, Result, Stroke, Wheel};
+use egui_tester::{Button, Drag, Key, Modifiers, PerformanceBudget, Result, Wheel, demand};
 
 use crate::harness::{
-    Harness, click_budgeted, click_named, demand, durable_budget, instant_budget, replace_text,
-    screen_point, search_reaction_budget, state_is, verdict,
+    Control, Harness, TrailStory, durable_budget, first_anchor, map_pixel, screen_point,
+    search_reaction_budget,
 };
+use crate::interactions::lasso_boundary;
+use crate::observation::{SearchPhase, View, Workspace, shows};
 
 const ROOT: &str = "/test/discover-loop";
 
 pub fn run(harness: &Harness<'_>) -> Result<()> {
     harness.testbed.retain_on_failure("discover-loop")?;
-    let app = harness.testbed.launch(harness.gui(None, false, true))?;
-    let session = harness.session(&app)?;
-    let mut probe = app.witness()?;
-    let _first = session.wait_presented(&mut probe, Duration::from_secs(30))?;
+    let app = harness.launch_gui(None, false, true)?;
+    let mut story = harness.story(&app)?;
+    let _ready = story.ready(Duration::from_secs(30))?;
 
-    create_project(&session, &mut probe)?;
-    acquire_region(&session, &mut probe)?;
+    create_project(&mut story)?;
+    acquire_region(&mut story)?;
     harness.fixtures.assert_harvested()?;
-    find_and_keep(&session, &mut probe)?;
+    find_and_keep(&mut story)?;
     verify_discovery(harness)?;
 
     if let Some(artifacts) = harness.artifacts {
-        session
+        story
             .capture()?
             .save_png(artifacts.join("story-1-discover.png"))?;
     }
     app.terminate()?;
-    drop(session);
+    drop(story);
     drop(app);
 
-    let restarted = harness
-        .testbed
-        .launch(harness.gui(Some(ROOT), true, false))?;
-    let session = harness.session(&restarted)?;
-    let mut probe = restarted.witness()?;
-    let restored = probe.wait(
-        &restarted,
+    let restarted = harness.launch_gui(Some(ROOT), true, false)?;
+    let mut story = harness.story(&restarted)?;
+    let restored = story.wait_within(
         Duration::from_secs(30),
-        "saved discovery to survive a fresh process",
-        |frame| {
-            state_is(frame, "workspace", "trail")
-                && frame.state["saved_trails"] == 1
-                && frame
-                    .anchors
-                    .iter()
-                    .any(|anchor| anchor.name.starts_with("library.trail/"))
-        },
+        shows::workspace(Workspace::Trail) & shows::view(View::Browse) & shows::library(1),
     )?;
-    let trail = restored
-        .anchors
-        .iter()
-        .find(|anchor| anchor.name.starts_with("library.trail/"))
-        .cloned()
-        .ok_or_else(|| verdict("restored Library row vanished"))?;
-    let _opened = click_budgeted(
-        &session,
-        &mut probe,
-        &trail,
-        instant_budget(),
-        "open the trail recovered after restart",
-        |frame| state_is(frame, "view", "focus-saved"),
-    )?;
+    let trail = first_anchor(&restored, "library.trail/", "restored Library row vanished")?;
+    let _opened = story
+        .click_anchor(&trail)?
+        .expect(shows::view(View::FocusSaved))?;
     restarted.terminate()?;
     Ok(())
 }
 
-fn create_project(
-    session: &egui_tester::X11Session<'_, '_>,
-    probe: &mut egui_tester::JsonProbe,
-) -> Result<()> {
-    let app = session.application();
-    let deck = probe.wait(
-        app,
-        Duration::from_secs(10),
-        "empty project deck",
-        |frame| {
-            state_is(frame, "workspace", "projects")
-                && frame.anchor("projects.new.name").is_some()
-                && frame.anchor("projects.new.parent").is_some()
-        },
-    )?;
-    let name = deck
-        .anchor("projects.new.name")
-        .cloned()
-        .ok_or_else(|| verdict("project deck omitted its name field"))?;
-    let parent = deck
-        .anchor("projects.new.parent")
-        .cloned()
-        .ok_or_else(|| verdict("project deck omitted its parent field"))?;
-    let _name = replace_text(session, probe, &name, "Discover Loop")?;
-    let parent_typed = replace_text(session, probe, &parent, "/test")?;
-    let armed = probe.wait_budgeted(
-        app,
-        &parent_typed,
-        instant_budget(),
-        "arm project creation after completing its fields",
-        |frame| frame.anchor("projects.new.create").is_some(),
-    )?;
-    let create = armed
-        .value()
-        .anchor("projects.new.create")
-        .cloned()
-        .ok_or_else(|| verdict("armed project creation control vanished"))?;
-    let _created = click_budgeted(
-        session,
-        probe,
-        &create,
-        durable_budget(),
-        "create a project through the project deck",
-        |frame| state_is(frame, "workspace", "survey"),
-    )?;
+fn create_project(story: &mut TrailStory<'_, '_>) -> Result<()> {
+    let _deck = story.wait(shows::workspace(Workspace::Projects) & shows::view(View::Projects))?;
+    let _name = story
+        .replace_text(Control::ProjectName, "Discover Loop", shows::text_focused())?
+        .presented()?;
+    let _parent = story
+        .replace_text(Control::ProjectParent, "/test", shows::text_focused())?
+        .presented()?;
+    let _created = story
+        .click(Control::ProjectCreate)?
+        .within(durable_budget())
+        .expect(shows::workspace(Workspace::Survey))?;
     Ok(())
 }
 
-fn acquire_region(
-    session: &egui_tester::X11Session<'_, '_>,
-    probe: &mut egui_tester::JsonProbe,
-) -> Result<()> {
-    let app = session.application();
-    let drawing = click_named(
-        session,
-        probe,
-        "survey.add-area",
-        instant_budget(),
-        "arm map-area selection",
-        |frame| frame.state["survey"]["drawing"] == true,
-    )?;
-    let map = drawing
-        .value()
-        .anchor("survey.map")
-        .cloned()
-        .ok_or_else(|| verdict("survey omitted its map canvas"))?;
-    let [x0, y0, x1, y1] = map.rect;
+fn acquire_region(story: &mut TrailStory<'_, '_>) -> Result<()> {
+    let _drawing = story
+        .click(Control::SurveyAddArea)?
+        .expect(shows::survey_drawing())?;
+    let [x0, y0, x1, y1] = story.anchor(Control::SurveyMap)?.rect;
     let center = (f32::midpoint(x0, x1), f32::midpoint(y0, y1));
     let from = screen_point([f64::from(center.0 - 13.0), f64::from(center.1 - 13.0)])?;
     let to = screen_point([f64::from(center.0 + 13.0), f64::from(center.1 + 13.0)])?;
-    let drag = session.drag(
-        from,
-        to,
-        Drag {
-            duration: Duration::from_millis(120),
-            ..Drag::default()
-        },
-    )?;
-    let _started = probe.wait_budgeted(
-        app,
-        &drag,
-        PerformanceBudget::new(Duration::from_millis(600))
-            .through_presentation()
-            .timeout(Duration::from_secs(8)),
-        "begin trail-data acquisition after selecting a region",
-        |frame| frame.state["survey"]["acquiring"] == true && frame.state["survey"]["regions"] == 1,
-    )?;
-    let _ready = probe.wait(
-        app,
+    let _started = story
+        .drag_from(
+            from,
+            to,
+            Drag {
+                duration: Duration::from_millis(120),
+                ..Drag::default()
+            },
+        )?
+        .within(
+            PerformanceBudget::new(Duration::from_millis(600))
+                .through_presentation()
+                .timeout(Duration::from_secs(8)),
+        )
+        .expect(shows::survey_acquiring(1))?;
+    let _ready = story.wait_within(
         Duration::from_secs(30),
-        "provider acquisition, indexing, and workbench promotion",
-        |frame| state_is(frame, "workspace", "trail") && frame.state["candidates"] == 0,
+        shows::workspace(Workspace::Trail) & shows::candidates(0),
     )?;
     Ok(())
 }
 
-fn find_and_keep(
-    session: &egui_tester::X11Session<'_, '_>,
-    probe: &mut egui_tester::JsonProbe,
-) -> Result<()> {
-    configure_search(session, probe)?;
-    search_and_keep(session, probe)
-}
+fn find_and_keep(story: &mut TrailStory<'_, '_>) -> Result<()> {
+    configure_search(story)?;
+    let mut strike = story.key(Key::Return)?;
+    let _progress = strike
+        .within(search_reaction_budget())
+        .expect(shows::search(SearchPhase::Striking))?;
+    let _eager = strike
+        .within(
+            PerformanceBudget::new(Duration::from_secs(2))
+                .through_presentation()
+                .timeout(Duration::from_secs(12)),
+        )
+        .expect(shows::candidates_at_least(1))?;
+    drop(strike);
 
-fn configure_search(
-    session: &egui_tester::X11Session<'_, '_>,
-    probe: &mut egui_tester::JsonProbe,
-) -> Result<()> {
-    let app = session.application();
-    let frame = probe.wait(
-        app,
-        Duration::from_secs(10),
-        "acquired trail map",
-        |frame| frame.anchor("map.canvas").is_some(),
-    )?;
-    let initial_scale = frame.state["map"]["world_points"]
-        .as_f64()
-        .ok_or_else(|| verdict("map witness omitted its scale"))?;
-    let map = frame
-        .anchor("map.canvas")
-        .cloned()
-        .ok_or_else(|| verdict("acquired project omitted its map"))?;
-    let (cx, cy) = map.center();
-    let _zoom = session.wheel(
-        cx,
-        cy,
-        -7,
-        Wheel {
-            tick_duration: Duration::from_millis(24),
-        },
-    )?;
-    let frame = probe.wait(
-        app,
-        Duration::from_secs(8),
-        "zoom close enough to place a precise trailhead",
-        |frame| {
-            frame.state["map"]["world_points"]
-                .as_f64()
-                .is_some_and(|scale| scale >= initial_scale * 16.0)
-        },
-    )?;
-    let map = frame
-        .anchor("map.canvas")
-        .cloned()
-        .ok_or_else(|| verdict("zoomed project omitted its map"))?;
-    let trailhead = crate::harness::map_pixel(&frame, [-98.5, 39.5])?;
-    let placed =
-        session.modified_click(trailhead.0, trailhead.1, Button::Primary, Modifiers::ALT)?;
-    let placed = probe.wait_budgeted(
-        app,
-        &placed,
-        instant_budget(),
-        "place a trailhead with Alt-click",
-        |frame| frame.state["search"]["trailhead"].is_array(),
-    )?;
-    let boundary = placed
-        .value()
-        .anchor("search.boundary")
-        .cloned()
-        .ok_or_else(|| verdict("search controls omitted the boundary tool"))?;
-    let _armed = click_budgeted(
-        session,
-        probe,
-        &boundary,
-        instant_budget(),
-        "arm the search boundary lasso",
-        |frame| frame.anchor("map.canvas").is_some(),
-    )?;
-    let [x0, y0, x1, y1] = map.rect;
-    let inset_x = (x1 - x0) * 0.15;
-    let inset_y = (y1 - y0) * 0.15;
-    let point = |x, y| screen_point([f64::from(x), f64::from(y)]);
-    let knots = [
-        point(x0 + inset_x, y0 + inset_y)?,
-        point(x1 - inset_x, y0 + inset_y)?,
-        point(x1 - inset_x, y1 - inset_y)?,
-        point(x0 + inset_x, y1 - inset_y)?,
-        point(x0 + inset_x, y0 + inset_y)?,
-    ];
-    let lasso = session.stroke(
-        &knots,
-        Stroke {
-            steps_per_leg: 5,
-            leg_duration: Duration::from_millis(45),
-            ..Stroke::default()
-        },
-    )?;
-    let _bounded = probe.wait_budgeted(
-        app,
-        &lasso,
-        instant_budget(),
-        "commit a free-hand search boundary",
-        |frame| frame.state["search"]["boundary"] == true,
-    )?;
-    Ok(())
-}
-
-fn search_and_keep(
-    session: &egui_tester::X11Session<'_, '_>,
-    probe: &mut egui_tester::JsonProbe,
-) -> Result<()> {
-    let app = session.application();
-    let strike = session.key(Key::Return)?;
-    let _progress = probe.wait_budgeted(
-        app,
-        &strike,
-        search_reaction_budget(),
-        "show search progress after Enter",
-        |frame| frame.state["search"]["phase"] == "striking",
-    )?;
-    let _eager = probe.wait_budgeted(
-        app,
-        &strike,
-        PerformanceBudget::new(Duration::from_secs(2))
-            .through_presentation()
-            .timeout(Duration::from_secs(12)),
-        "promote the first useful candidate eagerly",
-        |frame| {
-            frame.state["candidates"]
-                .as_u64()
-                .is_some_and(|count| count >= 1)
-        },
-    )?;
-    let complete = probe.wait(
-        app,
+    let complete = story.wait_within(
         Duration::from_secs(20),
-        "search to settle with retained candidates",
+        shows::candidates_at_least(1) & shows::search(SearchPhase::Idle),
+    )?;
+    let candidate = first_anchor(
+        &complete,
+        "results.candidate/",
+        "search produced no visible result tile",
+    )?;
+    let _focused = story
+        .click_anchor(&candidate)?
+        .expect(shows::view(View::FocusCandidate))?;
+    let _saved = story
+        .click(Control::FocusSave)?
+        .within(durable_budget())
+        .expect(shows::view(View::FocusSaved) & shows::library(1))?;
+    Ok(())
+}
+
+fn configure_search(story: &mut TrailStory<'_, '_>) -> Result<()> {
+    let frame = story.wait(shows::map())?;
+    let initial_scale = frame
+        .state
+        .map
+        .as_ref()
+        .map(|map| map.world_points)
+        .unwrap_or_default();
+    let center = story.anchor(Control::Map)?.center();
+    let _zoom = story
+        .wheel(
+            center,
+            -7,
+            Wheel {
+                tick_duration: Duration::from_millis(24),
+            },
+        )?
+        .expect(shows::map_scale_at_least(initial_scale * 16.0))?;
+    let frame = story.wait_stable(
+        Duration::from_secs(8),
+        Duration::from_millis(160),
+        "trailhead-placement viewport to settle",
         |frame| {
-            frame.state["search"]["phase"] == "idle"
-                && frame.state["candidates"]
-                    .as_u64()
-                    .is_some_and(|count| count >= 1)
+            frame.state.map.as_ref().map(|map| {
+                [
+                    map.center[0].to_bits(),
+                    map.center[1].to_bits(),
+                    map.world_points.to_bits(),
+                ]
+            })
         },
     )?;
-    let candidate = complete
-        .anchors
-        .iter()
-        .find(|anchor| anchor.name.starts_with("results.candidate/"))
-        .cloned()
-        .ok_or_else(|| verdict("search produced no visible result tile"))?;
-    let _focused = click_budgeted(
-        session,
-        probe,
-        &candidate,
-        instant_budget(),
-        "inspect an eager search result",
-        |frame| state_is(frame, "view", "focus-candidate"),
-    )?;
-    let _saved = click_named(
-        session,
-        probe,
-        "focus.save",
-        durable_budget(),
-        "save the inspected candidate",
-        |frame| state_is(frame, "view", "focus-saved") && frame.state["saved_trails"] == 1,
-    )?;
+    let trailhead = map_pixel(&frame, [-98.5, 39.5])?;
+    let _placed = story
+        .modified_click_at(trailhead, Button::Primary, Modifiers::ALT)?
+        .expect(shows::trailhead())?;
+    let _armed = story.click(Control::Boundary)?.presented()?;
+
+    let _bounded = lasso_boundary(story, 0.15)?;
     Ok(())
 }
 
@@ -355,6 +196,5 @@ fn verify_discovery(harness: &Harness<'_>) -> Result<()> {
             .as_array()
             .is_some_and(|trails| trails.len() == 1),
         "saved discovery did not reach the durable Library",
-    )?;
-    Ok(())
+    )
 }

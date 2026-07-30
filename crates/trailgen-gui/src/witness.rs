@@ -1,9 +1,9 @@
 use egui::{Rect, Ui};
 
 #[inline]
-pub fn anchor(ui: &Ui, name: impl Into<String>, rect: Rect) {
+pub fn anchor(ui: &Ui, name: impl AsRef<str>, rect: Rect) {
     #[cfg(feature = "egui-test")]
-    egui_tester_witness::egui::record(ui, name, rect);
+    egui_tester_witness::egui::record(ui, name.as_ref().to_owned(), rect);
     #[cfg(not(feature = "egui-test"))]
     {
         let _ = (ui, rect);
@@ -13,8 +13,8 @@ pub fn anchor(ui: &Ui, name: impl Into<String>, rect: Rect) {
 
 #[cfg(feature = "egui-test")]
 #[inline]
-pub fn rect(ctx: &egui::Context, name: impl Into<String>, rect: Rect) {
-    egui_tester_witness::egui::record_rect(ctx, name, rect);
+pub fn rect(ctx: &egui::Context, name: impl AsRef<str>, rect: Rect) {
+    egui_tester_witness::egui::record_rect(ctx, name.as_ref().to_owned(), rect);
 }
 
 #[cfg(feature = "egui-test")]
@@ -22,12 +22,12 @@ pub use active::*;
 
 #[cfg(feature = "egui-test")]
 mod active {
-    use egui::{Context, Rect};
-    use egui_tester_witness::{Anchor, FrameObservation, PendingFrame};
+    use egui::Rect;
     use serde::Serialize;
 
     #[derive(Serialize)]
     pub struct State {
+        pub contract: &'static str,
         pub workspace: &'static str,
         pub view: &'static str,
         pub focused_trail: Option<String>,
@@ -49,6 +49,7 @@ mod active {
             text_edit_focused: bool,
         ) -> Self {
             Self {
+                contract: trailgen_contract::UI_FINGERPRINT,
                 workspace,
                 view,
                 focused_trail: None,
@@ -126,47 +127,5 @@ mod active {
         pub visible: bool,
         pub locked_distance_m: Option<f64>,
         pub marker: Option<[f64; 2]>,
-    }
-
-    pub fn install(ctx: &Context) {
-        egui_tester_witness::egui::install(ctx);
-        ctx.on_begin_pass(
-            "clear poolrooms witness anchors",
-            std::sync::Arc::new(|ui| {
-                drop(dwemer_poolrooms::instrumentation::take(ui.ctx()));
-            }),
-        );
-    }
-
-    pub fn stage(
-        ctx: &Context,
-        observed: FrameObservation,
-        frame: u64,
-        pixels_per_point: f32,
-        state: State,
-    ) -> egui_tester_witness::Result<PendingFrame<State>> {
-        let anchors = egui_tester_witness::egui::take(ctx, pixels_per_point)?;
-        let poolrooms = dwemer_poolrooms::instrumentation::take(ctx)
-            .into_iter()
-            .map(|anchor| {
-                Anchor::logical(
-                    anchor.name,
-                    [
-                        anchor.rect.min.x,
-                        anchor.rect.min.y,
-                        anchor.rect.max.x,
-                        anchor.rect.max.y,
-                    ],
-                    pixels_per_point,
-                )
-            })
-            .collect::<egui_tester_witness::Result<Vec<_>>>()?;
-        PendingFrame::forge_at(
-            observed,
-            frame,
-            pixels_per_point,
-            anchors.into_iter().chain(poolrooms),
-            state,
-        )
     }
 }

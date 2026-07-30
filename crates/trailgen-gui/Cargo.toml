@@ -11,7 +11,7 @@ keywords = ["gis", "hiking", "routing", "egui", "wgpu"]
 categories = ["gui", "science::geo"]
 
 [features]
-egui-test = ["dep:egui-tester-witness", "dwemer_poolrooms/instrumentation"]
+egui-test = ["dep:egui-tester-witness", "trailgen-shell/egui-test"]
 
 [dependencies]
 anyhow.workspace = true
@@ -21,14 +21,12 @@ directories.workspace = true
 dwemer_poolrooms.workspace = true
 egui.workspace = true
 egui-wgpu.workspace = true
-egui-winit.workspace = true
 egui-tester-witness = { workspace = true, optional = true, features = ["egui"] }
 fast-mvt.workspace = true
 futures-util.workspace = true
 geo-types.workspace = true
 lyon_tessellation.workspace = true
 pmtiles.workspace = true
-pollster.workspace = true
 rfd.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -36,7 +34,9 @@ sha2.workspace = true
 tokio.workspace = true
 toml.workspace = true
 trailgen-core.workspace = true
+trailgen-contract.workspace = true
 trailgen-data.workspace = true
+trailgen-shell.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

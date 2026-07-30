@@ -24,26 +24,46 @@ durable or rendered oracle before passing. Tests never call product internals.
    and release the elevation reticle, save, and recover the loop after restart.
 
 The provider server, basemap, terrain, small graph, and dense graph are local,
-deterministic fixtures inside the testbed. Network denial is the default;
-story 1 grants host networking only to its loopback fixture server.
+deterministic fixtures. Network denial is universal. Story 1 exercises the
+ordinary reqwest HTTP clients against a filesystem Unix socket mounted only
+inside the disposable `/test` tree; no tested product process receives IP
+network authority.
 
 ## Evidence Law
 
 Every step has three separate facts:
 
-1. an `X11Session` gesture;
-2. a causally fresh, final-pass witness observation;
+1. a native X11 gesture through typed `Story<Observation>` porcelain;
+2. the earliest causally fresh, final-pass witness observation;
 3. an external oracle such as private project state, pixels, process state, or
    a later cold start.
 
 `PerformanceBudget` governs reaction latency. `FrameProbe` and
 `CadenceBudget` govern sustained interaction. Smoothed product kinetics must
-cross `JsonProbe::wait_stable` before a viewport or similar value becomes a
+cross `Probe::wait_stable` before a viewport or similar value becomes a
 baseline. Functional timeouts never enlarge performance budgets.
 
+Before the first injected input, every story verifies
+`trailgen-contract::UI_FINGERPRINT`. The GUI and acceptance executable consume
+the same dependency-free Target vocabulary; raw anchor strings are not a
+second contract.
+
+The atomic witness is the current-state and hit-testing surface. A separate
+length-framed observation journal retains every presented semantic frame.
+Reaction verdicts walk that journal in order, so a brief valid state cannot be
+lost between polls and harness I/O cannot inflate its production latency.
+
 Run the complete contract with `scripts/test-gui`. On failure, inspect the
-retained transcript, witness, frame journal, logs, private filesystem, and
-screenshot under `TRAILGEN_ACCEPTANCE_ARTIFACTS`.
+retained transcript, witness, observation and cadence journals, logs, private
+filesystem, and screenshot under `TRAILGEN_ACCEPTANCE_ARTIFACTS`.
+
+## Platform Doctrine
+
+X11 is the sole release-tested GUI vertical for this tranche. It owns native
+input, private display authority, capture, presentation fencing, performance
+budgets, and failure artifacts end to end. Wayland expansion is deliberately
+deferred until this X11 architecture has survived adoption by the next
+application; an optional compositor smoke is not acceptance parity.
 
 ## Coverage Frontier
 
@@ -56,10 +76,10 @@ unwritten on the present harness:
 - cartographic disclosure and label stability through contour detail bands;
 - saved-library hover preview and destructive delete confirmation.
 
-The shared tester still lacks generic Wayland input, native window
-move/resize and multi-window or tray choreography, accessibility-tree
-selectors, clipboard/IME and non-Latin-1 text, and a serializable recording
-timeline. Native folder-picker cancellation is blocked specifically on the
-multi-window/dialog gap. These are tester design defects; see its adoption
-guide. Until each is implemented, a Trailgen story needing it must remain
-explicitly parked rather than falling back to xdotool.
+The shared tester still lacks native window move/resize and multi-window or
+tray choreography, accessibility-tree selectors, clipboard/IME and
+non-Latin-1 text, and a serializable recording timeline. Native folder-picker
+cancellation is blocked specifically on the multi-window/dialog gap. Generic
+Wayland input is a deferred horizontal expansion, not part of the current
+release claim. Until each surface is admitted, a Trailgen story needing it
+must remain explicitly parked rather than falling back to xdotool.

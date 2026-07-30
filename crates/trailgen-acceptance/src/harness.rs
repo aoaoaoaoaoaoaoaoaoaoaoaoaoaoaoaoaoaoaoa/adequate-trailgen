@@ -5,16 +5,21 @@ use std::{
 };
 
 use egui_tester::{
-    Anchor, AppCommand, Application, Button, Error, Graphics, JsonProbe, Network,
-    PerformanceBudget, ProbeFrame, Result, Testbed, Timed, WindowQuery, X11Session,
+    Anchor, AppCommand, Application, Error, Graphics, Network, PerformanceBudget, ProbeFrame,
+    Result, Story, Testbed, WindowQuery,
 };
 use num_traits::ToPrimitive as _;
-use serde::Deserialize;
 use serde_json::Value;
 
-use crate::fixture::FixtureWorld;
+use crate::{fixture::FixtureWorld, observation::Observation};
+
+pub use egui_tester::demand;
 
 pub const TITLE: &str = "trailgen · trail workbench";
+
+pub type TrailStory<'app, 'bed> = Story<'app, 'bed, Observation>;
+pub type TrailFrame = ProbeFrame<Observation>;
+pub use trailgen_contract::Target as Control;
 
 pub struct Harness<'a> {
     pub testbed: &'a Testbed,
@@ -79,7 +84,7 @@ impl<'a> Harness<'a> {
         }
     }
 
-    pub fn gui(&self, project: Option<&str>, offline: bool, online: bool) -> AppCommand {
+    pub fn gui(&self, project: Option<&str>, offline: bool) -> AppCommand {
         let mut args = vec!["gui"];
         if let Some(project) = project {
             args.push(project);
@@ -87,87 +92,61 @@ impl<'a> Harness<'a> {
         if offline {
             args.push("--offline");
         }
-        let command = AppCommand::new(self.binary)
+        AppCommand::new(self.binary)
             .args(args)
             .env("TRAILGEN_BASEMAP_ARCHIVE", "/test/fixtures/empty.pmtiles")
             .graphics(Graphics::Host)
-            .network(if online { Network::Host } else { Network::Deny })
+            .network(Network::Deny)
             .witness("probes/trailgen.json")
-            .runtime(Duration::from_mins(3));
-        if online {
-            self.fixtures.online(command)
+            .runtime(Duration::from_mins(3))
+    }
+
+    pub fn launch_gui(
+        &self,
+        project: Option<&str>,
+        offline: bool,
+        online: bool,
+    ) -> Result<Application<'a>> {
+        let command = self.gui(project, offline);
+        self.testbed.launch(if online {
+            FixtureWorld::online(command)
         } else {
             command
-        }
+        })
     }
 
-    pub fn session<'app>(&'a self, app: &'app Application<'a>) -> Result<X11Session<'app, 'a>> {
-        let session = self.testbed.x11_session(
+    pub fn story<'app>(&'a self, app: &'app Application<'a>) -> Result<TrailStory<'app, 'a>> {
+        let mut story: TrailStory<'app, 'a> = Story::bind(
+            self.testbed,
             app,
             WindowQuery::title_exact(TITLE),
-            Duration::from_secs(30),
+            instant_budget(),
         )?;
-        session.focus()?;
-        Ok(session)
+        let frame = story.ready(Duration::from_secs(10))?;
+        demand(
+            frame.state.contract == trailgen_contract::UI_FINGERPRINT,
+            format!(
+                "Trailgen UI contract mismatch: expected {}, observed {}",
+                trailgen_contract::UI_FINGERPRINT,
+                frame.state.contract
+            ),
+        )?;
+        Ok(story)
     }
 }
 
-pub fn click_budgeted(
-    session: &X11Session<'_, '_>,
-    probe: &mut JsonProbe,
-    anchor: &Anchor,
-    budget: PerformanceBudget,
-    description: &'static str,
-    predicate: impl FnMut(&ProbeFrame) -> bool,
-) -> Result<Timed<ProbeFrame>> {
-    let (x, y) = anchor.center();
-    let receipt = session.click(x, y, Button::Primary)?;
-    probe.wait_budgeted(
-        session.application(),
-        &receipt,
-        budget,
-        description,
-        predicate,
-    )
+pub fn first_anchor(frame: &TrailFrame, prefix: &str, missing: &'static str) -> Result<Anchor> {
+    frame
+        .anchors
+        .iter()
+        .find(|anchor| anchor.name.starts_with(prefix))
+        .cloned()
+        .ok_or_else(|| verdict(missing))
 }
 
-pub fn click_named(
-    session: &X11Session<'_, '_>,
-    probe: &mut JsonProbe,
-    name: &str,
-    budget: PerformanceBudget,
-    description: &'static str,
-    predicate: impl FnMut(&ProbeFrame) -> bool,
-) -> Result<Timed<ProbeFrame>> {
-    let anchor = probe.wait_anchor(session.application(), name, Duration::from_secs(8))?;
-    click_budgeted(session, probe, &anchor, budget, description, predicate)
-}
-
-pub fn replace_text(
-    session: &X11Session<'_, '_>,
-    probe: &mut JsonProbe,
-    anchor: &Anchor,
-    text: &str,
-) -> Result<egui_tester::ActionReceipt> {
-    let (x, y) = anchor.center();
-    let focus = session.click(x, y, Button::Primary)?;
-    let _focused = probe.wait_budgeted(
-        session.application(),
-        &focus,
-        instant_budget(),
-        "focus a text control before typing",
-        |frame| state_flag(frame, "text_edit_focused"),
-    )?;
-    let _select = session.chord(
-        egui_tester::Modifiers::CTRL,
-        egui_tester::Key::Character('a'),
-    )?;
-    session.type_text(text)
-}
-
-pub fn map_pixel(frame: &ProbeFrame, coordinate: [f64; 2]) -> Result<(i16, i16)> {
-    let state = decode_state(frame)?;
-    let map = state
+pub fn map_pixel(frame: &TrailFrame, coordinate: [f64; 2]) -> Result<(i16, i16)> {
+    let map = frame
+        .state
         .map
         .as_ref()
         .ok_or_else(|| verdict("witness omitted map transform"))?;
@@ -197,13 +176,6 @@ pub fn screen_point([x, y]: [f64; 2]) -> Result<(i16, i16)> {
     ))
 }
 
-pub fn decode_state(frame: &ProbeFrame) -> Result<WitnessState> {
-    serde_json::from_value(frame.state.clone()).map_err(|error| Error::Probe {
-        path: PathBuf::from("<trailgen-witness>"),
-        detail: error.to_string(),
-    })
-}
-
 pub fn read_json(path: &Path) -> Result<Value> {
     let bytes = fs::read(path).map_err(|source| Error::Io {
         operation: "read acceptance oracle",
@@ -214,14 +186,6 @@ pub fn read_json(path: &Path) -> Result<Value> {
         path: path.to_owned(),
         detail: error.to_string(),
     })
-}
-
-pub fn state_is(frame: &ProbeFrame, key: &str, expected: &str) -> bool {
-    frame.state[key].as_str() == Some(expected)
-}
-
-pub fn state_flag(frame: &ProbeFrame, key: &str) -> bool {
-    frame.state[key].as_bool() == Some(true)
 }
 
 pub fn instant_budget() -> PerformanceBudget {
@@ -242,22 +206,9 @@ pub fn search_reaction_budget() -> PerformanceBudget {
         .timeout(Duration::from_secs(8))
 }
 
-pub fn demand(condition: bool, detail: impl Into<String>) -> Result<()> {
-    if condition {
-        Ok(())
-    } else {
-        Err(verdict_owned(detail.into()))
-    }
-}
-
-pub fn verdict(detail: &'static str) -> Error {
-    verdict_owned(detail.to_owned())
-}
-
-pub const fn verdict_owned(detail: String) -> Error {
-    Error::X11 {
-        operation: "adjudicate Trailgen user story",
-        detail,
+pub fn verdict(detail: impl Into<String>) -> Error {
+    Error::Verdict {
+        detail: detail.into(),
     }
 }
 
@@ -283,23 +234,4 @@ fn world_from_coord([longitude, latitude]: [f64; 2]) -> [f64; 2] {
     let latitude = latitude.clamp(-85.051_128_78, 85.051_128_78).to_radians();
     let y = (1.0 - latitude.tan().asinh() / std::f64::consts::PI) * 0.5;
     [x, y]
-}
-
-#[derive(Deserialize)]
-pub struct WitnessState {
-    pub map: Option<MapState>,
-    pub editor: Option<EditorState>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct MapState {
-    pub rect: [f32; 4],
-    pub center: [f64; 2],
-    pub world_points: f64,
-}
-
-#[derive(Deserialize)]
-pub struct EditorState {
-    pub support_points: Vec<[f64; 2]>,
-    pub route_signature: Option<u64>,
 }

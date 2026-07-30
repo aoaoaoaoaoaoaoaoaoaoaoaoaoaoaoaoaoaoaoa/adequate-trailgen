@@ -8,12 +8,12 @@
 mod annotation;
 mod app;
 mod basemap;
-mod boiler;
 mod cadence;
 mod chrome;
 mod forge;
 mod gallery;
 mod habitat;
+mod host;
 mod library;
 mod live_area;
 mod map;
@@ -45,5 +45,5 @@ pub fn run(intent: ProjectIntent, offline: bool) -> Result<()> {
     let ctx = egui::Context::default();
     dwemer_poolrooms::chrome::install(&ctx);
     let app = projects::Workbench::launch(&ctx, habitat, intent, offline);
-    boiler::run(ctx, app)
+    host::run(ctx, app)
 }

@@ -1,10 +1,12 @@
 [workspace]
 members = [
   "crates/trailgen-acceptance",
+  "crates/trailgen-contract",
   "crates/trailgen-core",
   "crates/trailgen-data",
   "crates/trailgen-cli",
   "crates/trailgen-gui",
+  "crates/trailgen-shell",
 ]
 resolver = "2"
 
@@ -48,19 +50,21 @@ tiff = "0.11.3"
 tokio = { version = "1.48.0", features = ["rt"] }
 toml = "0.8.23"
 trailgen-core = { path = "crates/trailgen-core" }
+trailgen-contract = { path = "crates/trailgen-contract" }
 trailgen-data = { path = "crates/trailgen-data" }
 trailgen-gui = { path = "crates/trailgen-gui" }
+trailgen-shell = { path = "crates/trailgen-shell" }
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 
 [workspace.dependencies.egui-tester]
 git = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester"
-rev = "87d5d3548be054f0ccbe26de07687544bd12546a"
-version = "0.3.0"
+rev = "88d4e7c8aff4365c5bd750da44d5604cc97ae9a4"
+version = "0.4.0"
 
 [workspace.dependencies.egui-tester-witness]
 git = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester"
-rev = "87d5d3548be054f0ccbe26de07687544bd12546a"
-version = "0.3.0"
+rev = "88d4e7c8aff4365c5bd750da44d5604cc97ae9a4"
+version = "0.4.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

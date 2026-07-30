@@ -1,0 +1,12 @@
+[package]
+name = "trailgen-contract"
+version = "0.1.0"
+description = "Stable UI identity shared by Trailgen and its black-box acceptance stories."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version = "1.88"
+publish = false
+
+[lints]
+workspace = true

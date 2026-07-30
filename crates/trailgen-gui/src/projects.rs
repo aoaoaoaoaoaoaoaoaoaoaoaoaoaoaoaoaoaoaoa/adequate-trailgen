@@ -19,6 +19,7 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
+use trailgen_contract::Target;
 use trailgen_core::Coord;
 use trailgen_data::SurveyRegion;
 
@@ -385,7 +386,7 @@ impl SurveyWorkbench {
             )
             .min_size(vec2(ui.available_width(), 34.0)),
         );
-        crate::witness::anchor(ui, "survey.add-area", select.rect);
+        crate::witness::anchor(ui, Target::SurveyAddArea, select.rect);
         chrome::tension(ui, &select);
         if select.clicked() {
             if selecting {
@@ -482,7 +483,7 @@ impl SurveyWorkbench {
     fn map(&mut self, ui: &mut egui::Ui) {
         let (rect, response) =
             ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
-        crate::witness::anchor(ui, "survey.map", response.rect);
+        crate::witness::anchor(ui, Target::SurveyMap, response.rect);
         self.map_rect = rect;
         if self.fit_regions {
             self.viewport = map::fit_coords(
@@ -773,7 +774,7 @@ impl ProjectDeck {
                 .hint_text("project name · Harriman loops")
                 .text_color(chrome::TEXT),
         );
-        crate::witness::anchor(ui, "projects.new.name", name.rect);
+        crate::witness::anchor(ui, Target::ProjectName, name.rect);
         chrome::tension(ui, &name);
         ui.add_space(5.0);
         let _parent = ui.horizontal(|ui| {
@@ -783,7 +784,7 @@ impl ProjectDeck {
                     .hint_text("parent folder")
                     .text_color(chrome::TEXT),
             );
-            crate::witness::anchor(ui, "projects.new.parent", edit.rect);
+            crate::witness::anchor(ui, Target::ProjectParent, edit.rect);
             chrome::tension(ui, &edit);
             let browse = ui.add_sized([142.0, 28.0], chrome::command_button("BROWSE…", false));
             chrome::tension(ui, &browse);
@@ -803,7 +804,7 @@ impl ProjectDeck {
         );
         let create =
             create.on_disabled_hover_text("Enter a project name and choose a parent folder.");
-        crate::witness::anchor(ui, "projects.new.create", create.rect);
+        crate::witness::anchor(ui, Target::ProjectCreate, create.rect);
         chrome::tension(ui, &create);
         if create.clicked()
             || (ready && name.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)))

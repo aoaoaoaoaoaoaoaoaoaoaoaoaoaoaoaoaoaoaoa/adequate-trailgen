@@ -1,7 +1,7 @@
 use std::{
     fs::File,
     io::{BufRead as _, BufReader, Cursor, Write as _},
-    net::{TcpListener, TcpStream},
+    os::unix::net::{UnixListener, UnixStream},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -13,6 +13,8 @@ use std::{
 
 use egui_tester::{AppCommand, Error, Result, Testbed};
 use pmtiles::{Compression, PmTilesWriter, TileType};
+
+const PROVIDER_SOCKET: &str = "fixtures/provider.sock";
 
 pub struct FixtureWorld {
     server: FixtureServer,
@@ -32,32 +34,30 @@ impl FixtureWorld {
         let basemap = testbed.private_path("fixtures/empty.pmtiles")?;
         empty_basemap(&basemap)?;
         Ok(Self {
-            server: FixtureServer::raise()?,
+            server: FixtureServer::raise(testbed.private_path(PROVIDER_SOCKET)?)?,
         })
     }
 
-    pub fn online(&self, command: AppCommand) -> AppCommand {
+    pub fn online(command: AppCommand) -> AppCommand {
         command
-            .env("TRAILGEN_OVERPASS_ENDPOINT", self.server.url("overpass"))
-            .env("TRAILGEN_USGS_TRAILS_ENDPOINT", self.server.url("usgs"))
-            .env("TRAILGEN_TERRAIN_ENDPOINT", self.server.url("terrain"))
+            .env("TRAILGEN_OVERPASS_ENDPOINT", provider_url("overpass"))
+            .env("TRAILGEN_USGS_TRAILS_ENDPOINT", provider_url("usgs"))
+            .env("TRAILGEN_TERRAIN_ENDPOINT", provider_url("terrain"))
+            .private_env("TRAILGEN_HTTP_UNIX_SOCKET", PROVIDER_SOCKET)
     }
 
     pub fn assert_harvested(&self) -> Result<()> {
-        if self.server.overpass.load(Ordering::Acquire) == 0
-            || self.server.usgs.load(Ordering::Acquire) == 0
-            || self.server.terrain.load(Ordering::Acquire) == 0
-        {
-            return Err(verdict(
-                "GUI map-area acquisition did not traverse every local provider",
-            ));
-        }
-        Ok(())
+        egui_tester::demand(
+            self.server.overpass.load(Ordering::Acquire) != 0
+                && self.server.usgs.load(Ordering::Acquire) != 0
+                && self.server.terrain.load(Ordering::Acquire) != 0,
+            "GUI map-area acquisition did not traverse every private provider",
+        )
     }
 }
 
 struct FixtureServer {
-    address: std::net::SocketAddr,
+    socket: PathBuf,
     shutdown: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
     overpass: Arc<AtomicUsize>,
@@ -66,20 +66,15 @@ struct FixtureServer {
 }
 
 impl FixtureServer {
-    fn raise() -> Result<Self> {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).map_err(|source| Error::Io {
-            operation: "bind fixture provider",
-            path: PathBuf::from("<loopback>"),
+    fn raise(socket: PathBuf) -> Result<Self> {
+        let listener = UnixListener::bind(&socket).map_err(|source| Error::Io {
+            operation: "bind private fixture provider",
+            path: socket.clone(),
             source,
         })?;
         listener.set_nonblocking(true).map_err(|source| Error::Io {
-            operation: "make fixture provider nonblocking",
-            path: PathBuf::from("<loopback>"),
-            source,
-        })?;
-        let address = listener.local_addr().map_err(|source| Error::Io {
-            operation: "read fixture provider address",
-            path: PathBuf::from("<loopback>"),
+            operation: "make private fixture provider nonblocking",
+            path: socket.clone(),
             source,
         })?;
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -91,6 +86,7 @@ impl FixtureServer {
             let overpass = Arc::clone(&overpass);
             let usgs = Arc::clone(&usgs);
             let terrain = Arc::clone(&terrain);
+            let socket = socket.clone();
             thread::Builder::new()
                 .name("trailgen-acceptance-provider".to_owned())
                 .spawn(move || {
@@ -106,15 +102,16 @@ impl FixtureServer {
                             Err(_) => break,
                         }
                     }
+                    let _removed = std::fs::remove_file(socket);
                 })
                 .map_err(|source| Error::Io {
-                    operation: "spawn fixture provider",
-                    path: PathBuf::from("<loopback>"),
+                    operation: "spawn private fixture provider",
+                    path: PathBuf::from("<thread>"),
                     source,
                 })?
         };
         Ok(Self {
-            address,
+            socket,
             shutdown,
             worker: Some(worker),
             overpass,
@@ -122,16 +119,16 @@ impl FixtureServer {
             terrain,
         })
     }
+}
 
-    fn url(&self, path: &str) -> String {
-        format!("http://{}/{path}", self.address)
-    }
+fn provider_url(path: &str) -> String {
+    format!("http://trailgen.fixture/{path}")
 }
 
 impl Drop for FixtureServer {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::Release);
-        let _wake = TcpStream::connect(self.address);
+        let _wake = UnixStream::connect(&self.socket);
         if let Some(worker) = self.worker.take() {
             let _joined = worker.join();
         }
@@ -139,7 +136,7 @@ impl Drop for FixtureServer {
 }
 
 fn serve(
-    stream: TcpStream,
+    stream: UnixStream,
     terrain_png: &[u8],
     overpass: &AtomicUsize,
     usgs: &AtomicUsize,

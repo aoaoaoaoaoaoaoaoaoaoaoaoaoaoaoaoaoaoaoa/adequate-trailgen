@@ -1,4 +1,4 @@
-use crate::{MAX_REGION_DEG2, MAX_SOURCE_BYTES, SurveyRegion, user_agent};
+use crate::{MAX_REGION_DEG2, MAX_SOURCE_BYTES, SurveyRegion, http_client};
 use anyhow::{Context as _, Result, bail, ensure};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value, json};
@@ -256,10 +256,7 @@ impl NetworkProvider for AuthorityTrailProvider {
                 origin: self.endpoint.clone(),
             });
         }
-        let client = reqwest::blocking::Client::builder()
-            .timeout(self.timeout)
-            .user_agent(user_agent(self.descriptor().id.as_str()))
-            .build()
+        let client = http_client(self.descriptor().id.as_str(), self.timeout)
             .with_context(|| format!("build {} client", self.descriptor().label))?;
         let mut features = Vec::new();
         let mut encoded_feature_bytes = 0_u64;
@@ -425,10 +422,7 @@ impl NetworkProvider for UsgsNationalTrails {
             area <= MAX_REGION_DEG2,
             "USGS trail-data bounds span {area:.2} square degrees; limit is {MAX_REGION_DEG2:.2}"
         );
-        let client = reqwest::blocking::Client::builder()
-            .timeout(self.timeout)
-            .user_agent(user_agent("usgs-trail-source"))
-            .build()
+        let client = http_client("usgs-trail-source", self.timeout)
             .context("build USGS National Digital Trails client")?;
         let mut features = Vec::new();
         let mut encoded_feature_bytes = 0_u64;

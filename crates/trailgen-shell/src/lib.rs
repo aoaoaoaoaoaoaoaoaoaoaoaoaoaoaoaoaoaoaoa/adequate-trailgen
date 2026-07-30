@@ -1,7 +1,15 @@
-use crate::{projects::Workbench, trail_map::TrailMapGpu, vector_map::VectorMapGpu};
-use anyhow::{Context as _, Result};
-use dwemer_poolrooms::water::Engine;
-use egui_wgpu::{RenderState, RendererOptions, ScreenDescriptor, WgpuConfiguration, wgpu};
+//! Provisional native host extracted under Trailgen's acceptance contract.
+//!
+//! This crate owns only the winit, egui, wgpu, Poolrooms-water, and optional
+//! post-present witness lifecycle. Product chrome and domain behavior remain
+//! in the application. Its name and repository are deliberately provisional
+//! until a second application proves the same boundary.
+
+use anyhow::{Context as _, Result, bail};
+use dwemer_poolrooms::water::{Engine, Frame as WaterFrame};
+use egui_wgpu::{
+    RenderState, Renderer, RendererOptions, ScreenDescriptor, WgpuConfiguration, wgpu,
+};
 use egui_winit::winit::{
     application::ApplicationHandler,
     dpi::{LogicalSize, PhysicalSize},
@@ -9,19 +17,66 @@ use egui_winit::winit::{
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     window::{Window, WindowAttributes},
 };
+#[cfg(feature = "egui-test")]
+use serde::Serialize;
 use std::{
     sync::{Arc, Mutex, MutexGuard},
     time::Instant,
 };
 
-const WINDOW_SIZE: LogicalSize<f64> = LogicalSize::new(1_440.0, 920.0);
+/// Stable top-level window identity and initial geometry.
+#[derive(Clone, Copy, Debug)]
+pub struct WindowSpec {
+    pub title: &'static str,
+    pub initial_size: [f64; 2],
+}
+
+impl WindowSpec {
+    #[must_use]
+    pub const fn new(title: &'static str, initial_size: [f64; 2]) -> Self {
+        Self {
+            title,
+            initial_size,
+        }
+    }
+}
+
+/// The narrow product seam admitted by the native host.
+pub trait NativeApp {
+    const WINDOW: WindowSpec;
+
+    /// Build one ordinary product UI frame.
+    fn draw(&mut self, ui: &mut egui::Ui);
+
+    /// Commit work deliberately deferred until the frame boundary.
+    fn commit_frame(&mut self) -> bool;
+
+    /// Describe Poolrooms water composition for the frame.
+    fn water(
+        &mut self,
+        ctx: &egui::Context,
+        pixels_per_point: f32,
+        tooltip_rects: &[egui::Rect],
+    ) -> WaterFrame;
+
+    /// Install application-owned wgpu callback resources.
+    fn register_gpu(renderer: &mut Renderer, device: &wgpu::Device, format: wgpu::TextureFormat);
+
+    #[cfg(feature = "egui-test")]
+    type Observation: Serialize;
+
+    /// Project the smallest useful one-way acceptance observation.
+    #[cfg(feature = "egui-test")]
+    fn observe(&self, text_edit_focused: bool) -> Self::Observation;
+}
 
 #[derive(Clone, Copy, Debug)]
 struct Spark;
 
 type Alarm = Arc<Mutex<Option<Instant>>>;
 
-pub fn run(ctx: egui::Context, app: Workbench) -> Result<()> {
+/// Run one native application until its sole top-level window closes.
+pub fn run<A: NativeApp>(ctx: egui::Context, app: A) -> Result<()> {
     let event_loop = EventLoop::<Spark>::with_user_event()
         .build()
         .context("build event loop")?;
@@ -32,19 +87,20 @@ pub fn run(ctx: egui::Context, app: Workbench) -> Result<()> {
     let witness = egui_tester_witness::Publisher::from_env().context("arm egui-tester witness")?;
     #[cfg(feature = "egui-test")]
     if witness.is_some() {
-        crate::witness::install(&ctx);
+        install_witness(&ctx);
     }
-    event_loop
-        .run_app(&mut Boiler {
-            ctx,
-            app,
-            alarm,
-            rig: None,
-            force_redraw: false,
-            #[cfg(feature = "egui-test")]
-            witness,
-        })
-        .context("run event loop")
+    let mut shell = Shell {
+        ctx,
+        app,
+        alarm,
+        rig: None,
+        force_redraw: false,
+        fault: None,
+        #[cfg(feature = "egui-test")]
+        witness,
+    };
+    event_loop.run_app(&mut shell).context("run event loop")?;
+    shell.fault.map_or(Ok(()), Err)
 }
 
 fn arm_repaints(ctx: &egui::Context, alarm: Alarm, proxy: EventLoopProxy<Spark>) {
@@ -68,20 +124,21 @@ fn lock_alarm(alarm: &Alarm) -> MutexGuard<'_, Option<Instant>> {
     }
 }
 
-struct Boiler {
+struct Shell<A> {
     ctx: egui::Context,
-    app: Workbench,
+    app: A,
     alarm: Alarm,
     rig: Option<Rig>,
     force_redraw: bool,
+    fault: Option<anyhow::Error>,
     #[cfg(feature = "egui-test")]
     witness: Option<egui_tester_witness::Publisher>,
 }
 
-impl Boiler {
-    fn paint(&mut self) {
+impl<A: NativeApp> Shell<A> {
+    fn paint(&mut self) -> Result<()> {
         let Some(rig) = self.rig.as_mut() else {
-            return;
+            return Ok(());
         };
         #[cfg(feature = "egui-test")]
         let pulse = self
@@ -89,7 +146,7 @@ impl Boiler {
             .as_ref()
             .map(|_| egui_tester_witness::FramePulse::begin());
         let raw_input = rig.input.take_egui_input(&rig.window);
-        let output = self.ctx.run_ui(raw_input, |ui| self.app.pulse(ui));
+        let output = self.ctx.run_ui(raw_input, |ui| self.app.draw(ui));
         rig.input
             .handle_platform_output(&rig.window, output.platform_output);
         #[cfg(feature = "egui-test")]
@@ -98,7 +155,7 @@ impl Boiler {
         let tooltip_rects = tooltip_rects(&self.ctx);
         let water = self
             .app
-            .water_frame(&self.ctx, output.pixels_per_point, &tooltip_rects);
+            .water(&self.ctx, output.pixels_per_point, &tooltip_rects);
         if water.wants_repaint() {
             rig.window.request_redraw();
         }
@@ -107,25 +164,25 @@ impl Boiler {
             &output.textures_delta,
             output.pixels_per_point,
             &water,
-        );
+        )?;
         #[cfg(not(feature = "egui-test"))]
         let _ = presented;
         #[cfg(feature = "egui-test")]
         if presented && let (Some(publisher), Some(observed)) = (&mut self.witness, observed) {
             let presentation = egui_tester_witness::ProductInstant::now();
-            let pending = crate::witness::stage(
+            let pending = stage_witness(
                 &self.ctx,
                 observed,
                 self.ctx.cumulative_frame_nr(),
                 output.pixels_per_point,
-                self.app.witness_state(self.ctx.text_edit_focused()),
+                self.app.observe(self.ctx.text_edit_focused()),
             )
-            .unwrap_or_else(|err| panic!("could not stage egui-tester witness: {err}"));
+            .context("stage egui-tester witness")?;
             let _presentation = publisher
                 .present_at(pending, presentation)
-                .unwrap_or_else(|err| panic!("could not publish egui-tester witness: {err}"));
+                .context("publish egui-tester witness")?;
         }
-        if self.app.settle() {
+        if self.app.commit_frame() {
             self.force_redraw = true;
         }
         if let Some(viewport) = output.viewport_output.get(&egui::ViewportId::ROOT) {
@@ -135,6 +192,7 @@ impl Boiler {
                 advance_alarm(&self.alarm, when);
             }
         }
+        Ok(())
     }
 
     fn tend_alarm(&self) {
@@ -153,6 +211,13 @@ impl Boiler {
             rig.window.request_redraw();
         }
     }
+
+    fn abort(&mut self, event_loop: &ActiveEventLoop, error: anyhow::Error) {
+        if self.fault.is_none() {
+            self.fault = Some(error);
+        }
+        event_loop.exit();
+    }
 }
 
 fn tooltip_rects(ctx: &egui::Context) -> Vec<egui::Rect> {
@@ -166,17 +231,14 @@ fn tooltip_rects(ctx: &egui::Context) -> Vec<egui::Rect> {
     })
 }
 
-impl ApplicationHandler<Spark> for Boiler {
+impl<A: NativeApp> ApplicationHandler<Spark> for Shell<A> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.rig.is_some() {
             return;
         }
-        match Rig::raise(event_loop, &self.ctx) {
+        match Rig::raise::<A>(event_loop, &self.ctx) {
             Ok(rig) => self.rig = Some(rig),
-            Err(err) => {
-                eprintln!("could not raise trailgen window: {err:#}");
-                event_loop.exit();
-            }
+            Err(error) => self.abort(event_loop, error.context("raise native window")),
         }
     }
 
@@ -202,7 +264,9 @@ impl ApplicationHandler<Spark> for Boiler {
                 return;
             }
             WindowEvent::RedrawRequested => {
-                self.paint();
+                if let Err(error) = self.paint() {
+                    self.abort(event_loop, error);
+                }
                 return;
             }
             WindowEvent::Resized(size) => {
@@ -245,13 +309,18 @@ struct Rig {
 }
 
 impl Rig {
-    fn raise(event_loop: &ActiveEventLoop, ctx: &egui::Context) -> Result<Self> {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "winit reports DPI as f64 while egui's scale contract is f32"
+    )]
+    fn raise<A: NativeApp>(event_loop: &ActiveEventLoop, ctx: &egui::Context) -> Result<Self> {
+        let [width, height] = A::WINDOW.initial_size;
         let window = Arc::new(
             event_loop
                 .create_window(
                     WindowAttributes::default()
-                        .with_title("trailgen · trail workbench")
-                        .with_inner_size(WINDOW_SIZE),
+                        .with_title(A::WINDOW.title)
+                        .with_inner_size(LogicalSize::new(width, height)),
                 )
                 .context("create window")?,
         );
@@ -275,15 +344,7 @@ impl Rig {
             RendererOptions::default(),
         ))
         .context("create wgpu render state")?;
-        {
-            let mut renderer = gpu.renderer.write();
-            let _prior = renderer
-                .callback_resources
-                .insert(VectorMapGpu::new(&gpu.device, gpu.target_format));
-            let _prior = renderer
-                .callback_resources
-                .insert(TrailMapGpu::new(&gpu.device, gpu.target_format));
-        }
+        A::register_gpu(&mut gpu.renderer.write(), &gpu.device, gpu.target_format);
         let size = window.inner_size();
         let mut config = surface
             .get_default_config(&gpu.adapter, size.width.max(1), size.height.max(1))
@@ -323,8 +384,8 @@ impl Rig {
         primitives: &[egui::ClippedPrimitive],
         delta: &egui::TexturesDelta,
         pixels_per_point: f32,
-        water: &dwemer_poolrooms::water::Frame,
-    ) -> bool {
+        water: &WaterFrame,
+    ) -> Result<bool> {
         let screen = ScreenDescriptor {
             size_in_pixels: [self.config.width, self.config.height],
             pixels_per_point,
@@ -333,7 +394,7 @@ impl Rig {
             .gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("trailgen-boiler"),
+                label: Some("native-app-shell"),
             });
         let user_commands = {
             let mut renderer = self.gpu.renderer.write();
@@ -353,17 +414,16 @@ impl Rig {
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
             wgpu::CurrentSurfaceTexture::Timeout => {
                 self.window.request_redraw();
-                return false;
+                return Ok(false);
             }
-            wgpu::CurrentSurfaceTexture::Occluded => return false,
+            wgpu::CurrentSurfaceTexture::Occluded => return Ok(false),
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                 self.surface.configure(&self.gpu.device, &self.config);
                 self.window.request_redraw();
-                return false;
+                return Ok(false);
             }
             wgpu::CurrentSurfaceTexture::Validation => {
-                eprintln!("surface texture validation failure");
-                return false;
+                bail!("surface texture validation failure");
             }
         };
         let surface_view = frame
@@ -381,7 +441,7 @@ impl Rig {
             };
             let mut pass = encoder
                 .begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("trailgen-egui"),
+                    label: Some("native-app-egui"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: target,
                         resolve_target: None,
@@ -423,10 +483,58 @@ impl Rig {
         }
         self.window.pre_present_notify();
         frame.present();
-        let mut renderer = self.gpu.renderer.write();
-        for id in &delta.free {
-            renderer.free_texture(id);
+        {
+            let mut renderer = self.gpu.renderer.write();
+            for id in &delta.free {
+                renderer.free_texture(id);
+            }
         }
-        true
+        Ok(true)
     }
+}
+
+#[cfg(feature = "egui-test")]
+fn install_witness(ctx: &egui::Context) {
+    egui_tester_witness::egui::install(ctx);
+    ctx.on_begin_pass(
+        "clear poolrooms witness anchors",
+        Arc::new(|ui| {
+            drop(dwemer_poolrooms::instrumentation::take(ui.ctx()));
+        }),
+    );
+}
+
+#[cfg(feature = "egui-test")]
+fn stage_witness<T: Serialize>(
+    ctx: &egui::Context,
+    observed: egui_tester_witness::FrameObservation,
+    frame: u64,
+    pixels_per_point: f32,
+    state: T,
+) -> egui_tester_witness::Result<egui_tester_witness::PendingFrame<T>> {
+    use egui_tester_witness::Anchor;
+
+    let anchors = egui_tester_witness::egui::take(ctx, pixels_per_point)?;
+    let poolrooms = dwemer_poolrooms::instrumentation::take(ctx)
+        .into_iter()
+        .map(|anchor| {
+            Anchor::logical(
+                anchor.name,
+                [
+                    anchor.rect.min.x,
+                    anchor.rect.min.y,
+                    anchor.rect.max.x,
+                    anchor.rect.max.y,
+                ],
+                pixels_per_point,
+            )
+        })
+        .collect::<egui_tester_witness::Result<Vec<_>>>()?;
+    egui_tester_witness::PendingFrame::forge_at(
+        observed,
+        frame,
+        pixels_per_point,
+        anchors.into_iter().chain(poolrooms),
+        state,
+    )
 }

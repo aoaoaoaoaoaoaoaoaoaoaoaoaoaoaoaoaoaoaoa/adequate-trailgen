@@ -1,4 +1,4 @@
-use super::{Event, SurveyRegion, fingerprint, read_bounded, write_atomic};
+use super::{Event, SurveyRegion, fingerprint, http_client, read_bounded, write_atomic};
 use anyhow::{Context as _, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -131,10 +131,7 @@ pub fn acquire(
                 tile.y
             );
             let client = client.get_or_insert_with(|| {
-                reqwest::blocking::Client::builder()
-                    .timeout(Duration::from_mins(1))
-                    .user_agent(concat!("trailgen/", env!("CARGO_PKG_VERSION")))
-                    .build()
+                http_client("terrain", Duration::from_mins(1))
                     .expect("static terrain client configuration is valid")
             });
             let response = client

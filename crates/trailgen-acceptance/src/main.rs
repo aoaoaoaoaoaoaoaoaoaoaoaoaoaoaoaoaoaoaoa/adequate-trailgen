@@ -1,5 +1,8 @@
 mod fixture;
 mod harness;
+mod interactions;
+mod observation;
+mod performance;
 mod stories;
 
 use std::{env, path::PathBuf};

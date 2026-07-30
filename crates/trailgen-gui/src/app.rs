@@ -26,6 +26,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+use trailgen_contract::Target;
 use trailgen_core::{
     Coord, EdgeDisposition, EdgeEdicts, EdgeIndex, LoopConstraints, RouteMetrics, RouteShape,
     RoutingLaw, SearchParams, SearchProgress, SearchStage, SolverKind, SupportPoint, Trail,
@@ -622,6 +623,7 @@ impl TrailApp {
             WorkbenchView::Edit(_) => ("edit", None),
         };
         crate::witness::State {
+            contract: trailgen_contract::UI_FINGERPRINT,
             workspace: "trail",
             view,
             focused_trail,
@@ -805,7 +807,7 @@ impl TrailApp {
             chrome::command_button("DRAW A TRAIL", false)
                 .min_size(vec2(ui.available_width(), 30.0)),
         );
-        crate::witness::anchor(ui, "search.manual", manual.rect);
+        crate::witness::anchor(ui, Target::Manual, manual.rect);
         chrome::tension(ui, &manual);
         if manual.clicked() {
             self.begin_editor(EditorOrigin::New, None);
@@ -878,11 +880,7 @@ impl TrailApp {
         };
         crate::witness::anchor(
             ui,
-            if striking {
-                "search.stop"
-            } else {
-                "search.find"
-            },
+            if striking { Target::Stop } else { Target::Find },
             find.rect,
         );
         chrome::tension(ui, &find);
@@ -978,7 +976,7 @@ impl TrailApp {
                     27.0,
                 )),
             );
-            crate::witness::anchor(ui, "search.boundary", draw.rect);
+            crate::witness::anchor(ui, Target::Boundary, draw.rect);
             chrome::tension(ui, &draw);
             if draw.clicked() {
                 if drawing {
@@ -1125,7 +1123,7 @@ impl TrailApp {
             chrome::command_button("SAVE TRAIL · CTRL+S", ready)
                 .min_size(vec2(ui.available_width(), 34.0)),
         );
-        crate::witness::anchor(ui, "editor.save", save.rect);
+        crate::witness::anchor(ui, Target::EditorSave, save.rect);
         chrome::tension(ui, &save);
         if save.clicked() {
             self.save_editor();
@@ -1149,7 +1147,7 @@ impl TrailApp {
         let closeable = matches!(editor.shape, RouteShape::Open | RouteShape::Loop);
         if closeable {
             let close_loop = chrome::Checkbox::new(&mut looped, "CLOSE LOOP").show(ui);
-            crate::witness::anchor(ui, "editor.close-loop", close_loop.rect);
+            crate::witness::anchor(ui, Target::CloseLoop, close_loop.rect);
             self.water.checkbox(&close_loop);
             if close_loop.changed() {
                 if looped {
@@ -1179,7 +1177,7 @@ impl TrailApp {
             chrome::command_button("REVERSE DIRECTION", false)
                 .min_size(vec2(ui.available_width(), 27.0)),
         );
-        crate::witness::anchor(ui, "editor.reverse", reverse.rect);
+        crate::witness::anchor(ui, Target::Reverse, reverse.rect);
         chrome::tension(ui, &reverse);
         if reverse.clicked() {
             self.reverse_editor();
@@ -1495,7 +1493,7 @@ impl TrailApp {
         let mut rename_action = None;
         let _row = ui.horizontal(|ui| {
             let back = chrome::command(ui, "← BACK", false);
-            crate::witness::anchor(ui, "focus.back", back.rect);
+            crate::witness::anchor(ui, Target::FocusBack, back.rect);
             if back.clicked() {
                 action = Some(FocusAction::Close(back.rect));
             }
@@ -1531,12 +1529,12 @@ impl TrailApp {
             match self.view.focus() {
                 Some(Focus::Candidate { .. }) => {
                     let edit = chrome::command(ui, "EDIT TRAIL", false);
-                    crate::witness::anchor(ui, "focus.edit", edit.rect);
+                    crate::witness::anchor(ui, Target::FocusEdit, edit.rect);
                     if edit.clicked() {
                         action = Some(FocusAction::Edit(edit.rect));
                     }
                     let save = chrome::command(ui, "SAVE TRAIL", true);
-                    crate::witness::anchor(ui, "focus.save", save.rect);
+                    crate::witness::anchor(ui, Target::FocusSave, save.rect);
                     if save.clicked() {
                         action = Some(FocusAction::Save(save.rect));
                     }
@@ -1549,7 +1547,7 @@ impl TrailApp {
                         false,
                     )
                     .on_disabled_hover_text("This legacy trail has no support points");
-                    crate::witness::anchor(ui, "focus.edit", edit.rect);
+                    crate::witness::anchor(ui, Target::FocusEdit, edit.rect);
                     if edit.clicked() {
                         action = Some(FocusAction::Edit(edit.rect));
                     }
@@ -1583,7 +1581,7 @@ impl TrailApp {
             let id = saved_id?;
             let rename =
                 chrome::command(ui, "✎", false).on_hover_text("Rename this saved trail · F2");
-            crate::witness::anchor(ui, "focus.rename", rename.rect);
+            crate::witness::anchor(ui, Target::FocusRename, rename.rect);
             return rename
                 .clicked()
                 .then(|| RenameAction::Begin(id.clone(), rename.rect));
@@ -1597,7 +1595,7 @@ impl TrailApp {
                 .text_color(chrome::TEXT)
                 .char_limit(80),
         );
-        crate::witness::anchor(ui, "focus.rename.field", edit.rect);
+        crate::witness::anchor(ui, Target::RenameField, edit.rect);
         if draft.seize_focus {
             edit.request_focus();
             draft.seize_focus = false;
@@ -1768,7 +1766,7 @@ impl TrailApp {
                 ui.available_height() - 3.0,
                 self.profile_cursor.locked_m,
             );
-            crate::witness::anchor(ui, "profile.canvas", probe.response.rect);
+            crate::witness::anchor(ui, Target::Profile, probe.response.rect);
             chrome::shallow_tension(ui, &probe.response);
             let active_m = self.profile_cursor.resolve(
                 probe.hovered_m,
@@ -1801,7 +1799,7 @@ impl TrailApp {
     fn map(&mut self, ui: &mut egui::Ui) {
         let (rect, response) =
             ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
-        crate::witness::anchor(ui, "map.canvas", response.rect);
+        crate::witness::anchor(ui, Target::Map, response.rect);
         self.map_rect = rect;
         self.water.begin(Domain::shelf(rect));
         self.apply_fit(rect);

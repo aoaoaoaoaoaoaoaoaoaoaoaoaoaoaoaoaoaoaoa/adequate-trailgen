@@ -341,10 +341,7 @@ impl PlaceIndex for Nominatim {
     fn locate_us(&self, query: &str) -> Result<Place> {
         let query = query.trim();
         ensure!(!query.is_empty(), "enter a US place or trailhead");
-        let replies = reqwest::blocking::Client::builder()
-            .timeout(self.timeout)
-            .user_agent(user_agent("place-search"))
-            .build()
+        let replies = http_client("place-search", self.timeout)
             .context("build OpenStreetMap place-search client")?
             .get(&self.endpoint)
             .query(&[
@@ -426,10 +423,7 @@ impl Overpass {
             "trail-data bounds span {area_deg2:.2} square degrees; limit is {MAX_REGION_DEG2:.2}"
         );
         let query = self.query(profile, bounds);
-        let client = reqwest::blocking::Client::builder()
-            .timeout(self.timeout)
-            .user_agent(user_agent("trail-source"))
-            .build()
+        let client = http_client("trail-source", self.timeout)
             .context("build OpenStreetMap trail-source client")?;
         let mut faults = Vec::new();
         for endpoint in &self.endpoints {
@@ -1993,6 +1987,29 @@ fn user_agent(task: &str) -> String {
         env!("CARGO_PKG_VERSION"),
         env!("CARGO_PKG_REPOSITORY")
     )
+}
+
+fn http_client(task: &str, timeout: Duration) -> Result<reqwest::blocking::Client> {
+    let builder = reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .user_agent(user_agent(task));
+    #[cfg(unix)]
+    let builder = if let Some(raw) = env::var_os("TRAILGEN_HTTP_UNIX_SOCKET") {
+        let socket = PathBuf::from(raw);
+        ensure!(
+            socket.is_absolute(),
+            "TRAILGEN_HTTP_UNIX_SOCKET must name an absolute path"
+        );
+        builder.unix_socket(socket)
+    } else {
+        builder
+    };
+    #[cfg(not(unix))]
+    ensure!(
+        env::var_os("TRAILGEN_HTTP_UNIX_SOCKET").is_none(),
+        "TRAILGEN_HTTP_UNIX_SOCKET is unavailable on this platform"
+    );
+    builder.build().context("build HTTP provider client")
 }
 
 fn fingerprint(bytes: &[u8]) -> SourceFingerprint {

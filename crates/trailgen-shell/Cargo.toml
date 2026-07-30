@@ -1,0 +1,29 @@
+[package]
+name = "trailgen-shell"
+version = "0.1.0"
+description = "Private incubation of the shared native Poolrooms application host."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version = "1.96"
+publish = false
+
+[features]
+egui-test = [
+  "dep:egui-tester-witness",
+  "dep:serde",
+  "dwemer_poolrooms/instrumentation",
+]
+
+[dependencies]
+anyhow.workspace = true
+dwemer_poolrooms.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+egui-winit.workspace = true
+egui-tester-witness = { workspace = true, optional = true, features = ["egui"] }
+pollster.workspace = true
+serde = { workspace = true, optional = true }
+
+[lints]
+workspace = true
