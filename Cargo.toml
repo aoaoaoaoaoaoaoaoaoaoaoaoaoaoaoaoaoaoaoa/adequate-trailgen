@@ -24,8 +24,6 @@ dwemer_poolrooms = "0.7.0"
 egui = "=0.34.3"
 egui-wgpu = "=0.34.3"
 egui-winit = "=0.34.3"
-egui-tester = { git = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester", rev = "2e9746514828e7b943b0892c060835bd5b72e3e8", version = "0.2.0" }
-egui-tester-witness = { git = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester", rev = "2e9746514828e7b943b0892c060835bd5b72e3e8", version = "0.2.0" }
 fast-mvt = { version = "0.6.1", default-features = false, features = ["reader"] }
 futures-util = "0.3.31"
 geo-types = "0.7.19"
@@ -53,6 +51,16 @@ trailgen-core = { path = "crates/trailgen-core" }
 trailgen-data = { path = "crates/trailgen-data" }
 trailgen-gui = { path = "crates/trailgen-gui" }
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
+
+[workspace.dependencies.egui-tester]
+git = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester"
+rev = "87d5d3548be054f0ccbe26de07687544bd12546a"
+version = "0.3.0"
+
+[workspace.dependencies.egui-tester-witness]
+git = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester"
+rev = "87d5d3548be054f0ccbe26de07687544bd12546a"
+version = "0.3.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

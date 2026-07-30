@@ -56,10 +56,12 @@ scripts/test-gui
 
 The standing Harriman cases replay two user-owned CSV traces through route-derived graphs and require deterministic generation, executable artifact verification, and at least 99.5% point survival within 2 m. A separate 2026-07-21 public-source probe found complete current-OSM geometry and topology coverage for both traces: South Lows remained within 2.74 m and West within 5.23 m, with no disconnected transition. USGS enriched the surrounding corpus but did not improve either owned trace.
 
-`scripts/test-gui` is the hermetic native acceptance gate. It runs the actual
-optimized binary on a private X server, renames a saved trail through the
-pencil control, drags a support pin onto another graph branch, enforces
-input-to-presented-frame budgets, and verifies durable route geometry.
+`scripts/test-gui` is the hermetic native acceptance gate. Four complete user
+stories exercise GUI project creation and provider acquisition, saved-trail
+refinement with undo/redo and restart, twelve-candidate comparison under
+cadence budgets, and manual loop drawing with profile interaction. The harness
+drives the optimized binary through native input and adjudicates durable files
+outside its one-way UI witness.
 
 See [installation](docs/installation.md), [model](docs/model.md), [configuration](docs/config.md), [source adapters](docs/source-adapters.md), and [known limitations](docs/limitations.md).
 

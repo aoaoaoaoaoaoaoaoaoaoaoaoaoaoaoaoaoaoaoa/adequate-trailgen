@@ -266,19 +266,19 @@ enum Cmd {
         /// Maximum route descent in meters.
         #[arg(long)]
         max_descent_m: Option<f64>,
-        /// Maximum road or pavement distance fraction in [0,1].
+        /// Maximum road or pavement distance fraction in 0–1.
         #[arg(long)]
         max_road_fraction: Option<f64>,
-        /// Maximum low-confidence edge distance fraction in [0,1].
+        /// Maximum low-confidence edge distance fraction in 0–1.
         #[arg(long)]
         max_low_confidence_fraction: Option<f64>,
-        /// Maximum restricted/closed/private access distance fraction in [0,1].
+        /// Maximum restricted/closed/private access distance fraction in 0–1.
         #[arg(long)]
         max_restricted_access_fraction: Option<f64>,
         /// Allowed measured route shape; repeat for multiple shapes.
         #[arg(long = "shape", value_parser = parse_shape)]
         shape: Vec<RouteShape>,
-        /// Maximum repeated-edge distance fraction in [0,1].
+        /// Maximum repeated-edge distance fraction in 0–1.
         #[arg(long)]
         max_repeated_edge_fraction: Option<f64>,
         /// Terrain bucket that must not appear in emitted routes; repeatable.

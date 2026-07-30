@@ -106,27 +106,28 @@ Every material renderer change must be exercised in at least these states:
 4. pan and zoom across at least one detail-band boundary;
 5. return to the prior viewport.
 
-Use the isolated X11 harness; never test against the live desktop. Set
-`TRAILGEN_PROFILE_FRAMES=/tmp/frames.csv` for per-frame interval, paint time,
-shape count, and primitive count. Set `TRAILGEN_PROFILE_TRAILS=1` for trail
-forge and GPU upload telemetry.
-
-For the standing candidate trace:
+Use the isolated native acceptance harness; never test against the live
+desktop:
 
 ```sh
-scripts/profile-candidates /tmp/trailgen-profile /path/to/project
+scripts/test-gui
 ```
 
-The script raises its own private lavapipe/Xvfb session and writes timing,
-telemetry, and screenshots beneath the named output directory.
+Story 3 forges a deterministic dense graph, obtains twelve candidates, pans
+while search is active, then sustains pan and zoom across the full portfolio.
+Its lossless frame journal records frame begin, semantic observation,
+presentation, and post-present retirement. `CadenceBudget` removes witness tax
+and rejects median, p95, worst, and p95 paint regressions. The story also
+focuses one candidate and proves Back restores the settled viewport exactly.
 
-Record p50, p95, and worst frame paint time, egui shape count, uploaded bytes,
-resident bytes, and the decisive screenshot. Compare a settled repeated trace,
-not a lucky frame. A change is not faster if it reduces candidates, hides a
-layer, weakens detail, changes the viewport, or moves work outside the measured
-interval.
+The canonical host-GPU contract is p50 cadence ≤ 40 ms, p95 cadence ≤ 50 ms,
+worst cadence ≤ 180 ms, and p95 product frame work ≤ 40 ms. A passing run prints
+the observed distributions. Failure bundles retain the action transcript,
+last witness, frame journal, application logs, private product state, and
+latest screenshot beneath `TRAILGEN_ACCEPTANCE_ARTIFACTS`.
 
-The standing many-result dogfood workload is the saved broad Harriman loop
-search in the `nj-nys` project. It currently returns twelve ranked candidates.
-Its result view must keep egui shape count proportional to UI and visible
-thumbnails, never to the combined route geometry.
+Compare a settled repeated trace, not a lucky frame. A change is not faster if
+it reduces candidates, hides a layer, weakens detail, changes the viewport, or
+moves work outside the measured interval. The result view must keep CPU and
+egui work proportional to visible UI and resident tiles, never to combined
+route geometry.

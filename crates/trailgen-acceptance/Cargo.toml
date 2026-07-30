@@ -11,6 +11,8 @@ publish = false
 [dependencies]
 egui-tester.workspace = true
 num-traits.workspace = true
+pmtiles.workspace = true
+png.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

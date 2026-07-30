@@ -10,10 +10,8 @@ use egui_winit::winit::{
     window::{Window, WindowAttributes},
 };
 use std::{
-    fs::File,
-    io::{BufWriter, Write as _},
     sync::{Arc, Mutex, MutexGuard},
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::Instant,
 };
 
 const WINDOW_SIZE: LogicalSize<f64> = LogicalSize::new(1_440.0, 920.0);
@@ -32,6 +30,10 @@ pub fn run(ctx: egui::Context, app: Workbench) -> Result<()> {
     arm_repaints(&ctx, Arc::clone(&alarm), event_loop.create_proxy());
     #[cfg(feature = "egui-test")]
     let witness = egui_tester_witness::Publisher::from_env().context("arm egui-tester witness")?;
+    #[cfg(feature = "egui-test")]
+    if witness.is_some() {
+        crate::witness::install(&ctx);
+    }
     event_loop
         .run_app(&mut Boiler {
             ctx,
@@ -39,7 +41,6 @@ pub fn run(ctx: egui::Context, app: Workbench) -> Result<()> {
             alarm,
             rig: None,
             force_redraw: false,
-            frames: FrameLedger::from_env(),
             #[cfg(feature = "egui-test")]
             witness,
         })
@@ -73,29 +74,26 @@ struct Boiler {
     alarm: Alarm,
     rig: Option<Rig>,
     force_redraw: bool,
-    frames: FrameLedger,
     #[cfg(feature = "egui-test")]
     witness: Option<egui_tester_witness::Publisher>,
 }
 
 impl Boiler {
     fn paint(&mut self) {
-        let begun = self.frames.begin();
         let Some(rig) = self.rig.as_mut() else {
             return;
         };
         #[cfg(feature = "egui-test")]
-        crate::witness::reset(&self.ctx);
+        let pulse = self
+            .witness
+            .as_ref()
+            .map(|_| egui_tester_witness::FramePulse::begin());
         let raw_input = rig.input.take_egui_input(&rig.window);
         let output = self.ctx.run_ui(raw_input, |ui| self.app.pulse(ui));
         rig.input
             .handle_platform_output(&rig.window, output.platform_output);
-        let shape_count = output.shapes.len();
         #[cfg(feature = "egui-test")]
-        let observed = self
-            .witness
-            .as_ref()
-            .map(|_| egui_tester_witness::ProductInstant::now());
+        let observed = pulse.map(egui_tester_witness::FramePulse::observe);
         let primitives = self.ctx.tessellate(output.shapes, output.pixels_per_point);
         let tooltip_rects = tooltip_rects(&self.ctx);
         let water = self
@@ -127,7 +125,6 @@ impl Boiler {
                 .present_at(pending, presentation)
                 .unwrap_or_else(|err| panic!("could not publish egui-tester witness: {err}"));
         }
-        self.frames.finish(begun, shape_count, primitives.len());
         if self.app.settle() {
             self.force_redraw = true;
         }
@@ -235,76 +232,6 @@ impl ApplicationHandler<Spark> for Boiler {
         self.tend_alarm();
         let deadline = *lock_alarm(&self.alarm);
         event_loop.set_control_flow(deadline.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
-    }
-}
-
-#[derive(Clone, Copy)]
-struct FrameStamp {
-    begun: Instant,
-    unix_us: u128,
-    interval_us: u128,
-}
-
-#[derive(Default)]
-struct FrameLedger {
-    output: Option<BufWriter<File>>,
-    prior: Option<Instant>,
-}
-
-impl FrameLedger {
-    fn from_env() -> Self {
-        let output = std::env::var_os("TRAILGEN_PROFILE_FRAMES").map(|path| {
-            let file = File::create(&path).unwrap_or_else(|error| {
-                panic!(
-                    "cannot create frame ledger {}: {error}",
-                    std::path::Path::new(&path).display()
-                )
-            });
-            let mut output = BufWriter::new(file);
-            writeln!(output, "unix_us,interval_us,paint_us,shapes,primitives")
-                .expect("frame ledger must accept its header");
-            output.flush().expect("frame ledger header must reach disk");
-            output
-        });
-        Self {
-            output,
-            prior: None,
-        }
-    }
-
-    fn begin(&mut self) -> Option<FrameStamp> {
-        self.output.as_ref()?;
-        let begun = Instant::now();
-        let interval_us = self
-            .prior
-            .replace(begun)
-            .map_or(0, |prior| begun.duration_since(prior).as_micros());
-        let unix_us = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_micros();
-        Some(FrameStamp {
-            begun,
-            unix_us,
-            interval_us,
-        })
-    }
-
-    fn finish(&mut self, stamp: Option<FrameStamp>, shapes: usize, primitives: usize) {
-        let (Some(stamp), Some(output)) = (stamp, self.output.as_mut()) else {
-            return;
-        };
-        writeln!(
-            output,
-            "{},{},{},{},{}",
-            stamp.unix_us,
-            stamp.interval_us,
-            stamp.begun.elapsed().as_micros(),
-            shapes,
-            primitives,
-        )
-        .expect("frame ledger must accept samples");
-        output.flush().expect("frame ledger sample must reach disk");
     }
 }
 

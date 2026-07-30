@@ -9,3 +9,7 @@ the many-candidate dogfood trace and its visual states have been checked.
 
 Before changing workbench navigation, tools, search sessions, overlays, or
 persistence, read and obey [spec/UI_STATE_MODEL.md](spec/UI_STATE_MODEL.md).
+
+Before changing a critical GUI behavior or its witness surface, read and obey
+[spec/GUI_ACCEPTANCE.md](spec/GUI_ACCEPTANCE.md). Acceptance scenarios are
+full user stories; xdotool choreography is forbidden.

@@ -211,9 +211,7 @@ impl Workbench {
         match &self.mode {
             WorkbenchMode::Project { workspace, .. } => match workspace {
                 ProjectWorkspace::Trail(app) => app.witness_state(text_edit_focused),
-                ProjectWorkspace::Survey(_) => {
-                    crate::witness::State::empty("survey", "browse", text_edit_focused)
-                }
+                ProjectWorkspace::Survey(project) => project.witness_state(text_edit_focused),
             },
             WorkbenchMode::Projects(_) => {
                 crate::witness::State::empty("projects", "projects", text_edit_focused)
@@ -287,6 +285,7 @@ struct SurveyWorkbench {
     observed_slate: Slate,
     slate_dirty: Option<Instant>,
     water: Surface,
+    map_rect: egui::Rect,
 }
 
 impl SurveyWorkbench {
@@ -328,6 +327,7 @@ impl SurveyWorkbench {
             observed_slate: slate,
             slate_dirty: None,
             water: forge_water(),
+            map_rect: egui::Rect::ZERO,
         };
         if !offline && !project.regions.is_empty() {
             project.strike(ctx, TrailDataMutation::Refresh)?;
@@ -385,6 +385,7 @@ impl SurveyWorkbench {
             )
             .min_size(vec2(ui.available_width(), 34.0)),
         );
+        crate::witness::anchor(ui, "survey.add-area", select.rect);
         chrome::tension(ui, &select);
         if select.clicked() {
             if selecting {
@@ -481,6 +482,8 @@ impl SurveyWorkbench {
     fn map(&mut self, ui: &mut egui::Ui) {
         let (rect, response) =
             ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
+        crate::witness::anchor(ui, "survey.map", response.rect);
+        self.map_rect = rect;
         if self.fit_regions {
             self.viewport = map::fit_coords(
                 self.regions.iter().flat_map(|region| {
@@ -562,6 +565,26 @@ impl SurveyWorkbench {
         "Updating trails…".clone_into(&mut self.corpus_status);
         self.corpus = Some(TrailData::spawn(ctx.clone(), self.root.clone(), mutation)?);
         Ok(())
+    }
+
+    #[cfg(feature = "egui-test")]
+    fn witness_state(&self, text_edit_focused: bool) -> crate::witness::State {
+        let mut state = crate::witness::State::empty("survey", "browse", text_edit_focused);
+        state.map = self.map_rect.is_positive().then(|| {
+            crate::witness::MapState::forge(
+                self.map_rect,
+                self.viewport.center,
+                map::world_pixels(self.viewport),
+            )
+        });
+        state.survey = Some(crate::witness::SurveyState {
+            regions: self.regions.len(),
+            acquiring: self.corpus.is_some(),
+            drawing: self.scribe.active(),
+            status: self.corpus_status.clone(),
+            fault: self.fault.clone(),
+        });
+        state
     }
 
     fn absorb_corpus(&mut self, action: &mut Option<WorkspaceAction>) {
@@ -750,6 +773,7 @@ impl ProjectDeck {
                 .hint_text("project name · Harriman loops")
                 .text_color(chrome::TEXT),
         );
+        crate::witness::anchor(ui, "projects.new.name", name.rect);
         chrome::tension(ui, &name);
         ui.add_space(5.0);
         let _parent = ui.horizontal(|ui| {
@@ -759,6 +783,7 @@ impl ProjectDeck {
                     .hint_text("parent folder")
                     .text_color(chrome::TEXT),
             );
+            crate::witness::anchor(ui, "projects.new.parent", edit.rect);
             chrome::tension(ui, &edit);
             let browse = ui.add_sized([142.0, 28.0], chrome::command_button("BROWSE…", false));
             chrome::tension(ui, &browse);
@@ -778,6 +803,7 @@ impl ProjectDeck {
         );
         let create =
             create.on_disabled_hover_text("Enter a project name and choose a parent folder.");
+        crate::witness::anchor(ui, "projects.new.create", create.rect);
         chrome::tension(ui, &create);
         if create.clicked()
             || (ready && name.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)))
@@ -803,6 +829,7 @@ impl ProjectDeck {
                     .hint_text("folder containing trailgen.toml")
                     .text_color(chrome::TEXT),
             );
+            crate::witness::anchor(ui, "projects.open.path", edit.rect);
             chrome::tension(ui, &edit);
             if edit.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
                 *action = Some(ProjectAction::Open(PathBuf::from(self.open_root.trim())));
@@ -823,6 +850,7 @@ impl ProjectDeck {
                 chrome::command_button("OPEN PROJECT", true).min_size(vec2(210.0, 34.0)),
             );
             let open = open.on_disabled_hover_text("Choose a project folder first.");
+            crate::witness::anchor(ui, "projects.open", open.rect);
             chrome::tension(ui, &open);
             if open.clicked() {
                 *action = Some(ProjectAction::Open(PathBuf::from(self.open_root.trim())));
@@ -856,6 +884,11 @@ impl ProjectDeck {
                 )
                 .on_hover_text(project.root.display().to_string());
             chrome::tension(ui, &response);
+            crate::witness::anchor(
+                ui,
+                format!("projects.known/{}", project.name),
+                response.rect,
+            );
             if response.clicked() {
                 *action = Some(ProjectAction::Open(project.root.clone()));
             }

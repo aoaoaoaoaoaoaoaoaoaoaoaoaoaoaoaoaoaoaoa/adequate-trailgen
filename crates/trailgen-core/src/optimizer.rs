@@ -26,6 +26,7 @@ pub struct SearchProgress {
 pub trait SearchMonitor {
     fn cancelled(&self) -> bool;
     fn report(&self, progress: SearchProgress);
+    fn preview(&self, _routes: &[Route]) {}
 }
 
 impl SearchMonitor for () {
@@ -409,6 +410,7 @@ struct SearchMeter<'a> {
     explored: usize,
     limit: usize,
     reported: usize,
+    previewed: usize,
 }
 
 impl<'a> SearchMeter<'a> {
@@ -420,22 +422,30 @@ impl<'a> SearchMeter<'a> {
             explored: 0,
             limit,
             reported: 0,
+            previewed: 0,
         }
     }
 
-    fn advance(&mut self, candidates: usize) -> bool {
+    fn advance(&mut self, routes: &[Route]) -> bool {
         if self.explored >= self.limit || self.monitor.cancelled() {
             return false;
         }
+        if routes.len() > self.previewed {
+            self.previewed = routes.len();
+            self.monitor.preview(routes);
+        }
         self.explored += 1;
         if self.explored == 1 || self.explored - self.reported >= Self::REPORT_STRIDE {
-            self.emit(SearchStage::Exploring, candidates);
+            self.emit(SearchStage::Exploring, routes.len());
         }
         true
     }
 
-    fn finish(&mut self, candidates: usize) {
-        self.emit(SearchStage::Ranking, candidates);
+    fn finish(&mut self, routes: &[Route]) {
+        if routes.len() > self.previewed {
+            self.monitor.preview(routes);
+        }
+        self.emit(SearchStage::Ranking, routes.len());
     }
 
     fn emit(&mut self, stage: SearchStage, candidates: usize) {
@@ -497,7 +507,7 @@ impl LoopHunter {
         };
 
         while let Some(state) = stack.pop() {
-            if !meter.advance(routes.len()) {
+            if !meter.advance(&routes) {
                 break;
             }
             closer.strike(&state, constraints, &mut routes);
@@ -571,7 +581,7 @@ impl LoopHunter {
         if monitor.cancelled() {
             return Vec::new();
         }
-        meter.finish(routes.len());
+        meter.finish(&routes);
         finish_routes(routes, graph, constraints, count, self.params.keep, monitor)
     }
 }
@@ -619,7 +629,7 @@ impl ExactLoopSolver {
         let mut meter = SearchMeter::new(monitor, self.params.max_frontier);
 
         while let Some(state) = stack.pop() {
-            if !meter.advance(routes.len()) {
+            if !meter.advance(&routes) {
                 break;
             }
             if state.edges.len() >= self.params.max_hops {
@@ -682,7 +692,7 @@ impl ExactLoopSolver {
         if monitor.cancelled() {
             return Vec::new();
         }
-        meter.finish(routes.len());
+        meter.finish(&routes);
         finish_routes(routes, graph, constraints, count, self.params.keep, monitor)
     }
 }
@@ -754,7 +764,7 @@ fn support_out_and_backs(
     let maximum_cost = maximum_outward_m * (1.0 + law.road_aversion);
 
     while let Some(SupportFrontier { cost, walk }) = frontier.pop() {
-        if cost > maximum_cost || !meter.advance(routes.len()) {
+        if cost > maximum_cost || !meter.advance(&routes) {
             break;
         }
         if distance
@@ -820,7 +830,7 @@ fn support_out_and_backs(
     if monitor.cancelled() {
         return Vec::new();
     }
-    meter.finish(routes.len());
+    meter.finish(&routes);
     finish_routes(routes, graph, constraints, count, params.keep, monitor)
 }
 
@@ -898,7 +908,7 @@ fn support_loop_portfolio_obeying(
         outbound: vec![None; graph.vertices.len()],
     };
     for (attempt, design) in designs.into_iter().take(limit).enumerate() {
-        if !meter.advance(routes.len()) {
+        if !meter.advance(&routes) {
             break;
         }
         let mut compulsory_order = compulsory.clone();
@@ -923,7 +933,7 @@ fn support_loop_portfolio_obeying(
     if monitor.cancelled() {
         return Vec::new();
     }
-    meter.finish(routes.len());
+    meter.finish(&routes);
     finish_routes(routes, graph, constraints, count, params.keep, monitor)
 }
 
@@ -2550,6 +2560,7 @@ mod tests {
         cancel_after: usize,
         checks: Cell<usize>,
         progress: RefCell<Vec<SearchProgress>>,
+        previews: RefCell<Vec<usize>>,
     }
 
     impl RecordingMonitor {
@@ -2558,6 +2569,7 @@ mod tests {
                 cancel_after: usize::MAX,
                 checks: Cell::new(0),
                 progress: RefCell::new(Vec::new()),
+                previews: RefCell::new(Vec::new()),
             }
         }
     }
@@ -2571,6 +2583,10 @@ mod tests {
 
         fn report(&self, progress: SearchProgress) {
             self.progress.borrow_mut().push(progress);
+        }
+
+        fn preview(&self, routes: &[Route]) {
+            self.previews.borrow_mut().push(routes.len());
         }
     }
 
@@ -2983,6 +2999,13 @@ mod tests {
                 .all(|pair| pair[0].explored <= pair[1].explored)
         );
         assert!(progress.iter().all(|progress| progress.explored <= 100));
+        let previews = monitor.previews.borrow();
+        assert!(previews.first().is_some_and(|count| *count > 0));
+        assert!(previews.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(
+            previews.last().copied(),
+            progress.last().map(|progress| progress.candidates)
+        );
     }
 
     #[test]
@@ -3012,6 +3035,7 @@ mod tests {
             cancel_after: 3,
             checks: Cell::new(0),
             progress: RefCell::new(Vec::new()),
+            previews: RefCell::new(Vec::new()),
         };
 
         let routes = SolverKind::Auto.solve_monitored(

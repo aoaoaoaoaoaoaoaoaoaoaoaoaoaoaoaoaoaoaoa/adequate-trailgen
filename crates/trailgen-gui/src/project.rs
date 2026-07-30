@@ -7,6 +7,7 @@ use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use egui::Context;
 use serde::Deserialize;
 use std::{
+    cell::Cell,
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -251,6 +252,11 @@ pub enum SearchEvent {
         serial: u64,
         progress: SearchProgress,
     },
+    Preview {
+        serial: u64,
+        portfolio: Box<CandidatePortfolio>,
+        elapsed: Duration,
+    },
     Found {
         serial: u64,
         portfolio: Box<CandidatePortfolio>,
@@ -272,6 +278,12 @@ struct SearchJob {
     halt: Arc<AtomicBool>,
 }
 
+enum BoundaryMask {
+    All,
+    Edges(Vec<bool>),
+    Halted,
+}
+
 #[derive(Debug)]
 pub struct SearchHandle(Arc<AtomicBool>);
 
@@ -287,14 +299,20 @@ impl Drop for SearchHandle {
     }
 }
 
-struct ForgeMonitor {
+struct ForgeMonitor<'a> {
     serial: u64,
+    graph: &'a TrailGraph,
     halt: Arc<AtomicBool>,
     events: Sender<SearchEvent>,
     ctx: Context,
+    routing: trailgen_core::RoutingLaw,
+    manual_defaults: LoopConstraints,
+    warmth: CandidateWarmth,
+    started: Instant,
+    previewed: Cell<bool>,
 }
 
-impl SearchMonitor for ForgeMonitor {
+impl SearchMonitor for ForgeMonitor<'_> {
     fn cancelled(&self) -> bool {
         self.halt.load(Ordering::Acquire)
     }
@@ -305,6 +323,41 @@ impl SearchMonitor for ForgeMonitor {
             progress,
         });
         self.ctx.request_repaint();
+    }
+
+    fn preview(&self, routes: &[Route]) {
+        if self.previewed.get() || self.cancelled() {
+            return;
+        }
+        let routes = routes
+            .iter()
+            .filter(|route| route.verdict.satisfied)
+            .take(1)
+            .cloned()
+            .collect::<Vec<_>>();
+        if routes.is_empty() {
+            return;
+        }
+        let Some(portfolio) = CandidatePortfolio::forge(
+            self.graph,
+            routes,
+            self.routing,
+            &self.manual_defaults,
+            &self.warmth,
+            || self.cancelled(),
+        ) else {
+            return;
+        };
+        self.previewed.set(true);
+        let _published = publish(
+            &self.events,
+            &self.ctx,
+            SearchEvent::Preview {
+                serial: self.serial,
+                portfolio: Box::new(portfolio),
+                elapsed: self.started.elapsed(),
+            },
+        );
     }
 }
 
@@ -361,26 +414,21 @@ fn forge_search(
     let started = Instant::now();
     let monitor = ForgeMonitor {
         serial: request.serial,
+        graph,
         halt,
         events: events.clone(),
         ctx: ctx.clone(),
+        routing: request.params.routing,
+        manual_defaults: request.manual_defaults.clone(),
+        warmth: request.warmth.clone(),
+        started,
+        previewed: Cell::new(false),
     };
-    let mask = if let Some(boundary) = &request.boundary {
-        monitor.report(SearchProgress {
-            stage: SearchStage::Preparing,
-            explored: 0,
-            limit: graph.edges.len(),
-            candidates: 0,
-        });
-        let Some(mask) = boundary.edge_mask(graph, |explored, limit| {
-            monitor.report(SearchProgress {
-                stage: SearchStage::Preparing,
-                explored,
-                limit,
-                candidates: 0,
-            });
-            !monitor.cancelled()
-        }) else {
+    let mask = forge_boundary_mask(graph, &request, &monitor);
+    let scope = match &mask {
+        BoundaryMask::All => SearchScope::all(graph),
+        BoundaryMask::Edges(mask) => SearchScope::restricted(graph, mask),
+        BoundaryMask::Halted => {
             return publish(
                 events,
                 ctx,
@@ -389,15 +437,8 @@ fn forge_search(
                     elapsed: started.elapsed(),
                 },
             );
-        };
-        Some(mask)
-    } else {
-        None
+        }
     };
-    let scope = mask.as_deref().map_or_else(
-        || SearchScope::all(graph),
-        |mask| SearchScope::restricted(graph, mask),
-    );
     let routes = exact_matches(request.solver.revise_scoped(
         request.params,
         scope,
@@ -456,6 +497,33 @@ fn forge_search(
         }
     };
     publish(events, ctx, event)
+}
+
+fn forge_boundary_mask(
+    graph: &TrailGraph,
+    request: &SearchRequest,
+    monitor: &ForgeMonitor<'_>,
+) -> BoundaryMask {
+    let Some(boundary) = &request.boundary else {
+        return BoundaryMask::All;
+    };
+    monitor.report(SearchProgress {
+        stage: SearchStage::Preparing,
+        explored: 0,
+        limit: graph.edges.len(),
+        candidates: 0,
+    });
+    boundary
+        .edge_mask(graph, |explored, limit| {
+            monitor.report(SearchProgress {
+                stage: SearchStage::Preparing,
+                explored,
+                limit,
+                candidates: 0,
+            });
+            !monitor.cancelled()
+        })
+        .map_or(BoundaryMask::Halted, BoundaryMask::Edges)
 }
 
 fn publish(events: &Sender<SearchEvent>, ctx: &Context, event: SearchEvent) -> bool {

@@ -23,7 +23,7 @@ pub use active::*;
 #[cfg(feature = "egui-test")]
 mod active {
     use egui::{Context, Rect};
-    use egui_tester_witness::{Anchor, PendingFrame, ProductInstant};
+    use egui_tester_witness::{Anchor, FrameObservation, PendingFrame};
     use serde::Serialize;
 
     #[derive(Serialize)]
@@ -33,8 +33,13 @@ mod active {
         pub focused_trail: Option<String>,
         pub rename_active: bool,
         pub text_edit_focused: bool,
+        pub saved_trails: usize,
+        pub candidates: usize,
         pub map: Option<MapState>,
         pub editor: Option<EditorState>,
+        pub search: Option<SearchState>,
+        pub survey: Option<SurveyState>,
+        pub profile: Option<ProfileState>,
     }
 
     impl State {
@@ -49,8 +54,13 @@ mod active {
                 focused_trail: None,
                 rename_active: false,
                 text_edit_focused,
+                saved_trails: 0,
+                candidates: 0,
                 map: None,
                 editor: None,
+                search: None,
+                survey: None,
+                profile: None,
             }
         }
     }
@@ -74,20 +84,63 @@ mod active {
 
     #[derive(Serialize)]
     pub struct EditorState {
+        pub origin: &'static str,
+        pub shape: &'static str,
         pub ready: bool,
         pub dragging_support: Option<usize>,
         pub support_points: Vec<[f64; 2]>,
         pub route_distance_m: Option<f64>,
         pub route_signature: Option<u64>,
+        pub undo_depth: usize,
+        pub redo_depth: usize,
+        pub fault: Option<String>,
     }
 
-    pub fn reset(ctx: &Context) {
-        egui_tester_witness::egui::reset(ctx);
+    #[derive(Serialize)]
+    pub struct SearchState {
+        pub phase: &'static str,
+        pub serial: Option<u64>,
+        pub stage: Option<&'static str>,
+        pub explored: usize,
+        pub limit: usize,
+        pub discovered: usize,
+        pub stopping: bool,
+        pub trailhead: Option<[f64; 2]>,
+        pub boundary: bool,
+        pub required: usize,
+        pub forbidden: usize,
+        pub revision_scheduled: bool,
+    }
+
+    #[derive(Serialize)]
+    pub struct SurveyState {
+        pub regions: usize,
+        pub acquiring: bool,
+        pub drawing: bool,
+        pub status: String,
+        pub fault: Option<String>,
+    }
+
+    #[derive(Serialize)]
+    pub struct ProfileState {
+        pub visible: bool,
+        pub locked_distance_m: Option<f64>,
+        pub marker: Option<[f64; 2]>,
+    }
+
+    pub fn install(ctx: &Context) {
+        egui_tester_witness::egui::install(ctx);
+        ctx.on_begin_pass(
+            "clear poolrooms witness anchors",
+            std::sync::Arc::new(|ui| {
+                drop(dwemer_poolrooms::instrumentation::take(ui.ctx()));
+            }),
+        );
     }
 
     pub fn stage(
         ctx: &Context,
-        observed: ProductInstant,
+        observed: FrameObservation,
         frame: u64,
         pixels_per_point: f32,
         state: State,

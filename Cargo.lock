@@ -883,8 +883,8 @@ dependencies = [
 
 [[package]]
 name = "egui-tester"
-version = "0.2.0"
-source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester?rev=2e9746514828e7b943b0892c060835bd5b72e3e8#2e9746514828e7b943b0892c060835bd5b72e3e8"
+version = "0.3.0"
+source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester?rev=87d5d3548be054f0ccbe26de07687544bd12546a#87d5d3548be054f0ccbe26de07687544bd12546a"
 dependencies = [
  "bitflags 2.13.1",
  "egui-tester-witness",
@@ -900,8 +900,8 @@ dependencies = [
 
 [[package]]
 name = "egui-tester-witness"
-version = "0.2.0"
-source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester?rev=2e9746514828e7b943b0892c060835bd5b72e3e8#2e9746514828e7b943b0892c060835bd5b72e3e8"
+version = "0.3.0"
+source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester?rev=87d5d3548be054f0ccbe26de07687544bd12546a#87d5d3548be054f0ccbe26de07687544bd12546a"
 dependencies = [
  "egui",
  "rustix 1.1.4",
@@ -4007,6 +4007,8 @@ version = "0.1.0"
 dependencies = [
  "egui-tester",
  "num-traits",
+ "pmtiles",
+ "png",
  "serde",
  "serde_json",
 ]
