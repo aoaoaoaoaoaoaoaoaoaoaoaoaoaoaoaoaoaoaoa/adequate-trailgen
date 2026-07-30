@@ -71,6 +71,7 @@ pub struct TrailApp {
     search_due: Option<Instant>,
     view: WorkbenchView,
     sort: TrailSort,
+    trail_coloring: map::TrailColoring,
     viewport: Viewport,
     cartography: map::CartographicClock,
     scale_bar: map::ScaleBar,
@@ -627,6 +628,7 @@ impl TrailApp {
             search_due: None,
             view: WorkbenchView::Browse,
             sort: slate.sort,
+            trail_coloring: slate.trail_coloring,
             viewport,
             cartography,
             scale_bar: map::ScaleBar::default(),
@@ -773,6 +775,7 @@ impl TrailApp {
                     self.map_rect,
                     self.viewport.center,
                     map::world_pixels(self.viewport),
+                    self.trail_coloring,
                 )
             }),
             editor: self.witness_editor(),
@@ -1990,17 +1993,26 @@ impl TrailApp {
         self.map_rect = rect;
         self.water.begin(Domain::shelf(rect));
         self.apply_fit(rect);
-        let pointer = response.interact_pointer_pos();
+        let legend_claims_pointer = self.interact_trail_legend(ui, rect);
+        let pointer = (!legend_claims_pointer)
+            .then(|| response.interact_pointer_pos())
+            .flatten();
         let support_under_pointer =
             pointer.and_then(|pointer| self.editor_support_at(pointer, rect));
-        if ui.input(|input| input.pointer.button_pressed(egui::PointerButton::Primary)) {
+        if !legend_claims_pointer
+            && ui.input(|input| input.pointer.button_pressed(egui::PointerButton::Primary))
+        {
             self.seize_editor_support(pointer, support_under_pointer, rect);
         }
-        let trailhead_gesture = self.interact_trailhead(ui, rect);
-        let click_modifiers = response
-            .clicked_by(egui::PointerButton::Primary)
-            .then(|| primary_click_modifiers(ui, rect))
-            .flatten();
+        let trailhead_gesture = if legend_claims_pointer {
+            TrailheadGesture::default()
+        } else {
+            self.interact_trailhead(ui, rect)
+        };
+        let click_modifiers = (!legend_claims_pointer
+            && response.clicked_by(egui::PointerButton::Primary))
+        .then(|| primary_click_modifiers(ui, rect))
+        .flatten();
         let editor_dragging = self
             .view
             .editor()
@@ -2021,6 +2033,7 @@ impl TrailApp {
                 && !self.boundary_scribe.active()
                 && !editor_dragging
                 && !trailhead_gesture.captured,
+            !legend_claims_pointer,
         );
         if moved {
             self.fit = Fit::None;
@@ -2032,12 +2045,34 @@ impl TrailApp {
             }
         }
         let (scribe_event, boundary_event) = self.interact_scribes(ui, &response, rect);
+        self.paint_map_scene(ui, rect);
+
+        self.settle_map_gestures(
+            ui,
+            &response,
+            MapGesture {
+                rect,
+                pointer,
+                support_under_pointer,
+                trailhead: trailhead_gesture,
+                click_modifiers,
+            },
+        );
+        if before != self.viewport {
+            ui.ctx().request_repaint();
+        }
+        self.handle_scribe(ui.ctx(), &scribe_event);
+        self.handle_boundary(boundary_event);
+    }
+
+    fn paint_map_scene(&mut self, ui: &egui::Ui, rect: egui::Rect) {
         let canvas = ui.painter_at(rect);
         let frame = map::MapFramePlan::forge(self.viewport, rect);
         let cartography = self.cartography.observe(self.viewport, ui.ctx());
         let _ground = canvas.rect_filled(rect, 0.0, map::MAP_GROUND);
         let annotations = self.forge_cartography(&canvas, frame, cartography);
-        self.atlas.paint_network(&canvas, frame);
+        self.atlas
+            .paint_network(&canvas, frame, self.trail_coloring);
         self.paint_live_area(&canvas, rect);
         self.paint_trails(&canvas, rect);
         if self.shows_search_context() {
@@ -2058,7 +2093,6 @@ impl TrailApp {
             map::paint_start(&canvas, coord, self.viewport, rect, seized);
         }
         self.scale_bar.paint(&canvas, self.viewport, rect);
-        self.atlas.paint_legend(&canvas, rect);
         let _edge = canvas.rect_stroke(
             rect.shrink(0.5),
             0.0,
@@ -2066,23 +2100,32 @@ impl TrailApp {
             egui::StrokeKind::Inside,
         );
         self.paint_map_header(&canvas, rect);
+    }
 
-        self.settle_map_gestures(
-            ui,
-            &response,
-            MapGesture {
-                rect,
-                pointer,
-                support_under_pointer,
-                trailhead: trailhead_gesture,
-                click_modifiers,
-            },
-        );
-        if before != self.viewport {
+    fn interact_trail_legend(&mut self, ui: &egui::Ui, rect: egui::Rect) -> bool {
+        let legend = self.atlas.show_legend(ui.ctx(), rect, self.trail_coloring);
+        for (coloring, tab) in &legend.tabs {
+            let target = coloring_target(*coloring);
+            crate::witness::rect(ui.ctx(), target, *tab);
+            if ui
+                .input(|input| input.pointer.hover_pos())
+                .is_some_and(|pointer| tab.contains(pointer))
+            {
+                self.water.hover(target, *tab);
+            }
+        }
+        if let Some((coloring, tab)) = legend.clicked {
+            self.trail_coloring = coloring;
+            self.water.click(tab);
             ui.ctx().request_repaint();
         }
-        self.handle_scribe(ui.ctx(), &scribe_event);
-        self.handle_boundary(boundary_event);
+        ui.input(|input| {
+            input
+                .pointer
+                .hover_pos()
+                .zip(legend.rect)
+                .is_some_and(|(pointer, legend)| legend.contains(pointer))
+        })
     }
 
     fn paint_live_area(&self, painter: &egui::Painter, rect: egui::Rect) {
@@ -2163,6 +2206,7 @@ impl TrailApp {
                         self.viewport,
                         rect,
                         map::SELECTED_TRAIL_COLOR,
+                        self.trail_coloring,
                     );
                 }
             }
@@ -2179,14 +2223,17 @@ impl TrailApp {
                         self.viewport,
                         rect,
                         SELECTED_TRAIL_COLOR,
+                        self.trail_coloring,
                     );
                 }
             }
             WorkbenchView::Focus(Focus::Saved(id)) => {
                 if let Some(projection) = self.saved_projections.get_mut(id) {
-                    projection
-                        .overlay
-                        .paint(painter, map::MapFramePlan::forge(self.viewport, rect));
+                    projection.overlay.paint(
+                        painter,
+                        map::MapFramePlan::forge(self.viewport, rect),
+                        self.trail_coloring,
+                    );
                 }
             }
             WorkbenchView::Browse => {
@@ -2195,12 +2242,17 @@ impl TrailApp {
                     .as_ref()
                     .and_then(|id| self.saved_projections.get_mut(id))
                 {
-                    projection
-                        .overlay
-                        .paint(painter, map::MapFramePlan::forge(self.viewport, rect));
+                    projection.overlay.paint(
+                        painter,
+                        map::MapFramePlan::forge(self.viewport, rect),
+                        self.trail_coloring,
+                    );
                 } else if let Some(run) = &mut self.candidates {
-                    run.overlay
-                        .paint(painter, map::MapFramePlan::forge(self.viewport, rect));
+                    run.overlay.paint(
+                        painter,
+                        map::MapFramePlan::forge(self.viewport, rect),
+                        self.trail_coloring,
+                    );
                 }
             }
         }
@@ -3595,6 +3647,7 @@ impl TrailApp {
             shutters: self.shutters.clone(),
             inspector_scroll: self.inspector_scroll,
             sort: self.sort,
+            trail_coloring: self.trail_coloring,
         }
     }
 
@@ -3732,6 +3785,14 @@ const fn route_shape_name(shape: RouteShape) -> &'static str {
         RouteShape::OutAndBack => "out-and-back",
         RouteShape::FigureEight => "figure-eight",
         RouteShape::Open => "open",
+    }
+}
+
+const fn coloring_target(coloring: map::TrailColoring) -> Target {
+    match coloring {
+        map::TrailColoring::Class => Target::LegendClass,
+        map::TrailColoring::Formality => Target::LegendFormality,
+        map::TrailColoring::Terrain => Target::LegendTerrain,
     }
 }
 

@@ -546,6 +546,7 @@ impl SurveyWorkbench {
             &response,
             rect,
             !self.scribe.active(),
+            true,
         ) {
             if response.dragged() {
                 self.water
@@ -620,6 +621,7 @@ impl SurveyWorkbench {
                 self.map_rect,
                 self.viewport.center,
                 map::world_pixels(self.viewport),
+                trailgen_contract::TrailColoring::Class,
             )
         });
         state.survey = Some(crate::witness::SurveyState {

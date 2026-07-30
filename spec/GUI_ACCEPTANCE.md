@@ -8,10 +8,12 @@ durable or rendered oracle before passing. Tests never call product internals.
 ## Standing Stories
 
 1. **Discover and keep.** Create a project, draw a map area, acquire local OSM,
-   USGS, and terrain fixtures, place a trailhead with Alt-click, lasso a search
-   boundary, start with Enter, observe eager candidate promotion, save, arm Add
-   Map Area without camera travel, refresh the corpus without unloading the
-   saved trail, and recover the result after restart.
+   USGS, and terrain fixtures; switch class → formal/informal → terrain colors
+   while rendered line cadence remains fixed; place a trailhead with Alt-click,
+   lasso a search boundary, start with Enter, observe eager candidate promotion,
+   save, arm Add Map Area without camera travel, refresh the corpus without
+   unloading the saved trail, and recover the result and color projection after
+   restart.
 2. **Refine deliberately.** Open and rename a saved trail, drag a support onto
    another branch, prove recomputation occurs after release, verify the native
    window title, undo, redo, cancel without disk mutation, repeat, save, and

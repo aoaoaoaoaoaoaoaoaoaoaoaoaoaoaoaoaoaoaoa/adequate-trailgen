@@ -96,6 +96,12 @@ Selected routes dominate context by width and chroma. Overview disclosure may
 remove their internal pattern before the tube, but selection, candidate
 identity, and access warnings must remain legible.
 
+Trail hue is a user-selected semantic projection: class, formal/informal, or
+terrain. Switching it is a uniform-only operation over retained geometry.
+Surface and wayfinding own the core cadence independently; no hue projection
+may rebuild, replace, phase-shift, or otherwise reinterpret solid, dashed,
+dash-dot, or dotted marks. Access alarms continue to outrank every projection.
+
 ## Evidence
 
 Every material renderer change must be exercised in at least these states:

@@ -13,10 +13,15 @@ pub fn anchor(ui: &Ui, name: impl Display, rect: Rect) {
     }
 }
 
-#[cfg(feature = "egui-test")]
 #[inline]
 pub fn rect(ctx: &egui::Context, name: impl Display, rect: Rect) {
+    #[cfg(feature = "egui-test")]
     egui_tester_witness::egui::record_rect(ctx, name.to_string(), rect);
+    #[cfg(not(feature = "egui-test"))]
+    {
+        let _ = (ctx, rect);
+        drop(name);
+    }
 }
 
 #[cfg(feature = "egui-test")]
@@ -26,7 +31,9 @@ pub use active::*;
 mod active {
     use egui::Rect;
     use serde::Serialize;
-    use trailgen_contract::{CorpusPhase, EditorOrigin, RouteShape, SearchPhase, View, Workspace};
+    use trailgen_contract::{
+        CorpusPhase, EditorOrigin, RouteShape, SearchPhase, TrailColoring, View, Workspace,
+    };
 
     #[derive(Serialize)]
     pub struct State {
@@ -68,14 +75,21 @@ mod active {
         pub rect: [f32; 4],
         pub center: [f64; 2],
         pub world_points: f64,
+        pub coloring: TrailColoring,
     }
 
     impl MapState {
-        pub const fn forge(rect: Rect, center: [f64; 2], world_points: f64) -> Self {
+        pub const fn forge(
+            rect: Rect,
+            center: [f64; 2],
+            world_points: f64,
+            coloring: TrailColoring,
+        ) -> Self {
             Self {
                 rect: [rect.min.x, rect.min.y, rect.max.x, rect.max.y],
                 center,
                 world_points,
+                coloring,
             }
         }
     }

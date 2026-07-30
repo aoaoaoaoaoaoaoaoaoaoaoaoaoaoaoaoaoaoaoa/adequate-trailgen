@@ -1,13 +1,13 @@
 use std::{collections::BTreeSet, path::Path, time::Duration};
 
-use egui_tester::{Button, Drag, Key, Modifiers, Result, Wheel, demand};
+use egui_tester::{Button, Drag, Frame, Key, Modifiers, PixelRegion, Result, Wheel, demand};
 
 use crate::harness::{
     DataMode, Harness, RunClass, Target, TargetClass, TrailStory, first_anchor, map_pixel,
     read_json, screen_point,
 };
 use crate::interactions::lasso_boundary;
-use crate::observation::{CorpusPhase, SearchPhase, View, Workspace, shows};
+use crate::observation::{CorpusPhase, SearchPhase, TrailColoring, View, Workspace, shows};
 
 const ROOT: &str = "/test/discover-loop";
 
@@ -36,7 +36,10 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
     let mut story = harness.story(&restarted, RunClass::Functional)?;
     let restored = story.wait_within(
         Duration::from_secs(30),
-        shows::workspace(Workspace::Trail) & shows::view(View::Browse) & shows::library(1),
+        shows::workspace(Workspace::Trail)
+            & shows::view(View::Browse)
+            & shows::library(1)
+            & shows::coloring(TrailColoring::Terrain),
     )?;
     let trail = first_anchor(
         &restored,
@@ -177,12 +180,14 @@ fn configure_search(story: &mut TrailStory<'_, '_>) -> Result<()> {
     let _zoom = story
         .wheel(
             center,
-            -7,
+            -14,
             Wheel {
                 tick_duration: Duration::from_millis(24),
             },
         )?
-        .until(shows::map_scale_at_least(initial_scale * 16.0))?;
+        .until(shows::map_scale_at_least(
+            800_000.0_f64.max(initial_scale * 128.0),
+        ))?;
     let frame = story.wait_stable(
         Duration::from_secs(8),
         Duration::from_millis(160),
@@ -197,6 +202,8 @@ fn configure_search(story: &mut TrailStory<'_, '_>) -> Result<()> {
             })
         },
     )?;
+    exercise_color_legend(story, &frame)?;
+    let frame = story.wait(shows::coloring(TrailColoring::Terrain))?;
     let trailhead = map_pixel(&frame, [-98.5, 39.5])?;
     let _placed = story
         .modified_click_at(trailhead, Button::Primary, Modifiers::ALT)?
@@ -205,6 +212,111 @@ fn configure_search(story: &mut TrailStory<'_, '_>) -> Result<()> {
 
     let _bounded = lasso_boundary(story, 0.15)?;
     Ok(())
+}
+
+fn exercise_color_legend(
+    story: &mut TrailStory<'_, '_>,
+    frame: &crate::harness::TrailFrame,
+) -> Result<()> {
+    let northwest = map_pixel(frame, [-98.516, 39.516])?;
+    let southeast = map_pixel(frame, [-98.484, 39.484])?;
+    let region = PixelRegion::new(
+        i32::from(northwest.0.min(southeast.0)) - 12,
+        i32::from(northwest.1.min(southeast.1)) - 12,
+        i32::from(northwest.0.max(southeast.0)) + 12,
+        i32::from(northwest.1.max(southeast.1)) + 12,
+    );
+    let class = story.capture()?;
+    let _formal_state = story
+        .click(Target::LegendFormality)?
+        .until(shows::coloring(TrailColoring::Formality))?;
+    let formal =
+        story
+            .session()
+            .wait_changed_region(&class, region, 0.002, 5, Duration::from_secs(4))?;
+    let formal_difference = class.difference_region(&formal, region, 5)?;
+    demand(
+        formal_difference >= 0.000_5,
+        "formality selector changed semantic state without recoloring map trails",
+    )?;
+    let formality_agreement = core_agreement(&class, &formal, region)?;
+    demand(
+        formality_agreement >= 0.98,
+        format!(
+            "formality coloring perturbed the fixed surface / wayfinding cadence \
+             ({formality_agreement:.3} agreement)"
+        ),
+    )?;
+
+    let _terrain_state = story
+        .click(Target::LegendTerrain)?
+        .until(shows::coloring(TrailColoring::Terrain))?;
+    let terrain =
+        story
+            .session()
+            .wait_changed_region(&formal, region, 0.002, 5, Duration::from_secs(4))?;
+    let terrain_difference = formal.difference_region(&terrain, region, 5)?;
+    demand(
+        terrain_difference >= 0.000_5,
+        "terrain selector changed semantic state without recoloring map trails",
+    )?;
+    let terrain_agreement = core_agreement(&formal, &terrain, region)?;
+    demand(
+        terrain_agreement >= 0.98,
+        format!(
+            "terrain coloring perturbed the fixed surface / wayfinding cadence \
+             ({terrain_agreement:.3} agreement)"
+        ),
+    )
+}
+
+fn core_agreement(left: &Frame, right: &Frame, region: PixelRegion) -> Result<f64> {
+    let left = left.crop(region)?;
+    let right = right.crop(region)?;
+    demand(
+        (left.width(), left.height()) == (right.width(), right.height()),
+        "trail-color cadence oracle received differently sized frames",
+    )?;
+    let dark = |pixel: &[u8]| pixel[0] <= 92 && pixel[1] <= 92 && pixel[2] <= 92;
+    let left_ink = left.rgba().chunks_exact(4).map(dark).collect::<Vec<_>>();
+    let right_ink = right.rgba().chunks_exact(4).map(dark).collect::<Vec<_>>();
+    let left_count = left_ink.iter().filter(|ink| **ink).count();
+    let right_count = right_ink.iter().filter(|ink| **ink).count();
+    let total = left_count + right_count;
+    demand(
+        total >= 128,
+        "trail-color cadence oracle found too little rendered core ink",
+    )?;
+    let width = usize::try_from(left.width())
+        .map_err(|_| crate::harness::verdict("cadence crop width exceeded usize"))?;
+    let height = usize::try_from(left.height())
+        .map_err(|_| crate::harness::verdict("cadence crop height exceeded usize"))?;
+    let covered = covered_ink(&left_ink, &right_ink, width, height)
+        + covered_ink(&right_ink, &left_ink, width, height);
+    let covered = u32::try_from(covered)
+        .map_err(|_| crate::harness::verdict("covered core ink exceeded u32"))?;
+    let total =
+        u32::try_from(total).map_err(|_| crate::harness::verdict("total core ink exceeded u32"))?;
+    Ok(f64::from(covered) / f64::from(total))
+}
+
+fn covered_ink(source: &[bool], target: &[bool], width: usize, height: usize) -> usize {
+    source
+        .iter()
+        .enumerate()
+        .filter(|(index, ink)| {
+            if !**ink {
+                return false;
+            }
+            let x = index % width;
+            let y = index / width;
+            let x_range = x.saturating_sub(1)..=(x + 1).min(width - 1);
+            let y_range = y.saturating_sub(1)..=(y + 1).min(height - 1);
+            y_range
+                .flat_map(|y| x_range.clone().map(move |x| y * width + x))
+                .any(|index| target[index])
+        })
+        .count()
 }
 
 fn verify_discovery(harness: &Harness<'_>) -> Result<()> {

@@ -7,7 +7,7 @@ use std::{borrow::Cow, fmt};
 
 use serde::{Deserialize, Serialize};
 
-pub const UI_FINGERPRINT: &str = "trailgen.ui/3";
+pub const UI_FINGERPRINT: &str = "trailgen.ui/4";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -58,6 +58,22 @@ pub enum CorpusPhase {
     Updating,
 }
 
+/// The trail property projected onto tube hue.
+///
+/// Surface and wayfinding remain a separate, invariant visual channel.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TrailColoring {
+    #[default]
+    Class,
+    Formality,
+    Terrain,
+}
+
+impl TrailColoring {
+    pub const ALL: [Self; 3] = [Self::Class, Self::Formality, Self::Terrain];
+}
+
 /// Stable recipient of a native user gesture.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Target {
@@ -67,6 +83,9 @@ pub enum Target {
     SurveyAddArea,
     SurveyMap,
     Map,
+    LegendClass,
+    LegendFormality,
+    LegendTerrain,
     Manual,
     AddMapArea,
     RefreshTrails,
@@ -87,13 +106,16 @@ pub enum Target {
 }
 
 impl Target {
-    pub const STATIC: [Self; 22] = [
+    pub const STATIC: [Self; 25] = [
         Self::ProjectName,
         Self::ProjectParent,
         Self::ProjectCreate,
         Self::SurveyAddArea,
         Self::SurveyMap,
         Self::Map,
+        Self::LegendClass,
+        Self::LegendFormality,
+        Self::LegendTerrain,
         Self::Manual,
         Self::AddMapArea,
         Self::RefreshTrails,
@@ -121,6 +143,9 @@ impl Target {
             Self::SurveyAddArea => "survey.add-area",
             Self::SurveyMap => "survey.map",
             Self::Map => "map.canvas",
+            Self::LegendClass => "map.legend/class",
+            Self::LegendFormality => "map.legend/formality",
+            Self::LegendTerrain => "map.legend/terrain",
             Self::Manual => "search.manual",
             Self::AddMapArea => "areas.add",
             Self::RefreshTrails => "areas.refresh",

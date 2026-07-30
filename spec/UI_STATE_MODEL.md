@@ -170,8 +170,9 @@ the primary view implicitly or perform graph-scale work on the event loop.
 
 The project owns its library, search recipe, downloaded regions, and graph.
 XDG state owns the base Browse viewport, result sorting, inspector position,
-and section shutters. Candidates, focus, editor drafts, undo history, profile
-cursor, map gestures, worker progress, and navigation frames are session state.
+section shutters, and trail-color projection. Candidates, focus, editor drafts,
+undo history, profile cursor, map gestures, worker progress, and navigation
+frames are session state.
 
 Only the base Browse viewport is persisted. Focus and Edit may pan or zoom
 without corrupting the viewport to which Back or Cancel returns.

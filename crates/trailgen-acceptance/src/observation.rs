@@ -1,7 +1,9 @@
 use egui_tester::{Condition, field};
 use serde::Deserialize;
 
-pub use trailgen_contract::{CorpusPhase, EditorOrigin, RouteShape, SearchPhase, View, Workspace};
+pub use trailgen_contract::{
+    CorpusPhase, EditorOrigin, RouteShape, SearchPhase, TrailColoring, View, Workspace,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct Observation {
@@ -24,6 +26,7 @@ pub struct MapState {
     pub rect: [f32; 4],
     pub center: [f64; 2],
     pub world_points: f64,
+    pub coloring: TrailColoring,
 }
 
 #[derive(Debug, Deserialize)]
@@ -64,8 +67,8 @@ pub struct ProfileState {
 
 pub mod shows {
     use super::{
-        Condition, CorpusPhase, EditorOrigin, Observation, RouteShape, SearchPhase, View,
-        Workspace, field,
+        Condition, CorpusPhase, EditorOrigin, Observation, RouteShape, SearchPhase, TrailColoring,
+        View, Workspace, field,
     };
 
     pub fn condition(
@@ -116,6 +119,15 @@ pub mod shows {
                 .map
                 .as_ref()
                 .is_some_and(|map| map.world_points >= minimum)
+        })
+    }
+
+    pub fn coloring(expected: TrailColoring) -> Condition<Observation> {
+        condition(format!("trail coloring {expected:?}"), move |state| {
+            state
+                .map
+                .as_ref()
+                .is_some_and(|map| map.coloring == expected)
         })
     }
 

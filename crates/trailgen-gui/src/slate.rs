@@ -1,4 +1,7 @@
-use crate::{gallery::TrailSort, map::Viewport};
+use crate::{
+    gallery::TrailSort,
+    map::{TrailColoring, Viewport},
+};
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -15,6 +18,7 @@ pub struct Slate {
     pub shutters: BTreeMap<String, bool>,
     pub inspector_scroll: f32,
     pub sort: TrailSort,
+    pub trail_coloring: TrailColoring,
 }
 
 impl Default for Slate {
@@ -25,6 +29,7 @@ impl Default for Slate {
             shutters: BTreeMap::new(),
             inspector_scroll: 0.0,
             sort: TrailSort::default(),
+            trail_coloring: TrailColoring::default(),
         }
     }
 }
@@ -92,6 +97,7 @@ mod tests {
             zoom: 15.5,
         });
         slate.shutters.insert("areas".to_owned(), true);
+        slate.trail_coloring = TrailColoring::Terrain;
         slate.save(&path)?;
         assert_eq!(Slate::load(&path, &alpha), slate);
         let foreign = Slate::load(&path, &beta);

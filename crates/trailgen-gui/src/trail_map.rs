@@ -1,10 +1,13 @@
 use crate::{
     basemap::{self, TileKey},
     cadence::WorldLevel,
-    map::{CadenceLineage, MapFramePlan, TrailMark, TrailSalience, WorldEdge, trail_core},
+    map::{
+        CadenceLineage, MapFramePlan, TrailColoring, TrailMark, TrailSalience, WorldEdge,
+        coloring_shader_code, formality_color, trail_core, trail_terrain_color,
+    },
 };
 use bytemuck::{Pod, Zeroable};
-use egui::Painter;
+use egui::{Color32, Painter};
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor, wgpu};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -15,6 +18,7 @@ use std::{
     },
     time::Instant,
 };
+use trailgen_core::{Access, Terrain, TrailStanding};
 use wgpu::util::DeviceExt as _;
 
 const BASE_TILE_ZOOM: u8 = 12;
@@ -153,7 +157,12 @@ impl TrailField {
         }
     }
 
-    pub fn paint(&mut self, painter: &Painter, frame: MapFramePlan) {
+    pub fn paint_colored(
+        &mut self,
+        painter: &Painter,
+        frame: MapFramePlan,
+        coloring: TrailColoring,
+    ) {
         let Some(band) = DetailBand::resolve(
             self.visibility.as_ref().map(|visibility| visibility.band),
             frame.zoom.get(),
@@ -237,6 +246,7 @@ impl TrailField {
                 view_zoom: frame.zoom.get() as f32,
                 cadence_cells_per_world: cadence.cells_per_world() as f32,
                 salience: self.salience,
+                coloring,
                 disclosure: self.disclosure,
             },
         ));
@@ -484,6 +494,9 @@ impl TrailMeshBuilder {
             .collect::<Vec<_>>();
         let color = salience.access_color(edge.color, edge.access).to_array();
         let pattern = pattern_code(edge.mark);
+        let informal = edge.standing == TrailStanding::Informal;
+        let terrain = terrain_code(edge.terrain);
+        let blocked = matches!(edge.access, Access::Closed | Access::Private);
         let base = u32::try_from(self.vertices.len()).expect("trail tile vertex count fits u32");
         for (slot, point) in local.iter().copied().enumerate() {
             let [negative, positive] = ribbon_extrusions(&local, slot, salience);
@@ -493,7 +506,7 @@ impl TrailMeshBuilder {
                     extrusion: negative,
                     srgb: color,
                     arc_world: samples[slot].arc_world as f32,
-                    cadence: cadence_word(law_id, pattern, false),
+                    cadence: cadence_word(law_id, pattern, false, informal, terrain, blocked),
                     edge_factor: -1.0,
                 },
                 TrailPoint {
@@ -501,7 +514,7 @@ impl TrailMeshBuilder {
                     extrusion: positive,
                     srgb: color,
                     arc_world: samples[slot].arc_world as f32,
-                    cadence: cadence_word(law_id, pattern, true),
+                    cadence: cadence_word(law_id, pattern, true, informal, terrain, blocked),
                     edge_factor: 1.0,
                 },
             ]);
@@ -520,14 +533,14 @@ impl TrailMeshBuilder {
                 ribbon_direction(local[0], local[1], -1.0),
                 color,
                 samples[0].arc_world as f32,
-                cadence_word(law_id, pattern, false),
+                cadence_word(law_id, pattern, false, informal, terrain, blocked),
             );
             self.push_round_cap(
                 local[local.len() - 1],
                 ribbon_direction(local[local.len() - 2], local[local.len() - 1], 1.0),
                 color,
                 samples[samples.len() - 1].arc_world as f32,
-                cadence_word(law_id, pattern, false),
+                cadence_word(law_id, pattern, false, informal, terrain, blocked),
             );
         }
     }
@@ -638,13 +651,43 @@ const fn pattern_code(mark: TrailMark) -> u32 {
     }
 }
 
-const fn cadence_word(law: u32, pattern: u32, positive_side: bool) -> u32 {
+const CADENCE_LAW_SHIFT: u32 = 9;
+const CADENCE_STYLE_MASK: u32 = (1 << CADENCE_LAW_SHIFT) - 1;
+
+const fn cadence_word(
+    law: u32,
+    pattern: u32,
+    positive_side: bool,
+    informal: bool,
+    terrain: u32,
+    blocked: bool,
+) -> u32 {
     assert!(
-        law <= u32::MAX >> 3,
+        law <= u32::MAX >> CADENCE_LAW_SHIFT,
         "cadence law exceeds packed vertex range"
     );
     assert!(pattern < 4, "trail pattern exceeds packed vertex range");
-    (law << 3) | (pattern << 1) | positive_side as u32
+    assert!(terrain < 16, "trail terrain exceeds packed vertex range");
+    (law << CADENCE_LAW_SHIFT)
+        | ((blocked as u32) << 8)
+        | (terrain << 4)
+        | ((informal as u32) << 3)
+        | (pattern << 1)
+        | positive_side as u32
+}
+
+const fn terrain_code(terrain: Terrain) -> u32 {
+    match terrain {
+        Terrain::Unknown => 0,
+        Terrain::Trail => 1,
+        Terrain::Forest => 2,
+        Terrain::Alpine => 3,
+        Terrain::Talus => 4,
+        Terrain::Scramble => 5,
+        Terrain::Pavement => 6,
+        Terrain::Road => 7,
+        Terrain::Water => 8,
+    }
 }
 
 #[repr(C)]
@@ -661,7 +704,7 @@ const _: () = assert!(size_of::<TrailPoint>() == 32);
 
 impl TrailPoint {
     const fn law(&self) -> u32 {
-        self.cadence >> 3
+        self.cadence >> CADENCE_LAW_SHIFT
     }
 
     const fn pattern(&self) -> u32 {
@@ -669,7 +712,11 @@ impl TrailPoint {
     }
 
     const fn set_law(&mut self, law: u32) {
-        self.cadence = cadence_word(law, self.pattern(), self.cadence & 1 != 0);
+        assert!(
+            law <= u32::MAX >> CADENCE_LAW_SHIFT,
+            "cadence law exceeds packed vertex range"
+        );
+        self.cadence = (law << CADENCE_LAW_SHIFT) | (self.cadence & CADENCE_STYLE_MASK);
     }
 }
 
@@ -818,6 +865,7 @@ struct TrailPaint {
     view_zoom: f32,
     cadence_cells_per_world: f32,
     salience: TrailSalience,
+    coloring: TrailColoring,
     disclosure: [f32; 4],
 }
 
@@ -1398,6 +1446,8 @@ struct Uniform {
     cadence_cells_per_world: f32,
     radii: [f32; 2],
     disclosure: [f32; 4],
+    projection: [u32; 4],
+    palette: [[f32; 4]; 11],
 }
 
 impl Uniform {
@@ -1421,8 +1471,35 @@ impl Uniform {
                 trail_core(paint.salience.width()).width * 0.5,
             ],
             disclosure: paint.disclosure,
+            projection: [coloring_shader_code(paint.coloring), 0, 0, 0],
+            palette: trail_palette(paint.salience),
         }
     }
+}
+
+fn trail_palette(salience: TrailSalience) -> [[f32; 4]; 11] {
+    const TERRAINS: [Terrain; 9] = [
+        Terrain::Unknown,
+        Terrain::Trail,
+        Terrain::Forest,
+        Terrain::Alpine,
+        Terrain::Talus,
+        Terrain::Scramble,
+        Terrain::Pavement,
+        Terrain::Road,
+        Terrain::Water,
+    ];
+    let mut palette = [[0.0; 4]; 11];
+    palette[0] = normalized(formality_color(false, salience));
+    palette[1] = normalized(formality_color(true, salience));
+    for (slot, terrain) in TERRAINS.into_iter().enumerate() {
+        palette[slot + 2] = normalized(trail_terrain_color(terrain, salience));
+    }
+    palette
+}
+
+fn normalized(color: Color32) -> [f32; 4] {
+    color.to_array().map(|channel| f32::from(channel) / 255.0)
 }
 
 #[repr(C)]
@@ -1507,6 +1584,8 @@ struct Uniform {
     cadence_cells_per_world: f32,
     radii: vec2f,
     disclosure: vec4f,
+    projection: vec4u,
+    palette: array<vec4f, 11>,
 };
 
 struct CadenceLaw {
@@ -1568,7 +1647,10 @@ fn trail_vertex(
 ) -> VertexOut {
     var out: VertexOut;
     let pattern = (cadence >> 1u) & 3u;
-    let law = cadence >> 3u;
+    let informal = (cadence >> 3u) & 1u;
+    let terrain = (cadence >> 4u) & 15u;
+    let blocked = (cadence >> 8u) & 1u;
+    let law = cadence >> 9u;
     let core = layer == 1u;
     let core_onset = select(u.disclosure.y, u.disclosure.z, pattern != 0u);
     let onset_zoom = select(u.disclosure.x, core_onset, core);
@@ -1580,7 +1662,14 @@ fn trail_vertex(
     let clip = clip_at(local, origin_high, origin_low, tile_span, wrap)
         + vec2f(offset.x, -offset.y);
     out.position = vec4f(clip, 0.0, 1.0);
-    let ink = select(color, vec4f(20.0 / 255.0, 19.0 / 255.0, 17.0 / 255.0, 1.0), core);
+    var tube = color;
+    if blocked == 0u && u.projection.x == 1u {
+        tube = u.palette[informal];
+    }
+    if blocked == 0u && u.projection.x == 2u {
+        tube = u.palette[2u + min(terrain, 8u)];
+    }
+    let ink = select(tube, vec4f(20.0 / 255.0, 19.0 / 255.0, 17.0 / 255.0, 1.0), core);
     out.color = vec4f(ink.rgb, ink.a * maturity * opacity);
     out.edge_distance = edge_factor * expanded_radius;
     out.solid_radius = visible_radius;
@@ -1958,6 +2047,8 @@ mod tests {
             lineage: None,
             color: trail_class_color(TrailClass::Path),
             trail_class: trailgen_core::TrailClass::Path,
+            standing: TrailStanding::Established,
+            terrain: Terrain::Trail,
             mark: TrailMark::Solid,
             access: trailgen_core::Access::Open,
         };
@@ -1970,6 +2061,31 @@ mod tests {
     }
 
     #[test]
+    fn semantic_hue_bits_cannot_alias_cadence_bits() {
+        for pattern in 0..4 {
+            let plain = cadence_word(37, pattern, false, false, 0, false);
+            let adorned = cadence_word(37, pattern, true, true, terrain_code(Terrain::Water), true);
+            for word in [plain, adorned] {
+                let mut point = TrailPoint {
+                    local: [0.0; 2],
+                    extrusion: [0.0; 2],
+                    srgb: [0; 4],
+                    arc_world: 0.0,
+                    cadence: word,
+                    edge_factor: 0.0,
+                };
+                assert_eq!(point.law(), 37);
+                assert_eq!(point.pattern(), pattern);
+                let style = point.cadence & CADENCE_STYLE_MASK;
+                point.set_law(91);
+                assert_eq!(point.law(), 91);
+                assert_eq!(point.pattern(), pattern);
+                assert_eq!(point.cadence & CADENCE_STYLE_MASK, style);
+            }
+        }
+    }
+
+    #[test]
     fn selected_ribbons_own_semicircular_support_caps() {
         let mut builder = TrailMeshBuilder::default();
         builder.push_round_cap(
@@ -1977,7 +2093,7 @@ mod tests {
             [1.0, 0.0],
             [255; 4],
             0.25,
-            cadence_word(0, 0, false),
+            cadence_word(0, 0, false, false, terrain_code(Terrain::Trail), false),
         );
         assert_eq!(builder.vertices.len(), ROUND_CAP_STEPS + 2);
         assert_eq!(builder.indices.len(), ROUND_CAP_STEPS * 3);
@@ -2015,6 +2131,8 @@ mod tests {
                 lineage: None,
                 color: trail_class_color(class),
                 trail_class: class,
+                standing: TrailStanding::Established,
+                terrain: Terrain::Trail,
                 mark: TrailMark::Solid,
                 access: trailgen_core::Access::Open,
             }

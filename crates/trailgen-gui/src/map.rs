@@ -8,6 +8,7 @@ use std::{
     sync::{Mutex, OnceLock},
     time::{Duration, Instant},
 };
+pub use trailgen_contract::TrailColoring;
 use trailgen_core::{
     Access, Coord, EdgeDisposition, EdgeId, Route, RouteShape, Terrain, TrailClass, TrailGraph,
     TrailMarking, TrailStanding,
@@ -248,6 +249,30 @@ impl TrailSalience {
     }
 }
 
+const fn coloring_tab(coloring: TrailColoring) -> &'static str {
+    match coloring {
+        TrailColoring::Class => "TYPE",
+        TrailColoring::Formality => "FORM",
+        TrailColoring::Terrain => "TERRAIN",
+    }
+}
+
+const fn coloring_heading(coloring: TrailColoring) -> &'static str {
+    match coloring {
+        TrailColoring::Class => "COLOR · TRAIL TYPE",
+        TrailColoring::Formality => "COLOR · FORMALITY",
+        TrailColoring::Terrain => "COLOR · TERRAIN",
+    }
+}
+
+pub const fn coloring_shader_code(coloring: TrailColoring) -> u32 {
+    match coloring {
+        TrailColoring::Class => 0,
+        TrailColoring::Formality => 1,
+        TrailColoring::Terrain => 2,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Viewport {
     pub center: [f64; 2],
@@ -456,6 +481,7 @@ pub fn navigate_with(
     response: &egui::Response,
     rect: Rect,
     pan: bool,
+    zoom: bool,
 ) -> bool {
     let before = *view;
     if pan && response.dragged_by(egui::PointerButton::Primary) {
@@ -464,7 +490,7 @@ pub fn navigate_with(
         view.center[0] -= f64::from(delta.x) / scale;
         view.center[1] -= f64::from(delta.y) / scale;
     }
-    if response.hovered() {
+    if zoom && response.hovered() {
         let (scroll, pointer) = ui.input(|input| {
             (
                 input.smooth_scroll_delta.y,
@@ -487,6 +513,7 @@ pub fn navigate_with(
 
 pub struct Atlas {
     classes: Vec<TrailClass>,
+    terrains: Vec<Terrain>,
     field: TrailField,
 }
 
@@ -501,6 +528,8 @@ pub struct WorldEdge {
     pub lineage: Option<CadenceLineage>,
     pub color: Color32,
     pub trail_class: TrailClass,
+    pub standing: TrailStanding,
+    pub terrain: Terrain,
     pub mark: TrailMark,
     pub access: Access,
 }
@@ -558,6 +587,8 @@ impl Atlas {
                     lineage: None,
                     color: trail_class_color(edge.attr.trail_class),
                     trail_class: edge.attr.trail_class,
+                    standing: edge.attr.standing,
+                    terrain: edge.attr.terrain,
                     mark: trail_mark(
                         edge.attr.trail_class,
                         edge.attr.standing,
@@ -576,79 +607,158 @@ impl Atlas {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
+        let terrains = edges
+            .iter()
+            .map(|edge| edge.terrain)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
         let field = TrailField::forge(&edges);
-        Self { classes, field }
+        Self {
+            classes,
+            terrains,
+            field,
+        }
     }
 
-    pub fn paint_legend(&self, painter: &Painter, rect: Rect) {
+    pub fn show_legend(
+        &self,
+        ctx: &egui::Context,
+        rect: Rect,
+        current: TrailColoring,
+    ) -> LegendResponse {
+        const WIDTH: f32 = 224.0;
         if self.classes.is_empty() {
-            return;
+            return LegendResponse::default();
         }
-        let width = 204.0;
-        let row = 21.0;
-        let height = 51.0 + row * (self.classes.len() + TrailMark::ALL.len()) as f32;
-        let plate = Rect::from_min_size(
-            pos2(rect.right() - width - 12.0, rect.top() + 12.0),
-            vec2(width, height),
-        );
-        let _fill = painter.rect_filled(plate, 1.0, chrome::SURFACE.gamma_multiply(0.94));
-        let _edge = painter.rect_stroke(
-            plate,
-            1.0,
-            Stroke::new(1.0_f32, chrome::EDGE_STRONG),
-            egui::StrokeKind::Inside,
-        );
-        painter.text(
-            plate.min + vec2(9.0, 7.0),
-            egui::Align2::LEFT_TOP,
-            "TRAIL TYPES",
-            egui::FontId::monospace(13.0),
-            chrome::MUTED,
-        );
-        for (slot, class) in self.classes.iter().copied().enumerate() {
-            let y = (slot as f32).mul_add(row, plate.top() + 29.0);
-            let _swatch = painter.line_segment(
-                [pos2(plate.left() + 10.0, y), pos2(plate.left() + 32.0, y)],
-                Stroke::new(TrailSalience::Context.width(), trail_class_color(class)),
-            );
-            painter.text(
-                pos2(plate.left() + 41.0, y),
-                egui::Align2::LEFT_CENTER,
-                trail_class_label(class),
-                egui::FontId::monospace(13.0),
-                chrome::TEXT,
-            );
-        }
-        let heading_y = (self.classes.len() as f32).mul_add(row, plate.top() + 34.0);
-        painter.text(
-            pos2(plate.left() + 8.0, heading_y),
-            egui::Align2::LEFT_TOP,
-            "SURFACE / WAYFINDING",
-            egui::FontId::monospace(13.0),
-            chrome::MUTED,
-        );
-        for (slot, mark) in TrailMark::ALL.into_iter().enumerate() {
-            let y = (slot as f32).mul_add(row, heading_y + 24.0);
-            paint_trail_tube(
-                painter,
-                &[pos2(plate.left() + 10.0, y), pos2(plate.left() + 32.0, y)],
-                TrailSalience::Context.width(),
-                trail_class_color(TrailClass::Path),
-                mark,
-            );
-            painter.text(
-                pos2(plate.left() + 41.0, y),
-                egui::Align2::LEFT_CENTER,
-                mark.label(),
-                egui::FontId::monospace(13.0),
-                chrome::TEXT,
-            );
-        }
+        let mut answer = LegendResponse::default();
+        let shown = egui::Area::new(egui::Id::new("trail-color-legend"))
+            .order(egui::Order::Foreground)
+            .pivot(egui::Align2::RIGHT_TOP)
+            .fixed_pos(rect.right_top() + vec2(-12.0, 12.0))
+            .constrain_to(rect)
+            .movable(false)
+            .sense(egui::Sense::click_and_drag())
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(chrome::SURFACE.gamma_multiply(0.94))
+                    .stroke(Stroke::new(1.0_f32, chrome::EDGE_STRONG))
+                    .corner_radius(1.0)
+                    .inner_margin(9.0)
+                    .show(ui, |ui| {
+                        ui.set_width(WIDTH - 18.0);
+                        let _heading = ui.label(chrome::eyebrow("TRAIL COLORS"));
+                        let _tabs = ui.horizontal(|ui| {
+                            for coloring in TrailColoring::ALL {
+                                let response = chrome::command(
+                                    ui,
+                                    coloring_tab(coloring),
+                                    coloring == current,
+                                );
+                                answer.tabs.push((coloring, response.rect));
+                                if response.clicked() {
+                                    answer.clicked = Some((coloring, response.rect));
+                                }
+                            }
+                        });
+                        ui.add_space(4.0);
+                        let _heading = ui.label(chrome::eyebrow(coloring_heading(current)));
+                        match current {
+                            TrailColoring::Class => {
+                                for class in self.classes.iter().copied() {
+                                    legend_row(
+                                        ui,
+                                        trail_class_label(class),
+                                        trail_class_color(class),
+                                        None,
+                                    );
+                                }
+                            }
+                            TrailColoring::Formality => {
+                                legend_row(
+                                    ui,
+                                    "FORMAL",
+                                    formality_color(false, TrailSalience::Context),
+                                    None,
+                                );
+                                legend_row(
+                                    ui,
+                                    "INFORMAL",
+                                    formality_color(true, TrailSalience::Context),
+                                    None,
+                                );
+                            }
+                            TrailColoring::Terrain => {
+                                for terrain in self.terrains.iter().copied() {
+                                    legend_row(
+                                        ui,
+                                        terrain_label(terrain),
+                                        trail_terrain_color(terrain, TrailSalience::Context),
+                                        None,
+                                    );
+                                }
+                            }
+                        }
+                        ui.add_space(4.0);
+                        let _heading =
+                            ui.label(chrome::eyebrow("LINE STYLE · SURFACE / WAYFINDING"));
+                        for mark in TrailMark::ALL {
+                            legend_row(
+                                ui,
+                                mark.label(),
+                                trail_class_color(TrailClass::Path),
+                                Some(mark),
+                            );
+                        }
+                    });
+            });
+        answer.rect = Some(shown.response.rect);
+        answer
     }
 
-    pub fn paint_network(&mut self, painter: &Painter, frame: MapFramePlan) {
-        self.field.paint(painter, frame);
+    pub fn paint_network(
+        &mut self,
+        painter: &Painter,
+        frame: MapFramePlan,
+        coloring: TrailColoring,
+    ) {
+        self.field.paint_colored(painter, frame, coloring);
     }
+}
+
+#[derive(Default)]
+pub struct LegendResponse {
+    pub rect: Option<Rect>,
+    pub tabs: Vec<(TrailColoring, Rect)>,
+    pub clicked: Option<(TrailColoring, Rect)>,
+}
+
+fn legend_row(ui: &mut egui::Ui, label: &str, color: Color32, mark: Option<TrailMark>) {
+    let (rect, _response) =
+        ui.allocate_exact_size(vec2(ui.available_width(), 21.0), egui::Sense::hover());
+    let from = pos2(rect.left() + 2.0, rect.center().y);
+    let to = pos2(rect.left() + 24.0, rect.center().y);
+    if let Some(mark) = mark {
+        paint_trail_tube(
+            ui.painter(),
+            &[from, to],
+            TrailSalience::Context.width(),
+            color,
+            mark,
+        );
+    } else {
+        let _swatch = ui.painter().line_segment(
+            [from, to],
+            Stroke::new(TrailSalience::Context.width(), color),
+        );
+    }
+    ui.painter().text(
+        pos2(rect.left() + 33.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::monospace(13.0),
+        chrome::TEXT,
+    );
 }
 
 impl RouteOverlay {
@@ -669,8 +779,8 @@ impl RouteOverlay {
         }
     }
 
-    pub fn paint(&mut self, painter: &Painter, frame: MapFramePlan) {
-        self.field.paint(painter, frame);
+    pub fn paint(&mut self, painter: &Painter, frame: MapFramePlan, coloring: TrailColoring) {
+        self.field.paint_colored(painter, frame, coloring);
     }
 }
 
@@ -684,6 +794,8 @@ struct Crown {
 struct OverlayStyle {
     color: Color32,
     trail_class: TrailClass,
+    standing: TrailStanding,
+    terrain: Terrain,
     mark: TrailMark,
     access: Access,
 }
@@ -691,6 +803,9 @@ struct OverlayStyle {
 impl OverlayStyle {
     fn same_visual_law(self, other: Self) -> bool {
         self.mark == other.mark
+            && (self.standing == TrailStanding::Informal)
+                == (other.standing == TrailStanding::Informal)
+            && self.terrain == other.terrain
             && TrailSalience::Selected.access_color(self.color, self.access)
                 == TrailSalience::Selected.access_color(other.color, other.access)
     }
@@ -738,6 +853,8 @@ fn candidate_chains(graph: &TrailGraph, routes: &[Route], identities: &[usize]) 
                 let style = OverlayStyle {
                     color,
                     trail_class: edge.attr.trail_class,
+                    standing: edge.attr.standing,
+                    terrain: edge.attr.terrain,
                     mark: trail_mark(
                         edge.attr.trail_class,
                         edge.attr.standing,
@@ -793,6 +910,8 @@ fn saved_chains(trail: &SavedTrail) -> Vec<WorldEdge> {
         let style = OverlayStyle {
             color: SELECTED_TRAIL_COLOR,
             trail_class: leg.trail_class,
+            standing: leg.standing,
+            terrain: leg.terrain,
             mark: trail_mark(
                 leg.trail_class,
                 leg.standing,
@@ -844,6 +963,8 @@ fn seal_overlay(draft: &mut Option<OverlayDraft>, chains: &mut Vec<WorldEdge>) {
         lineage: None,
         color: draft.style.color,
         trail_class: draft.style.trail_class,
+        standing: draft.style.standing,
+        terrain: draft.style.terrain,
         mark: draft.style.mark,
         access: draft.style.access,
     });
@@ -915,6 +1036,7 @@ pub fn paint_route(
     view: Viewport,
     rect: Rect,
     color: Color32,
+    coloring: TrailColoring,
 ) {
     let mut at = route.start;
     let mut strokes = Vec::with_capacity(route.edges.len());
@@ -935,7 +1057,14 @@ pub fn paint_route(
                     .into_iter()
                     .map(|world| screen_at(view, rect, world))
                     .collect(),
-                color: TrailSalience::Selected.access_color(color, edge.attr.access),
+                color: trail_hue(
+                    coloring,
+                    color,
+                    edge.attr.standing,
+                    edge.attr.terrain,
+                    TrailSalience::Selected,
+                    edge.attr.access,
+                ),
                 mark: trail_mark(
                     edge.attr.trail_class,
                     edge.attr.standing,
@@ -1303,6 +1432,56 @@ pub const fn terrain_color(terrain: Terrain) -> Color32 {
         Terrain::Road => Color32::from_rgb(158, 112, 73),
         Terrain::Water => Color32::from_rgb(60, 137, 179),
     }
+}
+
+pub const fn formality_color(informal: bool, salience: TrailSalience) -> Color32 {
+    match (informal, salience) {
+        (false, TrailSalience::Context) => Color32::from_rgb(213, 180, 104),
+        (true, TrailSalience::Context) => Color32::from_rgb(205, 133, 190),
+        (false, TrailSalience::Selected) => Color32::from_rgb(255, 168, 39),
+        (true, TrailSalience::Selected) => Color32::from_rgb(247, 62, 181),
+    }
+}
+
+/// Terrain hues for map trails deliberately avoid green, which disappears
+/// against park fill. The elevation profile retains literal land-cover hues.
+pub const fn trail_terrain_color(terrain: Terrain, salience: TrailSalience) -> Color32 {
+    match (terrain, salience) {
+        (Terrain::Unknown, TrailSalience::Context) => Color32::from_rgb(154, 140, 123),
+        (Terrain::Trail, TrailSalience::Context) => Color32::from_rgb(219, 178, 85),
+        (Terrain::Forest, TrailSalience::Context) => Color32::from_rgb(150, 110, 169),
+        (Terrain::Alpine, TrailSalience::Context) => Color32::from_rgb(104, 165, 195),
+        (Terrain::Talus, TrailSalience::Context) => Color32::from_rgb(191, 139, 81),
+        (Terrain::Scramble, TrailSalience::Context) => Color32::from_rgb(202, 83, 62),
+        (Terrain::Pavement, TrailSalience::Context) => Color32::from_rgb(142, 145, 151),
+        (Terrain::Road, TrailSalience::Context) => Color32::from_rgb(158, 112, 73),
+        (Terrain::Water, TrailSalience::Context) => Color32::from_rgb(60, 137, 179),
+        (Terrain::Unknown, TrailSalience::Selected) => Color32::from_rgb(227, 165, 88),
+        (Terrain::Trail, TrailSalience::Selected) => Color32::from_rgb(255, 180, 37),
+        (Terrain::Forest, TrailSalience::Selected) => Color32::from_rgb(207, 88, 232),
+        (Terrain::Alpine, TrailSalience::Selected) => Color32::from_rgb(67, 174, 234),
+        (Terrain::Talus, TrailSalience::Selected) => Color32::from_rgb(242, 126, 31),
+        (Terrain::Scramble, TrailSalience::Selected) => Color32::from_rgb(246, 64, 42),
+        (Terrain::Pavement, TrailSalience::Selected) => Color32::from_rgb(197, 202, 213),
+        (Terrain::Road, TrailSalience::Selected) => Color32::from_rgb(224, 109, 48),
+        (Terrain::Water, TrailSalience::Selected) => Color32::from_rgb(31, 143, 224),
+    }
+}
+
+pub fn trail_hue(
+    coloring: TrailColoring,
+    class_color: Color32,
+    standing: TrailStanding,
+    terrain: Terrain,
+    salience: TrailSalience,
+    access: Access,
+) -> Color32 {
+    let projected = match coloring {
+        TrailColoring::Class => class_color,
+        TrailColoring::Formality => formality_color(standing == TrailStanding::Informal, salience),
+        TrailColoring::Terrain => trail_terrain_color(terrain, salience),
+    };
+    salience.access_color(projected, access)
 }
 
 pub const fn terrain_label(terrain: Terrain) -> &'static str {
@@ -1678,6 +1857,45 @@ mod tests {
     }
 
     #[test]
+    fn color_projections_preserve_class_identity_and_access_alarm() {
+        let class = trail_class_color(TrailClass::Path);
+        let open = |coloring| {
+            trail_hue(
+                coloring,
+                class,
+                TrailStanding::Informal,
+                Terrain::Talus,
+                TrailSalience::Context,
+                Access::Open,
+            )
+        };
+        assert_eq!(open(TrailColoring::Class), class);
+        assert_eq!(
+            open(TrailColoring::Formality),
+            formality_color(true, TrailSalience::Context)
+        );
+        assert_eq!(
+            open(TrailColoring::Terrain),
+            trail_terrain_color(Terrain::Talus, TrailSalience::Context)
+        );
+
+        let blocked = TrailSalience::Selected.access_color(class, Access::Private);
+        for coloring in TrailColoring::ALL {
+            assert_eq!(
+                trail_hue(
+                    coloring,
+                    class,
+                    TrailStanding::Informal,
+                    Terrain::Talus,
+                    TrailSalience::Selected,
+                    Access::Private,
+                ),
+                blocked,
+            );
+        }
+    }
+
+    #[test]
     fn selected_trails_dominate_by_width_and_chroma() {
         const CLASSES: [TrailClass; 10] = [
             TrailClass::Unknown,
@@ -1841,6 +2059,8 @@ mod tests {
             lineage: None,
             color: trail_class_color(TrailClass::Path),
             trail_class: TrailClass::Path,
+            standing: TrailStanding::Established,
+            terrain: Terrain::Trail,
             mark: TrailMark::Dashed,
             access: Access::Open,
         }
