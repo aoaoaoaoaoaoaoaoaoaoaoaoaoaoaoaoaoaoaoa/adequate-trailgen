@@ -396,6 +396,26 @@ fn tile_shell(
         ui.painter()
             .galley(badge.min + vec2(3.5, 2.0), galley, chrome::TEXT);
     }
+    let difficulty = ui.painter().layout_no_wrap(
+        difficulty_badge(metrics),
+        egui::FontId::monospace(9.0),
+        chrome::TEXT,
+    );
+    let badge = Rect::from_min_size(
+        preview.left_bottom() + vec2(5.0, -difficulty.size().y - 9.0),
+        difficulty.size() + vec2(7.0, 4.0),
+    );
+    let _fill = ui
+        .painter()
+        .rect_filled(badge, 1.0, chrome::SURFACE.gamma_multiply(0.94));
+    let _rim = ui.painter().rect_stroke(
+        badge,
+        1.0,
+        Stroke::new(0.8_f32, chrome::EDGE_STRONG),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter()
+        .galley(badge.min + vec2(3.5, 2.0), difficulty, chrome::TEXT);
 
     let title = Rect::from_min_max(
         pos2(well.left() + 7.0, preview.bottom() + 6.0),
@@ -425,6 +445,10 @@ fn tile_shell(
         chrome::MUTED,
     );
     response
+}
+
+fn difficulty_badge(metrics: &trailgen_core::RouteMetrics) -> String {
+    format!("DIFFICULTY {:.0}", metrics.difficulty)
 }
 
 #[derive(Clone, Copy)]
@@ -535,5 +559,16 @@ mod tests {
                 .fold(f32::INFINITY, f32::min);
             assert!(error <= MINIATURE_ERROR_POINTS + 1.0e-4);
         }
+    }
+
+    #[test]
+    fn candidate_badge_discloses_route_difficulty() {
+        let route = route("ridge", 12_000.0, 620.0);
+        let metrics = trailgen_core::RouteMetrics {
+            difficulty: 67.6,
+            ..route.metrics
+        };
+
+        assert_eq!(difficulty_badge(&metrics), "DIFFICULTY 68");
     }
 }

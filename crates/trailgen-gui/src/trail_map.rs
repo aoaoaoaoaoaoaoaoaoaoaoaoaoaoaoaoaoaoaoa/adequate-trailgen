@@ -28,6 +28,7 @@ const PATTERN_ONSET_ZOOM: f32 = 11.48;
 const DISCLOSURE_SPAN_ZOOM: f32 = 0.58;
 const OVERLAY_ONSET_ZOOM: f32 = -100.0;
 const SELECTED_MITER_LIMIT: f32 = std::f32::consts::SQRT_2;
+const ROUND_CAP_STEPS: usize = 8;
 const DETAIL_HYSTERESIS_ZOOM: f64 = 0.08;
 const DETAIL_TRANSITION: std::time::Duration = std::time::Duration::from_millis(160);
 const _: () = assert!(TUBE_ONSET_ZOOM >= FIRST_BAND as f32);
@@ -111,7 +112,7 @@ impl TrailField {
                         edge,
                         law_ids[edge_id],
                         salience,
-                        salience == TrailSalience::Selected && band.zoom() >= 13.0,
+                        salience == TrailSalience::Selected,
                     );
                 }
             }
@@ -466,7 +467,7 @@ impl TrailMeshBuilder {
         edge: &WorldEdge,
         law_id: u32,
         salience: TrailSalience,
-        cap_supports: bool,
+        round_caps: bool,
     ) {
         if samples.len() < 2 {
             return;
@@ -485,7 +486,7 @@ impl TrailMeshBuilder {
         let pattern = pattern_code(edge.mark);
         let base = u32::try_from(self.vertices.len()).expect("trail tile vertex count fits u32");
         for (slot, point) in local.iter().copied().enumerate() {
-            let [negative, positive] = ribbon_extrusions(&local, slot, salience, cap_supports);
+            let [negative, positive] = ribbon_extrusions(&local, slot, salience);
             self.vertices.extend([
                 TrailPoint {
                     local: point,
@@ -493,6 +494,7 @@ impl TrailMeshBuilder {
                     srgb: color,
                     arc_world: samples[slot].arc_world as f32,
                     cadence: cadence_word(law_id, pattern, false),
+                    edge_factor: -1.0,
                 },
                 TrailPoint {
                     local: point,
@@ -500,6 +502,7 @@ impl TrailMeshBuilder {
                     srgb: color,
                     arc_world: samples[slot].arc_world as f32,
                     cadence: cadence_word(law_id, pattern, true),
+                    edge_factor: 1.0,
                 },
             ]);
         }
@@ -510,6 +513,62 @@ impl TrailMeshBuilder {
                 .expect("trail fragment index fits u32");
             let a = base + offset;
             self.indices.extend([a, a + 1, a + 2, a + 1, a + 3, a + 2]);
+        }
+        if round_caps {
+            self.push_round_cap(
+                local[0],
+                ribbon_direction(local[0], local[1], -1.0),
+                color,
+                samples[0].arc_world as f32,
+                cadence_word(law_id, pattern, false),
+            );
+            self.push_round_cap(
+                local[local.len() - 1],
+                ribbon_direction(local[local.len() - 2], local[local.len() - 1], 1.0),
+                color,
+                samples[samples.len() - 1].arc_world as f32,
+                cadence_word(law_id, pattern, false),
+            );
+        }
+    }
+
+    fn push_round_cap(
+        &mut self,
+        local: [f32; 2],
+        outward: [f32; 2],
+        srgb: [u8; 4],
+        arc_world: f32,
+        cadence: u32,
+    ) {
+        let base = u32::try_from(self.vertices.len()).expect("trail tile vertex count fits u32");
+        self.vertices.push(TrailPoint {
+            local,
+            extrusion: [0.0, 0.0],
+            srgb,
+            arc_world,
+            cadence,
+            edge_factor: 0.0,
+        });
+        let normal = [-outward[1], outward[0]];
+        for slot in 0..=ROUND_CAP_STEPS {
+            let angle = -std::f32::consts::FRAC_PI_2
+                + std::f32::consts::PI * slot as f32 / ROUND_CAP_STEPS as f32;
+            let (sin, cos) = angle.sin_cos();
+            self.vertices.push(TrailPoint {
+                local,
+                extrusion: [
+                    outward[0].mul_add(cos, normal[0] * sin),
+                    outward[1].mul_add(cos, normal[1] * sin),
+                ],
+                srgb,
+                arc_world,
+                cadence,
+                edge_factor: 1.0,
+            });
+        }
+        for slot in 0..ROUND_CAP_STEPS {
+            let rim = base + 1 + u32::try_from(slot).expect("round-cap subdivision count fits u32");
+            self.indices.extend([base, rim, rim + 1]);
         }
     }
 
@@ -548,12 +607,7 @@ impl TrailMeshBuilder {
     }
 }
 
-fn ribbon_extrusions(
-    points: &[[f32; 2]],
-    slot: usize,
-    salience: TrailSalience,
-    cap_supports: bool,
-) -> [[f32; 2]; 2] {
+fn ribbon_extrusions(points: &[[f32; 2]], slot: usize, salience: TrailSalience) -> [[f32; 2]; 2] {
     let mut join = basemap::join_normal(points, slot);
     if salience == TrailSalience::Selected {
         let reach = join[0].hypot(join[1]);
@@ -562,19 +616,7 @@ fn ribbon_extrusions(
             join = [join[0] * scale, join[1] * scale];
         }
     }
-    let mut pair = [[-join[0], -join[1]], join];
-    if cap_supports && (slot == 0 || slot + 1 == points.len()) {
-        let tangent = if slot == 0 {
-            ribbon_direction(points[0], points[1], -1.0)
-        } else {
-            ribbon_direction(points[points.len() - 2], points[points.len() - 1], 1.0)
-        };
-        for extrusion in &mut pair {
-            extrusion[0] += tangent[0];
-            extrusion[1] += tangent[1];
-        }
-    }
-    pair
+    [[-join[0], -join[1]], join]
 }
 
 fn ribbon_direction(from: [f32; 2], to: [f32; 2], sign: f32) -> [f32; 2] {
@@ -613,8 +655,9 @@ struct TrailPoint {
     srgb: [u8; 4],
     arc_world: f32,
     cadence: u32,
+    edge_factor: f32,
 }
-const _: () = assert!(size_of::<TrailPoint>() == 28);
+const _: () = assert!(size_of::<TrailPoint>() == 32);
 
 impl TrailPoint {
     const fn law(&self) -> u32 {
@@ -1422,12 +1465,13 @@ fn wrap_radius(world_width: f32, center_x: f32) -> u32 {
 }
 
 const fn trail_layout() -> wgpu::VertexBufferLayout<'static> {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+    const ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
         0 => Float32x2,
         1 => Float32x2,
         2 => Unorm8x4,
         3 => Float32,
-        4 => Uint32
+        4 => Uint32,
+        5 => Float32
     ];
     wgpu::VertexBufferLayout {
         array_stride: size_of::<TrailPoint>() as u64,
@@ -1514,6 +1558,7 @@ fn trail_vertex(
     @location(2) color: vec4f,
     @location(3) arc_world: f32,
     @location(4) cadence: u32,
+    @location(5) edge_factor: f32,
     @location(7) origin_high: vec2f,
     @location(8) origin_low: vec2f,
     @location(9) tile_span: f32,
@@ -1522,7 +1567,6 @@ fn trail_vertex(
     @location(12) opacity: f32,
 ) -> VertexOut {
     var out: VertexOut;
-    let side = select(-1.0, 1.0, (cadence & 1u) != 0u);
     let pattern = (cadence >> 1u) & 3u;
     let law = cadence >> 3u;
     let core = layer == 1u;
@@ -1538,7 +1582,7 @@ fn trail_vertex(
     out.position = vec4f(clip, 0.0, 1.0);
     let ink = select(color, vec4f(20.0 / 255.0, 19.0 / 255.0, 17.0 / 255.0, 1.0), core);
     out.color = vec4f(ink.rgb, ink.a * maturity * opacity);
-    out.edge_distance = side * expanded_radius;
+    out.edge_distance = edge_factor * expanded_radius;
     out.solid_radius = visible_radius;
     out.tile_local = local + extrusion * expanded_radius / (u.world_points * tile_span);
     out.arc_world = arc_world;
@@ -1926,16 +1970,30 @@ mod tests {
     }
 
     #[test]
-    fn selected_ribbons_cap_support_seams_and_repel_miter_spikes() {
-        let straight = [[0.0, 0.0], [1.0, 0.0]];
-        let start = ribbon_extrusions(&straight, 0, TrailSalience::Selected, true);
-        let end = ribbon_extrusions(&straight, 1, TrailSalience::Selected, true);
-        assert!(start.iter().all(|extrusion| extrusion[0] < 0.0));
-        assert!(end.iter().all(|extrusion| extrusion[0] > 0.0));
+    fn selected_ribbons_own_semicircular_support_caps() {
+        let mut builder = TrailMeshBuilder::default();
+        builder.push_round_cap(
+            [0.5, 0.5],
+            [1.0, 0.0],
+            [255; 4],
+            0.25,
+            cadence_word(0, 0, false),
+        );
+        assert_eq!(builder.vertices.len(), ROUND_CAP_STEPS + 2);
+        assert_eq!(builder.indices.len(), ROUND_CAP_STEPS * 3);
+        assert!(builder.vertices[0].edge_factor.abs() < f32::EPSILON);
+        assert!(builder.vertices[1..].iter().all(|vertex| {
+            (vertex.extrusion[0].hypot(vertex.extrusion[1]) - 1.0).abs() < 1.0e-5
+                && vertex.extrusion[0] >= -f32::EPSILON
+                && (vertex.edge_factor - 1.0).abs() < f32::EPSILON
+        }));
+    }
 
+    #[test]
+    fn selected_ribbons_repel_miter_spikes() {
         let corner = [[0.0, 0.0], [1.0, 0.0], [0.5, 0.866_025_4]];
-        let context = ribbon_extrusions(&corner, 1, TrailSalience::Context, false);
-        let selected = ribbon_extrusions(&corner, 1, TrailSalience::Selected, true);
+        let context = ribbon_extrusions(&corner, 1, TrailSalience::Context);
+        let selected = ribbon_extrusions(&corner, 1, TrailSalience::Selected);
         assert!(context[1][0].hypot(context[1][1]) > SELECTED_MITER_LIMIT);
         assert!(selected.iter().all(
             |extrusion| extrusion[0].hypot(extrusion[1]) <= SELECTED_MITER_LIMIT + f32::EPSILON

@@ -1,7 +1,7 @@
 use egui_tester::{Condition, field};
 use serde::Deserialize;
 
-pub use trailgen_contract::{EditorOrigin, RouteShape, SearchPhase, View, Workspace};
+pub use trailgen_contract::{CorpusPhase, EditorOrigin, RouteShape, SearchPhase, View, Workspace};
 
 #[derive(Debug, Deserialize)]
 pub struct Observation {
@@ -40,6 +40,7 @@ pub struct EditorState {
 #[derive(Debug, Deserialize)]
 pub struct SearchState {
     pub phase: SearchPhase,
+    pub corpus: CorpusPhase,
     pub trailhead: bool,
     pub boundary: bool,
     pub required: usize,
@@ -63,7 +64,8 @@ pub struct ProfileState {
 
 pub mod shows {
     use super::{
-        Condition, EditorOrigin, Observation, RouteShape, SearchPhase, View, Workspace, field,
+        Condition, CorpusPhase, EditorOrigin, Observation, RouteShape, SearchPhase, View,
+        Workspace, field,
     };
 
     pub fn condition(
@@ -141,6 +143,15 @@ pub mod shows {
                 .search
                 .as_ref()
                 .is_some_and(|search| search.phase == phase)
+        })
+    }
+
+    pub fn corpus(expected: CorpusPhase) -> Condition<Observation> {
+        condition(format!("trail corpus phase {expected:?}"), move |state| {
+            state
+                .search
+                .as_ref()
+                .is_some_and(|search| search.corpus == expected)
         })
     }
 

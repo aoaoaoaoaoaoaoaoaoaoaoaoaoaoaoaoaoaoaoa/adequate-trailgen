@@ -67,6 +67,7 @@ pub struct TrailApp {
     rename: Option<RenameDraft>,
     candidates: Option<CandidatePortfolio>,
     edicts: EdgeEdicts,
+    edict_history: UndoLog<EdgeEdicts>,
     search_due: Option<Instant>,
     view: WorkbenchView,
     sort: TrailSort,
@@ -82,6 +83,8 @@ pub struct TrailApp {
     vector: VectorField,
     relief: Relief,
     regions: Vec<SurveyRegion>,
+    region_names: BTreeMap<String, String>,
+    area_rename: Option<AreaRenameDraft>,
     corpus: Option<TrailData>,
     scribe: RegionScribe,
     boundary_scribe: BoundaryScribe,
@@ -110,8 +113,7 @@ struct TrailEditor {
     profile: Option<ElevationProfile>,
     fault: Option<String>,
     notice: Option<String>,
-    undo: VecDeque<TrailSketch>,
-    redo: VecDeque<TrailSketch>,
+    history: UndoLog<TrailSketch>,
     drag: Option<PinDrag>,
 }
 
@@ -159,6 +161,64 @@ struct TrailSketch {
     support_points: Vec<SupportPoint>,
 }
 
+struct UndoLog<T> {
+    past: VecDeque<T>,
+    future: VecDeque<T>,
+}
+
+impl<T> Default for UndoLog<T> {
+    fn default() -> Self {
+        Self {
+            past: VecDeque::new(),
+            future: VecDeque::new(),
+        }
+    }
+}
+
+impl<T> UndoLog<T> {
+    fn push(stack: &mut VecDeque<T>, state: T) {
+        if stack.len() == UNDO_DEPTH {
+            let _oldest = stack.pop_front();
+        }
+        stack.push_back(state);
+    }
+
+    fn commit(&mut self, before: T) {
+        Self::push(&mut self.past, before);
+        self.future.clear();
+    }
+
+    fn undo(&mut self, current: T) -> Option<T> {
+        let target = self.past.pop_back()?;
+        Self::push(&mut self.future, current);
+        Some(target)
+    }
+
+    fn redo(&mut self, current: T) -> Option<T> {
+        let target = self.future.pop_back()?;
+        Self::push(&mut self.past, current);
+        Some(target)
+    }
+
+    fn can_undo(&self) -> bool {
+        !self.past.is_empty()
+    }
+
+    fn can_redo(&self) -> bool {
+        !self.future.is_empty()
+    }
+
+    #[cfg(feature = "egui-test")]
+    fn redo_depth(&self) -> usize {
+        self.future.len()
+    }
+
+    fn clear(&mut self) {
+        self.past.clear();
+        self.future.clear();
+    }
+}
+
 struct LoopClosure {
     trailhead: SupportPoint,
     realization: TrailRealization,
@@ -169,6 +229,23 @@ struct RenameDraft {
     trail: TrailId,
     text: String,
     seize_focus: bool,
+}
+
+struct AreaRenameDraft {
+    region: String,
+    text: String,
+    seize_focus: bool,
+}
+
+enum AreaRenameAction {
+    Begin(String),
+    Commit,
+    Cancel,
+}
+
+enum AreaRowAction {
+    Remove(egui::Rect),
+    Rename,
 }
 
 struct SavedProjection {
@@ -258,54 +335,38 @@ impl TrailEditor {
         }
     }
 
-    fn push(history: &mut VecDeque<TrailSketch>, sketch: TrailSketch) {
-        if history.len() == UNDO_DEPTH {
-            let _oldest = history.pop_front();
-        }
-        history.push_back(sketch);
-    }
-
-    fn commit(&mut self, sketch: TrailSketch) {
-        Self::push(&mut self.undo, sketch);
-        self.redo.clear();
-    }
-
     fn checkpoint(&mut self) {
         self.finish_drag();
-        self.commit(self.sketch());
+        self.history.commit(self.sketch());
     }
 
-    fn finish_drag(&mut self) {
+    fn finish_drag(&mut self) -> bool {
         let Some(drag) = self.drag.take() else {
-            return;
+            return false;
         };
-        if drag.before != self.sketch() {
-            self.commit(drag.before);
+        let changed = drag.before != self.sketch();
+        if changed {
+            self.history.commit(drag.before);
         }
+        changed
     }
 
     fn undo(&mut self) -> bool {
+        self.finish_drag();
         let current = self.sketch();
-        let target = self
-            .drag
-            .take()
-            .and_then(|drag| (drag.before != current).then_some(drag.before))
-            .or_else(|| self.undo.pop_back());
-        let Some(target) = target else {
+        let Some(target) = self.history.undo(current) else {
             return false;
         };
-        Self::push(&mut self.redo, current);
         self.restore(target);
         true
     }
 
     fn redo(&mut self) -> bool {
         self.finish_drag();
-        let Some(target) = self.redo.pop_back() else {
+        let current = self.sketch();
+        let Some(target) = self.history.redo(current) else {
             return false;
         };
-        let current = self.sketch();
-        Self::push(&mut self.undo, current);
         self.restore(target);
         true
     }
@@ -439,8 +500,29 @@ pub enum Action {
 
 struct LoadedCorpus {
     regions: Vec<SurveyRegion>,
+    region_names: BTreeMap<String, String>,
     task: Option<TrailData>,
     status: Option<String>,
+}
+
+pub struct ReloadFrame {
+    focus: Option<TrailId>,
+    viewport: Viewport,
+    browse_viewport: Option<Viewport>,
+}
+
+impl ReloadFrame {
+    pub const fn browse(viewport: Viewport) -> Self {
+        Self {
+            focus: None,
+            viewport,
+            browse_viewport: None,
+        }
+    }
+
+    pub const fn viewport(&self) -> Viewport {
+        self.viewport
+    }
 }
 
 impl LoadedCorpus {
@@ -452,6 +534,7 @@ impl LoadedCorpus {
         indexed: Option<&trailgen_data::Summary>,
     ) -> Result<Self> {
         let regions = config.regions;
+        let region_names = config.region_names;
         let stale = !regions.is_empty() && indexed.is_none();
         let task = if !offline && stale {
             Some(TrailData::spawn(
@@ -475,6 +558,7 @@ impl LoadedCorpus {
             });
         Ok(Self {
             regions,
+            region_names,
             task,
             status,
         })
@@ -539,6 +623,7 @@ impl TrailApp {
             rename: None,
             candidates: None,
             edicts: EdgeEdicts::default(),
+            edict_history: UndoLog::default(),
             search_due: None,
             view: WorkbenchView::Browse,
             sort: slate.sort,
@@ -558,6 +643,8 @@ impl TrailApp {
             vector,
             relief,
             regions: corpus.regions,
+            region_names: corpus.region_names,
+            area_rename: None,
             corpus: corpus.task,
             scribe: RegionScribe::default(),
             boundary_scribe: BoundaryScribe::default(),
@@ -612,6 +699,52 @@ impl TrailApp {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn window_title(&self) -> String {
+        let trail = match &self.view {
+            WorkbenchView::Focus(Focus::Candidate { identity }) => self
+                .candidates
+                .as_ref()
+                .and_then(|run| run.slot(*identity).and_then(|slot| run.routes.get(slot)))
+                .map(|route| route.name.as_str()),
+            WorkbenchView::Focus(Focus::Saved(id)) => {
+                self.library.trail(id).map(|trail| trail.name.as_str())
+            }
+            WorkbenchView::Edit(editor) => Some(editor.name.as_str()),
+            WorkbenchView::Browse => None,
+        };
+        trail.map_or_else(
+            || format!("{} · trailgen", self.name),
+            |trail| format!("{trail} · {} · trailgen", self.name),
+        )
+    }
+
+    pub fn reload_frame(&self) -> ReloadFrame {
+        match self.view.focus() {
+            Some(Focus::Saved(id)) => ReloadFrame {
+                focus: Some(id.clone()),
+                viewport: self.viewport,
+                browse_viewport: self.focus_frame.return_to,
+            },
+            Some(Focus::Candidate { .. }) | None => ReloadFrame {
+                focus: None,
+                viewport: self.viewport,
+                browse_viewport: None,
+            },
+        }
+    }
+
+    pub fn restore_reload_frame(&mut self, frame: ReloadFrame) {
+        self.viewport = frame.viewport;
+        self.fit = Fit::None;
+        if let Some(id) = frame.focus.filter(|id| self.library.trail(id).is_some()) {
+            self.view = WorkbenchView::Focus(Focus::Saved(id));
+            self.focus_frame.return_to = frame.browse_viewport;
+        } else {
+            self.view = WorkbenchView::Browse;
+            self.focus_frame = FocusFrame::default();
+        }
     }
 
     #[cfg(feature = "egui-test")]
@@ -680,7 +813,7 @@ impl TrailApp {
                         },
                     )
                 }),
-                redo_depth: editor.redo.len(),
+                redo_depth: editor.history.redo_depth(),
             })
     }
 
@@ -692,6 +825,11 @@ impl TrailApp {
                 trailgen_contract::SearchPhase::Running
             } else {
                 trailgen_contract::SearchPhase::Idle
+            },
+            corpus: if self.corpus.is_some() {
+                trailgen_contract::CorpusPhase::Updating
+            } else {
+                trailgen_contract::CorpusPhase::Idle
             },
             trailhead: recipe.trailhead.is_some(),
             boundary: recipe.boundary.is_some(),
@@ -794,6 +932,7 @@ impl TrailApp {
         self.trailhead_editor(ui, &mut recipe);
         self.search_boundary_editor(ui, &mut recipe);
         let recipe_changed = self.search_recipe_editor(ui, &mut recipe);
+        let trailhead_missing = recipe.trailhead.is_none();
 
         if recipe_changed || recipe != original {
             *self.library.search_mut() = recipe;
@@ -847,7 +986,7 @@ impl TrailApp {
             )
             .min_size(vec2(ui.available_width(), 36.0)),
         );
-        let find = match (striking, validation) {
+        let find = match (striking, validation.as_deref()) {
             (false, Some(fault)) => find.on_disabled_hover_text(fault),
             (true, _) | (false, None) => find,
         };
@@ -857,6 +996,9 @@ impl TrailApp {
             find.rect,
         );
         chrome::tension(ui, &find);
+        if !striking && trailhead_missing {
+            let _reason = chrome::note(ui, "PLACE A TRAILHEAD TO ENABLE SEARCH");
+        }
         if find.clicked() {
             if striking {
                 self.stop_search();
@@ -899,7 +1041,7 @@ impl TrailApp {
                 if self.placing_trailhead {
                     self.scribe.disarm();
                     self.boundary_scribe.disarm();
-                    self.leave_focus();
+                    self.dissolve_focus();
                 }
                 self.water.click(place.rect);
             }
@@ -959,7 +1101,7 @@ impl TrailApp {
                     self.scribe.disarm();
                     self.placing_trailhead = false;
                     self.trailhead_drag = None;
-                    self.leave_focus();
+                    self.dissolve_focus();
                 }
                 self.water.click(draw.rect);
             }
@@ -1053,11 +1195,11 @@ impl TrailApp {
             let can_undo = self
                 .view
                 .editor()
-                .is_some_and(|editor| !editor.undo.is_empty());
+                .is_some_and(|editor| editor.history.can_undo());
             let can_redo = self
                 .view
                 .editor()
-                .is_some_and(|editor| !editor.redo.is_empty());
+                .is_some_and(|editor| editor.history.can_redo());
             let undo = ui.add_enabled(
                 can_undo,
                 chrome::command_button("UNDO · CTRL+Z", false).min_size(vec2(112.0, 27.0)),
@@ -1100,6 +1242,7 @@ impl TrailApp {
         chrome::tension(ui, &save);
         if save.clicked() {
             self.save_editor();
+            ui.ctx().request_repaint();
             self.water.thwack(save.rect, 0.7);
         }
         let cancel = ui.add(
@@ -1176,11 +1319,7 @@ impl TrailApp {
         let mut opened = None;
         for trail in self.library.trails() {
             let selected = active.as_ref() == Some(&trail.id);
-            let response = ui.add_enabled(
-                navigable,
-                chrome::command_button(trail.name.to_ascii_uppercase(), selected)
-                    .min_size(vec2(ui.available_width(), 27.0)),
-            );
+            let response = library_button(ui, trail, selected, navigable);
             #[cfg(feature = "egui-test")]
             crate::witness::anchor(
                 ui,
@@ -1198,17 +1337,11 @@ impl TrailApp {
                 self.water
                     .hover(("saved-library", &trail.id), response.rect);
             }
-            if response.clicked() {
+            if response.clicked()
+                || (response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)))
+            {
                 opened = Some((trail.id.clone(), response.rect));
             }
-            let _metrics = chrome::note(
-                ui,
-                format!(
-                    "{:.1} KM · ASCENT {:.0} M",
-                    trail.metrics.distance_m / 1_000.0,
-                    trail.metrics.ascent_m
-                ),
-            );
             ui.add_space(3.0);
         }
 
@@ -1277,9 +1410,27 @@ impl TrailApp {
 
     fn area_panel(&mut self, ui: &mut egui::Ui) {
         let _count = chrome::note(ui, format!("{} DOWNLOADED AREA(S)", self.regions.len()));
-        let selecting = self.scribe.active();
         let mutable =
             !self.view.is_editing() && self.corpus.is_none() && !self.forge_phase.active();
+        self.area_picker(ui, mutable);
+        if let Some((id, rect)) = self.area_rows(ui, mutable) {
+            if self
+                .area_rename
+                .as_ref()
+                .is_some_and(|draft| draft.region == id)
+            {
+                self.area_rename = None;
+            }
+            match self.strike_corpus(ui.ctx(), TrailDataMutation::Remove(id)) {
+                Ok(()) => self.water.click(rect),
+                Err(err) => self.status = format!("Could not remove that map area: {err:#}"),
+            }
+        }
+        self.area_refresher(ui, mutable);
+    }
+
+    fn area_picker(&mut self, ui: &mut egui::Ui, mutable: bool) {
+        let selecting = self.scribe.active();
         let select = ui.add_enabled(
             !self.offline && mutable,
             chrome::command_button(
@@ -1292,6 +1443,7 @@ impl TrailApp {
             )
             .min_size(vec2(ui.available_width(), 27.0)),
         );
+        crate::witness::anchor(ui, Target::AddMapArea, select.rect);
         chrome::tension(ui, &select);
         if select.clicked() {
             if selecting {
@@ -1301,40 +1453,88 @@ impl TrailApp {
                 self.boundary_scribe.disarm();
                 self.placing_trailhead = false;
                 self.trailhead_drag = None;
-                self.leave_focus();
+                self.dissolve_focus();
             }
             self.water.click(select.rect);
         }
+    }
 
+    fn area_rows(&mut self, ui: &mut egui::Ui, mutable: bool) -> Option<(String, egui::Rect)> {
+        let areas = self
+            .regions
+            .iter()
+            .enumerate()
+            .map(|(slot, region)| (slot, region.id.clone()))
+            .collect::<Vec<_>>();
         let mut excision = None;
-        for (slot, region) in self.regions.iter().enumerate() {
-            let _row = ui.horizontal(|ui| {
-                let _label = ui.label(chrome::muted(format!("AREA {slot:02}")));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let remove = ui
-                        .add_enabled(
-                            mutable,
-                            chrome::command_button("REMOVE", false).min_size(vec2(58.0, 22.0)),
-                        )
-                        .on_hover_text("Remove this downloaded area and update trails.");
-                    if remove.clicked() {
-                        excision = Some((region.id.clone(), remove.rect));
+        let mut rename_action = None;
+        for (slot, id) in areas {
+            if self
+                .area_rename
+                .as_ref()
+                .is_some_and(|draft| draft.region == id)
+            {
+                let draft = self.area_rename.as_mut().expect("area rename checked");
+                let _row = ui.horizontal(|ui| {
+                    let edit = ui.add(
+                        egui::TextEdit::singleline(&mut draft.text)
+                            .font(egui::TextStyle::Monospace)
+                            .char_limit(80)
+                            .desired_width(116.0),
+                    );
+                    if draft.seize_focus {
+                        edit.request_focus();
+                        draft.seize_focus = false;
+                    }
+                    let save = chrome::command(ui, "SAVE", true);
+                    let cancel = chrome::command(ui, "CANCEL", false);
+                    let (enter, escape) = rename_shortcuts(ui, &edit);
+                    if enter || save.clicked() {
+                        rename_action = Some(AreaRenameAction::Commit);
+                    } else if escape || cancel.clicked() {
+                        rename_action = Some(AreaRenameAction::Cancel);
                     }
                 });
-            });
-        }
-        if let Some((id, rect)) = excision {
-            match self.strike_corpus(ui.ctx(), TrailDataMutation::Remove(id)) {
-                Ok(()) => self.water.click(rect),
-                Err(err) => self.status = format!("Could not remove that map area: {err:#}"),
+                continue;
+            }
+            let action = area_row(
+                ui,
+                self.region_names.get(&id).map(String::as_str),
+                slot,
+                mutable,
+            );
+            match action {
+                Some(AreaRowAction::Remove(rect)) => excision = Some((id, rect)),
+                Some(AreaRowAction::Rename) => {
+                    rename_action = Some(AreaRenameAction::Begin(id));
+                }
+                None => {}
             }
         }
+        match rename_action {
+            Some(AreaRenameAction::Begin(region)) => {
+                let text = self.region_names.get(&region).cloned().unwrap_or_default();
+                self.area_rename = Some(AreaRenameDraft {
+                    region,
+                    text,
+                    seize_focus: true,
+                });
+            }
+            Some(AreaRenameAction::Commit) => self.commit_area_rename(),
+            Some(AreaRenameAction::Cancel) => self.area_rename = None,
+            None => {}
+        }
+        excision
+    }
+
+    fn area_refresher(&mut self, ui: &mut egui::Ui, mutable: bool) {
         if !self.regions.is_empty() {
             let refresh = ui.add_enabled(
                 !self.offline && mutable,
                 chrome::command_button("REFRESH TRAILS", false)
                     .min_size(vec2(ui.available_width(), 24.0)),
             );
+            crate::witness::anchor(ui, Target::RefreshTrails, refresh.rect);
             chrome::tension(ui, &refresh);
             if refresh.clicked() {
                 match self.strike_corpus(ui.ctx(), TrailDataMutation::Refresh) {
@@ -1342,6 +1542,19 @@ impl TrailApp {
                     Err(err) => self.status = format!("Could not refresh trails: {err:#}"),
                 }
             }
+        }
+    }
+
+    fn commit_area_rename(&mut self) {
+        let Some(draft) = self.area_rename.take() else {
+            return;
+        };
+        match trailgen_data::name_region(&self.root, &draft.region, &draft.text) {
+            Ok(config) => {
+                self.region_names = config.region_names;
+                "Map area named.".clone_into(&mut self.status);
+            }
+            Err(err) => self.status = format!("Could not name that map area: {err:#}"),
         }
     }
 
@@ -1450,6 +1663,7 @@ impl TrailApp {
             }
             self.candidates = None;
             self.edicts.clear();
+            self.edict_history.clear();
             self.search_due = None;
             "Search results cleared. Saved trails are untouched.".clone_into(&mut self.status);
             self.water.click(rect);
@@ -1489,7 +1703,7 @@ impl TrailApp {
                     .filter(|standing| *standing != TrailStanding::Established)
                 {
                     let _standing = ui.colored_label(
-                        map::trail_standing_color(standing),
+                        toolbar_standing_color(standing),
                         RichText::new(format!(
                             "PATH STATUS · {}",
                             map::trail_standing_label(standing)
@@ -1550,7 +1764,7 @@ impl TrailApp {
         let renaming =
             saved_id.is_some_and(|id| self.rename.as_ref().is_some_and(|draft| &draft.trail == id));
         if !renaming {
-            let _name = toolbar_text(ui, name.to_ascii_uppercase(), chrome::TEXT);
+            let _name = toolbar_title(ui, name.to_ascii_uppercase());
             let id = saved_id?;
             let rename =
                 chrome::command(ui, "✎", false).on_hover_text("Rename this saved trail · F2");
@@ -1611,7 +1825,7 @@ impl TrailApp {
             .and_then(|editor| editor.realization.as_ref())
             .map(|realization| metrics_summary(&realization.route.metrics));
         let _row = ui.horizontal(|ui| {
-            let _name = toolbar_text(ui, name, chrome::TEXT);
+            let _name = toolbar_title(ui, name);
             if let Some(summary) = summary {
                 ui.separator();
                 let _summary = toolbar_text(ui, summary, chrome::MUTED);
@@ -1792,6 +2006,11 @@ impl TrailApp {
             .editor()
             .and_then(|editor| editor.drag.as_ref())
             .is_some();
+        if editor_dragging {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        } else if support_under_pointer.is_some() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        }
         let before = self.viewport;
         let moved = map::navigate_with(
             &mut self.viewport,
@@ -2037,11 +2256,7 @@ impl TrailApp {
                 .and_then(|editor| editor.drag.as_ref())
                 .map(|drag| (drag.slot, drag.grab))
         {
-            self.place_editor_support(
-                map::coord_at(self.viewport, rect, pointer - grab),
-                Some(slot),
-                false,
-            );
+            self.preview_editor_support(map::coord_at(self.viewport, rect, pointer - grab), slot);
         }
         if ui.input(|input| input.pointer.button_released(egui::PointerButton::Primary)) {
             self.finish_editor_drag();
@@ -2175,7 +2390,12 @@ impl TrailApp {
     }
 
     fn paint_map_header(&self, painter: &egui::Painter, rect: egui::Rect) {
-        let text = if self.scribe.active() {
+        let text = if self.corpus.is_some() {
+            self.trail_data_status
+                .as_deref()
+                .unwrap_or("Updating trails…")
+                .to_ascii_uppercase()
+        } else if self.scribe.active() {
             "DRAW A MAP AREA".to_owned()
         } else if self.view.is_editing() {
             "TRAIL EDITOR".to_owned()
@@ -2194,7 +2414,7 @@ impl TrailApp {
         } else {
             "TRAIL MAP".to_owned()
         };
-        let galley = painter.layout_no_wrap(text, egui::FontId::monospace(11.0), chrome::TEXT);
+        let galley = painter.layout_no_wrap(text, egui::FontId::monospace(13.0), chrome::TEXT);
         let plate = egui::Rect::from_min_size(
             rect.left_top() + vec2(12.0, 12.0),
             galley.size() + vec2(14.0, 8.0),
@@ -2247,8 +2467,6 @@ impl TrailApp {
                     {
                         self.status = format!("Could not add that map area: {err:#}");
                         self.scribe.arm();
-                    } else {
-                        self.regions.push(region);
                     }
                 }
             }
@@ -2344,7 +2562,7 @@ impl TrailApp {
     }
 
     fn place_editor_support(&mut self, requested: Coord, slot: Option<usize>, remember: bool) {
-        let Some(projection) = self.graph.project_onto_edge(requested) else {
+        let Some(projection) = self.edge_index.project(&self.graph, requested) else {
             return;
         };
         if projection.distance_m > TRAILHEAD_SNAP_M {
@@ -2387,6 +2605,25 @@ impl TrailApp {
         self.reforge_editor();
     }
 
+    fn preview_editor_support(&mut self, requested: Coord, slot: usize) {
+        let Some(projection) = self.edge_index.project(&self.graph, requested) else {
+            return;
+        };
+        if projection.distance_m > TRAILHEAD_SNAP_M {
+            return;
+        }
+        let support = SupportPoint::forge(projection.coord)
+            .expect("edge projections contain valid coordinates");
+        let Some(editor) = self.view.editor_mut() else {
+            return;
+        };
+        if editor.support_points.get(slot) != Some(&support)
+            && let Some(current) = editor.support_points.get_mut(slot)
+        {
+            *current = support;
+        }
+    }
+
     fn remember_editor(&mut self) {
         if let Some(editor) = self.view.editor_mut() {
             editor.checkpoint();
@@ -2394,8 +2631,8 @@ impl TrailApp {
     }
 
     fn finish_editor_drag(&mut self) {
-        if let Some(editor) = self.view.editor_mut() {
-            editor.finish_drag();
+        if self.view.editor_mut().is_some_and(TrailEditor::finish_drag) {
+            self.reforge_editor();
         }
     }
 
@@ -2541,21 +2778,39 @@ impl TrailApp {
             "Click closer to a trail segment.".clone_into(&mut self.status);
             return;
         }
+        let before = self.edicts.clone();
         if forbidden {
             self.edicts.toggle_forbidden(projection.edge);
         } else {
             self.edicts.toggle_required(projection.edge);
         }
+        self.edict_history.commit(before);
         let disposition = self.edicts.disposition(projection.edge);
-        self.view = WorkbenchView::Browse;
-        self.focus_frame = FocusFrame::default();
-        self.fit = Fit::None;
+        self.dissolve_focus();
         match disposition {
             EdgeDisposition::Required => "Segment required. Revising trails…",
             EdgeDisposition::Forbidden => "Segment excluded. Revising trails…",
             EdgeDisposition::Free => "Segment rule removed. Revising trails…",
         }
         .clone_into(&mut self.status);
+        self.schedule_revision();
+    }
+
+    fn undo_edict(&mut self) {
+        let Some(edicts) = self.edict_history.undo(self.edicts.clone()) else {
+            return;
+        };
+        self.edicts = edicts;
+        "Segment rule undone. Revising trails…".clone_into(&mut self.status);
+        self.schedule_revision();
+    }
+
+    fn redo_edict(&mut self) {
+        let Some(edicts) = self.edict_history.redo(self.edicts.clone()) else {
+            return;
+        };
+        self.edicts = edicts;
+        "Segment rule restored. Revising trails…".clone_into(&mut self.status);
         self.schedule_revision();
     }
 
@@ -2792,6 +3047,7 @@ impl TrailApp {
                 }
                 TrailDataEvent::Ready(None) => {
                     self.regions.clear();
+                    self.region_names.clear();
                     self.trail_data_status = Some("No map areas downloaded.".to_owned());
                     self.workspace_signal = Some(Action::Reload);
                     finished = true;
@@ -2801,6 +3057,7 @@ impl TrailApp {
                     self.trail_data_status = Some("Trail update failed.".to_owned());
                     if let Ok(config) = trailgen_data::project_config(&self.root) {
                         self.regions = config.regions;
+                        self.region_names = config.region_names;
                     }
                     finished = true;
                 }
@@ -2920,8 +3177,7 @@ impl TrailApp {
             profile: None,
             fault: None,
             notice: None,
-            undo: VecDeque::new(),
-            redo: VecDeque::new(),
+            history: UndoLog::default(),
             drag: None,
         }));
         self.reforge_editor();
@@ -3151,6 +3407,14 @@ impl TrailApp {
         self.fit = Fit::None;
     }
 
+    fn dissolve_focus(&mut self) {
+        if matches!(self.view, WorkbenchView::Focus(_)) {
+            self.view = WorkbenchView::Browse;
+            self.focus_frame = FocusFrame::default();
+            self.fit = Fit::None;
+        }
+    }
+
     fn apply_fit(&mut self, rect: egui::Rect) {
         let viewport = match &self.fit {
             Fit::Graph => Some(Viewport::fit_graph(&self.graph, rect)),
@@ -3193,15 +3457,25 @@ impl TrailApp {
             input.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Z)
                 || input.consume_key(egui::Modifiers::CTRL, egui::Key::Y)
         });
-        if redo && self.view.is_editing() {
-            self.redo_editor();
-            return;
+        if redo {
+            if self.view.is_editing() {
+                self.redo_editor();
+                return;
+            }
+            if self.shows_search_context() && self.edict_history.can_redo() {
+                self.redo_edict();
+                return;
+            }
         }
-        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Z))
-            && self.view.is_editing()
-        {
-            self.undo_editor();
-            return;
+        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Z)) {
+            if self.view.is_editing() {
+                self.undo_editor();
+                return;
+            }
+            if self.shows_search_context() && self.edict_history.can_undo() {
+                self.undo_edict();
+                return;
+            }
         }
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::S))
             && self.view.editor().is_some_and(TrailEditor::ready)
@@ -3209,10 +3483,12 @@ impl TrailApp {
             self.save_editor();
             return;
         }
-        let find = ctx.input_mut(|input| {
-            input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
-                || input.consume_key(egui::Modifiers::CTRL, egui::Key::Enter)
-        });
+        let widget_focused = ctx.memory(|memory| memory.focused().is_some());
+        let find = !widget_focused
+            && ctx.input_mut(|input| {
+                input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+                    || input.consume_key(egui::Modifiers::CTRL, egui::Key::Enter)
+            });
         if find {
             let search_open = self.shutters.get("search").copied().unwrap_or(true);
             if search_open && !self.view.is_editing() && !self.forge_phase.active() {
@@ -3370,9 +3646,26 @@ fn toolbar_text(ui: &mut egui::Ui, text: impl Into<String>, color: Color32) -> e
     ui.label(
         RichText::new(text.into())
             .monospace()
-            .size(10.5)
+            .size(12.0)
             .color(color),
     )
+}
+
+fn toolbar_title(ui: &mut egui::Ui, text: impl Into<String>) -> egui::Response {
+    ui.label(
+        RichText::new(text.into())
+            .monospace()
+            .strong()
+            .size(14.0)
+            .color(chrome::TEXT),
+    )
+}
+
+const fn toolbar_standing_color(standing: TrailStanding) -> Color32 {
+    match standing {
+        TrailStanding::Unknown => chrome::MUTED,
+        known => map::trail_standing_color(known),
+    }
 }
 
 fn trail_name_is_valid(name: &str) -> bool {
@@ -3507,16 +3800,117 @@ fn measure_range(
                     .max_decimals(1),
             );
             crate::witness::anchor(ui, format!("search.{id}.max"), high.rect);
-            if low.changed() && *minimum > *maximum {
-                *maximum = *minimum;
-            } else if high.changed() && *maximum < *minimum {
-                *minimum = *maximum;
-            }
+            reconcile_range(minimum, maximum, low.changed(), high.changed());
             low.changed() || high.changed()
         })
         .inner
     })
     .inner
+}
+
+fn reconcile_range(minimum: &mut f64, maximum: &mut f64, low_changed: bool, high_changed: bool) {
+    if low_changed && *minimum > *maximum {
+        *minimum = *maximum;
+    }
+    if high_changed && *maximum < *minimum {
+        *maximum = *minimum;
+    }
+}
+
+fn library_button(
+    ui: &mut egui::Ui,
+    trail: &SavedTrail,
+    selected: bool,
+    enabled: bool,
+) -> egui::Response {
+    ui.add_enabled_ui(enabled, |ui| {
+        let (rect, response) =
+            ui.allocate_exact_size(vec2(ui.available_width(), 42.0), egui::Sense::click());
+        if ui.is_rect_visible(rect) {
+            let fill = if selected {
+                chrome::RAISED
+            } else if response.hovered() {
+                chrome::SURFACE.gamma_multiply(1.12)
+            } else {
+                chrome::SURFACE
+            };
+            let stroke = Stroke::new(
+                if selected { 1.4_f32 } else { 1.0_f32 },
+                if selected {
+                    chrome::HOT
+                } else {
+                    chrome::EDGE_STRONG
+                },
+            );
+            let _plate = ui
+                .painter()
+                .rect(rect, 1.0, fill, stroke, egui::StrokeKind::Inside);
+            let ink = if enabled {
+                if selected { chrome::HOT } else { chrome::TEXT }
+            } else {
+                chrome::MUTED
+            };
+            ui.painter().text(
+                rect.left_top() + vec2(8.0, 6.0),
+                egui::Align2::LEFT_TOP,
+                trail.name.to_ascii_uppercase(),
+                egui::FontId::monospace(12.5),
+                ink,
+            );
+            ui.painter().text(
+                rect.left_bottom() + vec2(8.0, -6.0),
+                egui::Align2::LEFT_BOTTOM,
+                library_measurements(&trail.metrics),
+                egui::FontId::monospace(10.5),
+                chrome::MUTED,
+            );
+        }
+        response
+    })
+    .inner
+}
+
+fn area_row(
+    ui: &mut egui::Ui,
+    name: Option<&str>,
+    slot: usize,
+    mutable: bool,
+) -> Option<AreaRowAction> {
+    let mut action = None;
+    let name = name.map_or_else(|| format!("AREA {slot:02}"), str::to_ascii_uppercase);
+    let _row = ui.horizontal(|ui| {
+        let _label = ui.add(egui::Label::new(chrome::muted(name)).truncate());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let remove = ui
+                .add_enabled(
+                    mutable,
+                    chrome::command_button("REMOVE", false).min_size(vec2(58.0, 22.0)),
+                )
+                .on_hover_text("Remove this downloaded area and update trails.");
+            let rename = ui.add_enabled(
+                mutable,
+                chrome::command_button("NAME", false).min_size(vec2(48.0, 22.0)),
+            );
+            if remove.clicked() {
+                action = Some(AreaRowAction::Remove(remove.rect));
+            } else if rename.clicked() {
+                action = Some(AreaRowAction::Rename);
+            }
+        });
+    });
+    action
+}
+
+fn library_measurements(metrics: &RouteMetrics) -> String {
+    if metrics.elevation_fraction >= 0.8 {
+        format!(
+            "{:.1} KM · +{:.0} M",
+            metrics.distance_m / 1_000.0,
+            metrics.ascent_m
+        )
+    } else {
+        format!("{:.1} KM", metrics.distance_m / 1_000.0)
+    }
 }
 
 fn gallery_empty(ui: &egui::Ui, message: &str) {
@@ -3846,8 +4240,7 @@ mod tests {
             profile: None,
             fault: None,
             notice: None,
-            undo: VecDeque::new(),
-            redo: VecDeque::new(),
+            history: UndoLog::default(),
             drag: None,
         };
 
@@ -3878,6 +4271,59 @@ mod tests {
         assert_eq!(editor.support_points, vec![first]);
         assert!(editor.redo());
         assert_eq!(editor.support_points, vec![second]);
+    }
+
+    #[test]
+    fn undo_log_is_bounded_and_new_work_annihilates_the_abandoned_future() {
+        let mut history = UndoLog::default();
+        for state in 0..=UNDO_DEPTH {
+            history.commit(state);
+        }
+        assert_eq!(history.past.len(), UNDO_DEPTH);
+        assert_eq!(history.undo(UNDO_DEPTH + 1), Some(UNDO_DEPTH));
+        assert_eq!(history.future.len(), 1);
+
+        history.commit(1_000);
+
+        assert!(history.future.is_empty());
+        assert_eq!(history.undo(1_001), Some(1_000));
+    }
+
+    #[test]
+    fn distance_range_moves_only_the_endpoint_the_user_changed() {
+        let mut minimum = 20.0;
+        let mut maximum = 10.0;
+        reconcile_range(&mut minimum, &mut maximum, false, true);
+        assert_eq!((minimum, maximum), (20.0, 20.0));
+
+        let mut minimum = 30.0;
+        let mut maximum = 20.0;
+        reconcile_range(&mut minimum, &mut maximum, true, false);
+        assert_eq!((minimum, maximum), (20.0, 20.0));
+    }
+
+    #[test]
+    fn saved_trail_measurements_are_compact_and_unambiguous() {
+        let metrics = RouteMetrics {
+            distance_m: 12_340.0,
+            ascent_m: 567.0,
+            elevation_fraction: 1.0,
+            ..RouteMetrics::default()
+        };
+        assert_eq!(library_measurements(&metrics), "12.3 KM · +567 M");
+        assert!(!library_measurements(&metrics).contains("ASCENT"));
+    }
+
+    #[test]
+    fn unknown_path_status_remains_legible_on_dark_chrome() {
+        assert_eq!(
+            toolbar_standing_color(TrailStanding::Unknown),
+            chrome::MUTED
+        );
+        assert_ne!(
+            toolbar_standing_color(TrailStanding::Unknown),
+            map::trail_standing_color(TrailStanding::Unknown)
+        );
     }
 
     #[test]
@@ -4026,8 +4472,7 @@ mod tests {
             profile: Some(profile),
             fault: None,
             notice: None,
-            undo: VecDeque::new(),
-            redo: VecDeque::new(),
+            history: UndoLog::default(),
             drag: None,
         };
 

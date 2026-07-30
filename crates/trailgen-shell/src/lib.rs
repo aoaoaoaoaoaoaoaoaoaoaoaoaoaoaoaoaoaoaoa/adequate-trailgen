@@ -45,6 +45,11 @@ impl WindowSpec {
 pub trait NativeApp {
     const WINDOW: WindowSpec;
 
+    /// Current top-level window identity.
+    fn window_title(&self) -> String {
+        Self::WINDOW.title.to_owned()
+    }
+
     /// Build one ordinary product UI frame.
     fn draw(&mut self, ui: &mut egui::Ui);
 
@@ -96,6 +101,7 @@ pub fn run<A: NativeApp>(ctx: egui::Context, app: A) -> Result<()> {
         alarm,
         rig: None,
         force_redraw: false,
+        window_title: A::WINDOW.title.to_owned(),
         fault: None,
         #[cfg(feature = "egui-test")]
         witness,
@@ -135,6 +141,7 @@ struct Shell<A: NativeApp> {
     alarm: Alarm,
     rig: Option<Rig>,
     force_redraw: bool,
+    window_title: String,
     fault: Option<anyhow::Error>,
     #[cfg(feature = "egui-test")]
     witness: Option<egui_tester_witness::Publisher<A::Observation>>,
@@ -152,6 +159,11 @@ impl<A: NativeApp> Shell<A> {
             .map(|_| egui_tester_witness::FramePulse::begin());
         let raw_input = rig.input.take_egui_input(&rig.window);
         let output = self.ctx.run_ui(raw_input, |ui| self.app.draw(ui));
+        let title = self.app.window_title();
+        if title != self.window_title {
+            rig.window.set_title(&title);
+            self.window_title = title;
+        }
         rig.input
             .handle_platform_output(&rig.window, output.platform_output);
         let primitives = self.ctx.tessellate(output.shapes, output.pixels_per_point);

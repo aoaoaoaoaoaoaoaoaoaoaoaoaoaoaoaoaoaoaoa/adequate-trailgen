@@ -14,7 +14,7 @@ use trailgen_core::{
 };
 
 const TILE_EDGE: f64 = 256.0;
-const CARTOGRAPHIC_SETTLE: Duration = Duration::from_millis(120);
+const CARTOGRAPHIC_SETTLE: Duration = Duration::from_millis(90);
 pub const EARTH_CIRCUMFERENCE_M: f64 = 40_075_016.686;
 const FIT_PADDING: f32 = 44.0;
 
@@ -662,44 +662,7 @@ impl RouteOverlay {
     }
 
     pub fn saved(trail: &SavedTrail) -> Self {
-        let last = trail.legs.len().saturating_sub(1);
-        let mut edges = trail
-            .legs
-            .iter()
-            .enumerate()
-            .map(|(slot, leg)| {
-                let points = leg
-                    .geometry
-                    .points
-                    .iter()
-                    .copied()
-                    .map(world_from_coord)
-                    .collect::<Vec<_>>();
-                WorldEdge {
-                    endpoints: [
-                        slot,
-                        if slot == last && trail.metrics.shape == RouteShape::Loop {
-                            0
-                        } else {
-                            slot + 1
-                        },
-                    ],
-                    length_world: world_polyline_length(&points),
-                    points,
-                    lineage: None,
-                    color: SELECTED_TRAIL_COLOR,
-                    trail_class: leg.trail_class,
-                    mark: trail_mark(
-                        leg.trail_class,
-                        leg.standing,
-                        leg.marking,
-                        leg.terrain,
-                        leg.surface.as_deref(),
-                    ),
-                    access: leg.access,
-                }
-            })
-            .collect::<Vec<_>>();
+        let mut edges = saved_chains(trail);
         weave_cadence(trail.legs.len() + 1, &mut edges);
         Self {
             field: TrailField::overlay(&edges),
@@ -717,12 +680,20 @@ struct Crown {
     slot: usize,
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy)]
 struct OverlayStyle {
     color: Color32,
     trail_class: TrailClass,
     mark: TrailMark,
     access: Access,
+}
+
+impl OverlayStyle {
+    fn same_visual_law(self, other: Self) -> bool {
+        self.mark == other.mark
+            && TrailSalience::Selected.access_color(self.color, self.access)
+                == TrailSalience::Selected.access_color(other.color, other.access)
+    }
 }
 
 struct OverlayDraft {
@@ -786,7 +757,7 @@ fn candidate_chains(graph: &TrailGraph, routes: &[Route], identities: &[usize]) 
                 if let Some(run) = &mut draft
                     && run.endpoints[1] == at.0
                     && degree[at.0] == 2
-                    && run.style == style
+                    && run.style.same_visual_law(style)
                 {
                     run.points.extend(points.into_iter().skip(1));
                     run.endpoints[1] = next.0;
@@ -806,6 +777,59 @@ fn candidate_chains(graph: &TrailGraph, routes: &[Route], identities: &[usize]) 
         }
         seal_overlay(&mut draft, &mut chains);
     }
+    chains
+}
+
+fn saved_chains(trail: &SavedTrail) -> Vec<WorldEdge> {
+    let last = trail.legs.len().saturating_sub(1);
+    let mut draft = None::<OverlayDraft>;
+    let mut chains = Vec::new();
+    for (slot, leg) in trail.legs.iter().enumerate() {
+        let endpoint = if slot == last && trail.metrics.shape == RouteShape::Loop {
+            0
+        } else {
+            slot + 1
+        };
+        let style = OverlayStyle {
+            color: SELECTED_TRAIL_COLOR,
+            trail_class: leg.trail_class,
+            mark: trail_mark(
+                leg.trail_class,
+                leg.standing,
+                leg.marking,
+                leg.terrain,
+                leg.surface.as_deref(),
+            ),
+            access: leg.access,
+        };
+        let points = leg
+            .geometry
+            .points
+            .iter()
+            .copied()
+            .map(world_from_coord)
+            .collect::<Vec<_>>();
+        if let Some(run) = &mut draft
+            && run.endpoints[1] == slot
+            && run.style.same_visual_law(style)
+            && run
+                .points
+                .last()
+                .zip(points.first())
+                .is_some_and(|(left, right)| same_world(*left, *right))
+        {
+            run.points.extend(points.into_iter().skip(1));
+            run.endpoints[1] = endpoint;
+        } else {
+            seal_overlay(&mut draft, &mut chains);
+            draft = Some(OverlayDraft {
+                endpoints: [slot, endpoint],
+                points,
+                style,
+            });
+        }
+    }
+    seal_overlay(&mut draft, &mut chains);
     chains
 }
 
@@ -903,21 +927,24 @@ pub fn paint_route(
             .copied()
             .map(world_from_coord)
             .collect::<Vec<_>>();
-        strokes.push(SelectedStroke {
-            length_world: world_polyline_length(&world),
-            points: world
-                .into_iter()
-                .map(|world| screen_at(view, rect, world))
-                .collect(),
-            color: TrailSalience::Selected.access_color(color, edge.attr.access),
-            mark: trail_mark(
-                edge.attr.trail_class,
-                edge.attr.standing,
-                edge.attr.marking,
-                edge.attr.terrain,
-                edge.attr.surface.as_deref(),
-            ),
-        });
+        annex_selected_stroke(
+            &mut strokes,
+            SelectedStroke {
+                length_world: world_polyline_length(&world),
+                points: world
+                    .into_iter()
+                    .map(|world| screen_at(view, rect, world))
+                    .collect(),
+                color: TrailSalience::Selected.access_color(color, edge.attr.access),
+                mark: trail_mark(
+                    edge.attr.trail_class,
+                    edge.attr.standing,
+                    edge.attr.marking,
+                    edge.attr.terrain,
+                    edge.attr.surface.as_deref(),
+                ),
+            },
+        );
         at = edge
             .traverse(at)
             .expect("validated route edge must be traversable");
@@ -933,11 +960,9 @@ pub fn paint_edict(
     view: Viewport,
     rect: Rect,
 ) {
-    let color = match disposition {
-        EdgeDisposition::Required => Color32::from_rgb(239, 174, 39),
-        EdgeDisposition::Forbidden => Color32::from_rgb(224, 52, 157),
-        EdgeDisposition::Free => return,
-    };
+    if disposition == EdgeDisposition::Free {
+        return;
+    }
     let points = graph.edges[edge.0]
         .geometry
         .points
@@ -946,13 +971,47 @@ pub fn paint_edict(
         .map(world_from_coord)
         .map(|world| screen_at(view, rect, world))
         .collect::<Vec<_>>();
-    paint_trail_tube(
-        painter,
-        &points,
-        TrailSalience::Selected.width(),
-        color,
-        TrailMark::Solid,
-    );
+    let Some(anchor) = polyline_midpoint(&points) else {
+        return;
+    };
+    match disposition {
+        EdgeDisposition::Required => forge::pin(painter, anchor, false),
+        EdgeDisposition::Forbidden => paint_exclusion(painter, anchor),
+        EdgeDisposition::Free => unreachable!("free edicts return before projection"),
+    }
+}
+
+fn paint_exclusion(painter: &Painter, anchor: Pos2) {
+    const ARM: f32 = 11.0;
+    let slash = [
+        [anchor + vec2(-ARM, -ARM), anchor + vec2(ARM, ARM)],
+        [anchor + vec2(-ARM, ARM), anchor + vec2(ARM, -ARM)],
+    ];
+    for stroke in [
+        Stroke::new(6.0_f32, Color32::from_black_alpha(205)),
+        Stroke::new(3.2_f32, Color32::from_rgb(232, 48, 45)),
+    ] {
+        for arm in slash {
+            painter.line_segment(arm, stroke);
+        }
+    }
+}
+
+fn polyline_midpoint(points: &[Pos2]) -> Option<Pos2> {
+    let length = points
+        .windows(2)
+        .map(|pair| pair[0].distance(pair[1]))
+        .sum::<f32>();
+    let target = length * 0.5;
+    let mut traversed = 0.0;
+    for pair in points.windows(2) {
+        let span = pair[0].distance(pair[1]);
+        if span > f32::EPSILON && traversed + span >= target {
+            return Some(pair[0].lerp(pair[1], (target - traversed) / span));
+        }
+        traversed += span;
+    }
+    points.first().copied()
 }
 
 struct SelectedStroke {
@@ -960,6 +1019,23 @@ struct SelectedStroke {
     length_world: f64,
     color: Color32,
     mark: TrailMark,
+}
+
+fn annex_selected_stroke(strokes: &mut Vec<SelectedStroke>, stroke: SelectedStroke) {
+    if let Some(tail) = strokes.last_mut()
+        && tail.color == stroke.color
+        && tail.mark == stroke.mark
+        && tail
+            .points
+            .last()
+            .zip(stroke.points.first())
+            .is_some_and(|(left, right)| left.distance(*right) <= 0.01)
+    {
+        tail.length_world += stroke.length_world;
+        tail.points.extend(stroke.points.into_iter().skip(1));
+    } else {
+        strokes.push(stroke);
+    }
 }
 
 fn paint_selected_strokes(painter: &Painter, strokes: &[SelectedStroke], view: Viewport) {
@@ -1047,6 +1123,9 @@ fn paint_trail_tube_pattern(
     }
     let length = cadence::polyline_length(points);
     let _tube = painter.add(Shape::line(points.to_vec(), Stroke::new(width, color)));
+    for endpoint in [points[0], points[points.len() - 1]] {
+        let _cap = painter.circle_filled(endpoint, width * 0.5, color);
+    }
     let core = trail_core(width);
     if let Some(pattern) = pattern {
         let mut shapes = Vec::new();
@@ -1060,6 +1139,9 @@ fn paint_trail_tube_pattern(
         painter.extend(shapes);
     } else {
         let _core = painter.add(Shape::line(points.to_vec(), core));
+        for endpoint in [points[0], points[points.len() - 1]] {
+            let _cap = painter.circle_filled(endpoint, core.width * 0.5, core.color);
+        }
     }
     length
 }
@@ -1347,6 +1429,10 @@ fn world_polyline_length(points: &[[f64; 2]]) -> f64 {
         .sum()
 }
 
+fn same_world(left: [f64; 2], right: [f64; 2]) -> bool {
+    (left[0] - right[0]).abs() <= 1.0e-12 && (left[1] - right[1]).abs() <= 1.0e-12
+}
+
 fn wrapped_delta(x: f64, center: f64) -> f64 {
     let delta = x - center;
     if delta > 0.5 {
@@ -1429,6 +1515,11 @@ mod tests {
     }
 
     #[test]
+    fn cartographic_settle_does_not_hold_labels_past_one_tenth_second() {
+        assert!(CARTOGRAPHIC_SETTLE <= Duration::from_millis(100));
+    }
+
+    #[test]
     fn mercator_round_trip_is_tight() {
         let coord = Coord::new(-74.102, 41.221);
         let round_trip = world_to_coord(world_from_coord(coord));
@@ -1452,6 +1543,18 @@ mod tests {
             assert!([1.0, 2.0, 5.0].contains(&(length / decade)));
             assert!(length <= target);
         }
+    }
+
+    #[test]
+    fn edict_mark_anchors_at_arc_length_midpoint() {
+        let points = [pos2(0.0, 0.0), pos2(90.0, 0.0), pos2(90.0, 10.0)];
+
+        assert!(
+            polyline_midpoint(&points)
+                .is_some_and(|midpoint| midpoint.distance(pos2(50.0, 0.0)) < 1.0e-4)
+        );
+        assert_eq!(polyline_midpoint(&[pos2(7.0, 9.0)]), Some(pos2(7.0, 9.0)));
+        assert_eq!(polyline_midpoint(&[]), None);
     }
 
     #[test]
@@ -1529,6 +1632,40 @@ mod tests {
         assert_eq!(chains.len(), 1);
         assert_eq!(chains[0].endpoints, [0, 2]);
         assert_eq!(chains[0].points.len(), 3);
+
+        let mut saved = SavedTrail::capture(&graph, &route([0, 1])).expect("route can be saved");
+        saved.metrics.shape = RouteShape::Open;
+        let saved = saved_chains(&saved);
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].endpoints, [0, 2]);
+        assert_eq!(saved[0].points.len(), 3);
+    }
+
+    #[test]
+    fn privileged_cpu_strokes_fuse_only_across_one_visual_law() {
+        let stroke = |points, mark| SelectedStroke {
+            points,
+            length_world: 1.0,
+            color: SELECTED_TRAIL_COLOR,
+            mark,
+        };
+        let mut strokes = Vec::new();
+        annex_selected_stroke(
+            &mut strokes,
+            stroke(vec![pos2(0.0, 0.0), pos2(1.0, 0.0)], TrailMark::Solid),
+        );
+        annex_selected_stroke(
+            &mut strokes,
+            stroke(vec![pos2(1.0, 0.0), pos2(2.0, 0.0)], TrailMark::Solid),
+        );
+        annex_selected_stroke(
+            &mut strokes,
+            stroke(vec![pos2(2.0, 0.0), pos2(3.0, 0.0)], TrailMark::Dashed),
+        );
+
+        assert_eq!(strokes.len(), 2);
+        assert_eq!(strokes[0].points.len(), 3);
+        assert!((strokes[0].length_world - 2.0).abs() < f64::EPSILON);
     }
 
     #[test]

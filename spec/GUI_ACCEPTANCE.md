@@ -9,19 +9,23 @@ durable or rendered oracle before passing. Tests never call product internals.
 
 1. **Discover and keep.** Create a project, draw a map area, acquire local OSM,
    USGS, and terrain fixtures, place a trailhead with Alt-click, lasso a search
-   boundary, start with Enter, observe eager candidate promotion, save, and
-   recover the result after restart.
+   boundary, start with Enter, observe eager candidate promotion, save, arm Add
+   Map Area without camera travel, refresh the corpus without unloading the
+   saved trail, and recover the result after restart.
 2. **Refine deliberately.** Open and rename a saved trail, drag a support onto
-   another branch, prove route recomputation, undo, redo, cancel without disk
-   mutation, repeat, save, and recover the changed geometry after restart.
+   another branch, prove recomputation occurs after release, verify the native
+   window title, undo, redo, cancel without disk mutation, repeat, save, and
+   recover the changed geometry after restart.
 3. **Compare without lag.** Generate twelve alternatives on a dense graph, pan
    during search and after promotion, zoom across detail, enforce host cadence
    distributions, focus and return to the settled viewport, warm-revise
-   parameters, require and forbid segments, stop without discarding promoted
-   results, then save a candidate.
+   parameters, arm a search boundary without camera travel, require and forbid
+   segments with undo and redo, stop without discarding promoted results, then
+   save a candidate.
 4. **Draw from nothing.** Enter the manual editor without search, place a
    partial-edge support, undo and redo, close and reverse a loop, exercise the
-   elevation reticle, save, and recover the loop after restart.
+   elevation reticle, reject torn editor/focus presentation during save, and
+   recover the loop after restart.
 
 The provider server, basemap, terrain, small graph, and dense graph are local,
 deterministic fixtures. Network denial is universal. The discovery story
@@ -67,9 +71,12 @@ dilate a production threshold.
 ## Execution
 
 `scripts/test-gui` first builds the ordinary uninstrumented release binary and
-proves that it launches to nontrivial pixels. It then builds the observational
-feature and runs each story independently, so one failure has a named scenario
-and bounded residue.
+the acceptance driver, then proves that the product launches to nontrivial
+pixels. It next builds the observational feature and runs each story
+independently, so one failure has a named scenario and bounded residue. The
+host-performance story runs last, after all compilation and deterministic
+software-graphics stories, so build load cannot counterfeit product frame
+cost.
 
 ```console
 scripts/test-gui

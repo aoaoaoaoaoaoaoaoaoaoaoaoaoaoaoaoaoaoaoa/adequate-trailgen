@@ -26,7 +26,7 @@ pub use active::*;
 mod active {
     use egui::Rect;
     use serde::Serialize;
-    use trailgen_contract::{EditorOrigin, RouteShape, SearchPhase, View, Workspace};
+    use trailgen_contract::{CorpusPhase, EditorOrigin, RouteShape, SearchPhase, View, Workspace};
 
     #[derive(Serialize)]
     pub struct State {
@@ -94,6 +94,7 @@ mod active {
     #[derive(Serialize)]
     pub struct SearchState {
         pub phase: SearchPhase,
+        pub corpus: CorpusPhase,
         pub trailhead: bool,
         pub boundary: bool,
         pub required: usize,

@@ -78,7 +78,8 @@ the same inline rename transaction; `F2` is its keyboard entrance. Renaming
 changes metadata in place; deleting removes the canonical trail. Neither
 operation changes route identity or transient Results.
 Library navigation is inert while Edit owns an unsaved draft; only Save or
-Cancel may leave that editor.
+Cancel may leave that editor. Map-area names are metadata keyed by immutable
+region identity; renaming one cannot invalidate or reacquire its corpus.
 
 ## Presentation
 
@@ -132,10 +133,13 @@ The map-tool lane is subordinate to `Browse`:
 Idle | SelectMapArea | DrawSearchBoundary | PlaceTrailhead | DragTrailhead
 ```
 
-Arming one tool disarms every other tool and leaves Focus. Edit owns primary
-click and pin dragging, so no map tool may be armed there. Segment edicts own
-plain and Shift-click only in Find mode. Alt-click owns trailhead placement
-only when neither Edit, Focus, nor a scribe has the pointer.
+Arming one tool disarms every other tool and dissolves Focus in place: the
+current detail camera becomes the Browse camera and the obsolete return frame
+is discarded. Ordinary Back still restores the camera that preceded Focus.
+Edit owns primary click and pin dragging, so no map tool may be armed there.
+Segment edicts own plain and Shift-click only in Find mode. Alt-click owns
+trailhead placement only when neither Edit, Focus, nor a scribe has the
+pointer.
 
 The present scribe implementations retain their own gesture data, so exclusivity
 is enforced at their arming boundary rather than by one enum. The invariant is
@@ -151,9 +155,13 @@ debounced persistence are orthogonal workers.
 - Only events matching the active serial may publish.
 - Stopping preserves the previous portfolio.
 - Parameter or segment-edict changes schedule a warmed replacement search.
+- Segment edicts own one bounded undo log; undo and redo are routed to the
+  editor only while Edit owns the workbench.
 - Search completion installs a prepared portfolio; it does not force Focus.
-- Trail-data replacement requests a project reload and invalidates all
-  graph-bound session state at the workspace boundary.
+- Trail-data replacement commits the corpus atomically, then requests a
+  project reload. A saved-trail Focus and its exact camera survive because the
+  saved design owns its geometry independently of the graph. Candidate Focus
+  dissolves in place because candidate identity belongs to the old graph.
 
 Worker progress may change status text and repaint demand. It may not change
 the primary view implicitly or perform graph-scale work on the event loop.
@@ -182,6 +190,8 @@ without corrupting the viewport to which Back or Cancel returns.
 | previous / next | `Focus(kind)` | adjacent `Focus(kind)` |
 | parameter change | Find mode | prior results remain; warmed search scheduled |
 | click / Shift-click segment | Find mode | edict toggled; warmed search scheduled |
+| arm a map tool | `Focus(*)` | `Browse` at the current detail viewport |
+| refresh trail data | `Focus(Saved)` | reloaded `Focus(Saved)` at the same viewport |
 | Close Loop | `Edit(*)` with `Open | Loop` shape | same editor, shape changed and re-realized |
 | Reverse Direction | `Edit(Loop)` | same editor with exact walk inverted |
 | Clear Results | `Browse` | `Browse` with no portfolio or edicts |

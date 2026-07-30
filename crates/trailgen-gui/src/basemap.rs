@@ -1486,8 +1486,8 @@ impl Forge {
             Some("peak") => {
                 let Some(name) = tags.name else { return };
                 let text = tags.elevation_m.map_or_else(
-                    || format!("△ {name}"),
-                    |elevation| format!("△ {name} · {elevation:.0} m"),
+                    || name.to_owned(),
+                    |elevation| format!("{name} · {elevation:.0} m"),
                 );
                 self.push_label(
                     point,
@@ -1775,7 +1775,8 @@ struct LabelStyle {
     onset_zoom: f32,
 }
 
-const LANDMARK_DISCLOSURE_LEAD: f64 = 0.75;
+const LANDMARK_DISCLOSURE_LEAD: f64 = 1.25;
+const LANDMARK_FALLBACK_ADVANCE: f64 = 0.5;
 
 fn water_label_style(
     kind: Option<&str>,
@@ -1861,7 +1862,10 @@ fn disclosure_onset(provider: Option<f64>, style: f64) -> f32 {
 }
 
 fn landmark_onset(provider: Option<f64>, style: f64) -> f32 {
-    disclosure_onset(provider.map(|zoom| zoom - LANDMARK_DISCLOSURE_LEAD), style)
+    disclosure_onset(
+        provider.map(|zoom| zoom - LANDMARK_DISCLOSURE_LEAD),
+        style - LANDMARK_FALLBACK_ADVANCE,
+    )
 }
 
 #[derive(Clone, Copy, Default)]
@@ -2538,20 +2542,20 @@ mod tests {
     }
 
     #[test]
-    fn natural_landmarks_preempt_provider_disclosure_by_three_quarters() -> Result<()> {
+    fn natural_landmarks_preempt_provider_disclosure_by_five_quarters() -> Result<()> {
         let lake =
             water_label_style(Some("water"), Some("lake"), Some(13.0)).context("lake label")?;
         let pond =
             water_label_style(Some("water"), Some("pond"), Some(13.0)).context("pond label")?;
         let peak = peak_label_style(Some(13.0));
-        assert!((lake.onset_zoom - 12.25).abs() < f32::EPSILON);
-        assert!((pond.onset_zoom - 12.25).abs() < f32::EPSILON);
-        assert!((peak.onset_zoom - 12.25).abs() < f32::EPSILON);
+        assert!((lake.onset_zoom - 11.75).abs() < f32::EPSILON);
+        assert!((pond.onset_zoom - 11.75).abs() < f32::EPSILON);
+        assert!((peak.onset_zoom - 11.75).abs() < f32::EPSILON);
         assert!(lake.rank < pond.rank);
         assert!(lake.size > pond.size);
         assert!(peak.size >= 11.0);
-        assert!((pond_label_style(None).onset_zoom - 11.25).abs() < f32::EPSILON);
-        assert!((peak_label_style(None).onset_zoom - 9.75).abs() < f32::EPSILON);
+        assert!((pond_label_style(None).onset_zoom - 10.75).abs() < f32::EPSILON);
+        assert!((peak_label_style(None).onset_zoom - 9.25).abs() < f32::EPSILON);
         assert!(water_label_style(Some("water"), Some("river"), None).is_none());
         Ok(())
     }
@@ -2576,8 +2580,31 @@ mod tests {
         let label = forge.labels.first().context("pond label")?;
         assert_eq!(label.kind, LabelKind::Lake);
         assert_eq!(&*label.text, "Gillman Pond");
-        assert!((label.onset_zoom - 12.25).abs() < f32::EPSILON);
+        assert!((label.onset_zoom - 11.75).abs() < f32::EPSILON);
         Ok(())
+    }
+
+    #[test]
+    fn peak_text_leaves_the_world_anchor_to_the_geometric_sigil() {
+        let mut forge = Forge::new(TileKey {
+            zoom: 12,
+            x: 1_198,
+            y: 1_527,
+        });
+        forge.push_poi(
+            Point::new(2_048, 2_048),
+            4_096,
+            FeatureTags {
+                kind: Some("peak"),
+                name: Some("Bear Mountain"),
+                elevation_m: Some(391.0),
+                ..FeatureTags::default()
+            },
+        );
+        let label = forge.labels.first().expect("peak label");
+
+        assert_eq!(label.kind, LabelKind::Peak);
+        assert_eq!(&*label.text, "Bear Mountain · 391 m");
     }
 
     #[test]

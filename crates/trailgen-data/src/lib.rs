@@ -228,6 +228,9 @@ pub struct TrailDataConfig {
     pub managed: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub regions: Vec<SurveyRegion>,
+    /// User-facing names keyed by immutable survey-region identity.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub region_names: BTreeMap<String, String>,
     pub providers: Vec<ProviderId>,
 }
 
@@ -236,6 +239,7 @@ impl Default for TrailDataConfig {
         Self {
             managed: false,
             regions: Vec::new(),
+            region_names: BTreeMap::new(),
             providers: automatic_provider_ids(),
         }
     }
@@ -591,6 +595,7 @@ where
             config.regions.len() != before,
             "project has no survey region {id}"
         );
+        let _name = config.region_names.remove(id);
         configure_project(project, &config)?;
         if config.regions.is_empty() {
             clear_corpus(project)?;
@@ -1717,10 +1722,18 @@ pub fn project_config(project: &Path) -> Result<TrailDataConfig> {
     if config.providers == legacy_automatic_provider_ids() {
         config.providers = automatic_provider_ids();
     }
+    let mut names = std::mem::take(&mut config.region_names);
     for region in &mut config.regions {
         validate_region(region.bounds)?;
+        let legacy_id = region.id.clone();
         region.id = region_key(region.bounds);
+        if legacy_id != region.id
+            && let Some(name) = names.remove(&legacy_id)
+        {
+            let _replaced = names.insert(region.id.clone(), name);
+        }
     }
+    config.region_names = names;
     let legacy_place = document
         .get("trail_data")
         .and_then(|trail_data| trail_data.get("place"))
@@ -1796,6 +1809,25 @@ pub fn configure_project(project: &Path, trail_data: &TrailDataConfig) -> Result
     write_atomic(&path, toml::to_string_pretty(&config)?.as_bytes())
 }
 
+/// Name one map area without perturbing its immutable acquisition identity.
+pub fn name_region(project: &Path, id: &str, name: &str) -> Result<TrailDataConfig> {
+    validate_project(project)?;
+    let mut config = project_config(project)?;
+    ensure!(
+        config.regions.iter().any(|region| region.id == id),
+        "project has no survey region {id}"
+    );
+    let name = name.trim();
+    if name.is_empty() {
+        let _old = config.region_names.remove(id);
+    } else {
+        validate_region_name(name)?;
+        let _old = config.region_names.insert(id.to_owned(), name.to_owned());
+    }
+    configure_project(project, &config)?;
+    Ok(config)
+}
+
 fn validate_config(config: &TrailDataConfig) -> Result<()> {
     let mut ids = BTreeSet::new();
     for region in &config.regions {
@@ -1806,6 +1838,13 @@ fn validate_config(config: &TrailDataConfig) -> Result<()> {
             region.id
         );
     }
+    for (id, name) in &config.region_names {
+        ensure!(
+            ids.contains(id),
+            "map-area name refers to unknown region {id}"
+        );
+        validate_region_name(name)?;
+    }
     let providers = config.providers.iter().collect::<BTreeSet<_>>();
     ensure!(
         !providers.is_empty(),
@@ -1814,6 +1853,16 @@ fn validate_config(config: &TrailDataConfig) -> Result<()> {
     ensure!(
         providers.len() == config.providers.len(),
         "trail data contains duplicate providers"
+    );
+    Ok(())
+}
+
+fn validate_region_name(name: &str) -> Result<()> {
+    ensure!(!name.trim().is_empty(), "map-area name is empty");
+    ensure!(name.chars().count() <= 80, "map-area name is too long");
+    ensure!(
+        !name.chars().any(char::is_control),
+        "map-area name contains control characters"
     );
     Ok(())
 }
@@ -2480,6 +2529,32 @@ mod tests {
         let encoded = serde_json::to_vec(&expected)?;
         let decoded = serde_json::from_slice::<SurveyRegion>(&encoded)?;
         assert_eq!(decoded, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn map_area_names_are_metadata_not_corpus_identity() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let project = temp.path();
+        fs::write(project.join("trailgen.toml"), "name = 'Harriman'\n")?;
+        let (surveyor, _) = fixed_surveyor();
+        let summary = surveyor.add_region(
+            project,
+            GeoBounds::new(-74.130, 41.225, -74.120, 41.235),
+            drop,
+        )?;
+        let id = summary.regions[0].id.clone();
+
+        let named = name_region(project, &id, "  Wharton State Forest  ")?;
+
+        assert_eq!(
+            named.region_names.get(&id).map(String::as_str),
+            Some("Wharton State Forest")
+        );
+        assert_eq!(indexed_summary(project)?, Some(summary));
+
+        let unnamed = name_region(project, &id, "  ")?;
+        assert!(!unnamed.region_names.contains_key(&id));
         Ok(())
     }
 

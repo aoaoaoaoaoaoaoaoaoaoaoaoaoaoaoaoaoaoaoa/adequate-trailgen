@@ -1,6 +1,6 @@
 use crate::{
     ProjectIntent,
-    app::{Action as TrailAction, TrailApp, forge_water},
+    app::{Action as TrailAction, ReloadFrame, TrailApp, forge_water},
     basemap::Source as BasemapSource,
     chrome,
     habitat::{Habitat, ProjectPlace, create_project},
@@ -16,6 +16,7 @@ use anyhow::{Context as _, Result, ensure};
 use dwemer_poolrooms::water::{Frame as WaterFrame, Surface};
 use egui::{Color32, RichText, Stroke, vec2};
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -112,12 +113,16 @@ impl Workbench {
                 Some(WorkspaceAction::Projects) => Some(WorkbenchTransition::Projects),
                 Some(WorkspaceAction::Reload) => {
                     let root = workspace.root().to_owned();
+                    let frame = workspace.reload_frame();
                     match open_project(ui.ctx(), habitat, &root, *offline) {
-                        Ok(workspace) => Some(WorkbenchTransition::Project {
-                            workspace,
-                            habitat: habitat.clone(),
-                            offline: *offline,
-                        }),
+                        Ok(mut workspace) => {
+                            workspace.restore_reload_frame(frame);
+                            Some(WorkbenchTransition::Project {
+                                workspace,
+                                habitat: habitat.clone(),
+                                offline: *offline,
+                            })
+                        }
                         Err(err) => {
                             workspace.set_fault(format!("could not open this project: {err:#}"));
                             None
@@ -135,6 +140,14 @@ impl Workbench {
             }
             WorkbenchMode::Limbo => unreachable!("workbench transition escaped its pulse"),
         };
+    }
+
+    pub fn window_title(&self) -> String {
+        match &self.mode {
+            WorkbenchMode::Project { workspace, .. } => workspace.window_title(),
+            WorkbenchMode::Projects(_) => "trailgen · trail projects".to_owned(),
+            WorkbenchMode::Limbo => "trailgen".to_owned(),
+        }
     }
 
     pub fn settle(&mut self) -> bool {
@@ -248,6 +261,27 @@ impl ProjectWorkspace {
         }
     }
 
+    fn reload_frame(&self) -> ReloadFrame {
+        match self {
+            Self::Trail(app) => app.reload_frame(),
+            Self::Survey(project) => ReloadFrame::browse(project.viewport),
+        }
+    }
+
+    fn restore_reload_frame(&mut self, frame: ReloadFrame) {
+        match self {
+            Self::Trail(app) => app.restore_reload_frame(frame),
+            Self::Survey(project) => project.viewport = frame.viewport(),
+        }
+    }
+
+    fn window_title(&self) -> String {
+        match self {
+            Self::Trail(app) => app.window_title(),
+            Self::Survey(project) => format!("{} · trailgen", project.name),
+        }
+    }
+
     fn water_frame(
         &mut self,
         ctx: &egui::Context,
@@ -271,6 +305,7 @@ struct SurveyWorkbench {
     root: PathBuf,
     name: String,
     regions: Vec<SurveyRegion>,
+    region_names: BTreeMap<String, String>,
     corpus: Option<TrailData>,
     corpus_status: String,
     offline: bool,
@@ -309,6 +344,7 @@ impl SurveyWorkbench {
             root: place.root,
             name: place.name,
             regions: config.regions,
+            region_names: config.region_names,
             corpus: None,
             corpus_status: if offline {
                 "Go online to download trails.".to_owned()
@@ -401,7 +437,11 @@ impl SurveyWorkbench {
         let mut excision = None;
         for (slot, region) in self.regions.iter().enumerate() {
             let _region = ui.horizontal(|ui| {
-                let _area = ui.label(chrome::muted(format!("AREA {slot:02}")));
+                let name = self.region_names.get(&region.id).map_or_else(
+                    || format!("AREA {slot:02}"),
+                    |name| name.to_ascii_uppercase(),
+                );
+                let _area = ui.label(chrome::muted(name));
                 let remove = ui
                     .add_enabled(
                         self.corpus.is_none(),
@@ -608,6 +648,7 @@ impl SurveyWorkbench {
                 }
                 TrailDataEvent::Ready(None) => {
                     self.regions.clear();
+                    self.region_names.clear();
                     "No map areas downloaded.".clone_into(&mut self.corpus_status);
                     self.fault = None;
                     finished = true;
@@ -617,6 +658,7 @@ impl SurveyWorkbench {
                     self.fault = Some(fault);
                     if let Ok(config) = trailgen_data::project_config(&self.root) {
                         self.regions = config.regions;
+                        self.region_names = config.region_names;
                     }
                     finished = true;
                 }

@@ -59,7 +59,8 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
         shows::candidates(12) & shows::search(SearchPhase::Idle),
     )?;
     let report = stress_portfolio(&mut story, &frames, &complete)?;
-    let _returned = focus_and_return(&mut story, &report.settled)?;
+    let tool_view = arm_boundary_without_camera_travel(&mut story, &report.settled)?;
+    let _returned = focus_and_return(&mut story, &tool_view)?;
     revise_and_stop(&mut story)?;
     choose_and_save(&mut story)?;
 
@@ -82,6 +83,53 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
         report.zoom.worst,
     );
     Ok(())
+}
+
+fn arm_boundary_without_camera_travel(
+    story: &mut TrailStory<'_, '_>,
+    browse: &TrailFrame,
+) -> Result<TrailFrame> {
+    let candidate = first_anchor(
+        browse,
+        TargetClass::Candidate,
+        "candidate portfolio omitted its first tile",
+    )?;
+    let focused = story
+        .click_anchor(&candidate)?
+        .until(shows::view(View::FocusCandidate))?
+        .into_value();
+    let baseline = focused
+        .state
+        .map
+        .ok_or_else(|| crate::harness::verdict("focused candidate omitted its viewport"))?;
+    let armed = story
+        .click(Target::Boundary)?
+        .until(shows::view(View::Browse))?
+        .into_value();
+    let actual = armed
+        .state
+        .map
+        .ok_or_else(|| crate::harness::verdict("armed boundary omitted its viewport"))?;
+    demand(
+        near_map(actual.center, baseline.center)
+            && (actual.world_points - baseline.world_points).abs() <= 1.0e-6,
+        format!("arming the search boundary moved the viewport from {baseline:?} to {actual:?}"),
+    )?;
+    let _disarmed = story.key(Key::Escape)?.next_frame()?;
+    story.wait_stable(
+        Duration::from_secs(3),
+        Duration::from_millis(180),
+        "search-boundary cancellation to settle",
+        |frame| {
+            frame.state.map.map(|map| {
+                [
+                    map.center[0].to_bits(),
+                    map.center[1].to_bits(),
+                    map.world_points.to_bits(),
+                ]
+            })
+        },
+    )
 }
 
 fn choose_and_save(story: &mut TrailStory<'_, '_>) -> Result<()> {
@@ -179,6 +227,12 @@ fn revise_and_stop(story: &mut TrailStory<'_, '_>) -> Result<()> {
     let _required = story
         .click_at(require, Button::Primary)?
         .until(shows::required(1))?;
+    let _undone = story
+        .chord(Modifiers::CTRL, Key::Character('z'))?
+        .until(shows::required(0))?;
+    let _redone = story
+        .chord(Modifiers::CTRL, Key::Character('y'))?
+        .until(shows::required(1))?;
     let striking = story.wait_within(
         Duration::from_secs(8),
         shows::candidates_at_least(1) & shows::search(SearchPhase::Running),
@@ -197,6 +251,12 @@ fn revise_and_stop(story: &mut TrailStory<'_, '_>) -> Result<()> {
     let forbid = map_pixel(&stopped, [-105.0, 40.003])?;
     let _forbidden = story
         .modified_click_at(forbid, Button::Primary, Modifiers::SHIFT)?
+        .until(shows::forbidden(1))?;
+    let _undone = story
+        .chord(Modifiers::CTRL, Key::Character('z'))?
+        .until(shows::forbidden(0))?;
+    let _redone = story
+        .chord(Modifiers::CTRL, Key::Character('y'))?
         .until(shows::forbidden(1))?;
     Ok(())
 }

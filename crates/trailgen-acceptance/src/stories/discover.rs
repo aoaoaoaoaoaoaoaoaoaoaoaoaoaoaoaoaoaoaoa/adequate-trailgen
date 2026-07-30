@@ -7,7 +7,7 @@ use crate::harness::{
     read_json, screen_point,
 };
 use crate::interactions::lasso_boundary;
-use crate::observation::{SearchPhase, View, Workspace, shows};
+use crate::observation::{CorpusPhase, SearchPhase, View, Workspace, shows};
 
 const ROOT: &str = "/test/discover-loop";
 
@@ -20,6 +20,7 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
     acquire_region(&mut story)?;
     harness.fixtures.assert_harvested()?;
     find_and_keep(&mut story)?;
+    exercise_map_area_controls(&mut story)?;
     verify_discovery(harness)?;
 
     if let Some(artifacts) = harness.artifacts {
@@ -47,6 +48,57 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
         .until(shows::view(View::FocusSaved))?;
     restarted.terminate()?;
     Ok(())
+}
+
+fn exercise_map_area_controls(story: &mut TrailStory<'_, '_>) -> Result<()> {
+    let focused = story.wait(shows::view(View::FocusSaved) & shows::library(1))?;
+    let baseline = focused
+        .state
+        .map
+        .ok_or_else(|| crate::harness::verdict("saved trail omitted its viewport"))?;
+    let armed = story
+        .click(Target::AddMapArea)?
+        .until(shows::view(View::Browse))?
+        .into_value();
+    let actual = armed
+        .state
+        .map
+        .ok_or_else(|| crate::harness::verdict("map-area tool omitted its viewport"))?;
+    demand(
+        near_map(actual.center, baseline.center)
+            && (actual.world_points - baseline.world_points).abs() <= 1.0e-6,
+        format!("arming Add Map Area moved the viewport from {baseline:?} to {actual:?}"),
+    )?;
+    let browse = story.key(Key::Escape)?.next_frame()?.into_value();
+    let saved = first_anchor(
+        &browse,
+        TargetClass::LibraryTrail,
+        "saved trail vanished after cancelling Add Map Area",
+    )?;
+    let _focused = story
+        .click_anchor(&saved)?
+        .until(shows::view(View::FocusSaved))?;
+
+    let _started = story
+        .click(Target::RefreshTrails)?
+        .until(shows::corpus(CorpusPhase::Updating) & shows::view(View::FocusSaved))?;
+    let refreshed = story.wait_within(
+        Duration::from_secs(30),
+        shows::corpus(CorpusPhase::Idle) & shows::view(View::FocusSaved) & shows::library(1),
+    )?;
+    let actual = refreshed
+        .state
+        .map
+        .ok_or_else(|| crate::harness::verdict("refreshed trail omitted its viewport"))?;
+    demand(
+        near_map(actual.center, baseline.center)
+            && (actual.world_points - baseline.world_points).abs() <= 1.0e-6,
+        format!("refreshing trails moved the viewport from {baseline:?} to {actual:?}"),
+    )
+}
+
+fn near_map(left: [f64; 2], right: [f64; 2]) -> bool {
+    (left[0] - right[0]).abs() <= 1.0e-12 && (left[1] - right[1]).abs() <= 1.0e-12
 }
 
 fn create_project(story: &mut TrailStory<'_, '_>) -> Result<()> {

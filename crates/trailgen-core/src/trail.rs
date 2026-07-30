@@ -6,7 +6,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, BinaryHeap},
+    collections::{BTreeMap, BTreeSet, BinaryHeap},
     sync::Arc,
 };
 
@@ -225,15 +225,28 @@ impl Trail {
                     .last()
                     .expect("validated support points are nonempty")
                     .vertex;
-                edges.extend(
-                    shortest_path(graph, end, start, previous, self.routing, None).ok_or_else(
-                        || {
-                            TrailgenError::InvalidData(
-                                "no lawful return connects the final support point".to_owned(),
-                            )
-                        },
-                    )?,
-                );
+                let forbidden_edges = edges.iter().copied().collect::<BTreeSet<_>>();
+                let mut forbidden_vertices = walked_vertices(graph, start, &edges)?;
+                forbidden_vertices.remove(&start);
+                forbidden_vertices.remove(&end);
+                let return_path = shortest_path_avoiding(
+                    graph,
+                    end,
+                    start,
+                    previous,
+                    self.routing,
+                    &forbidden_edges,
+                    &forbidden_vertices,
+                )
+                // Preserve the specific shape mismatch when no simple closure
+                // exists; the GUI uses it to offer bounded trailhead rounding.
+                .or_else(|| shortest_path(graph, end, start, previous, self.routing, None))
+                .ok_or_else(|| {
+                    TrailgenError::InvalidData(
+                        "no lawful return connects the final support point".to_owned(),
+                    )
+                })?;
+                edges.extend(return_path);
             }
             RouteShape::FigureEight => unreachable!("figure-eight rejected by validation"),
         }
@@ -261,6 +274,22 @@ impl Trail {
             support_offsets,
         })
     }
+}
+
+fn walked_vertices(
+    graph: &TrailGraph,
+    start: VertexId,
+    edges: &[EdgeId],
+) -> crate::Result<BTreeSet<VertexId>> {
+    let mut vertices = BTreeSet::from([start]);
+    let mut at = start;
+    for edge in edges {
+        at = graph.edges[edge.0].traverse(at).ok_or_else(|| {
+            TrailgenError::InvalidData("support points induce an illegal directed trail".to_owned())
+        })?;
+        vertices.insert(at);
+    }
+    Ok(vertices)
 }
 
 fn route_vertices(graph: &TrailGraph, route: &Route) -> Option<Vec<VertexId>> {
@@ -768,6 +797,13 @@ impl PartialOrd for Frontier {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+struct PathVeto<'a> {
+    cost_ceiling: Option<f64>,
+    edges: Option<&'a BTreeSet<EdgeId>>,
+    vertices: Option<&'a BTreeSet<VertexId>>,
+}
+
 pub(crate) fn shortest_path(
     graph: &TrailGraph,
     from: VertexId,
@@ -775,6 +811,50 @@ pub(crate) fn shortest_path(
     previous: Option<EdgeId>,
     law: RoutingLaw,
     max_cost: Option<f64>,
+) -> Option<Vec<EdgeId>> {
+    shortest_path_excluding(
+        graph,
+        from,
+        target,
+        previous,
+        law,
+        PathVeto {
+            cost_ceiling: max_cost,
+            ..PathVeto::default()
+        },
+    )
+}
+
+fn shortest_path_avoiding(
+    graph: &TrailGraph,
+    from: VertexId,
+    target: VertexId,
+    previous: Option<EdgeId>,
+    law: RoutingLaw,
+    forbidden_edges: &BTreeSet<EdgeId>,
+    forbidden_vertices: &BTreeSet<VertexId>,
+) -> Option<Vec<EdgeId>> {
+    shortest_path_excluding(
+        graph,
+        from,
+        target,
+        previous,
+        law,
+        PathVeto {
+            cost_ceiling: None,
+            edges: Some(forbidden_edges),
+            vertices: Some(forbidden_vertices),
+        },
+    )
+}
+
+fn shortest_path_excluding(
+    graph: &TrailGraph,
+    from: VertexId,
+    target: VertexId,
+    previous: Option<EdgeId>,
+    law: RoutingLaw,
+    veto: PathVeto<'_>,
 ) -> Option<Vec<EdgeId>> {
     if from == target {
         return Some(Vec::new());
@@ -787,7 +867,7 @@ pub(crate) fn shortest_path(
     let mut distance = BTreeMap::from([(origin, 0.0)]);
     let mut predecessor = BTreeMap::<Walk, (Walk, EdgeId)>::new();
     while let Some(Frontier { cost, walk }) = frontier.pop() {
-        if max_cost.is_some_and(|maximum| cost > maximum)
+        if veto.cost_ceiling.is_some_and(|maximum| cost > maximum)
             || distance
                 .get(&walk)
                 .is_some_and(|best| cost > *best + f64::EPSILON)
@@ -806,18 +886,24 @@ pub(crate) fn shortest_path(
             return Some(edges);
         }
         for edge in graph.adjacency[walk.at.0].iter().copied() {
-            if !graph.turn_allowed(walk.previous, walk.at, edge) {
+            if veto.edges.is_some_and(|edges| edges.contains(&edge))
+                || !graph.turn_allowed(walk.previous, walk.at, edge)
+            {
                 continue;
             }
             let Some(edge_cost) = law.edge_cost(graph, edge) else {
                 continue;
             };
             let next_cost = cost + edge_cost;
-            if max_cost.is_some_and(|maximum| next_cost > maximum) {
+            if veto.cost_ceiling.is_some_and(|maximum| next_cost > maximum) {
+                continue;
+            }
+            let at = graph.edges[edge.0].traverse(walk.at)?;
+            if at != target && veto.vertices.is_some_and(|vertices| vertices.contains(&at)) {
                 continue;
             }
             let next = Walk {
-                at: graph.edges[edge.0].traverse(walk.at)?,
+                at,
                 previous: Some(edge),
             };
             if distance
@@ -1013,6 +1099,46 @@ mod tests {
             .expect("realize recovered loop");
         assert_eq!(realized.route.edges, route.edges);
         assert!(trail.support_points.len() >= 2);
+    }
+
+    #[test]
+    fn loop_closure_chooses_the_shortest_nonrepeating_return() {
+        let a = Coord::new(0.0, 0.0);
+        let b = Coord::new(0.002, 0.0);
+        let c = Coord::new(0.001, 0.001);
+        let graph = GraphBuilder::default()
+            .build(&[
+                draft("direct", a, b),
+                draft("east", b, c),
+                draft("west", c, a),
+            ])
+            .expect("build triangular network");
+        let trail = Trail::forge(
+            RouteShape::Loop,
+            [a, b]
+                .map(|coord| SupportPoint::forge(coord).expect("valid support"))
+                .to_vec(),
+            RoutingLaw::default(),
+        )
+        .expect("valid loop design");
+
+        let realized = trail
+            .realize("triangle", &graph, &loop_constraints(), 1.0)
+            .expect("alternative return closes a proper loop");
+
+        assert_eq!(realized.route.metrics.shape, RouteShape::Loop);
+        assert_eq!(realized.route.edges.len(), 3);
+        assert_eq!(
+            realized
+                .route
+                .edges
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>()
+                .len(),
+            3,
+            "the return must not double back over the outbound edge"
+        );
     }
 
     #[test]

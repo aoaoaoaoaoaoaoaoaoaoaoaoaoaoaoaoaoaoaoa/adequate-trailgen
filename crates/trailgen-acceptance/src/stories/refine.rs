@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use egui_tester::{Key, Modifiers, Result, Testbed, Timed, demand};
+use egui_tester::{Key, Modifiers, Result, Testbed, Timed, WindowQuery, demand};
 use serde_json::Value;
 
 use crate::harness::{
@@ -166,6 +166,18 @@ fn rename(story: &mut TrailStory<'_, '_>, testbed: &Testbed) -> Result<()> {
     demand(
         only_trail(&read_json(testbed, INDEX)?)?["name"] == RENAMED,
         "rename witness advanced before durable state",
+    )?;
+    let window = testbed.x11()?.wait_window_query(
+        story.session().application(),
+        WindowQuery::title_contains(RENAMED),
+        Duration::from_secs(2),
+    )?;
+    demand(
+        window.title() == format!("{RENAMED} · Acceptance · trailgen"),
+        format!(
+            "renamed trail did not reach the native window title: {:?}",
+            window.title()
+        ),
     )
 }
 

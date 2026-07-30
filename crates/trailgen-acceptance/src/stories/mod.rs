@@ -5,7 +5,7 @@ mod refine;
 
 use egui_tester::Result;
 
-use crate::harness::{Harness, TITLE, demand};
+use crate::harness::{Harness, TITLE_FRAGMENT, demand};
 
 type UserStory = for<'a> fn(&Harness<'a>) -> Result<()>;
 
@@ -13,7 +13,7 @@ pub fn smoke(harness: &Harness<'_>) -> Result<()> {
     let app = harness.launch_uninstrumented_smoke()?;
     let session = harness.testbed.x11_session(
         &app,
-        egui_tester::WindowQuery::title_exact(TITLE),
+        egui_tester::WindowQuery::title_contains(TITLE_FRAGMENT),
         std::time::Duration::from_secs(30),
     )?;
     session.focus()?;

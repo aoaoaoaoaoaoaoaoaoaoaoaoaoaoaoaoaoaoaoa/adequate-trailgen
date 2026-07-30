@@ -9,6 +9,10 @@ pub fn run(ctx: egui::Context, app: Workbench) -> Result<()> {
 impl NativeApp for Workbench {
     const WINDOW: WindowSpec = WindowSpec::new("trailgen · trail workbench", [1_440.0, 920.0]);
 
+    fn window_title(&self) -> String {
+        Self::window_title(self)
+    }
+
     fn draw(&mut self, ui: &mut egui::Ui) {
         self.pulse(ui);
     }

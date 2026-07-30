@@ -94,6 +94,16 @@ fn close_reverse_and_save(
     let _saved = story
         .click(Target::EditorSave)?
         .until(shows::view(View::FocusSaved) & shows::library(1))?;
+    let _coherent = story.wait_stable(
+        Duration::from_secs(3),
+        Duration::from_millis(80),
+        "saved focus to replace every editor surface",
+        |frame| {
+            (frame.state.view == View::FocusSaved
+                && frame.anchor(&Target::EditorSave.to_string()).is_none())
+            .then_some(())
+        },
+    )?;
     Ok(())
 }
 

@@ -15,7 +15,7 @@ use crate::{fixture::FixtureWorld, observation::Observation};
 
 pub use egui_tester::demand;
 
-pub const TITLE: &str = "trailgen · trail workbench";
+pub const TITLE_FRAGMENT: &str = "trailgen";
 
 pub type TrailStory<'app, 'bed> = Story<'app, 'bed, Observation>;
 pub type TrailFrame = ProbeFrame<Observation>;
@@ -148,7 +148,7 @@ impl<'a> Harness<'a> {
         let mut story: TrailStory<'app, 'a> = Story::bind(
             self.testbed,
             app,
-            WindowQuery::title_exact(TITLE),
+            WindowQuery::title_contains(TITLE_FRAGMENT),
             match run {
                 RunClass::Functional => ReactionBudget::functional(Duration::from_secs(30)),
                 RunClass::Performance => instant_budget(),

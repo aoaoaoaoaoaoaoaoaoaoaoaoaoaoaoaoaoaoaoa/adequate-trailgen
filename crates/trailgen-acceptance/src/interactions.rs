@@ -60,15 +60,26 @@ pub fn drag_support(
         .reaction(press)
         .until(shows::dragging_support(Some(slot)))?;
     let motion = story.session().move_to(destination.0, destination.1)?;
-    let reforged = story.reaction(motion).until(
-        shows::editor_ready()
+    let previewed = story
+        .reaction(motion)
+        .until(shows::signature(before_signature) & shows::support(slot, target))?;
+    let release = story.session().button_up(Button::Primary)?;
+    let reforged = story.reaction(release).until(
+        shows::dragging_support(None)
+            & shows::editor_ready()
             & shows::changed_signature(before_signature)
             & shows::support(slot, target),
     )?;
-    let release = story.session().button_up(Button::Primary)?;
-    let _released = story
-        .reaction(release)
-        .until(shows::dragging_support(None))?;
+    demand(
+        previewed
+            .value()
+            .state
+            .editor
+            .as_ref()
+            .and_then(|editor| editor.route_signature)
+            == Some(before_signature),
+        "pin drag recomputed route geometry before release",
+    )?;
     Ok(reforged)
 }
 

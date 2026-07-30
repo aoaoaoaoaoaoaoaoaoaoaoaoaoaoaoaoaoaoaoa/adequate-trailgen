@@ -192,13 +192,15 @@ impl ElevationProfile {
                 [pos2(x, plot.top()), pos2(x, plot.bottom())],
                 Stroke::new(0.6_f32, chrome::EDGE.gamma_multiply(0.35)),
             );
-            painter.text(
-                pos2(x, lanes.terrain.bottom() + 6.0),
-                egui::Align2::CENTER_TOP,
-                format!("{:.1}", self.distance_m * t / 1_000.0),
-                egui::FontId::monospace(10.0),
-                chrome::MUTED,
-            );
+            if let Some(label) = distance_notch(self.distance_m, i) {
+                painter.text(
+                    pos2(x, lanes.terrain.bottom() + 6.0),
+                    egui::Align2::CENTER_TOP,
+                    label,
+                    egui::FontId::monospace(10.0),
+                    chrome::MUTED,
+                );
+            }
         }
         painter.text(
             pos2(plot.left() - 6.0, plot.top()),
@@ -215,8 +217,8 @@ impl ElevationProfile {
             chrome::MUTED,
         );
         painter.text(
-            pos2(plot.right(), lanes.terrain.bottom() + 6.0),
-            egui::Align2::RIGHT_TOP,
+            pos2(plot.left(), lanes.terrain.bottom() + 6.0),
+            egui::Align2::LEFT_TOP,
             "DISTANCE · KM",
             egui::FontId::monospace(9.0),
             chrome::MUTED,
@@ -370,6 +372,10 @@ impl ElevationProfile {
     }
 }
 
+fn distance_notch(distance_m: f64, slot: u8) -> Option<String> {
+    (slot != 0).then(|| format!("{:.1}", distance_m * f64::from(slot) / 4_000.0))
+}
+
 fn annex_span(spans: &mut Vec<Span>, from_m: f64, to_m: f64, terrain: Terrain) {
     if to_m <= from_m {
         return;
@@ -404,6 +410,13 @@ mod tests {
             "the gutter must separate elevation from terrain"
         );
         assert!(!lanes.elevation.intersects(lanes.terrain));
+    }
+
+    #[test]
+    fn distance_caption_owns_the_origin_notch() {
+        assert_eq!(distance_notch(24_000.0, 0), None);
+        assert_eq!(distance_notch(24_000.0, 1).as_deref(), Some("6.0"));
+        assert_eq!(distance_notch(24_000.0, 4).as_deref(), Some("24.0"));
     }
 
     #[test]

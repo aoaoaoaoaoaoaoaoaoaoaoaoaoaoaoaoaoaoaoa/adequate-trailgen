@@ -1,5 +1,7 @@
 use crate::{basemap, forge, map, vector_map::VectorGap};
-use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Vec2, epaint::TextShape, vec2};
+use egui::{
+    Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, Vec2, epaint::TextShape, vec2,
+};
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -8,10 +10,12 @@ use std::{
 
 const LABEL_CEILING: usize = 180;
 const REPEAT_SEPARATION: f32 = 480.0;
-const TRANSITION: Duration = Duration::from_millis(160);
+const TRANSITION: Duration = Duration::from_millis(100);
 const IDENTITY_SCALE: f64 = 2_097_152.0;
 const STRAIGHT_SUPPORT_COSINE: f64 = 0.93;
 const PARKING_LABEL_LAG: f32 = 1.25;
+const PEAK_HALF_WIDTH: f32 = 5.2;
+const PEAK_TEXT_GAP: f32 = 4.0;
 
 pub struct PointLabel<'a> {
     pub world: [f64; 2],
@@ -440,6 +444,7 @@ struct Prepared {
     world_key: [u64; 2],
     world: [f64; 2],
     offset: Vec2,
+    symbol: Option<PointSymbol>,
     anchor: Pos2,
     angle: f32,
     footprint: Rect,
@@ -450,6 +455,11 @@ struct Prepared {
     break_line: bool,
     patron: Option<usize>,
     transition: f32,
+}
+
+#[derive(Clone, Copy)]
+enum PointSymbol {
+    Peak,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -483,6 +493,12 @@ impl Prepared {
         )
         .visual_bounding_rect()
         .expand(3.0);
+        if let Some(symbol) = projected.symbol {
+            projected.footprint = projected.footprint.union(symbol_footprint(
+                projected.anchor - projected.offset,
+                symbol,
+            ));
+        }
         projected.ink = projected.ink.gamma_multiply(transition);
         projected.halo = projected.halo.map(|halo| Halo {
             color: halo.color.gamma_multiply(transition),
@@ -647,6 +663,7 @@ fn prepare_parking<'a>(
                 world_key: world_key(mark.world),
                 world: mark.world,
                 offset: center - anchor,
+                symbol: None,
                 anchor: center,
                 angle: 0.0,
                 footprint,
@@ -677,14 +694,13 @@ fn prepare_points<'a>(
         if maturity <= 0.01 {
             continue;
         }
-        let anchor = map::screen_at(viewport, rect, label.world);
+        let world_anchor = map::screen_at(viewport, rect, label.world);
         let galley = painter.layout_no_wrap(
             label.text.to_owned(),
             FontId::proportional(label.size),
             Color32::PLACEHOLDER,
         );
-        let footprint = Rect::from_center_size(anchor, galley.size()).expand(3.0);
-        let (identity_kind, ink, halo) = match label.kind {
+        let (identity_kind, ink, halo, symbol, offset) = match label.kind {
             basemap::LabelKind::Place => (
                 2,
                 Color32::from_black_alpha((225.0 * maturity) as u8),
@@ -692,18 +708,35 @@ fn prepare_points<'a>(
                     color: Color32::from_white_alpha((92.0 * maturity) as u8),
                     width: 1.0,
                 }),
+                None,
+                Vec2::ZERO,
             ),
             basemap::LabelKind::Lake => (
                 3,
                 Color32::from_rgb(25, 82, 112).gamma_multiply(maturity),
                 None,
+                None,
+                Vec2::ZERO,
             ),
             basemap::LabelKind::Peak => (
                 4,
                 Color32::from_rgb(49, 39, 28).gamma_multiply(maturity),
                 None,
+                Some(PointSymbol::Peak),
+                vec2(
+                    galley
+                        .size()
+                        .x
+                        .mul_add(0.5, PEAK_HALF_WIDTH + PEAK_TEXT_GAP),
+                    0.0,
+                ),
             ),
         };
+        let anchor = world_anchor + offset;
+        let mut footprint = Rect::from_center_size(anchor, galley.size()).expand(3.0);
+        if let Some(symbol) = symbol {
+            footprint = footprint.union(symbol_footprint(world_anchor, symbol));
+        }
         if rect.contains_rect(footprint) {
             prepared.push(Prepared {
                 id: Identity::forge(identity_kind, label.text, label.world),
@@ -712,7 +745,8 @@ fn prepare_points<'a>(
                 birth_zoom: label.onset_zoom,
                 world_key: world_key(label.world),
                 world: label.world,
-                offset: Vec2::ZERO,
+                offset,
+                symbol,
                 anchor,
                 angle: 0.0,
                 footprint,
@@ -762,6 +796,7 @@ fn prepare_lines<'a>(
                 world_key: world_key(placement.world),
                 world: placement.world,
                 offset: Vec2::ZERO,
+                symbol: None,
                 anchor: placement.anchor,
                 angle: placement.angle,
                 footprint: shape.visual_bounding_rect().expand(3.0),
@@ -785,6 +820,9 @@ const fn world_key(world: [f64; 2]) -> [u64; 2] {
 }
 
 fn stamp(painter: &Painter, label: &Prepared) {
+    if let Some(symbol) = label.symbol {
+        paint_symbol(painter, label.anchor - label.offset, symbol, label.ink);
+    }
     if let Some(halo) = label.halo {
         let diagonal = halo.width * std::f32::consts::FRAC_1_SQRT_2;
         for offset in [
@@ -811,6 +849,29 @@ fn stamp(painter: &Painter, label: &Prepared) {
         Arc::clone(&label.galley),
         label.ink,
     ));
+}
+
+fn symbol_footprint(anchor: Pos2, symbol: PointSymbol) -> Rect {
+    match symbol {
+        PointSymbol::Peak => {
+            Rect::from_center_size(anchor, vec2(PEAK_HALF_WIDTH * 2.0, 9.0)).expand(2.0)
+        }
+    }
+}
+
+fn paint_symbol(painter: &Painter, anchor: Pos2, symbol: PointSymbol, ink: Color32) {
+    match symbol {
+        PointSymbol::Peak => {
+            let _peak = painter.add(Shape::closed_line(
+                vec![
+                    anchor + vec2(0.0, -6.0),
+                    anchor + vec2(PEAK_HALF_WIDTH, 3.0),
+                    anchor + vec2(-PEAK_HALF_WIDTH, 3.0),
+                ],
+                Stroke::new(1.35_f32, ink),
+            ));
+        }
+    }
 }
 
 fn text_shape(anchor: Pos2, angle: f32, galley: Arc<egui::Galley>, color: Color32) -> TextShape {
@@ -1029,6 +1090,44 @@ mod tests {
             assert_eq!(composition.parking.len(), 1);
             assert!(composition.labels.is_empty());
         });
+    }
+
+    #[test]
+    fn peak_symbol_owns_the_world_anchor_while_its_name_stands_east() {
+        let context = egui::Context::default();
+        let _output = context.run_ui(egui::RawInput::default(), |ui| {
+            let viewport = map::Viewport {
+                center: [0.5, 0.5],
+                zoom: 12.0,
+            };
+            let composition = compose(
+                ui.painter(),
+                viewport,
+                VIEW,
+                [PointLabel {
+                    world: viewport.center,
+                    text: "Bear Mountain · 391 m",
+                    kind: basemap::LabelKind::Peak,
+                    rank: 1,
+                    size: 11.4,
+                    onset_zoom: 9.0,
+                }],
+                std::iter::empty(),
+                std::iter::empty(),
+            );
+            let label = composition.labels.first().expect("peak label admitted");
+            let expected = map::screen_at(viewport, VIEW, viewport.center);
+
+            assert!(matches!(label.symbol, Some(PointSymbol::Peak)));
+            assert_eq!(label.anchor - label.offset, expected);
+            assert!(label.anchor.x > expected.x);
+        });
+    }
+
+    #[test]
+    fn settled_labels_reach_full_ink_within_one_tenth_second() {
+        assert!(TRANSITION <= Duration::from_millis(100));
+        assert!((smooth_time(TRANSITION) - 1.0).abs() < f32::EPSILON);
     }
     const CAMERA: map::Viewport = map::Viewport {
         center: [0.5, 0.5],

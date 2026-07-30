@@ -7,7 +7,7 @@ use std::{borrow::Cow, fmt};
 
 use serde::{Deserialize, Serialize};
 
-pub const UI_FINGERPRINT: &str = "trailgen.ui/2";
+pub const UI_FINGERPRINT: &str = "trailgen.ui/3";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -51,6 +51,13 @@ pub enum SearchPhase {
     Running,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CorpusPhase {
+    Idle,
+    Updating,
+}
+
 /// Stable recipient of a native user gesture.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Target {
@@ -61,6 +68,8 @@ pub enum Target {
     SurveyMap,
     Map,
     Manual,
+    AddMapArea,
+    RefreshTrails,
     Boundary,
     Find,
     Stop,
@@ -78,7 +87,7 @@ pub enum Target {
 }
 
 impl Target {
-    pub const STATIC: [Self; 20] = [
+    pub const STATIC: [Self; 22] = [
         Self::ProjectName,
         Self::ProjectParent,
         Self::ProjectCreate,
@@ -86,6 +95,8 @@ impl Target {
         Self::SurveyMap,
         Self::Map,
         Self::Manual,
+        Self::AddMapArea,
+        Self::RefreshTrails,
         Self::Boundary,
         Self::Find,
         Self::Stop,
@@ -111,6 +122,8 @@ impl Target {
             Self::SurveyMap => "survey.map",
             Self::Map => "map.canvas",
             Self::Manual => "search.manual",
+            Self::AddMapArea => "areas.add",
+            Self::RefreshTrails => "areas.refresh",
             Self::Boundary => "search.boundary",
             Self::Find => "search.find",
             Self::Stop => "search.stop",
