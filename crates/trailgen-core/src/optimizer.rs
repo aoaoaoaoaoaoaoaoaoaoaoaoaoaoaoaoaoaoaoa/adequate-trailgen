@@ -839,7 +839,7 @@ const SUPPORT_SECTORS: u32 = 16;
 
 #[derive(Clone, Debug)]
 struct SupportDesign {
-    promise_m: f64,
+    lower_bound_m: f64,
     supports: Vec<VertexId>,
 }
 
@@ -945,12 +945,12 @@ fn support_designs(
     params: SearchParams,
 ) -> Vec<SupportDesign> {
     let pool = params.keep.max(1).saturating_mul(8);
-    let target_m = (constraints.min_distance_m + constraints.max_distance_m) * 0.5;
+    let feasibility_floor_m = constraints.min_distance_m;
     let mut designs = landmarks
         .iter()
         .copied()
         .map(|pivot| SupportDesign {
-            promise_m: radial[pivot.0] * 2.0,
+            lower_bound_m: radial[pivot.0] * 2.0,
             supports: vec![pivot],
         })
         .collect::<Vec<_>>();
@@ -969,10 +969,10 @@ fn support_designs(
         }
     }
     pairs.sort_by(|left, right| {
-        support_rank(left.0, &left.1, target_m, params.seed).cmp(&support_rank(
+        support_rank(left.0, &left.1, feasibility_floor_m, params.seed).cmp(&support_rank(
             right.0,
             &right.1,
-            target_m,
+            feasibility_floor_m,
             params.seed,
         ))
     });
@@ -980,8 +980,8 @@ fn support_designs(
         pairs
             .into_iter()
             .take(pool)
-            .map(|(promise_m, supports)| SupportDesign {
-                promise_m,
+            .map(|(lower_bound_m, supports)| SupportDesign {
+                lower_bound_m,
                 supports: supports.into(),
             }),
     );
@@ -1009,32 +1009,43 @@ fn support_designs(
         }
     }
     triples.sort_by(|left, right| {
-        support_rank(left.0, &left.1, target_m, params.seed).cmp(&support_rank(
+        support_rank(left.0, &left.1, feasibility_floor_m, params.seed).cmp(&support_rank(
             right.0,
             &right.1,
-            target_m,
+            feasibility_floor_m,
             params.seed,
         ))
     });
     designs.extend(triples.into_iter().take(pool.saturating_mul(2)).map(
-        |(promise_m, supports)| SupportDesign {
-            promise_m,
+        |(lower_bound_m, supports)| SupportDesign {
+            lower_bound_m,
             supports: supports.into(),
         },
     ));
     designs.sort_by(|left, right| {
-        support_rank(left.promise_m, &left.supports, target_m, params.seed).cmp(&support_rank(
-            right.promise_m,
+        support_rank(
+            left.lower_bound_m,
+            &left.supports,
+            feasibility_floor_m,
+            params.seed,
+        )
+        .cmp(&support_rank(
+            right.lower_bound_m,
             &right.supports,
-            target_m,
+            feasibility_floor_m,
             params.seed,
         ))
     });
     designs
 }
 
-fn support_rank(promise_m: f64, supports: &[VertexId], target_m: f64, seed: u64) -> (u64, u64) {
-    let deviation = (promise_m - target_m).abs().to_bits();
+fn support_rank(
+    lower_bound_m: f64,
+    supports: &[VertexId],
+    feasibility_floor_m: f64,
+    seed: u64,
+) -> (u64, u64) {
+    let deviation = (lower_bound_m - feasibility_floor_m).abs().to_bits();
     let hash = supports
         .iter()
         .fold(seed, |hash, vertex| splitmix64(hash ^ vertex.0 as u64));
@@ -2622,6 +2633,42 @@ mod tests {
             })
             .map(|edge| edge.id)
             .expect("fixture edge exists")
+    }
+
+    #[test]
+    fn support_lower_bounds_target_the_feasibility_floor() {
+        let low = Coord::new(0.001, 0.0);
+        let midpoint = Coord::new(0.002, 0.0);
+        let graph = GraphBuilder::default()
+            .build(&[branch(
+                vec![Coord::new(0.0, 0.0), low, midpoint],
+                "lower-bound-axis",
+            )])
+            .expect("build lower-bound fixture");
+        let low = graph.nearest_vertex(low).expect("low landmark");
+        let midpoint = graph.nearest_vertex(midpoint).expect("midpoint landmark");
+        let mut radial = vec![f64::INFINITY; graph.vertices.len()];
+        radial[low.0] = 25_000.0;
+        radial[midpoint.0] = 37_500.0;
+        let constraints = LoopConstraints {
+            min_distance_m: 50_000.0,
+            max_distance_m: 100_000.0,
+            ..LoopConstraints::default()
+        };
+
+        let designs = support_designs(
+            &graph,
+            &radial,
+            &[low, midpoint],
+            &constraints,
+            SearchParams {
+                keep: 1,
+                ..SearchParams::default()
+            },
+        );
+
+        assert_eq!(designs[0].supports, [low]);
+        assert!((designs[0].lower_bound_m - constraints.min_distance_m).abs() <= f64::EPSILON);
     }
 
     #[test]

@@ -259,9 +259,11 @@ impl SearchRecipe {
                 min: defaults.min_ascent_m,
                 max: defaults.max_ascent_m,
             },
-            difficulty: defaults
-                .target_difficulty
-                .unwrap_or((defaults.min_difficulty + defaults.max_difficulty) * 0.5),
+            difficulty: defaults.target_difficulty.unwrap_or_else(|| {
+                default_difficulty_target()
+                    .max(defaults.min_difficulty)
+                    .min(defaults.max_difficulty)
+            }),
             shape: defaults
                 .allowed_shapes
                 .first()
@@ -791,6 +793,24 @@ mod tests {
             .next()
             .context("fixture must contain a loop")?;
         Ok((graph, route))
+    }
+
+    #[test]
+    fn default_recipe_targets_difficulty_without_capping_it() -> Result<()> {
+        let defaults = LoopConstraints::default();
+        let recipe = SearchRecipe::from_defaults(&defaults);
+
+        assert!((recipe.difficulty - default_difficulty_target()).abs() <= f64::EPSILON);
+        assert!(recipe.constraints(&defaults)?.max_difficulty > 1.0e300);
+        let bounded = LoopConstraints {
+            min_difficulty: 50.0,
+            max_difficulty: 90.0,
+            ..defaults
+        };
+        let recipe = SearchRecipe::from_defaults(&bounded);
+        assert!((recipe.difficulty - 50.0).abs() <= f64::EPSILON);
+        assert!((recipe.constraints(&bounded)?.max_difficulty - 90.0).abs() <= f64::EPSILON);
+        Ok(())
     }
 
     #[test]

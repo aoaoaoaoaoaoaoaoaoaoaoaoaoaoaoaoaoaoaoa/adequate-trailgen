@@ -3260,12 +3260,35 @@ fn elevation_bounds_reject_routes_outside_ascent_descent_window() {
 fn loop_constraints_deserialize_missing_fields_from_defaults() {
     let constraints = serde_json::from_str::<LoopConstraints>("{}").unwrap();
     assert_eq!(constraints, LoopConstraints::default());
+    assert!(constraints.max_difficulty > 1.0e300);
     let constraints =
         serde_json::from_str::<LoopConstraints>(r#"{"max_ascent_m": 1200.0}"#).unwrap();
     assert!((constraints.max_ascent_m - 1_200.0).abs() <= f64::EPSILON);
     assert!(
         (constraints.max_descent_m - LoopConstraints::default().max_descent_m).abs()
             <= f64::EPSILON
+    );
+}
+
+#[test]
+fn difficulty_is_a_target_until_a_hard_window_is_explicit() {
+    let metrics = RouteMetrics {
+        shape: RouteShape::Loop,
+        distance_m: 8_000.0,
+        difficulty: 10_000.0,
+        ..RouteMetrics::default()
+    };
+    let mut constraints = LoopConstraints::default();
+    assert!(constraints.judge(&metrics).satisfied);
+
+    constraints.max_difficulty = 90.0;
+    let verdict = constraints.judge(&metrics);
+    assert!(!verdict.satisfied);
+    assert!(
+        verdict
+            .violations
+            .iter()
+            .any(|violation| violation.starts_with("difficulty "))
     );
 }
 

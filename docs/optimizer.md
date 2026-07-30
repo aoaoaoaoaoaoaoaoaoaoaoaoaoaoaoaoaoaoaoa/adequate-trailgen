@@ -6,7 +6,7 @@ Trailgen separates physical effort from desirability:
 
 - **Difficulty** is a target. Distance, climb, grade, substrate, technical pressure, navigation,
   confidence, and access evidence produce the scalar; ranking minimizes distance from the requested
-  target inside the hard difficulty window.
+  target. The default hard window is unbounded; a project may impose one explicitly.
 - **Quality** is maximized. It is a length-normalized 0–100 score reduced by road exposure,
   uncertainty, and dubious access. Difficulty is deliberately absent, so a severe route can still
   be excellent.
@@ -33,10 +33,14 @@ saveable but is not falsely presented as editable. Figure-eight support topology
 
 ## Candidate Production
 
-`RouteSolver` is the search seam. Loops use `LoopHunter`, a bounded edge-simple outward frontier
-closed by routing-cost-ordered legal return paths. Small graphs may use `ExactLoopSolver`, which is
-exhaustive only inside its hop, frontier, and distance envelope. `solver = "auto"` selects the exact
-backend for graphs with at most 32 edges and the heuristic otherwise.
+`RouteSolver` is the search seam. Loop-only search contracts degree-two chains into a routing
+skeleton, samples radial/bearing landmarks, and realizes edge-simple support programs through
+least-cost nonoverlapping legs. A program's radial-plus-geodesic length is an admissible lower bound,
+so feasibility search ranks it against the requested minimum distance, not the interval midpoint.
+Mixed-shape search retains `LoopHunter`'s bounded edge-simple outward frontier and legal return-path
+closure. Small graphs may use `ExactLoopSolver`, which is exhaustive only inside its hop, frontier,
+and distance envelope. `solver = "auto"` selects the exact backend for graphs with at most 32 edges
+and the heuristic otherwise.
 
 Out-and-backs bypass DFS prefix enumeration. One turn-aware, road-aware shortest-path frontier emits
 the canonical shortest spine to each reachable turnaround and mirrors it. Dense chains therefore

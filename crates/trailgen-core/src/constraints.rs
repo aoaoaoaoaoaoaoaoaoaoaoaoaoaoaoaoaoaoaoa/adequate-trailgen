@@ -52,7 +52,7 @@ impl Default for LoopConstraints {
             min_distance_m: DEFAULT_MIN_DISTANCE_M,
             max_distance_m: DEFAULT_MAX_DISTANCE_M,
             min_difficulty: 0.0,
-            max_difficulty: 90.0,
+            max_difficulty: f64::MAX,
             target_difficulty: None,
             min_ascent_m: 0.0,
             max_ascent_m: 3_000.0,
@@ -539,7 +539,7 @@ const fn default_max_distance_m() -> f64 {
 }
 
 const fn default_max_difficulty() -> f64 {
-    90.0
+    f64::MAX
 }
 
 const fn default_max_elevation_m() -> f64 {
