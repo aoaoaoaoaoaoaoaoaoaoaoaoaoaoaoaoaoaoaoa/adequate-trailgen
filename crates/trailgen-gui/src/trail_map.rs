@@ -3,7 +3,7 @@ use crate::{
     cadence::WorldLevel,
     map::{
         CadenceLineage, MapFramePlan, TrailColoring, TrailMark, TrailSalience, WorldEdge,
-        coloring_shader_code, formality_color, trail_core, trail_terrain_color,
+        coloring_shader_code, formality_color, terrain_color, trail_core,
     },
 };
 use bytemuck::{Pod, Zeroable};
@@ -1493,7 +1493,7 @@ fn trail_palette(salience: TrailSalience) -> [[f32; 4]; 11] {
     palette[0] = normalized(formality_color(false, salience));
     palette[1] = normalized(formality_color(true, salience));
     for (slot, terrain) in TERRAINS.into_iter().enumerate() {
-        palette[slot + 2] = normalized(trail_terrain_color(terrain, salience));
+        palette[slot + 2] = normalized(terrain_color(terrain, salience));
     }
     palette
 }

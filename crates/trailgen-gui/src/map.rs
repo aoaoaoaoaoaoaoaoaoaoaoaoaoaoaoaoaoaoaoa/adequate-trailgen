@@ -693,7 +693,7 @@ impl Atlas {
                                     legend_row(
                                         ui,
                                         terrain_label(terrain),
-                                        trail_terrain_color(terrain, TrailSalience::Context),
+                                        terrain_color(terrain, TrailSalience::Context),
                                         None,
                                     );
                                 }
@@ -1420,20 +1420,6 @@ fn paint_scale_length(
     );
 }
 
-pub const fn terrain_color(terrain: Terrain) -> Color32 {
-    match terrain {
-        Terrain::Unknown => Color32::from_rgb(141, 132, 118),
-        Terrain::Trail => Color32::from_rgb(121, 184, 79),
-        Terrain::Forest => Color32::from_rgb(62, 132, 75),
-        Terrain::Alpine => Color32::from_rgb(204, 186, 104),
-        Terrain::Talus => Color32::from_rgb(191, 139, 81),
-        Terrain::Scramble => Color32::from_rgb(202, 83, 62),
-        Terrain::Pavement => Color32::from_rgb(142, 145, 151),
-        Terrain::Road => Color32::from_rgb(158, 112, 73),
-        Terrain::Water => Color32::from_rgb(60, 137, 179),
-    }
-}
-
 pub const fn formality_color(informal: bool, salience: TrailSalience) -> Color32 {
     match (informal, salience) {
         (false, TrailSalience::Context) => Color32::from_rgb(213, 180, 104),
@@ -1443,9 +1429,9 @@ pub const fn formality_color(informal: bool, salience: TrailSalience) -> Color32
     }
 }
 
-/// Terrain hues for map trails deliberately avoid green, which disappears
-/// against park fill. The elevation profile retains literal land-cover hues.
-pub const fn trail_terrain_color(terrain: Terrain, salience: TrailSalience) -> Color32 {
+/// Terrain hues avoid green, which disappears against park fill. Context
+/// colors are shared by the map, legend, and elevation ribbon.
+pub const fn terrain_color(terrain: Terrain, salience: TrailSalience) -> Color32 {
     match (terrain, salience) {
         (Terrain::Unknown, TrailSalience::Context) => Color32::from_rgb(154, 140, 123),
         (Terrain::Trail, TrailSalience::Context) => Color32::from_rgb(219, 178, 85),
@@ -1479,7 +1465,7 @@ pub fn trail_hue(
     let projected = match coloring {
         TrailColoring::Class => class_color,
         TrailColoring::Formality => formality_color(standing == TrailStanding::Informal, salience),
-        TrailColoring::Terrain => trail_terrain_color(terrain, salience),
+        TrailColoring::Terrain => terrain_color(terrain, salience),
     };
     salience.access_color(projected, access)
 }
@@ -1876,7 +1862,7 @@ mod tests {
         );
         assert_eq!(
             open(TrailColoring::Terrain),
-            trail_terrain_color(Terrain::Talus, TrailSalience::Context)
+            terrain_color(Terrain::Talus, TrailSalience::Context)
         );
 
         let blocked = TrailSalience::Selected.access_color(class, Access::Private);

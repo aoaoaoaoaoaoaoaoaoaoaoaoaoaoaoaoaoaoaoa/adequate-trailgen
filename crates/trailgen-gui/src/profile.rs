@@ -1,7 +1,7 @@
 use crate::chrome;
 use crate::{
     library::SavedTrail,
-    map::{terrain_color, terrain_label},
+    map::{TrailSalience, terrain_color, terrain_label},
 };
 use egui::{Color32, Rect, Response, Sense, Shape, Stroke, Ui, pos2, vec2};
 use trailgen_core::{LineString, Route, Terrain, TrailGraph};
@@ -232,7 +232,7 @@ impl ElevationProfile {
         for span in &self.spans {
             let left = self.x(ribbon, span.from_m);
             let right = self.x(ribbon, span.to_m);
-            let color = terrain_color(span.terrain);
+            let color = terrain_color(span.terrain, TrailSalience::Context);
             let first = mesh.vertices.len() as u32;
             mesh.colored_vertex(pos2(left, ribbon.top()), color);
             mesh.colored_vertex(pos2(left, ribbon.bottom()), color);
