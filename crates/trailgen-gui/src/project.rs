@@ -55,7 +55,6 @@ const fn interactive_search() -> SearchParams {
 
 pub struct Project {
     pub root: PathBuf,
-    pub graph: Arc<WalkGraph>,
     pub config: WorkbenchConfig,
     pub library: Library,
 }
@@ -69,14 +68,12 @@ impl Project {
             "project.read_config",
             read_toml(&root.join("trailgen.toml"))?
         );
-        let graph = product_phase!("project.load_graph", Self::load_graph(&root)?);
         let library = product_phase!(
             "project.load_library",
-            Library::open(&root, &graph, &config.constraints)?
+            Library::open(&root, &config.constraints)?
         );
         Ok(Self {
             root,
-            graph,
             config,
             library,
         })
@@ -669,9 +666,10 @@ mod tests {
         Library::default().save(temp.path())?;
 
         let project = Project::open(temp.path())?;
+        let graph = Project::load_graph(temp.path())?;
 
         assert_eq!(project.config.name, "live project");
-        assert_eq!(project.graph.as_ref(), &cached);
+        assert_eq!(graph.as_ref(), &cached);
         assert!(project.library.trails().is_empty());
         assert!(temp.path().join("library/index.json").is_file());
         Ok(())

@@ -13,7 +13,7 @@ use trailgen_core::{
     WalkGraph, WayKind,
 };
 
-const SCHEMA: u32 = 6;
+const SCHEMA: u32 = 7;
 const INDEX: &str = "library/index.json";
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -449,6 +449,8 @@ pub struct Library {
     schema: u32,
     trails: Vec<SavedTrail>,
     search: SearchRecipe,
+    #[serde(default = "legacy_imported")]
+    legacy_imported: bool,
 }
 
 impl Default for Library {
@@ -474,16 +476,21 @@ struct LibrarySchema {
     schema: u32,
 }
 
+const fn legacy_imported() -> bool {
+    true
+}
+
 impl Library {
     fn forge(defaults: &LoopConstraints) -> Self {
         Self {
             schema: SCHEMA,
             trails: Vec::new(),
             search: SearchRecipe::from_defaults(defaults),
+            legacy_imported: true,
         }
     }
 
-    pub fn open(project: &Path, graph: &WalkGraph, defaults: &LoopConstraints) -> Result<Self> {
+    pub fn open(project: &Path, defaults: &LoopConstraints) -> Result<Self> {
         let path = index_path(project);
         match fs::read(&path) {
             Ok(bytes) => {
@@ -496,7 +503,7 @@ impl Library {
                             .with_context(|| format!("parse {}", path.display()))?,
                         false,
                     )
-                } else if matches!(schema, 3..=5) {
+                } else if matches!(schema, 3..=6) {
                     let mut library = serde_json::from_slice::<Self>(&bytes)
                         .with_context(|| format!("parse {}", path.display()))?;
                     library.schema = SCHEMA;
@@ -513,6 +520,7 @@ impl Library {
                             schema: SCHEMA,
                             trails: legacy.trails,
                             search,
+                            legacy_imported: true,
                         },
                         true,
                     )
@@ -527,7 +535,8 @@ impl Library {
                 Ok(library)
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                let library = Self::migrate_legacy(project, graph, defaults)?;
+                let mut library = Self::forge(defaults);
+                library.legacy_imported = false;
                 library.save(project)?;
                 Ok(library)
             }
@@ -555,6 +564,10 @@ impl Library {
 
     pub fn trails(&self) -> &[SavedTrail] {
         &self.trails
+    }
+
+    pub(crate) const fn legacy_routes_pending(&self) -> bool {
+        !self.legacy_imported
     }
 
     pub fn trail(&self, id: &TrailId) -> Option<&SavedTrail> {
@@ -773,27 +786,33 @@ impl Library {
         changed
     }
 
-    fn migrate_legacy(
-        project: &Path,
-        graph: &WalkGraph,
-        defaults: &LoopConstraints,
-    ) -> Result<Self> {
+    pub(crate) fn read_legacy_routes(project: &Path, graph: &WalkGraph) -> Result<Vec<SavedTrail>> {
         let generated_graph =
             read_optional::<WalkGraph>(&project.join("routes/generated.graph.json"))?;
         if generated_graph.as_ref() != Some(graph) {
-            return Ok(Self::forge(defaults));
+            return Ok(Vec::new());
         }
         let routes = read_optional::<Vec<Route>>(&project.join("routes/generated.routes.json"))?
             .unwrap_or_default();
-        let mut library = Self::forge(defaults);
-        for route in routes {
-            let design = Trail::infer(graph, &route, RoutingLaw::default());
-            let trail = SavedTrail::capture_design(graph, &route, design.as_ref())?;
-            if library.trail(&trail.id).is_none() {
-                library.trails.push(trail);
+        routes
+            .into_iter()
+            .map(|route| {
+                let design = Trail::infer(graph, &route, RoutingLaw::default());
+                SavedTrail::capture_design(graph, &route, design.as_ref())
+            })
+            .collect()
+    }
+
+    pub(crate) fn absorb_legacy_routes(&mut self, trails: Vec<SavedTrail>) -> bool {
+        let mut changed = false;
+        for trail in trails {
+            if self.trail(&trail.id).is_none() {
+                self.trails.push(trail);
+                changed = true;
             }
         }
-        Ok(library)
+        self.legacy_imported = true;
+        changed
     }
 }
 
@@ -820,7 +839,7 @@ fn read_optional<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Option<T>>
     }
 }
 
-pub fn index_path(project: &Path) -> PathBuf {
+fn index_path(project: &Path) -> PathBuf {
     project.join(INDEX)
 }
 
@@ -943,7 +962,7 @@ mod tests {
             }))?,
         )?;
 
-        let library = Library::open(temp.path(), &graph, &LoopConstraints::default())?;
+        let library = Library::open(temp.path(), &LoopConstraints::default())?;
         assert_eq!(library.trails().len(), 1);
         assert!((library.search().lower_limb_load_km - 73.0).abs() < f64::EPSILON);
         let stored: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
@@ -965,19 +984,26 @@ mod tests {
             temp.path().join("routes/generated.routes.json"),
             serde_json::to_vec_pretty(&vec![route])?,
         )?;
-        let mut library = Library::open(temp.path(), &graph, &LoopConstraints::default())?;
+        let mut library = Library::open(temp.path(), &LoopConstraints::default())?;
+        assert!(library.legacy_routes_pending());
+        assert!(
+            Library::open(temp.path(), &LoopConstraints::default())?.legacy_routes_pending(),
+            "an interrupted first launch must not suppress legacy migration"
+        );
+        library.search_mut().lower_limb_load_km = 47.0;
+        let legacy = Library::read_legacy_routes(temp.path(), &graph)?;
+        assert!(library.absorb_legacy_routes(legacy));
         assert_eq!(library.trails.len(), 1);
+        assert!((library.search().lower_limb_load_km - 47.0).abs() < f64::EPSILON);
         assert!(
             !library.trails[0].support_points.is_empty(),
             "migrated generated routes must remain editable"
         );
         library.trails.clear();
         library.save(temp.path())?;
-        assert!(
-            Library::open(temp.path(), &graph, &LoopConstraints::default())?
-                .trails
-                .is_empty()
-        );
+        let reopened = Library::open(temp.path(), &LoopConstraints::default())?;
+        assert!(reopened.trails.is_empty());
+        assert!(!reopened.legacy_routes_pending());
         Ok(())
     }
 
@@ -1030,7 +1056,6 @@ mod tests {
     #[test]
     fn schema_three_search_recipe_gains_an_empty_boundary() -> Result<()> {
         let temp = tempfile::tempdir()?;
-        let (graph, _) = fixture()?;
         let path = index_path(temp.path());
         fs::create_dir_all(path.parent().context("index parent")?)?;
         let mut value = serde_json::to_value(Library::default())?;
@@ -1041,7 +1066,7 @@ mod tests {
             .remove("boundary");
         fs::write(&path, serde_json::to_vec_pretty(&value)?)?;
 
-        let library = Library::open(temp.path(), &graph, &LoopConstraints::default())?;
+        let library = Library::open(temp.path(), &LoopConstraints::default())?;
 
         assert!(library.search().boundary.is_none());
         let stored: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
@@ -1074,7 +1099,7 @@ mod tests {
         }
         fs::write(&path, serde_json::to_vec_pretty(&value)?)?;
 
-        let library = Library::open(temp.path(), &graph, &LoopConstraints::default())?;
+        let library = Library::open(temp.path(), &LoopConstraints::default())?;
 
         assert!((library.search().lower_limb_load_km - 73.0).abs() <= f64::EPSILON);
         assert_eq!(library.search().moving_time_s, default_moving_time_range());
@@ -1107,7 +1132,7 @@ mod tests {
         value["trails"][0]["legs"][1]["trail_class"] = serde_json::json!("service");
         fs::write(&path, serde_json::to_vec_pretty(&value)?)?;
 
-        let library = Library::open(temp.path(), &graph, &LoopConstraints::default())?;
+        let library = Library::open(temp.path(), &LoopConstraints::default())?;
 
         assert!(!library.trails().is_empty());
         assert_eq!(library.trails()[0].legs[0].way_kind, WayKind::Roadway);
@@ -1148,7 +1173,7 @@ mod tests {
         let original = library.promote_realization(&realize(2)?)?;
         library.save(temp.path())?;
 
-        let mut reopened = Library::open(temp.path(), &graph, &LoopConstraints::default())?;
+        let mut reopened = Library::open(temp.path(), &LoopConstraints::default())?;
         assert!(
             reopened
                 .trail(&original)

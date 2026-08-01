@@ -33,6 +33,11 @@ durable or rendered oracle before passing. Tests never call product internals.
    successor renumbering, restore it, close and reverse a loop, exercise the
    elevation reticle, reject torn editor/focus presentation during save, and
    recover the loop after restart.
+5. **Work while preparing.** Open the real workbench while graph armament is
+   deliberately stalled, edit and durably persist the search recipe, reject a
+   graph-dependent search, focus and rename a saved trail, pan the map, then
+   prove armament publication preserves the focus, profile, camera, library,
+   and intervening edits.
 
 The provider server, basemap, terrain, small graph, and dense graph are local,
 deterministic fixtures. Network denial is universal. The discovery story

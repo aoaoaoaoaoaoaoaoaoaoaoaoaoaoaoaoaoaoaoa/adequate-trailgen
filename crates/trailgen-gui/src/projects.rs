@@ -1,6 +1,6 @@
 use crate::{
     ProjectIntent,
-    app::{Action as TrailAction, ReloadFrame, TrailApp, TrailArmament, forge_water},
+    app::{Action as TrailAction, ReloadFrame, TrailApp, forge_water},
     basemap::Source as BasemapSource,
     chrome,
     habitat::{Habitat, ProjectPlace, create_project},
@@ -14,13 +14,11 @@ use crate::{
     vector_field::VectorField,
 };
 use anyhow::{Context as _, Result, ensure};
-use crossbeam_channel::{Receiver, bounded};
 use dwemer_poolrooms::water::{Frame as WaterFrame, Surface};
 use egui::{Color32, RichText, Stroke, vec2};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    thread,
     time::{Duration, Instant},
 };
 use trailgen_contract::Target;
@@ -54,7 +52,6 @@ enum WorkbenchTransition {
 enum ProjectWorkspace {
     Trail(Box<TrailApp>),
     Survey(Box<SurveyWorkbench>),
-    Loading(Box<LoadingWorkbench>),
 }
 
 #[derive(Clone, Copy)]
@@ -230,7 +227,6 @@ impl Workbench {
             WorkbenchMode::Project { workspace, .. } => match workspace {
                 ProjectWorkspace::Trail(app) => app.witness_state(text_edit_focused),
                 ProjectWorkspace::Survey(project) => project.witness_state(text_edit_focused),
-                ProjectWorkspace::Loading(project) => project.witness_state(text_edit_focused),
             },
             WorkbenchMode::Projects(deck) => {
                 let mut state = crate::witness::State::empty(
@@ -248,42 +244,12 @@ impl Workbench {
 
 impl ProjectWorkspace {
     fn pulse(&mut self, ui: &mut egui::Ui) -> Option<WorkspaceAction> {
-        let prepared = match self {
-            Self::Loading(project) => project.prepared(),
-            Self::Trail(_) | Self::Survey(_) => None,
-        };
-        if let Some(result) = prepared {
-            match result {
-                Ok(armament) => {
-                    let armed = match self {
-                        Self::Loading(project) => project.arm(ui.ctx(), armament),
-                        Self::Trail(_) | Self::Survey(_) => {
-                            unreachable!("only a loading workspace can publish trail armament")
-                        }
-                    };
-                    match armed {
-                        Ok(app) => *self = Self::Trail(app),
-                        Err(fault) => {
-                            if let Self::Loading(project) = self {
-                                project.fault = Some(format!("{fault:#}"));
-                            }
-                        }
-                    }
-                }
-                Err(fault) => {
-                    if let Self::Loading(project) = self {
-                        project.fault = Some(format!("{fault:#}"));
-                    }
-                }
-            }
-        }
         match self {
             Self::Trail(app) => app.pulse(ui).map(|action| match action {
                 TrailAction::Projects => WorkspaceAction::Projects,
                 TrailAction::Reload => WorkspaceAction::Reload,
             }),
             Self::Survey(project) => project.pulse(ui),
-            Self::Loading(project) => project.pulse(ui),
         }
     }
 
@@ -291,14 +257,12 @@ impl ProjectWorkspace {
         match self {
             Self::Trail(app) => app.root(),
             Self::Survey(project) => &project.root,
-            Self::Loading(project) => &project.root,
         }
     }
 
     fn set_fault(&mut self, fault: String) {
         match self {
             Self::Survey(project) => project.fault = Some(fault),
-            Self::Loading(project) => project.fault = Some(fault),
             Self::Trail(_) => {}
         }
     }
@@ -307,7 +271,6 @@ impl ProjectWorkspace {
         match self {
             Self::Trail(app) => app.reload_frame(),
             Self::Survey(project) => ReloadFrame::browse(project.viewport),
-            Self::Loading(project) => ReloadFrame::browse(project.viewport),
         }
     }
 
@@ -315,7 +278,6 @@ impl ProjectWorkspace {
         match self {
             Self::Trail(app) => app.restore_reload_frame(frame),
             Self::Survey(project) => project.viewport = frame.viewport(),
-            Self::Loading(project) => project.viewport = frame.viewport(),
         }
     }
 
@@ -323,7 +285,6 @@ impl ProjectWorkspace {
         match self {
             Self::Trail(app) => app.window_title(),
             Self::Survey(project) => format!("{} · trailgen", project.name),
-            Self::Loading(project) => format!("{} · trailgen", project.name),
         }
     }
 
@@ -340,285 +301,7 @@ impl ProjectWorkspace {
                     .water
                     .frame(ctx, pixels_per_point, tooltip_rects, None)
             }
-            Self::Loading(project) => {
-                project
-                    .water
-                    .frame(ctx, pixels_per_point, tooltip_rects, None)
-            }
         }
-    }
-}
-
-struct LoadingWorkbench {
-    root: PathBuf,
-    name: String,
-    viewport: Viewport,
-    vector: Option<VectorField>,
-    regions: Vec<SurveyRegion>,
-    region_names: BTreeMap<String, String>,
-    cartography: map::CartographicClock,
-    scale_bar: map::ScaleBar,
-    fit_regions: bool,
-    map_rect: egui::Rect,
-    prepared: Receiver<Result<TrailArmament>>,
-    offline: bool,
-    slate_path: PathBuf,
-    fault: Option<String>,
-    water: Surface,
-}
-
-impl LoadingWorkbench {
-    fn spawn(
-        ctx: &egui::Context,
-        place: ProjectPlace,
-        offline: bool,
-        slate_path: PathBuf,
-        config: trailgen_data::TrailDataConfig,
-        indexed: Option<trailgen_data::Summary>,
-    ) -> Result<Self> {
-        let root = place.root;
-        let name = place.name;
-        let restored_viewport = Slate::load(&slate_path, &root).viewport;
-        let viewport = restored_viewport.unwrap_or(Viewport::WORLD);
-        let regions = config.regions.clone();
-        let region_names = config.region_names.clone();
-        let bounds = regions
-            .iter()
-            .map(|region| region.bounds)
-            .collect::<Vec<_>>();
-        let vector = if bounds.is_empty() {
-            None
-        } else {
-            Some(VectorField::raise(
-                ctx,
-                BasemapSource::regions(&root, &bounds)?,
-                offline,
-                None,
-            )?)
-        };
-        let (publish, prepared) = bounded(1);
-        let worker_ctx = ctx.clone();
-        let worker_root = root.clone();
-        let worker_slate = slate_path.clone();
-        thread::Builder::new()
-            .name("trail-workbench-forge".to_owned())
-            .spawn(move || {
-                let result = TrailApp::prepare(
-                    &worker_ctx,
-                    &worker_root,
-                    offline,
-                    &worker_slate,
-                    config,
-                    indexed.as_ref(),
-                );
-                let _sent = publish.send(result);
-                worker_ctx.request_repaint();
-            })
-            .context("spawn trail workbench forge")?;
-        Ok(Self {
-            root,
-            name,
-            viewport,
-            vector,
-            regions,
-            region_names,
-            cartography: map::CartographicClock::new(viewport),
-            scale_bar: map::ScaleBar::default(),
-            fit_regions: restored_viewport.is_none(),
-            map_rect: egui::Rect::ZERO,
-            prepared,
-            offline,
-            slate_path,
-            fault: None,
-            water: forge_water(),
-        })
-    }
-
-    fn prepared(&self) -> Option<Result<TrailArmament>> {
-        self.prepared.try_recv().ok()
-    }
-
-    fn arm(&mut self, ctx: &egui::Context, armament: TrailArmament) -> Result<Box<TrailApp>> {
-        let viewport = self.viewport_handoff();
-        let mut app = TrailApp::arm(
-            ctx,
-            armament,
-            &mut self.vector,
-            self.offline,
-            self.slate_path.clone(),
-        )?;
-        if let Some(viewport) = viewport {
-            app.restore_reload_frame(ReloadFrame::browse(viewport));
-        }
-        Ok(Box::new(app))
-    }
-
-    /// Preserve a viewport only when the preparing workspace actually exposed
-    /// a map. Graph-only projects must retain `TrailApp`'s initial graph fit.
-    fn viewport_handoff(&self) -> Option<Viewport> {
-        self.vector.as_ref().map(|_| self.viewport)
-    }
-
-    fn pulse(&mut self, ui: &mut egui::Ui) -> Option<WorkspaceAction> {
-        if let Some(vector) = &mut self.vector {
-            product_phase!("loading.basemap_absorb", vector.absorb(ui.ctx()));
-        }
-        let projects = ui
-            .ctx()
-            .input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::O));
-        let mut action = projects.then_some(WorkspaceAction::Projects);
-        let _left = egui::Panel::left("loading-inspector")
-            .resizable(false)
-            .exact_size(chrome::INSPECTOR_WIDTH)
-            .show_inside(ui, |ui| {
-                ui.add_space(ui.spacing().item_spacing.x);
-                let _name = ui.label(chrome::title(self.name.to_ascii_uppercase()));
-                ui.add_space(3.0);
-                let projects = ui
-                    .add(
-                        chrome::command_button("PROJECTS", false)
-                            .min_size(vec2(ui.available_width(), 27.0)),
-                    )
-                    .on_hover_text("Open the project deck · Ctrl+O");
-                chrome::tension(ui, &projects);
-                if projects.clicked() {
-                    action = Some(WorkspaceAction::Projects);
-                    self.water.click(projects.rect);
-                }
-                if let Some(fault) = &self.fault {
-                    fault_label(ui, fault);
-                    let retry = ui
-                        .add(
-                            chrome::command_button("RETRY", true)
-                                .min_size(vec2(ui.available_width(), 27.0)),
-                        )
-                        .on_hover_text("Prepare this project again");
-                    chrome::tension(ui, &retry);
-                    if retry.clicked() {
-                        action = Some(WorkspaceAction::Reload);
-                        self.water.click(retry.rect);
-                    }
-                }
-            });
-        let _center = egui::CentralPanel::default().show_inside(ui, |ui| {
-            if self.vector.is_some() {
-                self.map(ui);
-            } else {
-                ui.centered_and_justified(|ui| {
-                    let status = self
-                        .fault
-                        .as_ref()
-                        .map_or("PREPARING TRAILS…", |_| "TRAIL PREPARATION FAILED");
-                    let _status = ui.label(chrome::section_title(status));
-                });
-            }
-        });
-        action
-    }
-
-    fn map(&mut self, ui: &mut egui::Ui) {
-        let (rect, response) =
-            ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
-        crate::witness::anchor(ui, Target::Map, response.rect);
-        self.map_rect = rect;
-        if self.fit_regions {
-            self.viewport = map::fit_coords(
-                self.regions.iter().flat_map(|region| {
-                    let bounds = region.bounds;
-                    [
-                        Coord::new(bounds.west, bounds.south),
-                        Coord::new(bounds.east, bounds.north),
-                    ]
-                }),
-                rect,
-            );
-            self.fit_regions = false;
-        }
-        self.water
-            .begin(dwemer_poolrooms::water::Domain::shelf(rect));
-        if map::navigate_with(&mut self.viewport, ui, &response, rect, true, true) {
-            if response.dragged() {
-                self.water
-                    .drag(rect, ui.input(|input| input.pointer.delta().y));
-            } else {
-                self.water.bump(rect);
-            }
-        }
-        let painter = ui.painter_at(rect);
-        let frame = map::MapFramePlan::forge(self.viewport, rect);
-        let cartography = self.cartography.observe(self.viewport, ui.ctx());
-        painter.rect_filled(rect, 0.0, map::MAP_GROUND);
-        let vector = self
-            .vector
-            .as_mut()
-            .expect("loading map is painted only with a vector field");
-        vector.paint_base(&painter, frame, cartography);
-        live_area::paint(
-            &painter,
-            live_area::Scene {
-                viewport: self.viewport,
-                canvas: rect,
-                regions: &self.regions,
-                names: &self.region_names,
-                preview: None,
-                adjustment: None,
-                handles: false,
-            },
-        );
-        vector.paint_annotations(&painter, frame, cartography, 0, Vec::new);
-        self.scale_bar.paint(&painter, self.viewport, rect);
-        painter.rect_stroke(
-            rect.shrink(0.5),
-            0.0,
-            Stroke::new(1.0_f32, chrome::EDGE_STRONG),
-            egui::StrokeKind::Inside,
-        );
-        let status = self
-            .fault
-            .as_ref()
-            .map_or("PREPARING TRAIL NETWORK…", |_| "TRAIL PREPARATION FAILED");
-        let status_rect =
-            egui::Rect::from_min_size(rect.left_top() + vec2(10.0, 10.0), vec2(246.0, 28.0));
-        painter.rect_filled(status_rect, 1.0, chrome::SURFACE);
-        painter.rect_stroke(
-            status_rect,
-            1.0,
-            Stroke::new(1.0_f32, chrome::EDGE_STRONG),
-            egui::StrokeKind::Inside,
-        );
-        painter.text(
-            status_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            status,
-            egui::FontId::monospace(12.0),
-            chrome::TEXT,
-        );
-    }
-
-    #[cfg(feature = "egui-test")]
-    fn witness_state(&self, text_edit_focused: bool) -> crate::witness::State {
-        let mut state = crate::witness::State::empty(
-            trailgen_contract::Workspace::Preparing,
-            trailgen_contract::View::Browse,
-            text_edit_focused,
-        );
-        state.map = self.map_rect.is_positive().then(|| {
-            crate::witness::MapState::forge(
-                self.map_rect,
-                self.viewport.center,
-                map::world_pixels(self.viewport),
-                trailgen_contract::TrailColoring::Class,
-                self.vector
-                    .as_ref()
-                    .map_or(0, VectorField::presented_tile_count),
-            )
-        });
-        state.areas = Some(crate::witness::AreaState {
-            regions: self.regions.len(),
-            drawing: false,
-            resizing: None,
-        });
-        state
     }
 }
 
@@ -1451,13 +1134,13 @@ fn open_project(
     };
     let trail_ready = trail_workspace_ready(has_graph, config.managed, indexed.is_some());
     let workspace = if trail_ready {
-        ProjectWorkspace::Loading(Box::new(LoadingWorkbench::spawn(
+        ProjectWorkspace::Trail(Box::new(TrailApp::raise(
             ctx,
-            place,
+            &root,
             offline,
             habitat.slate_path(&root),
             config,
-            indexed,
+            indexed.as_ref(),
         )?))
     } else {
         ProjectWorkspace::Survey(Box::new(SurveyWorkbench::new(

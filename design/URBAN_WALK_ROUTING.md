@@ -133,6 +133,7 @@ spatial-index build. The former four graph replicas occupied about 4.96 GiB;
 their single compressed authority is 134 MB, and the whole project fell from
 5.0 GiB to 418 MiB. Graph decoding fell from 39.45 s to 13.12 s and now runs
 behind an already-present native shell; the live X11 dogfood project presents
-its complete workbench within 17 s. Point barriers, via-way restrictions, and
+its interactive workbench before graph decoding and arms routing within 15 s.
+Point barriers, via-way restrictions, and
 conditional restrictions remain named correctness work, not silent claims of
 support.

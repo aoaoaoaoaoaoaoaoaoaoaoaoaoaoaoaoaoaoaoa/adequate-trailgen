@@ -172,10 +172,15 @@ Search, editor realization, trail-data mutation, vector acquisition, relief
 preparation, and debounced persistence are orthogonal workers.
 
 Opening a ready project publishes its native shell before decoding the graph
-or forging routing, spatial, and rendering projections. The loading workspace
-remains responsive and offers project navigation while one worker prepares the
-complete workbench; publication is one ownership swap. The witness names this
-state `Workspace::Preparing`; it is not trail-data acquisition or Survey.
+or forging routing, spatial, and rendering projections. There is no surrogate
+loading workspace: the real `TrailApp` immediately owns the library, recipe,
+regions, camera, and basemap, while one worker forges the optional graph
+armament. Publication installs that capability into the same workbench without
+replacing its live state. The witness names this capability deficit
+`Workspace::Preparing`; it is not a sibling workspace, trail-data acquisition,
+or Survey. Library edits, saved-trail focus, and camera motion remain valid and
+durable throughout preparation. Graph-dependent gestures remain visibly
+disabled until armament arrives.
 
 - Search is `Idle` or `Striking(serial, progress, stopping)`.
 - Editor realization is `Idle` or `Realizing(serial)`. Each support, shape,

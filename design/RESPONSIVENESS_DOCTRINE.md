@@ -189,8 +189,14 @@ found two ownership defects:
 Trailgen now raises the regional basemap independently and presents it about
 0.83 s after launch while graph armament continues. Parking projection belongs
 to a bounded forge and the event loop installs at most sixteen completed tiles
-per frame. The loading map itself is transferred into the armed workbench, so
-publication neither decodes a second substrate nor surrenders resident tiles.
+per frame. The native inspector, durable library, live camera, and regional map
+belong to one workbench from its first frame. Graph armament and saved-route
+projections arrive independently; installation neither reconstructs the
+workbench nor surrenders resident tiles or intervening user edits.
+An isolated NJ–NYS trace after this unification raised the real workbench in
+61.7 ms and began its first UI frame at 258 ms, while the 776,343-edge graph
+armament continued independently until 14.86 s. The first inspector pass cost
+5.0 ms and the first map pass 1.0 ms; neither awaited the graph.
 Across two identical host-GPU after-runs, panning measured 39.0–45.3 ms p95 and
 39.3–53.6 ms worst; `basemap.absorb` remained below 0.023 ms. The residual
 variation belongs to X11 surface-presentation cadence: final product UI work

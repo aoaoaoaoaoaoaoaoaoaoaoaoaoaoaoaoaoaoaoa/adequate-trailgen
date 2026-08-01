@@ -18,7 +18,7 @@ use crate::{
     },
     vector_field::VectorField,
 };
-use anyhow::{Context as _, Result, ensure};
+use anyhow::{Context as _, Result};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, unbounded};
 use dwemer_poolrooms::water::{Domain, Frame as WaterFrame, Surface, Wetness};
 use egui::{Color32, RichText, Stroke, vec2};
@@ -54,12 +54,7 @@ const SHAPES: [(RouteShape, &str); 3] = [
 pub struct TrailApp {
     root: PathBuf,
     name: String,
-    graph: Arc<WalkGraph>,
-    edge_index: Arc<EdgeIndex>,
-    finder_index: Arc<WalkRealmIndex>,
-    atlas: Atlas,
-    forge: SearchForge,
-    editor_forge: EditorForge,
+    sinew: Option<Sinew>,
     editor_serial: u64,
     defaults: LoopConstraints,
     params: SearchParams,
@@ -67,7 +62,8 @@ pub struct TrailApp {
     library: Library,
     committed_library: Library,
     library_dirty: Option<Instant>,
-    saved_projections: BTreeMap<TrailId, SavedProjection>,
+    saved_projections: BTreeMap<TrailId, Option<SavedProjection>>,
+    projection_forge: ProjectionForge,
     hovered_saved: Option<TrailId>,
     rename: Option<RenameDraft>,
     candidates: Option<CandidatePortfolio>,
@@ -87,7 +83,7 @@ pub struct TrailApp {
     forge_phase: ForgePhase,
     placing_trailhead: bool,
     trailhead_drag: Option<TrailheadDrag>,
-    vector: VectorField,
+    vector: Option<VectorField>,
     relief: Relief,
     regions: Vec<SurveyRegion>,
     region_names: BTreeMap<String, String>,
@@ -111,6 +107,7 @@ pub struct TrailApp {
     map_rect: egui::Rect,
     map_regime: MapRegime,
     workspace_signal: Option<Action>,
+    post_armament: Option<TrailDataMutation>,
 }
 
 struct TrailEditor {
@@ -506,6 +503,7 @@ impl FocusFrame {
 enum Fit {
     #[default]
     Graph,
+    Regions,
     Candidate {
         identity: usize,
     },
@@ -551,25 +549,13 @@ pub enum Action {
     Reload,
 }
 
-struct LoadedCorpus {
-    regions: Vec<SurveyRegion>,
-    region_names: BTreeMap<String, String>,
-    task: Option<TrailData>,
-    status: Option<String>,
-}
-
-pub struct TrailArmament {
-    project: Project,
-    slate: Slate,
-    corpus: LoadedCorpus,
+struct Sinew {
+    graph: Arc<WalkGraph>,
     edge_index: Arc<EdgeIndex>,
     finder_index: Arc<WalkRealmIndex>,
-    vector: Option<VectorField>,
-    relief: Relief,
     forge: SearchForge,
     editor_forge: EditorForge,
     atlas: Atlas,
-    saved_projections: BTreeMap<TrailId, SavedProjection>,
 }
 
 enum CorpusTask {
@@ -600,6 +586,12 @@ struct EditorForge {
     command: Sender<EditorJob>,
     pending: Receiver<EditorJob>,
     events: Receiver<EditorEvent>,
+    _thread: thread::JoinHandle<()>,
+}
+
+struct ProjectionForge {
+    command: Sender<(TrailId, SavedTrail)>,
+    events: Receiver<(TrailId, SavedProjection)>,
     _thread: thread::JoinHandle<()>,
 }
 
@@ -661,20 +653,43 @@ impl EditorForge {
     }
 }
 
+impl ProjectionForge {
+    fn spawn(ctx: egui::Context) -> Result<Self> {
+        let (command, jobs) = unbounded::<(TrailId, SavedTrail)>();
+        let (publish, events) = unbounded();
+        let thread = thread::Builder::new()
+            .name("saved-trail-projector".to_owned())
+            .spawn(move || {
+                while let Ok((id, trail)) = jobs.recv() {
+                    if publish.send((id, SavedProjection::forge(&trail))).is_err() {
+                        break;
+                    }
+                    ctx.request_repaint();
+                }
+            })
+            .context("spawn saved-trail projector")?;
+        Ok(Self {
+            command,
+            events,
+            _thread: thread,
+        })
+    }
+
+    fn strike(&self, id: TrailId, trail: SavedTrail) {
+        let _sent = self.command.send((id, trail));
+    }
+}
+
 struct CorpusArmament {
-    graph: Arc<WalkGraph>,
-    edge_index: Arc<EdgeIndex>,
-    finder_index: Arc<WalkRealmIndex>,
-    editor_forge: EditorForge,
-    atlas: Atlas,
-    forge: SearchForge,
+    sinew: Sinew,
     source: BasemapSource,
     regions: Vec<SurveyRegion>,
     region_names: BTreeMap<String, String>,
+    legacy_routes: Vec<SavedTrail>,
 }
 
 impl CorpusForge {
-    fn spawn(ctx: &egui::Context, root: PathBuf) -> Result<Self> {
+    fn spawn(ctx: &egui::Context, root: PathBuf, read_legacy_routes: bool) -> Result<Self> {
         let (event_tx, event) = bounded(1);
         let worker_ctx = ctx.clone();
         let thread = thread::Builder::new()
@@ -687,7 +702,22 @@ impl CorpusForge {
                 )
                 .entered();
                 let result = (|| {
+                    #[cfg(feature = "egui-test")]
+                    if let Some(delay) = std::env::var("TRAILGEN_STALL_ARMAMENT_MS")
+                        .ok()
+                        .and_then(|raw| raw.parse::<u64>().ok())
+                    {
+                        thread::sleep(Duration::from_millis(delay));
+                    }
                     let graph = product_phase!("corpus.load", Project::load_graph(&root)?);
+                    let legacy_routes = if read_legacy_routes {
+                        product_phase!(
+                            "corpus.legacy_routes",
+                            Library::read_legacy_routes(&root, &graph)?
+                        )
+                    } else {
+                        Vec::new()
+                    };
                     let edge_index = Arc::new(product_phase!(
                         "corpus.edge_index",
                         EdgeIndex::forge(&graph)
@@ -721,15 +751,18 @@ impl CorpusForge {
                         BasemapSource::project(&root, &graph, &bounds)?
                     );
                     Ok(CorpusArmament {
-                        graph,
-                        edge_index,
-                        finder_index,
-                        editor_forge,
-                        atlas,
-                        forge,
+                        sinew: Sinew {
+                            graph,
+                            edge_index,
+                            finder_index,
+                            forge,
+                            editor_forge,
+                            atlas,
+                        },
                         source,
                         regions: config.regions,
                         region_names: config.region_names,
+                        legacy_routes,
                     })
                 })();
                 let _sent = event_tx.send(result);
@@ -763,46 +796,6 @@ impl ReloadFrame {
     }
 }
 
-impl LoadedCorpus {
-    fn raise(
-        ctx: &egui::Context,
-        root: &Path,
-        offline: bool,
-        config: trailgen_data::TrailDataConfig,
-        indexed: Option<&trailgen_data::Summary>,
-    ) -> Result<Self> {
-        let regions = config.regions;
-        let region_names = config.region_names;
-        let stale = !regions.is_empty() && indexed.is_none();
-        let task = if !offline && stale {
-            Some(TrailData::spawn(
-                ctx.clone(),
-                root.to_owned(),
-                TrailDataMutation::Refresh,
-            )?)
-        } else {
-            None
-        };
-        let status = indexed
-            .map(|summary| format!("Trail data ready in {} map area(s).", summary.regions.len()))
-            .or_else(|| {
-                stale.then(|| {
-                    if offline {
-                        "Trail data needs an online refresh.".to_owned()
-                    } else {
-                        "Updating trails…".to_owned()
-                    }
-                })
-            });
-        Ok(Self {
-            regions,
-            region_names,
-            task,
-            status,
-        })
-    }
-}
-
 fn finder_counsel(library: &Library) -> String {
     if library.search().trailhead.is_some() {
         "Choose Find trails to search from this trailhead."
@@ -812,170 +805,61 @@ fn finder_counsel(library: &Library) -> String {
     .to_owned()
 }
 
-impl TrailArmament {
-    fn forge(
-        ctx: &egui::Context,
-        root: &Path,
-        offline: bool,
-        slate_path: &Path,
-        trail_data: trailgen_data::TrailDataConfig,
-        indexed: Option<&trailgen_data::Summary>,
-    ) -> Result<Self> {
-        let project = product_phase!("project.open", Project::open(root)?);
-        let slate = product_phase!("project.slate", Slate::load(slate_path, &project.root));
-        let corpus = product_phase!(
-            "project.corpus_state",
-            LoadedCorpus::raise(ctx, &project.root, offline, trail_data, indexed)?
-        );
-        let edge_index = Arc::new(product_phase!(
-            "project.edge_index",
-            EdgeIndex::forge(&project.graph)
-        ));
-        let finder_index = Arc::new(product_phase!(
-            "project.finder_index",
-            WalkRealmIndex::finder(&project.graph)
-        ));
-        let vector = if corpus.regions.is_empty() {
-            Some(product_phase!(
-                "project.vector_field",
-                spawn_vector_field(
-                    ctx,
-                    &project.root,
-                    Arc::clone(&project.graph),
-                    Arc::clone(&edge_index),
-                    &corpus.regions,
-                    offline,
-                )?
-            ))
-        } else {
-            None
-        };
-        let relief = product_phase!("project.relief", Relief::raise(ctx, &project.root)?);
-        let forge = product_phase!(
-            "project.search_worker",
-            SearchForge::spawn(
-                ctx.clone(),
-                Arc::clone(&project.graph),
-                Arc::clone(&finder_index),
-            )?
-        );
-        let editor_forge = product_phase!(
-            "project.editor_worker",
-            EditorForge::spawn(ctx.clone(), Arc::clone(&project.graph))?
-        );
-        let atlas = product_phase!("project.atlas", Atlas::forge(&project.graph));
-        let saved_projections = product_phase!("project.saved_projections", {
-            project
-                .library
-                .trails()
-                .iter()
-                .map(|trail| (trail.id.clone(), SavedProjection::forge(trail)))
-                .collect()
-        });
-        Ok(Self {
-            project,
-            slate,
-            corpus,
-            edge_index,
-            finder_index,
-            vector,
-            relief,
-            forge,
-            editor_forge,
-            atlas,
-            saved_projections,
-        })
+fn raise_region_vector(
+    ctx: &egui::Context,
+    root: &Path,
+    regions: &[SurveyRegion],
+    offline: bool,
+) -> Result<Option<VectorField>> {
+    let bounds = regions
+        .iter()
+        .map(|region| region.bounds)
+        .collect::<Vec<_>>();
+    if bounds.is_empty() {
+        return Ok(None);
     }
+    let source = BasemapSource::regions(root, &bounds)?;
+    product_phase!(
+        "project.vector_field",
+        VectorField::raise(ctx, source, offline, None).map(Some)
+    )
 }
 
 impl TrailApp {
-    pub(crate) fn prepare(
+    pub(crate) fn raise(
         ctx: &egui::Context,
         root: &Path,
         offline: bool,
-        slate_path: &Path,
+        slate_path: PathBuf,
         trail_data: trailgen_data::TrailDataConfig,
         indexed: Option<&trailgen_data::Summary>,
-    ) -> Result<TrailArmament> {
+    ) -> Result<Self> {
         let _open = tracing::info_span!(
             target: "eternalist::startup",
-            "trailgen.prepare",
+            "trailgen.raise",
             root = %root.display()
         )
         .entered();
-        TrailArmament::forge(ctx, root, offline, slate_path, trail_data, indexed)
-    }
-
-    pub(crate) fn arm(
-        ctx: &egui::Context,
-        mut armament: TrailArmament,
-        loading_vector: &mut Option<VectorField>,
-        offline: bool,
-        slate_path: PathBuf,
-    ) -> Result<Self> {
-        let _publish =
-            tracing::info_span!(target: "eternalist::product", "trailgen.publish").entered();
-        let vector = if let Some(vector) = loading_vector.as_mut() {
-            ensure!(
-                armament.vector.is_none(),
-                "trail preparation forged two basemap substrates"
-            );
-            let _retired = vector.bind_trails(
-                ctx,
-                Arc::clone(&armament.project.graph),
-                Arc::clone(&armament.edge_index),
-            )?;
-            loading_vector
-                .take()
-                .expect("validated loading basemap must remain owned until publication")
-        } else {
-            armament
-                .vector
-                .take()
-                .context("trail preparation omitted its basemap substrate")?
-        };
-        Ok(Self::assemble(armament, vector, offline, slate_path))
-    }
-
-    fn assemble(
-        armament: TrailArmament,
-        vector: VectorField,
-        offline: bool,
-        slate_path: PathBuf,
-    ) -> Self {
-        let TrailArmament {
-            project:
-                Project {
-                    root,
-                    graph,
-                    config,
-                    library,
-                },
-            slate,
-            corpus,
-            edge_index,
-            finder_index,
-            vector: prepared_vector,
-            relief,
-            forge,
-            editor_forge,
-            atlas,
-            saved_projections,
-        } = armament;
-        debug_assert!(prepared_vector.is_none());
+        let project = product_phase!("project.open", Project::open(root)?);
+        let slate = product_phase!("project.slate", Slate::load(&slate_path, &project.root));
+        let refresh = !offline && !trail_data.regions.is_empty() && indexed.is_none();
+        let vector = raise_region_vector(ctx, &project.root, &trail_data.regions, offline)?;
+        let relief = product_phase!("project.relief", Relief::raise(ctx, &project.root)?);
+        let projection_forge = ProjectionForge::spawn(ctx.clone())?;
+        let legacy_routes_pending = project.library.legacy_routes_pending();
+        let armament = CorpusForge::spawn(ctx, project.root.clone(), legacy_routes_pending)?;
+        let Project {
+            root,
+            config,
+            library,
+        } = project;
         let restored_viewport = slate.viewport;
         let viewport = restored_viewport.unwrap_or(Viewport::WORLD);
         let cartography = map::CartographicClock::new(viewport);
-        let status = finder_counsel(&library);
         let mut app = Self {
             root,
             name: config.name,
-            graph,
-            edge_index,
-            finder_index,
-            atlas,
-            forge,
-            editor_forge,
+            sinew: None,
             editor_serial: 0,
             defaults: config.constraints,
             params: config.search,
@@ -983,7 +867,8 @@ impl TrailApp {
             committed_library: library.clone(),
             library,
             library_dirty: None,
-            saved_projections,
+            saved_projections: BTreeMap::new(),
+            projection_forge,
             hovered_saved: None,
             rename: None,
             candidates: None,
@@ -998,10 +883,10 @@ impl TrailApp {
             cartography,
             scale_bar: map::ScaleBar::default(),
             focus_frame: FocusFrame::default(),
-            fit: if restored_viewport.is_some() {
-                Fit::None
-            } else {
-                Fit::Graph
+            fit: match (restored_viewport, trail_data.regions.is_empty()) {
+                (Some(_), _) => Fit::None,
+                (None, false) => Fit::Regions,
+                (None, true) => Fit::Graph,
             },
             serial: 0,
             forge_phase: ForgePhase::Idle,
@@ -1009,10 +894,10 @@ impl TrailApp {
             trailhead_drag: None,
             vector,
             relief,
-            regions: corpus.regions,
-            region_names: corpus.region_names,
+            regions: trail_data.regions,
+            region_names: trail_data.region_names,
             area_rename: None,
-            corpus: corpus.task.map(CorpusTask::Acquiring),
+            corpus: Some(CorpusTask::Preparing(armament)),
             scribe: RegionScribe::default(),
             area_handles: RegionHandles::default(),
             shortcuts: ShortcutHelp::default(),
@@ -1025,20 +910,23 @@ impl TrailApp {
             observed_slate: slate,
             slate_dirty: None,
             water: forge_water(),
-            status,
-            trail_data_status: corpus.status,
+            status: "Preparing trail network…".to_owned(),
+            trail_data_status: Some("Preparing trail network…".to_owned()),
             profile_cursor: ProfileCursor::default(),
             map_rect: egui::Rect::ZERO,
             map_regime: MapRegime::Browse,
             workspace_signal: None,
+            post_armament: refresh.then_some(TrailDataMutation::Refresh),
         };
+        app.reconcile_saved_projections();
         app.observed_slate = app.snapshot();
-        app
+        Ok(app)
     }
 
     pub fn pulse(&mut self, ui: &mut egui::Ui) -> Option<Action> {
         product_phase!("pulse.search_events", self.absorb_events(ui.ctx()));
         product_phase!("pulse.editor_events", self.absorb_editor_events());
+        product_phase!("pulse.saved_projections", self.absorb_saved_projections());
         product_phase!("pulse.corpus_events", self.absorb_corpus(ui.ctx()));
         product_phase!("pulse.input", {
             if !self.shortcuts.capture(ui.ctx()) {
@@ -1149,7 +1037,11 @@ impl TrailApp {
         };
         crate::witness::State {
             contract: trailgen_contract::UI_FINGERPRINT,
-            workspace: trailgen_contract::Workspace::Trail,
+            workspace: if self.sinew.is_some() {
+                trailgen_contract::Workspace::Trail
+            } else {
+                trailgen_contract::Workspace::Preparing
+            },
             view,
             rename_active: self.rename.is_some()
                 || self.area_rename.is_some()
@@ -1170,7 +1062,9 @@ impl TrailApp {
                     self.viewport.center,
                     map::world_pixels(self.viewport),
                     self.trail_coloring,
-                    self.vector.presented_tile_count(),
+                    self.vector
+                        .as_ref()
+                        .map_or(0, VectorField::presented_tile_count),
                 )
             }),
             areas: Some(crate::witness::AreaState {
@@ -1353,9 +1247,17 @@ impl TrailApp {
             search_progress(ui, progress);
             ui.add_space(4.0);
         }
+        if self.armament_retry(ui) {
+            return;
+        }
         let validation = self
-            .search_request(self.serial.saturating_add(1))
-            .and_then(|request| request.validate(&self.graph))
+            .sinew
+            .as_ref()
+            .context("trail network is still preparing")
+            .and_then(|sinew| {
+                self.search_request(self.serial.saturating_add(1))
+                    .and_then(|request| request.validate(&sinew.graph))
+            })
             .err()
             .map(|err| err.to_string());
         let stopping = matches!(
@@ -1415,7 +1317,10 @@ impl TrailApp {
                 });
                 let manual = chrome::command_enabled(
                     ui,
-                    editing || (!self.forge_phase.active() && self.corpus.is_none()),
+                    editing
+                        || (self.sinew.is_some()
+                            && !self.forge_phase.active()
+                            && self.corpus.is_none()),
                     "MANUAL",
                     editing,
                 )
@@ -1448,11 +1353,41 @@ impl TrailApp {
         }
     }
 
+    fn retry_armament(&mut self, ctx: &egui::Context) {
+        match CorpusForge::spawn(ctx, self.root.clone(), self.library.legacy_routes_pending()) {
+            Ok(forge) => {
+                self.corpus = Some(CorpusTask::Preparing(forge));
+                self.trail_data_status = Some("Preparing trail network…".to_owned());
+                "Preparing trail network…".clone_into(&mut self.status);
+            }
+            Err(err) => self.status = format!("Could not prepare trail network: {err:#}"),
+        }
+    }
+
+    fn armament_retry(&mut self, ui: &mut egui::Ui) -> bool {
+        if self.sinew.is_some() || self.corpus.is_some() {
+            return false;
+        }
+        let retry = ui
+            .add(
+                chrome::command_button("RETRY TRAIL NETWORK", true)
+                    .min_size(vec2(ui.available_width(), 36.0)),
+            )
+            .on_hover_text("Prepare this project's trail network again");
+        chrome::tension(ui, &retry);
+        if retry.clicked() {
+            self.retry_armament(ui.ctx());
+            self.water.click(retry.rect);
+        }
+        true
+    }
+
     fn trailhead_editor(&mut self, ui: &mut egui::Ui, recipe: &mut SearchRecipe) {
         let _trailhead = ui.label(chrome::eyebrow("TRAILHEAD"));
         let _trailhead_row = ui.horizontal(|ui| {
             let placing = self.placing_trailhead;
-            let place = ui.add(
+            let place = ui.add_enabled(
+                self.sinew.is_some(),
                 chrome::command_button(
                     if placing {
                         "CANCEL"
@@ -1472,7 +1407,9 @@ impl TrailApp {
                     27.0,
                 )),
             );
-            let place = if placing {
+            let place = if self.sinew.is_none() {
+                place.on_disabled_hover_text("Wait for the trail network to finish preparing")
+            } else if placing {
                 place.on_hover_text("Cancel trailhead placement · Esc")
             } else {
                 place.on_hover_text("Place or move the trailhead on the map · Alt+Click")
@@ -1812,7 +1749,11 @@ impl TrailApp {
             );
             let hovered = response.hovered();
             if hovered {
-                if let Some(projection) = self.saved_projections.get(&trail.id) {
+                if let Some(projection) = self
+                    .saved_projections
+                    .get(&trail.id)
+                    .and_then(Option::as_ref)
+                {
                     response.show_tooltip_ui(|ui| {
                         gallery::saved_preview(ui, trail, &projection.miniature);
                     });
@@ -1867,10 +1808,13 @@ impl TrailApp {
 
     fn area_panel(&mut self, ui: &mut egui::Ui) {
         let _count = chrome::note(ui, format!("{} DOWNLOADED AREA(S)", self.regions.len()));
-        let mutable =
-            !self.view.is_editing() && self.corpus.is_none() && !self.forge_phase.active();
+        let mutable = self.sinew.is_some()
+            && !self.view.is_editing()
+            && self.corpus.is_none()
+            && !self.forge_phase.active();
+        let renameable = !self.view.is_editing() && (self.sinew.is_none() || self.corpus.is_none());
         self.area_picker(ui, mutable);
-        if let Some((id, rect)) = self.area_rows(ui, mutable) {
+        if let Some((id, rect)) = self.area_rows(ui, mutable, renameable) {
             if self
                 .area_rename
                 .as_ref()
@@ -1921,7 +1865,12 @@ impl TrailApp {
         }
     }
 
-    fn area_rows(&mut self, ui: &mut egui::Ui, mutable: bool) -> Option<(String, egui::Rect)> {
+    fn area_rows(
+        &mut self,
+        ui: &mut egui::Ui,
+        mutable: bool,
+        renameable: bool,
+    ) -> Option<(String, egui::Rect)> {
         let areas = self
             .regions
             .iter()
@@ -1967,6 +1916,7 @@ impl TrailApp {
                 self.region_names.get(&id).map(String::as_str),
                 slot,
                 mutable,
+                renameable,
             );
             match action {
                 Some(AreaRowAction::Remove(rect)) => excision = Some((id, rect)),
@@ -2055,7 +2005,9 @@ impl TrailApp {
     fn counsel(&self, ui: &mut egui::Ui) {
         ui.add_space(5.0);
         let _row = ui.horizontal(|ui| {
-            let message = if self.corpus.is_some() {
+            let message = if self.sinew.is_none() {
+                &self.status
+            } else if self.corpus.is_some() {
                 self.trail_data_status
                     .as_deref()
                     .unwrap_or("Updating trails…")
@@ -2184,14 +2136,22 @@ impl TrailApp {
             }
             match self.view.focus() {
                 Some(Focus::Candidate { .. }) => {
-                    let edit =
-                        chrome::command_enabled(ui, self.corpus.is_none(), "EDIT TRAIL", false);
+                    let edit = chrome::command_enabled(
+                        ui,
+                        self.sinew.is_some() && self.corpus.is_none(),
+                        "EDIT TRAIL",
+                        false,
+                    );
                     crate::witness::anchor(ui, Target::FocusEdit, edit.rect);
                     if edit.clicked() {
                         action = Some(FocusAction::Edit(edit.rect));
                     }
-                    let save =
-                        chrome::command_enabled(ui, self.corpus.is_none(), "SAVE TRAIL", true);
+                    let save = chrome::command_enabled(
+                        ui,
+                        self.sinew.is_some() && self.corpus.is_none(),
+                        "SAVE TRAIL",
+                        true,
+                    );
                     crate::witness::anchor(ui, Target::FocusSave, save.rect);
                     if save.clicked() {
                         action = Some(FocusAction::Save(save.rect));
@@ -2200,7 +2160,9 @@ impl TrailApp {
                 Some(Focus::Saved(_)) => {
                     let edit = chrome::command_enabled(
                         ui,
-                        self.corpus.is_none() && self.focus_design().is_some(),
+                        self.sinew.is_some()
+                            && self.corpus.is_none()
+                            && self.focus_design().is_some(),
                         "EDIT TRAIL",
                         false,
                     )
@@ -2506,6 +2468,7 @@ impl TrailApp {
                 Some(Focus::Saved(id)) => self
                     .saved_projections
                     .get(id)
+                    .and_then(Option::as_ref)
                     .and_then(|projection| projection.profile.as_ref()),
                 None => None,
             }
@@ -2660,17 +2623,22 @@ impl TrailApp {
             "map.cartography",
             self.forge_cartography(&canvas, frame, cartography)
         );
-        product_phase!(
-            "map.trail_context",
-            self.atlas
-                .paint_network(&canvas, frame, self.trail_coloring)
-        );
+        if let Some(sinew) = &mut self.sinew {
+            product_phase!(
+                "map.trail_context",
+                sinew
+                    .atlas
+                    .paint_network(&canvas, frame, self.trail_coloring)
+            );
+        }
         product_phase!("map.live_areas", self.paint_live_area(&canvas, rect));
         product_phase!("map.privileged_trails", self.paint_trails(&canvas, rect));
         if self.shows_search_context() {
             self.paint_edicts(&canvas, rect);
         }
-        product_phase!("map.annotations", annotations.paint(&canvas));
+        if let Some(annotations) = annotations {
+            product_phase!("map.annotations", annotations.paint(&canvas));
+        }
         if self.shows_search_context() {
             self.paint_search_boundary(&canvas, rect);
         }
@@ -2695,7 +2663,10 @@ impl TrailApp {
     }
 
     fn interact_trail_legend(&mut self, ui: &egui::Ui, rect: egui::Rect) -> bool {
-        let legend = self.atlas.show_legend(ui.ctx(), rect, self.trail_coloring);
+        let Some(sinew) = &mut self.sinew else {
+            return false;
+        };
+        let legend = sinew.atlas.show_legend(ui.ctx(), rect, self.trail_coloring);
         for (coloring, tab) in &legend.tabs {
             let target = coloring_target(*coloring);
             crate::witness::rect(ui.ctx(), target, *tab);
@@ -2738,7 +2709,8 @@ impl TrailApp {
     }
 
     const fn area_handles_enabled(&self) -> bool {
-        matches!(self.view, WorkbenchView::Browse)
+        self.sinew.is_some()
+            && matches!(self.view, WorkbenchView::Browse)
             && self.corpus.is_none()
             && !self.forge_phase.active()
             && !self.scribe.active()
@@ -2789,17 +2761,17 @@ impl TrailApp {
         painter: &egui::Painter,
         frame: map::MapFramePlan,
         cartography: map::CartographicPlan,
-    ) -> Arc<annotation::Composition> {
+    ) -> Option<Arc<annotation::Composition>> {
+        let vector = self.vector.as_mut()?;
         product_phase!(
             "cartography.vector_fills",
-            self.vector.paint_fills(painter, frame, cartography)
+            vector.paint_fills(painter, frame, cartography)
         );
         let relief = &self.relief;
         let annotations = product_phase!("cartography.compose_annotations", {
-            self.vector
-                .compose_annotations(painter, frame, cartography, relief.revision(), || {
-                    relief.annotations(frame, cartography)
-                })
+            vector.compose_annotations(painter, frame, cartography, relief.revision(), || {
+                relief.annotations(frame, cartography)
+            })
         });
         let gaps = annotations.contour_gaps();
         product_phase!(
@@ -2808,9 +2780,9 @@ impl TrailApp {
         );
         product_phase!(
             "cartography.vector_strokes",
-            self.vector.paint_strokes(painter, frame, gaps)
+            vector.paint_strokes(painter, frame, gaps)
         );
-        annotations
+        Some(annotations)
     }
 
     fn paint_trails(&mut self, painter: &egui::Painter, rect: egui::Rect) {
@@ -2829,14 +2801,14 @@ impl TrailApp {
                 }
             }
             WorkbenchView::Focus(Focus::Candidate { identity }) => {
-                if let Some(route) = self
-                    .candidates
-                    .as_ref()
-                    .and_then(|run| run.slot(*identity).and_then(|slot| run.routes.get(slot)))
-                {
+                if let Some((graph, route)) = self.sinew.as_ref().map(|sinew| &sinew.graph).zip(
+                    self.candidates
+                        .as_ref()
+                        .and_then(|run| run.slot(*identity).and_then(|slot| run.routes.get(slot))),
+                ) {
                     map::paint_route(
                         painter,
-                        &self.graph,
+                        graph,
                         route,
                         self.viewport,
                         rect,
@@ -2846,7 +2818,9 @@ impl TrailApp {
                 }
             }
             WorkbenchView::Focus(Focus::Saved(id)) => {
-                if let Some(projection) = self.saved_projections.get_mut(id) {
+                if let Some(projection) =
+                    self.saved_projections.get_mut(id).and_then(Option::as_mut)
+                {
                     projection.overlay.paint(
                         painter,
                         map::MapFramePlan::forge(self.viewport, rect),
@@ -2859,6 +2833,7 @@ impl TrailApp {
                     .hovered_saved
                     .as_ref()
                     .and_then(|id| self.saved_projections.get_mut(id))
+                    .and_then(Option::as_mut)
                 {
                     projection.overlay.paint(
                         painter,
@@ -2877,10 +2852,13 @@ impl TrailApp {
     }
 
     fn paint_edicts(&self, painter: &egui::Painter, rect: egui::Rect) {
+        let Some(sinew) = &self.sinew else {
+            return;
+        };
         for edge in self.edicts.required() {
             map::paint_edict(
                 painter,
-                &self.graph,
+                &sinew.graph,
                 edge,
                 EdgeDisposition::Required,
                 self.viewport,
@@ -2890,7 +2868,7 @@ impl TrailApp {
         for edge in self.edicts.forbidden() {
             map::paint_edict(
                 painter,
-                &self.graph,
+                &sinew.graph,
                 edge,
                 EdgeDisposition::Forbidden,
                 self.viewport,
@@ -2973,7 +2951,8 @@ impl TrailApp {
     }
 
     const fn trailhead_input_available(&self) -> bool {
-        !self.view.is_editing()
+        self.sinew.is_some()
+            && !self.view.is_editing()
             && self.view.focus().is_none()
             && self.corpus.is_none()
             && !self.scribe.active()
@@ -3066,7 +3045,9 @@ impl TrailApp {
     }
 
     fn paint_map_header(&self, painter: &egui::Painter, rect: egui::Rect) {
-        let text = if self.corpus.is_some() {
+        let text = if self.sinew.is_none() {
+            self.status.to_ascii_uppercase()
+        } else if self.corpus.is_some() {
             self.trail_data_status
                 .as_deref()
                 .unwrap_or("Updating trails…")
@@ -3103,7 +3084,11 @@ impl TrailApp {
             egui::StrokeKind::Inside,
         );
         painter.galley(plate.min + vec2(7.0, 4.0), galley, chrome::TEXT);
-        if self.vector.has_presented_tiles() {
+        if self
+            .vector
+            .as_ref()
+            .is_some_and(VectorField::has_presented_tiles)
+        {
             let attribution = painter.layout_no_wrap(
                 "PROTOMAPS · © OPENSTREETMAP".to_owned(),
                 egui::FontId::monospace(9.5),
@@ -3215,7 +3200,11 @@ impl TrailApp {
     }
 
     fn place_trailhead(&mut self, requested: Coord, pointer: egui::Pos2) {
-        let Some(projection) = self.finder_index.edges().project(&self.graph, requested) else {
+        let Some(sinew) = &self.sinew else {
+            "Trail network is still preparing.".clone_into(&mut self.status);
+            return;
+        };
+        let Some(projection) = sinew.finder_index.edges().project(&sinew.graph, requested) else {
             "No downloaded trail is near that point.".clone_into(&mut self.status);
             return;
         };
@@ -3224,13 +3213,13 @@ impl TrailApp {
             "Move closer to a downloaded trail.".clone_into(&mut self.status);
             return;
         }
-        let edge = &self.graph.edges[projection.edge.0];
+        let edge = &sinew.graph.edges[projection.edge.0];
         let vertex = if projection.progress_m <= edge.attr.length_m * 0.5 {
             edge.a
         } else {
             edge.b
         };
-        let coord = self.graph.vertices[vertex.0].coord;
+        let coord = sinew.graph.vertices[vertex.0].coord;
         let Some(trailhead) = Trailhead::forge(coord) else {
             "That trailhead cannot be used.".clone_into(&mut self.status);
             return;
@@ -3302,7 +3291,10 @@ impl TrailApp {
     }
 
     fn place_editor_support(&mut self, requested: Coord, slot: Option<usize>, remember: bool) {
-        let Some(projection) = self.edge_index.project(&self.graph, requested) else {
+        let Some(sinew) = &self.sinew else {
+            return;
+        };
+        let Some(projection) = sinew.edge_index.project(&sinew.graph, requested) else {
             return;
         };
         if projection.distance_m > TRAILHEAD_SNAP_M {
@@ -3346,7 +3338,10 @@ impl TrailApp {
     }
 
     fn preview_editor_support(&mut self, requested: Coord, slot: usize) {
-        let Some(projection) = self.edge_index.project(&self.graph, requested) else {
+        let Some(sinew) = &self.sinew else {
+            return;
+        };
+        let Some(projection) = sinew.edge_index.project(&sinew.graph, requested) else {
             return;
         };
         if projection.distance_m > TRAILHEAD_SNAP_M {
@@ -3407,12 +3402,15 @@ impl TrailApp {
     }
 
     fn reverse_editor(&mut self) {
+        let Some(sinew) = &self.sinew else {
+            return;
+        };
         let reversed = self
             .view
             .editor()
             .and_then(|editor| editor.realization.as_ref())
             .context("reverse direction requires a realized loop")
-            .and_then(|realization| realization.reverse_loop(&self.graph).map_err(Into::into));
+            .and_then(|realization| realization.reverse_loop(&sinew.graph).map_err(Into::into));
         match reversed {
             Ok(reversal) => {
                 self.remember_editor();
@@ -3502,7 +3500,10 @@ impl TrailApp {
     }
 
     fn edict_segment(&mut self, requested: Coord, forbidden: bool) {
-        let Some(projection) = self.finder_index.edges().project(&self.graph, requested) else {
+        let Some(sinew) = &self.sinew else {
+            return;
+        };
+        let Some(projection) = sinew.finder_index.edges().project(&sinew.graph, requested) else {
             return;
         };
         if projection.distance_m > map::meters_per_point(self.viewport) * 11.0 {
@@ -3550,11 +3551,15 @@ impl TrailApp {
         self.serial = self.serial.saturating_add(1);
         self.editor_serial = self.editor_serial.saturating_add(1);
         let launch = self.search_request(self.serial).and_then(|request| {
+            let sinew = self
+                .sinew
+                .as_ref()
+                .context("trail network is still preparing")?;
             let progress = if request.boundary.is_some() {
                 SearchProgress {
                     stage: SearchStage::Preparing,
                     explored: 0,
-                    limit: self.graph.edges.len(),
+                    limit: sinew.graph.edges.len(),
                     candidates: 0,
                 }
             } else {
@@ -3565,7 +3570,7 @@ impl TrailApp {
                     candidates: 0,
                 }
             };
-            self.forge.strike(request).map(|handle| (handle, progress))
+            sinew.forge.strike(request).map(|handle| (handle, progress))
         });
         match launch {
             Ok((handle, progress)) => {
@@ -3595,14 +3600,18 @@ impl TrailApp {
     }
 
     fn search_request(&self, serial: u64) -> Result<SearchRequest> {
+        let sinew = self
+            .sinew
+            .as_ref()
+            .context("trail network is still preparing")?;
         let recipe = self.library.search();
         let trailhead = recipe.trailhead.context("place a trailhead on the map")?;
-        let start = self
+        let start = sinew
             .finder_index
             .edges()
-            .project(&self.graph, trailhead.coord())
+            .project(&sinew.graph, trailhead.coord())
             .map(|projection| {
-                let edge = &self.graph.edges[projection.edge.0];
+                let edge = &sinew.graph.edges[projection.edge.0];
                 if projection.progress_m <= edge.attr.length_m * 0.5 {
                     edge.a
                 } else {
@@ -3636,7 +3645,10 @@ impl TrailApp {
     }
 
     fn absorb_events(&mut self, ctx: &egui::Context) {
-        while let Ok(event) = self.forge.events.try_recv() {
+        let events = self.sinew.as_ref().map_or_else(Vec::new, |sinew| {
+            sinew.forge.events.try_iter().collect::<Vec<_>>()
+        });
+        for event in events {
             match event {
                 SearchEvent::Progress { serial, progress }
                     if self.forge_phase.serial() == Some(serial) =>
@@ -3726,12 +3738,17 @@ impl TrailApp {
                 | SearchEvent::Stopped { .. } => {}
             }
         }
-        self.vector.absorb(ctx);
+        if let Some(vector) = &mut self.vector {
+            vector.absorb(ctx);
+        }
         self.relief.absorb();
     }
 
     fn absorb_editor_events(&mut self) {
-        while let Ok(event) = self.editor_forge.events.try_recv() {
+        let events = self.sinew.as_ref().map_or_else(Vec::new, |sinew| {
+            sinew.editor_forge.events.try_iter().collect::<Vec<_>>()
+        });
+        for event in events {
             let mut status = None;
             if let Some(editor) = self.view.editor_mut()
                 && editor.realizing == Some(event.serial)
@@ -3816,11 +3833,17 @@ impl TrailApp {
                 return;
             };
             self.corpus = None;
-            match result.and_then(|armament| self.install_corpus(ctx, armament)) {
+            let initial = self.sinew.is_none();
+            match result.and_then(|armament| self.install_armament(ctx, armament)) {
                 Ok(()) => {}
                 Err(err) => {
-                    self.status = format!("Could not install updated trail data: {err:#}");
-                    self.trail_data_status = Some("Trail update failed.".to_owned());
+                    if initial {
+                        self.status = format!("Could not prepare trail network: {err:#}");
+                        self.trail_data_status = Some("Trail preparation failed.".to_owned());
+                    } else {
+                        self.status = format!("Could not install updated trail data: {err:#}");
+                        self.trail_data_status = Some("Trail update failed.".to_owned());
+                    }
                 }
             }
             return;
@@ -3837,7 +3860,7 @@ impl TrailApp {
                 TrailDataEvent::Ready(Some(summary)) => {
                     self.regions = summary.regions;
                     self.trail_data_status = Some("Preparing the updated trail map…".to_owned());
-                    match CorpusForge::spawn(ctx, self.root.clone()) {
+                    match CorpusForge::spawn(ctx, self.root.clone(), false) {
                         Ok(forge) => self.corpus = Some(CorpusTask::Preparing(forge)),
                         Err(err) => {
                             self.corpus = None;
@@ -3870,34 +3893,55 @@ impl TrailApp {
         }
     }
 
-    fn install_corpus(&mut self, ctx: &egui::Context, armament: CorpusArmament) -> Result<()> {
+    fn install_armament(&mut self, ctx: &egui::Context, armament: CorpusArmament) -> Result<()> {
         anyhow::ensure!(
             !self.view.is_editing(),
             "finish the active trail edit before installing new trail data"
         );
-        self.relief.retarget(ctx, &self.root)?;
-        let vector_retired = self.vector.retarget(
-            ctx,
-            armament.source,
-            self.offline,
-            Arc::clone(&armament.graph),
-            Arc::clone(&armament.edge_index),
-        )?;
-        if matches!(self.view.focus(), Some(Focus::Candidate { .. })) {
-            self.dissolve_focus();
+        let initial = self.sinew.is_none();
+        if !initial {
+            self.relief.retarget(ctx, &self.root)?;
         }
-        self.serial = self.serial.saturating_add(1);
-        self.search_due = None;
-        self.results_open = false;
-        self.edicts.clear();
-        self.edict_history.clear();
+        let vector_retired = if let Some(vector) = &mut self.vector {
+            Some(if initial {
+                vector.bind_trails(
+                    ctx,
+                    Arc::clone(&armament.sinew.graph),
+                    Arc::clone(&armament.sinew.edge_index),
+                )?
+            } else {
+                vector.retarget(
+                    ctx,
+                    armament.source,
+                    self.offline,
+                    Arc::clone(&armament.sinew.graph),
+                    Arc::clone(&armament.sinew.edge_index),
+                )?
+            })
+        } else {
+            self.vector = Some(VectorField::raise(
+                ctx,
+                armament.source,
+                self.offline,
+                Some((
+                    Arc::clone(&armament.sinew.graph),
+                    Arc::clone(&armament.sinew.edge_index),
+                )),
+            )?);
+            None
+        };
+        if !initial {
+            if matches!(self.view.focus(), Some(Focus::Candidate { .. })) {
+                self.dissolve_focus();
+            }
+            self.serial = self.serial.saturating_add(1);
+            self.search_due = None;
+            self.results_open = false;
+            self.edicts.clear();
+            self.edict_history.clear();
+        }
         let retired = (
-            std::mem::replace(&mut self.graph, armament.graph),
-            std::mem::replace(&mut self.edge_index, armament.edge_index),
-            std::mem::replace(&mut self.finder_index, armament.finder_index),
-            std::mem::replace(&mut self.atlas, armament.atlas),
-            std::mem::replace(&mut self.forge, armament.forge),
-            std::mem::replace(&mut self.editor_forge, armament.editor_forge),
+            self.sinew.replace(armament.sinew),
             std::mem::take(&mut self.candidates),
             std::mem::take(&mut self.forge_phase),
             vector_retired,
@@ -3905,15 +3949,29 @@ impl TrailApp {
         let _reaper = thread::Builder::new()
             .name("trail-corpus-reaper".to_owned())
             .spawn(move || drop(retired));
-        self.regions = armament.regions;
-        self.region_names = armament.region_names;
+        if !initial {
+            self.regions = armament.regions;
+            self.region_names = armament.region_names;
+        }
+        if self.library.legacy_routes_pending()
+            && self.library.absorb_legacy_routes(armament.legacy_routes)
+        {
+            self.reconcile_saved_projections();
+        }
         self.profile_cursor.bind(self.profile_owner());
         self.trail_data_status = Some(format!(
             "Trail data ready in {} map area(s).",
             self.regions.len()
         ));
-        "Updated trails are ready.".clone_into(&mut self.status);
+        if initial {
+            self.status = finder_counsel(&self.library);
+        } else {
+            "Updated trails are ready.".clone_into(&mut self.status);
+        }
         self.flush_library();
+        if initial && let Some(mutation) = self.post_armament.take() {
+            self.strike_corpus(ctx, mutation)?;
+        }
         Ok(())
     }
 
@@ -3941,10 +3999,13 @@ impl TrailApp {
             .as_ref()
             .and_then(|run| run.designs.get(slot))
             .map(|design| design.as_ref().clone());
+        let Some(graph) = self.sinew.as_ref().map(|sinew| &sinew.graph) else {
+            return;
+        };
         let result = if let Some(design) = design {
-            self.library.promote_design(&self.graph, &route, &design)
+            self.library.promote_design(graph, &route, &design)
         } else {
-            self.library.promote(&self.graph, &route)
+            self.library.promote(graph, &route)
         };
         match result {
             Ok(id) => {
@@ -4056,7 +4117,11 @@ impl TrailApp {
             routing: self.params.routing,
             constraints: self.manual_constraints(shape),
         };
-        let launched = self.editor_forge.strike(job);
+        let launched = self
+            .sinew
+            .as_ref()
+            .context("trail network is still preparing")
+            .and_then(|sinew| sinew.editor_forge.strike(job));
         let accepted = launched.is_ok();
         if let Some(editor) = self.view.editor_mut() {
             editor.shape_guard = None;
@@ -4169,11 +4234,12 @@ impl TrailApp {
                 .as_ref()
                 .and_then(|run| run.slot(*identity).and_then(|slot| run.routes.get(slot)))
                 .and_then(|route| {
+                    let graph = &self.sinew.as_ref()?.graph;
                     map::frailest_standing(
                         route
                             .edges
                             .iter()
-                            .map(|edge| self.graph.edges[edge.0].attr.standing),
+                            .map(|edge| graph.edges[edge.0].attr.standing),
                     )
                 }),
             Some(Focus::Saved(id)) => self.library.trail(id).and_then(|trail| {
@@ -4203,6 +4269,7 @@ impl TrailApp {
             Some(Focus::Saved(id)) => self
                 .saved_projections
                 .get(id)
+                .and_then(Option::as_ref)
                 .is_some_and(|projection| projection.profile.is_some()),
             None => false,
         }
@@ -4283,12 +4350,29 @@ impl TrailApp {
 
     fn apply_fit(&mut self, rect: egui::Rect) {
         let viewport = match &self.fit {
-            Fit::Graph => Some(Viewport::fit_graph(&self.graph, rect)),
+            Fit::Graph => self
+                .sinew
+                .as_ref()
+                .map(|sinew| Viewport::fit_graph(&sinew.graph, rect)),
+            Fit::Regions => Some(map::fit_coords(
+                self.regions.iter().flat_map(|region| {
+                    let bounds = region.bounds;
+                    [
+                        Coord::new(bounds.west, bounds.south),
+                        Coord::new(bounds.east, bounds.north),
+                    ]
+                }),
+                rect,
+            )),
             Fit::Candidate { identity } => self
                 .candidates
                 .as_ref()
                 .and_then(|run| run.slot(*identity).and_then(|slot| run.routes.get(slot)))
-                .map(|route| Viewport::fit_route(&self.graph, route, rect)),
+                .and_then(|route| {
+                    self.sinew
+                        .as_ref()
+                        .map(|sinew| Viewport::fit_route(&sinew.graph, route, rect))
+                }),
             Fit::Saved(id) => self
                 .library
                 .trail(id)
@@ -4361,7 +4445,11 @@ impl TrailApp {
             });
         if find {
             let search_open = self.shutters.get("search").copied().unwrap_or(true);
-            if search_open && !self.view.is_editing() && !self.forge_phase.active() {
+            if search_open
+                && self.sinew.is_some()
+                && !self.view.is_editing()
+                && !self.forge_phase.active()
+            {
                 self.strike();
             }
             return;
@@ -4417,9 +4505,22 @@ impl TrailApp {
             .trails()
             .iter()
             .filter(|trail| !self.saved_projections.contains_key(&trail.id))
-            .map(|trail| (trail.id.clone(), SavedProjection::forge(trail)))
+            .cloned()
             .collect::<Vec<_>>();
-        self.saved_projections.extend(missing);
+        for trail in missing {
+            let id = trail.id.clone();
+            self.projection_forge.strike(id.clone(), trail);
+            let prior = self.saved_projections.insert(id, None);
+            debug_assert!(prior.is_none());
+        }
+    }
+
+    fn absorb_saved_projections(&mut self) {
+        while let Ok((id, projection)) = self.projection_forge.events.try_recv() {
+            if self.library.trail(&id).is_some() {
+                let _pending = self.saved_projections.insert(id, Some(projection));
+            }
+        }
     }
 
     fn flush_library(&mut self) {
@@ -4807,13 +4908,14 @@ fn area_row(
     name: Option<&str>,
     slot: usize,
     mutable: bool,
+    renameable: bool,
 ) -> Option<AreaRowAction> {
     let mut action = None;
     let name = name.map_or_else(|| format!("AREA {slot:02}"), str::to_ascii_uppercase);
     let _row = ui.horizontal(|ui| {
         let rename = ui
             .add_enabled(
-                mutable,
+                renameable,
                 chrome::command_button("✎", false).min_size(vec2(24.0, 22.0)),
             )
             .on_hover_text("Rename this map area");
@@ -4896,22 +4998,6 @@ fn duration(duration: Duration) -> String {
 fn moving_time(seconds: f64) -> String {
     let minutes = (seconds.max(0.0) / 60.0).round();
     format!("{:.0}:{:02.0}", (minutes / 60.0).floor(), minutes % 60.0)
-}
-
-fn spawn_vector_field(
-    ctx: &egui::Context,
-    root: &Path,
-    graph: Arc<WalkGraph>,
-    edge_index: Arc<EdgeIndex>,
-    regions: &[SurveyRegion],
-    offline: bool,
-) -> Result<VectorField> {
-    let bounds = regions
-        .iter()
-        .map(|region| region.bounds)
-        .collect::<Vec<_>>();
-    let source = BasemapSource::project(root, &graph, &bounds)?;
-    VectorField::raise(ctx, source, offline, Some((graph, edge_index)))
 }
 
 impl Drop for TrailApp {

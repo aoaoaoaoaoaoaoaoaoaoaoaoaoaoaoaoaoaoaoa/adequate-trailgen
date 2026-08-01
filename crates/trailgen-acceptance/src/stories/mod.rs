@@ -1,6 +1,7 @@
 mod compare;
 mod discover;
 mod manual;
+mod prepare;
 mod refine;
 
 use egui_tester::Result;
@@ -40,11 +41,12 @@ pub fn smoke(harness: &Harness<'_>) -> Result<()> {
 }
 
 pub fn run(harness: &Harness<'_>, selected: Option<&str>) -> Result<()> {
-    let stories: [(&str, UserStory); 4] = [
+    let stories: [(&str, UserStory); 5] = [
         ("discover", discover::run),
         ("refine", refine::run),
         ("compare", compare::run),
         ("manual", manual::run),
+        ("prepare", prepare::run),
     ];
     let mut ran = 0;
     for (name, story) in stories {
@@ -56,7 +58,7 @@ pub fn run(harness: &Harness<'_>, selected: Option<&str>) -> Result<()> {
     if ran == 0 {
         return Err(egui_tester::Error::Verdict {
             detail: format!(
-                "unknown Trailgen story `{}`; expected discover, refine, compare, or manual",
+                "unknown Trailgen story `{}`; expected discover, refine, compare, manual, or prepare",
                 selected.unwrap_or_default()
             ),
         });
