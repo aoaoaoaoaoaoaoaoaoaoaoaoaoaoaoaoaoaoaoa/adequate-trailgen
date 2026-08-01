@@ -12,7 +12,10 @@ use std::{
 };
 
 use egui_tester::{AppCommand, Error, Result, Testbed};
-use pmtiles::{Compression, PmTilesWriter, TileType};
+use fast_mvt::{DEFAULT_EXTENT, MvtFeature, MvtGeometry, MvtLayer, MvtTile, MvtValue};
+use geo_types::{line_string, polygon};
+use num_traits::ToPrimitive as _;
+use pmtiles::{Compression, PmTilesWriter, TileCoord, TileType};
 
 const PROVIDER_SOCKET: &str = "fixtures/provider.sock";
 
@@ -31,8 +34,8 @@ impl FixtureWorld {
             root.join("crates/trailgen-core/tests/fixtures/mini_network.geojson"),
         )?;
         let _dense = testbed.write_private("fixtures/dense_network.geojson", dense_network())?;
-        let basemap = testbed.private_path("fixtures/empty.pmtiles")?;
-        empty_basemap(&basemap)?;
+        let basemap = testbed.private_path("fixtures/basemap.pmtiles")?;
+        fixture_basemap(&basemap)?;
         Ok(Self {
             server: FixtureServer::raise(testbed.private_path(PROVIDER_SOCKET)?)?,
         })
@@ -200,6 +203,7 @@ fn serve(
     } else {
         ("404 Not Found", "text/plain", b"not found")
     };
+    thread::sleep(Duration::from_millis(40));
     let stream = reader.get_mut();
     write!(
         stream,
@@ -246,13 +250,13 @@ fn terrain_tile() -> Vec<u8> {
     bytes
 }
 
-fn empty_basemap(path: &Path) -> Result<()> {
+fn fixture_basemap(path: &Path) -> Result<()> {
     let file = File::create(path).map_err(|source| Error::Io {
-        operation: "create empty basemap",
+        operation: "create fixture basemap",
         path: path.to_owned(),
         source,
     })?;
-    let writer = PmTilesWriter::new(TileType::Mvt)
+    let mut writer = PmTilesWriter::new(TileType::Mvt)
         .internal_compression(Compression::None)
         .tile_compression(Compression::None)
         .min_zoom(0)
@@ -260,12 +264,121 @@ fn empty_basemap(path: &Path) -> Result<()> {
         .bounds(-180.0, -85.0, 180.0, 85.0)
         .center(-98.5, 39.5)
         .center_zoom(4)
-        .metadata(r#"{"vector_layers":[]}"#)
+        .metadata(
+            r#"{"vector_layers":[{"id":"earth"},{"id":"landcover"},{"id":"water"},{"id":"roads"}]}"#,
+        )
         .create(file)
-        .map_err(|error| verdict_owned(format!("raise empty PMTiles writer: {error}")))?;
+        .map_err(|error| verdict_owned(format!("raise fixture PMTiles writer: {error}")))?;
+    let tile = fixture_vector_tile()?;
+    for coordinate in fixture_tile_cover()? {
+        writer
+            .add_tile(coordinate, &tile)
+            .map_err(|error| verdict_owned(format!("write fixture vector tile: {error}")))?;
+    }
     writer
         .finalize()
-        .map_err(|error| verdict_owned(format!("seal empty PMTiles archive: {error}")))
+        .map_err(|error| verdict_owned(format!("seal fixture PMTiles archive: {error}")))
+}
+
+fn fixture_tile_cover() -> Result<Vec<TileCoord>> {
+    let world = world_from_coord([-98.5, 39.5]);
+    let mut cover = Vec::new();
+    for zoom in 0_u8..=15 {
+        let side = 1_u32 << zoom;
+        let center_x = (world[0] * f64::from(side))
+            .floor()
+            .to_i64()
+            .ok_or_else(|| verdict_owned("fixture tile x is not integral".to_owned()))?;
+        let center_y = (world[1] * f64::from(side))
+            .floor()
+            .to_i64()
+            .ok_or_else(|| verdict_owned("fixture tile y is not integral".to_owned()))?;
+        for y in center_y.saturating_sub(2)..=(center_y + 2).min(i64::from(side) - 1) {
+            for x in center_x.saturating_sub(2)..=(center_x + 2).min(i64::from(side) - 1) {
+                if x < 0 || y < 0 {
+                    continue;
+                }
+                let x = u32::try_from(x)
+                    .map_err(|error| verdict_owned(format!("forge fixture tile x: {error}")))?;
+                let y = u32::try_from(y)
+                    .map_err(|error| verdict_owned(format!("forge fixture tile y: {error}")))?;
+                cover.push(TileCoord::new(zoom, x, y).map_err(|error| {
+                    verdict_owned(format!("forge fixture tile coordinate: {error}"))
+                })?);
+            }
+        }
+    }
+    Ok(cover)
+}
+
+fn fixture_vector_tile() -> Result<Vec<u8>> {
+    let polygon = |west, north, east, south| {
+        MvtGeometry::Polygon(polygon![
+            (x: west, y: north),
+            (x: east, y: north),
+            (x: east, y: south),
+            (x: west, y: south),
+            (x: west, y: north),
+        ])
+    };
+    let feature = |id, geometry, properties| MvtFeature {
+        id: Some(id),
+        geometry,
+        properties,
+    };
+    MvtTile {
+        layers: vec![
+            MvtLayer {
+                name: "earth".to_owned(),
+                extent: DEFAULT_EXTENT,
+                features: vec![feature(1, polygon(0, 0, 4_096, 4_096), Vec::new())],
+            },
+            MvtLayer {
+                name: "landcover".to_owned(),
+                extent: DEFAULT_EXTENT,
+                features: vec![feature(
+                    2,
+                    polygon(2_080, 180, 3_900, 3_900),
+                    vec![("kind".to_owned(), MvtValue::String("forest".to_owned()))],
+                )],
+            },
+            MvtLayer {
+                name: "water".to_owned(),
+                extent: DEFAULT_EXTENT,
+                features: vec![feature(3, polygon(680, 520, 1_620, 3_700), Vec::new())],
+            },
+            MvtLayer {
+                name: "roads".to_owned(),
+                extent: DEFAULT_EXTENT,
+                features: vec![feature(
+                    4,
+                    MvtGeometry::LineString(line_string![
+                        (x: 120, y: 3_600),
+                        (x: 1_850, y: 2_080),
+                        (x: 3_980, y: 620),
+                    ]),
+                    vec![
+                        ("kind".to_owned(), MvtValue::String("major_road".to_owned())),
+                        (
+                            "kind_detail".to_owned(),
+                            MvtValue::String("secondary".to_owned()),
+                        ),
+                        ("min_zoom".to_owned(), MvtValue::Double(0.0)),
+                    ],
+                )],
+            },
+        ],
+    }
+    .encode()
+    .map_err(|error| verdict_owned(format!("encode fixture vector tile: {error}")))
+}
+
+fn world_from_coord([longitude, latitude]: [f64; 2]) -> [f64; 2] {
+    let latitude = latitude.to_radians();
+    [
+        (longitude + 180.0) / 360.0,
+        (1.0 - latitude.tan().asinh() / std::f64::consts::PI) * 0.5,
+    ]
 }
 
 fn dense_network() -> Vec<u8> {
@@ -350,3 +463,37 @@ const OSM: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
   <way id="105"><nd ref="1"/><nd ref="5"/><nd ref="3"/><tag k="highway" v="path"/><tag k="informal" v="yes"/><tag k="surface" v="scree"/><tag k="name" v="Diagonal Trail"/></way>
   <way id="106"><nd ref="2"/><nd ref="5"/><nd ref="4"/><tag k="highway" v="path"/><tag k="name" v="Cross Trail"/></way>
 </osm>"#;
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use fast_mvt::MvtReaderRef;
+
+    use super::*;
+
+    #[test]
+    fn basemap_fixture_is_nonempty_and_decodable() -> Result<()> {
+        let bytes = fixture_vector_tile()?;
+        let reader = MvtReaderRef::new(&bytes)
+            .map_err(|error| verdict_owned(format!("decode fixture vector tile: {error}")))?;
+        let layers = reader
+            .layers()
+            .map(fast_mvt::MvtLayerRef::name)
+            .collect::<Vec<_>>();
+        egui_tester::demand(
+            layers == ["earth", "landcover", "water", "roads"],
+            format!("fixture basemap layers drifted: {layers:?}"),
+        )
+    }
+
+    #[test]
+    fn basemap_fixture_covers_every_supported_detail_at_its_center() -> Result<()> {
+        let cover = fixture_tile_cover()?;
+        let zooms = cover.iter().map(TileCoord::z).collect::<BTreeSet<_>>();
+        egui_tester::demand(
+            zooms == (0_u8..=15).collect(),
+            format!("fixture basemap zoom cover drifted: {zooms:?}"),
+        )
+    }
+}

@@ -20,12 +20,12 @@ use trailgen_core::{
     RoutingLaw, SearchParams, SeasonalWindow, SolverKind, VertexId, VrtDem, Weekday, WeekdaySet,
 };
 use trailgen_core::{
-    Coord, DifficultyWeights, EnrichmentConfig, GraphBuilder, JunctionPolicy, LineString,
-    LoopConstraints, LoopHunter, OverlayGeometry, PlaneElevation, Provenance, SeedRoute,
-    SegmentDraft, Terrain, TerrainMultipliers, TrailClass, TrailGraph, TrailMarking, TrailStanding,
-    TurnRestrictionDraft, TurnRestrictionRule, apply_access_overlays, apply_access_overlays_at,
-    apply_context_overlays, apply_terrain_overlays, enrich_graph, rank_routes,
-    route_edges_from_selected_arcs, route_edges_from_solution,
+    Coord, CrossingControl, EnrichmentConfig, GeometryClaim, GraphBuilder, JunctionPolicy,
+    LineString, LoopConstraints, LoopHunter, OverlayGeometry, PlaneElevation, Provenance,
+    SeedRoute, SegmentDraft, Terrain, TrailMarking, TrailStanding, TurnRestrictionDraft,
+    TurnRestrictionRule, WalkGraph, WayKind, WayRealm, apply_access_overlays,
+    apply_access_overlays_at, apply_context_overlays, apply_terrain_overlays, enrich_graph,
+    rank_routes, route_edges_from_selected_arcs, route_edges_from_solution,
 };
 
 const WGS84_PRJ: &str = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["Degree",0.0174532925199433]]"#;
@@ -42,9 +42,13 @@ fn builder_splits_crossing_lines() {
         SegmentDraft {
             junctions: JunctionPolicy::default(),
             turn_ref: None,
+            junction_keys: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![Coord::new(0.0, 0.5), Coord::new(1.0, 0.5)]).unwrap(),
-            trail_class: TrailClass::default(),
+            way_kind: WayKind::default(),
+            realm: WayRealm::default(),
+            geometry_claim: GeometryClaim::default(),
+            crossing_control: CrossingControl::default(),
             standing: TrailStanding::Unknown,
             marking: TrailMarking::default(),
             terrain: Terrain::Trail,
@@ -59,9 +63,13 @@ fn builder_splits_crossing_lines() {
         SegmentDraft {
             junctions: JunctionPolicy::default(),
             turn_ref: None,
+            junction_keys: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![Coord::new(0.5, 0.0), Coord::new(0.5, 1.0)]).unwrap(),
-            trail_class: TrailClass::default(),
+            way_kind: WayKind::default(),
+            realm: WayRealm::default(),
+            geometry_claim: GeometryClaim::default(),
+            crossing_control: CrossingControl::default(),
             standing: TrailStanding::Unknown,
             marking: TrailMarking::default(),
             terrain: Terrain::Trail,
@@ -90,9 +98,13 @@ fn graph_adjacency_respects_one_way_travel() {
         .build(&[SegmentDraft {
             junctions: JunctionPolicy::default(),
             turn_ref: None,
+            junction_keys: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
-            trail_class: TrailClass::default(),
+            way_kind: WayKind::default(),
+            realm: WayRealm::default(),
+            geometry_claim: GeometryClaim::default(),
+            crossing_control: CrossingControl::default(),
             standing: TrailStanding::Unknown,
             marking: TrailMarking::default(),
             terrain: Terrain::Trail,
@@ -122,11 +134,11 @@ fn graph_deserialization_rebuilds_derived_adjacency_and_rejects_corruption() {
         .unwrap();
     let mut json = serde_json::to_value(&graph).unwrap();
     assert!(json.get("adjacency").is_none());
-    let restored: TrailGraph = serde_json::from_value(json.clone()).unwrap();
+    let restored: WalkGraph = serde_json::from_value(json.clone()).unwrap();
     assert_eq!(restored.adjacency, graph.adjacency);
 
     json["edges"][0]["a"] = serde_json::json!(usize::MAX);
-    assert!(serde_json::from_value::<TrailGraph>(json).is_err());
+    assert!(serde_json::from_value::<WalkGraph>(json).is_err());
 }
 
 #[test]
@@ -135,7 +147,7 @@ fn solvers_respect_directed_turn_bans() {
     let constraints = LoopConstraints {
         min_distance_m: 0.0,
         max_distance_m: 10_000.0,
-        max_difficulty: 10_000.0,
+        max_lower_limb_load_km: 10_000.0,
         ..LoopConstraints::default()
     };
 
@@ -163,7 +175,7 @@ fn milp_respects_directed_turn_bans() {
     let constraints = LoopConstraints {
         min_distance_m: 0.0,
         max_distance_m: 10_000.0,
-        max_difficulty: 10_000.0,
+        max_lower_limb_load_km: 10_000.0,
         ..LoopConstraints::default()
     };
     let formulation = LoopMilpFormulation::formulate(&graph, graph.edges[0].a, &constraints);
@@ -203,7 +215,7 @@ fn milp_respects_directed_turn_bans() {
     ));
 }
 
-fn directed_turn_ban_graph() -> TrailGraph {
+fn directed_turn_ban_graph() -> WalkGraph {
     let start = Coord::new(0.0, 0.0);
     let via = Coord::new(0.01, 0.0);
     let crown = Coord::new(0.01, 0.01);
@@ -218,10 +230,12 @@ fn directed_turn_ban_graph() -> TrailGraph {
             SegmentDraft {
                 junctions: JunctionPolicy::default(),
                 turn_ref: Some("out".to_owned()),
+                junction_keys: None,
                 turn_restrictions: vec![
                     TurnRestrictionDraft {
                         from: "out".to_owned(),
                         via,
+                        via_key: None,
                         to: "north".to_owned(),
                         rule: TurnRestrictionRule::No,
                         provenance: turn_source.clone(),
@@ -229,13 +243,17 @@ fn directed_turn_ban_graph() -> TrailGraph {
                     TurnRestrictionDraft {
                         from: "north".to_owned(),
                         via,
+                        via_key: None,
                         to: "out".to_owned(),
                         rule: TurnRestrictionRule::No,
                         provenance: turn_source,
                     },
                 ],
                 geometry: LineString::new(vec![start, via]).unwrap(),
-                trail_class: TrailClass::default(),
+                way_kind: WayKind::default(),
+                realm: WayRealm::default(),
+                geometry_claim: GeometryClaim::default(),
+                crossing_control: CrossingControl::default(),
                 standing: TrailStanding::Unknown,
                 marking: TrailMarking::default(),
                 terrain: Terrain::Trail,
@@ -250,9 +268,13 @@ fn directed_turn_ban_graph() -> TrailGraph {
             SegmentDraft {
                 junctions: JunctionPolicy::default(),
                 turn_ref: Some("north".to_owned()),
+                junction_keys: None,
                 turn_restrictions: Vec::new(),
                 geometry: LineString::new(vec![via, crown]).unwrap(),
-                trail_class: TrailClass::default(),
+                way_kind: WayKind::default(),
+                realm: WayRealm::default(),
+                geometry_claim: GeometryClaim::default(),
+                crossing_control: CrossingControl::default(),
                 standing: TrailStanding::Unknown,
                 marking: TrailMarking::default(),
                 terrain: Terrain::Trail,
@@ -267,9 +289,13 @@ fn directed_turn_ban_graph() -> TrailGraph {
             SegmentDraft {
                 junctions: JunctionPolicy::default(),
                 turn_ref: Some("return".to_owned()),
+                junction_keys: None,
                 turn_restrictions: Vec::new(),
                 geometry: LineString::new(vec![crown, start]).unwrap(),
-                trail_class: TrailClass::default(),
+                way_kind: WayKind::default(),
+                realm: WayRealm::default(),
+                geometry_claim: GeometryClaim::default(),
+                crossing_control: CrossingControl::default(),
                 standing: TrailStanding::Unknown,
                 marking: TrailMarking::default(),
                 terrain: Terrain::Trail,
@@ -506,9 +532,13 @@ fn near_miss_drafts() -> Vec<SegmentDraft> {
         SegmentDraft {
             junctions: JunctionPolicy::default(),
             turn_ref: None,
+            junction_keys: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(1.0, 0.0)]).unwrap(),
-            trail_class: TrailClass::default(),
+            way_kind: WayKind::default(),
+            realm: WayRealm::default(),
+            geometry_claim: GeometryClaim::default(),
+            crossing_control: CrossingControl::default(),
             standing: TrailStanding::Unknown,
             marking: TrailMarking::default(),
             terrain: Terrain::Trail,
@@ -523,10 +553,14 @@ fn near_miss_drafts() -> Vec<SegmentDraft> {
         SegmentDraft {
             junctions: JunctionPolicy::default(),
             turn_ref: None,
+            junction_keys: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![Coord::new(0.5, 0.00005), Coord::new(0.5, 0.01)])
                 .unwrap(),
-            trail_class: TrailClass::default(),
+            way_kind: WayKind::default(),
+            realm: WayRealm::default(),
+            geometry_claim: GeometryClaim::default(),
+            crossing_control: CrossingControl::default(),
             standing: TrailStanding::Unknown,
             marking: TrailMarking::default(),
             terrain: Terrain::Trail,
@@ -542,105 +576,54 @@ fn near_miss_drafts() -> Vec<SegmentDraft> {
 }
 
 #[test]
-fn difficulty_penalizes_rough_uncertain_closed_edges() {
-    let smooth = SegmentDraft {
+fn flat_gravel_is_the_lower_limb_load_reference() {
+    let gravel = SegmentDraft {
         junctions: JunctionPolicy::default(),
         turn_ref: None,
+        junction_keys: None,
         turn_restrictions: Vec::new(),
         geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
-        trail_class: TrailClass::default(),
+        way_kind: WayKind::default(),
+        realm: WayRealm::default(),
+        geometry_claim: GeometryClaim::default(),
+        crossing_control: CrossingControl::default(),
         standing: TrailStanding::Unknown,
         marking: TrailMarking::default(),
         terrain: Terrain::Trail,
         terrain_confidence: None,
-        surface: Some("dirt".to_owned()),
+        surface: Some("gravel".to_owned()),
         access: Access::Open,
         travel: EdgeTravel::Both,
         road_exposure: 0.0,
         confidence: 1.0,
-        provenance: vec![Provenance::fixture("smooth")],
+        provenance: vec![Provenance::fixture("gravel")],
     };
-    let savage = SegmentDraft {
-        geometry: LineString::new(vec![Coord::new(0.0, 0.001), Coord::new(0.01, 0.001)]).unwrap(),
-        junctions: JunctionPolicy::default(),
-        turn_ref: None,
-        turn_restrictions: Vec::new(),
-        trail_class: TrailClass::default(),
-        standing: TrailStanding::Unknown,
-        marking: TrailMarking::default(),
-        terrain: Terrain::Scramble,
-        terrain_confidence: None,
-        surface: Some("dirt".to_owned()),
-        access: Access::Closed,
-        travel: EdgeTravel::Both,
-        road_exposure: 0.0,
-        confidence: 0.25,
-        provenance: vec![Provenance::fixture("savage")],
-    };
-    let uncertain = SegmentDraft {
-        geometry: LineString::new(vec![Coord::new(0.0, 0.002), Coord::new(0.01, 0.002)]).unwrap(),
-        junctions: JunctionPolicy::default(),
-        turn_ref: None,
-        turn_restrictions: Vec::new(),
-        trail_class: TrailClass::default(),
-        standing: TrailStanding::Unknown,
-        marking: TrailMarking::default(),
-        terrain: Terrain::Unknown,
-        terrain_confidence: None,
-        surface: Some("dirt".to_owned()),
-        access: Access::Open,
-        travel: EdgeTravel::Both,
-        road_exposure: 0.0,
-        confidence: 0.9,
-        provenance: vec![Provenance::fixture("uncertain")],
-    };
-    let unmarked = SegmentDraft {
-        geometry: LineString::new(vec![Coord::new(0.0, 0.003), Coord::new(0.01, 0.003)]).unwrap(),
-        marking: TrailMarking::Unmarked,
-        provenance: vec![Provenance::fixture("unmarked")],
-        ..smooth.clone()
-    };
-    let graph = GraphBuilder {
-        weights: DifficultyWeights::default(),
-        ..GraphBuilder::default()
-    }
-    .build(&[smooth, savage, uncertain, unmarked])
-    .unwrap();
-    assert!(graph.edges[1].attr.difficulty > graph.edges[0].attr.difficulty + 100.0);
-    assert!(graph.edges.iter().all(|edge| {
-        (edge.attr.difficulty - edge.attr.difficulty_breakdown.total()).abs() <= 1.0e-9
-    }));
-    assert!(graph.edges[1].attr.difficulty_breakdown.access > 900.0);
-    assert_eq!(graph.edges[0].attr.surface.as_deref(), Some("dirt"));
-    assert!(graph.edges[1].attr.difficulty_breakdown.technical > 0.0);
-    assert!(
-        graph.edges[1].attr.difficulty_breakdown.technical
-            > graph.edges[0].attr.difficulty_breakdown.technical
-    );
-    assert!(graph.edges[2].attr.difficulty_breakdown.navigation > 0.0);
-    assert!(
-        graph.edges[3].attr.difficulty_breakdown.navigation
-            > graph.edges[0].attr.difficulty_breakdown.navigation
-    );
-    assert!(
-        graph.edges[2].attr.difficulty_breakdown.navigation
-            > graph.edges[0].attr.difficulty_breakdown.navigation
-    );
+    let graph = GraphBuilder::default().build(&[gravel]).unwrap();
+    let edge = &graph.edges[0];
+    let distance_km = edge.attr.length_m / 1_000.0;
+
+    assert!((edge.attr.traversal.forward.lower_limb_load_km - distance_km).abs() <= 1.0e-9);
+    assert_eq!(edge.attr.traversal.forward, edge.attr.traversal.reverse);
+    assert!(edge.attr.traversal.forward.moving_time_s > 0.0);
 }
 
 #[test]
-fn difficulty_is_invariant_under_edge_subdivision() {
+fn lower_limb_load_is_directional_and_invariant_under_subdivision() {
     let draft = |points| SegmentDraft {
         junctions: JunctionPolicy::default(),
         turn_ref: None,
+        junction_keys: None,
         turn_restrictions: Vec::new(),
         geometry: LineString::new(points).unwrap(),
-        trail_class: TrailClass::default(),
+        way_kind: WayKind::default(),
+        realm: WayRealm::default(),
+        geometry_claim: GeometryClaim::default(),
+        crossing_control: CrossingControl::default(),
         standing: TrailStanding::Unknown,
         marking: TrailMarking::default(),
-        terrain: Terrain::Talus,
+        terrain: Terrain::Trail,
         terrain_confidence: Some(0.6),
-        surface: Some("scree".to_owned()),
+        surface: Some("gravel".to_owned()),
         access: Access::Restricted,
         travel: EdgeTravel::Both,
         road_exposure: 0.2,
@@ -663,74 +646,67 @@ fn difficulty_is_invariant_under_edge_subdivision() {
                 .collect(),
         )])
         .unwrap();
-    let difficulty = |graph: &TrailGraph| {
+    let traversal = |graph: &WalkGraph| {
         graph
             .edges
             .iter()
-            .map(|edge| edge.attr.difficulty)
-            .sum::<f64>()
+            .fold(Default::default(), |mut total: [f64; 2], edge| {
+                total[0] += edge.attr.traversal.forward.lower_limb_load_km;
+                total[1] += edge.attr.traversal.reverse.lower_limb_load_km;
+                total
+            })
     };
+    let coarse_load = traversal(&coarse);
+    let fine_load = traversal(&fine);
 
-    assert!((difficulty(&coarse) - difficulty(&fine)).abs() <= 1.0e-9);
+    assert!((coarse_load[0] - fine_load[0]).abs() <= 1.0e-9);
+    assert!((coarse_load[1] - fine_load[1]).abs() <= 1.0e-9);
+    assert!(coarse_load[1] > coarse_load[0]);
 }
 
 #[test]
-fn terrain_multipliers_are_configurable_and_defaulted() {
-    let mut weights = DifficultyWeights {
-        terrain_multipliers: TerrainMultipliers {
-            talus: 3.0,
-            ..TerrainMultipliers::default()
-        },
-        ..DifficultyWeights::default()
-    };
-    let draft = SegmentDraft {
+fn modest_uneven_terrain_uses_the_population_roughness_anchor() {
+    let gravel = SegmentDraft {
         junctions: JunctionPolicy::default(),
         turn_ref: None,
+        junction_keys: None,
         turn_restrictions: Vec::new(),
         geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
-        trail_class: TrailClass::default(),
+        way_kind: WayKind::default(),
+        realm: WayRealm::default(),
+        geometry_claim: GeometryClaim::default(),
+        crossing_control: CrossingControl::default(),
         standing: TrailStanding::Unknown,
         marking: TrailMarking::default(),
-        terrain: Terrain::Talus,
+        terrain: Terrain::Trail,
         terrain_confidence: None,
-        surface: None,
+        surface: Some("gravel".to_owned()),
         access: Access::Open,
         travel: EdgeTravel::Both,
         road_exposure: 0.0,
         confidence: 1.0,
-        provenance: vec![Provenance::fixture("talus")],
+        provenance: vec![Provenance::fixture("gravel")],
     };
-    let graph = GraphBuilder {
-        weights,
-        ..GraphBuilder::default()
-    }
-    .build(&[draft])
-    .unwrap();
-    let edge = &graph.edges[0];
-    assert!(edge.attr.difficulty_breakdown.terrain > edge.attr.difficulty_breakdown.distance);
+    let uneven = SegmentDraft {
+        geometry: LineString::new(vec![Coord::new(0.0, 0.001), Coord::new(0.01, 0.001)]).unwrap(),
+        surface: Some("dirt".to_owned()),
+        provenance: vec![Provenance::fixture("uneven")],
+        ..gravel.clone()
+    };
+    let graph = GraphBuilder::default().build(&[gravel, uneven]).unwrap();
+    let flat = graph.edges[0].attr.traversal.forward.lower_limb_load_km;
+    let rough = graph.edges[1].attr.traversal.forward.lower_limb_load_km;
 
-    weights = serde_json::from_str::<DifficultyWeights>(r#"{"terrain_multipliers":{"talus":2.0}}"#)
-        .unwrap();
-    assert!((weights.terrain_multiplier(Terrain::Talus) - 2.0).abs() <= f64::EPSILON);
-    assert!(
-        (weights.terrain_multiplier(Terrain::Scramble)
-            - DifficultyWeights::default().terrain_multiplier(Terrain::Scramble))
-        .abs()
-            <= f64::EPSILON
-    );
-    assert!(
-        (weights.bushwhack_penalty - DifficultyWeights::default().bushwhack_penalty).abs()
-            <= f64::EPSILON
-    );
+    assert!((rough / flat - 1.28).abs() <= 1.0e-9);
 }
 
 #[test]
-fn bushwhack_class_and_surrounding_terrain_compose() {
+fn bushwhack_class_and_surrounding_terrain_select_off_road_time_model() {
     let drafts = geojson::network_from_str(
         r#"{"type":"FeatureCollection","features":[{
             "type":"Feature",
             "properties":{
-                "trail_class":"off-trail",
+                "way_kind":"off-trail",
                 "terrain":"forest",
                 "surface":"leaf-litter",
                 "confidence":1.0,
@@ -741,16 +717,16 @@ fn bushwhack_class_and_surrounding_terrain_compose() {
         }]}"#,
     )
     .unwrap();
-    assert_eq!(drafts[0].trail_class, TrailClass::Bushwhack);
+    assert_eq!(drafts[0].way_kind, WayKind::Bushwhack);
     assert_eq!(drafts[0].terrain, Terrain::Forest);
     assert_eq!(drafts[0].surface.as_deref(), Some("leaf-litter"));
 
     let graph = GraphBuilder::default().build(&drafts).unwrap();
-    let breakdown = graph.edges[0].attr.difficulty_breakdown;
-    let expected =
-        graph.edges[0].attr.length_m / 1_000.0 * DifficultyWeights::default().bushwhack_penalty;
-    assert!((breakdown.bushwhack - expected).abs() <= 1.0e-9);
-    assert!(breakdown.terrain.abs() <= f64::EPSILON);
+    let edge = &graph.edges[0];
+    assert!(edge.attr.traversal.forward.lower_limb_load_km > edge.attr.length_m / 1_000.0);
+    assert!(
+        edge.attr.traversal.forward.moving_time_s > edge.attr.length_m / 1_000.0 / 4.5 * 3_600.0
+    );
 }
 
 #[test]
@@ -835,7 +811,7 @@ fn osm_xml_network_normalizes_walkable_ways() {
     .unwrap();
 
     assert_eq!(drafts.len(), 2);
-    assert_eq!(drafts[0].trail_class, TrailClass::Path);
+    assert_eq!(drafts[0].way_kind, WayKind::Path);
     assert_eq!(drafts[0].terrain, Terrain::Pavement);
     assert_eq!(drafts[0].terrain_confidence, Some(0.86));
     assert_eq!(drafts[0].surface.as_deref(), Some("asphalt"));
@@ -844,20 +820,150 @@ fn osm_xml_network_normalizes_walkable_ways() {
     assert_eq!(drafts[0].provenance[0].source, "osm-xml");
     assert_eq!(drafts[0].provenance[0].source_id.as_deref(), Some("10"));
     assert_eq!(drafts[1].terrain, Terrain::Road);
-    assert_eq!(drafts[1].trail_class, TrailClass::Track);
+    assert_eq!(drafts[1].way_kind, WayKind::Track);
     assert_eq!(drafts[1].terrain_confidence, Some(0.62));
     assert_eq!(drafts[1].access, Access::Private);
     assert!((drafts[1].road_exposure - 1.0).abs() <= f64::EPSILON);
 
     let graph = GraphBuilder::default().build(&drafts).unwrap();
     assert_eq!(graph.edges.len(), 2);
-    assert_eq!(graph.edges[0].attr.trail_class, TrailClass::Path);
-    assert_eq!(graph.edges[1].attr.trail_class, TrailClass::Track);
+    assert_eq!(graph.edges[0].attr.way_kind, WayKind::Path);
+    assert_eq!(graph.edges[1].attr.way_kind, WayKind::Track);
     assert!(
         graph
             .edges
             .iter()
             .any(|edge| edge.attr.provenance[0].source == "osm-xml")
+    );
+}
+
+#[test]
+fn osm_identity_keeps_coincident_distinct_nodes_disconnected() {
+    let drafts = osm::network_from_str(
+        r#"<osm version="0.6">
+  <node id="1" lat="40.0" lon="-105.01"/>
+  <node id="2" lat="40.0" lon="-105.00"/>
+  <node id="3" lat="40.0" lon="-105.00"/>
+  <node id="4" lat="40.0" lon="-104.99"/>
+  <way id="10"><nd ref="1"/><nd ref="2"/><tag k="highway" v="path"/></way>
+  <way id="11"><nd ref="3"/><nd ref="4"/><tag k="highway" v="path"/></way>
+</osm>"#,
+    )
+    .unwrap();
+
+    let graph = GraphBuilder::default().build(&drafts).unwrap();
+
+    assert_eq!(graph.vertices.len(), 4);
+    assert_eq!(graph.edges.len(), 2);
+    assert_eq!(
+        graph
+            .vertices
+            .iter()
+            .filter(|vertex| vertex.coord == Coord::new(-105.0, 40.0))
+            .count(),
+        2
+    );
+    assert!(graph.adjacency.iter().all(|fanout| fanout.len() == 1));
+}
+
+#[test]
+fn osm_pedestrian_facilities_preserve_independent_urban_semantics() {
+    let drafts = osm::network_from_str(
+        r#"<osm version="0.6">
+  <node id="1" lat="40.00" lon="-105.00"/><node id="2" lat="40.00" lon="-104.99"/>
+  <node id="3" lat="40.01" lon="-105.00"/><node id="4" lat="40.01" lon="-104.99"/>
+  <node id="5" lat="40.02" lon="-105.00"/><node id="6" lat="40.02" lon="-104.99"/>
+  <node id="7" lat="40.03" lon="-105.00"><tag k="highway" v="crossing"/><tag k="crossing" v="traffic_signals"/></node><node id="8" lat="40.03" lon="-104.99"/>
+  <node id="9" lat="40.04" lon="-105.00"/><node id="10" lat="40.04" lon="-104.99"/>
+  <way id="10"><nd ref="1"/><nd ref="2"/><tag k="highway" v="residential"/><tag k="sidewalk" v="both"/><tag k="oneway" v="yes"/></way>
+  <way id="11"><nd ref="3"/><nd ref="4"/><tag k="highway" v="residential"/><tag k="sidewalk" v="separate"/></way>
+  <way id="12"><nd ref="5"/><nd ref="6"/><tag k="highway" v="footway"/><tag k="footway" v="sidewalk"/></way>
+  <way id="13"><nd ref="7"/><nd ref="8"/><tag k="highway" v="footway"/><tag k="footway" v="crossing"/></way>
+  <way id="14"><nd ref="9"/><nd ref="10"/><tag k="highway" v="residential"/><tag k="foot" v="use_sidepath"/></way>
+</osm>"#,
+    )
+    .unwrap();
+
+    assert_eq!(drafts.len(), 4);
+    assert_eq!(drafts[0].way_kind, WayKind::Sidewalk);
+    assert_eq!(drafts[0].geometry_claim, GeometryClaim::CenterlineProxy);
+    assert_eq!(drafts[0].realm, WayRealm::Urban);
+    assert_eq!(drafts[0].terrain, Terrain::Pavement);
+    assert_eq!(drafts[0].travel, EdgeTravel::Both);
+    assert!((drafts[0].road_exposure - 0.25).abs() <= f64::EPSILON);
+
+    assert_eq!(drafts[1].way_kind, WayKind::Roadway);
+    assert_eq!(drafts[1].geometry_claim, GeometryClaim::Surveyed);
+    assert_eq!(drafts[1].realm, WayRealm::Urban);
+    assert_eq!(drafts[2].way_kind, WayKind::Sidewalk);
+    assert_eq!(drafts[2].geometry_claim, GeometryClaim::Surveyed);
+    assert_eq!(drafts[2].realm, WayRealm::Urban);
+    assert_eq!(drafts[3].way_kind, WayKind::Crossing);
+    assert_eq!(drafts[3].crossing_control, CrossingControl::Signals);
+    assert_eq!(drafts[3].realm, WayRealm::Urban);
+}
+
+#[test]
+fn osm_cycleways_preserve_pedestrian_authority() {
+    let drafts = osm::network_from_str(
+        r#"<osm version="0.6">
+  <node id="1" lat="40.00" lon="-74.00"/><node id="2" lat="40.00" lon="-73.99"/>
+  <node id="3" lat="40.01" lon="-74.00"/><node id="4" lat="40.01" lon="-73.99"/>
+  <node id="5" lat="40.02" lon="-74.00"/><node id="6" lat="40.02" lon="-73.99"/>
+  <way id="shared"><nd ref="1"/><nd ref="2"/><tag k="highway" v="cycleway"/><tag k="foot" v="designated"/><tag k="bicycle" v="designated"/><tag k="segregated" v="no"/><tag k="surface" v="asphalt"/></way>
+  <way id="bicycle-only"><nd ref="3"/><nd ref="4"/><tag k="highway" v="cycleway"/><tag k="foot" v="no"/></way>
+  <way id="us-default"><nd ref="5"/><nd ref="6"/><tag k="highway" v="cycleway"/></way>
+</osm>"#,
+    )
+    .unwrap();
+
+    assert_eq!(drafts.len(), 3);
+    assert_eq!(drafts[0].way_kind, WayKind::Cycleway);
+    assert_eq!(drafts[0].realm, WayRealm::Urban);
+    assert_eq!(drafts[0].terrain, Terrain::Pavement);
+    assert_eq!(drafts[0].access, Access::Open);
+    assert_eq!(drafts[1].way_kind, WayKind::Cycleway);
+    assert_eq!(drafts[1].access, Access::Closed);
+    assert_eq!(drafts[2].way_kind, WayKind::Cycleway);
+    assert_eq!(drafts[2].access, Access::Open);
+}
+
+#[test]
+fn parallel_sidewalk_and_road_remain_a_ranked_manual_multigraph() {
+    let drafts = osm::network_from_str(
+        r#"<osm version="0.6">
+  <node id="1" lat="40.0" lon="-105.0"/>
+  <node id="2" lat="40.0" lon="-104.99"/>
+  <way id="10"><nd ref="1"/><nd ref="2"/><tag k="highway" v="residential"/><tag k="sidewalk" v="separate"/></way>
+  <way id="11"><nd ref="1"/><nd ref="2"/><tag k="highway" v="footway"/><tag k="footway" v="sidewalk"/></way>
+</osm>"#,
+    )
+    .unwrap();
+    let graph = GraphBuilder::default().build(&drafts).unwrap();
+
+    assert_eq!(graph.vertices.len(), 2);
+    assert_eq!(graph.edges.len(), 2);
+    assert_eq!(graph.adjacency[0].len(), 2);
+    assert_eq!(graph.edges[0].attr.way_kind, WayKind::Roadway);
+    assert_eq!(graph.edges[1].attr.way_kind, WayKind::Sidewalk);
+
+    let manual = trailgen_core::EdgeIndex::forge(&graph);
+    let anchors = manual.candidates(&graph, Coord::new(-104.995, 40.0), 5.0, 8);
+    assert_eq!(
+        anchors.iter().map(|anchor| anchor.edge).collect::<Vec<_>>(),
+        vec![EdgeId(1), EdgeId(0)]
+    );
+    assert_eq!(
+        manual
+            .project(&graph, Coord::new(-104.995, 40.0))
+            .map(|anchor| anchor.edge),
+        Some(EdgeId(1))
+    );
+    assert!(
+        trailgen_core::WalkRealmIndex::finder(&graph)
+            .edges()
+            .candidates(&graph, Coord::new(-104.995, 40.0), 5.0, 8)
+            .is_empty()
     );
 }
 
@@ -922,11 +1028,11 @@ fn osm_xml_network_keeps_walkable_road_connectors_without_redundant_foot_tags() 
 
     assert_eq!(drafts.len(), 4);
     assert_eq!(drafts[0].turn_ref.as_deref(), Some("10"));
-    assert_eq!(drafts[0].trail_class, TrailClass::Service);
+    assert_eq!(drafts[0].way_kind, WayKind::ServiceRoad);
     assert_eq!(drafts[1].turn_ref.as_deref(), Some("11"));
     assert_eq!(drafts[2].turn_ref.as_deref(), Some("12"));
     assert_eq!(drafts[3].turn_ref.as_deref(), Some("13"));
-    assert_eq!(drafts[3].trail_class, TrailClass::Road);
+    assert_eq!(drafts[3].way_kind, WayKind::Roadway);
 }
 
 #[test]
@@ -1017,7 +1123,7 @@ fn osm_xml_network_preserves_hiking_route_relation_evidence() {
     <member type="node" ref="2" role="via"/>
     <member type="way" ref="11" role="to"/>
     <tag k="type" v="restriction"/>
-    <tag k="restriction" v="no_right_turn"/>
+    <tag k="restriction:foot" v="no_right_turn"/>
   </relation>
 </osm>"#,
     )
@@ -1135,14 +1241,18 @@ fn osm_pbf_context_overlays_normalize_roads_and_waterways() {
 }
 
 #[test]
-fn road_fraction_counts_road_and_pavement_terrain() {
+fn pavement_is_not_road_exposure() {
     let graph = GraphBuilder::default()
         .build(&[SegmentDraft {
             junctions: JunctionPolicy::default(),
             turn_ref: None,
+            junction_keys: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
-            trail_class: TrailClass::default(),
+            way_kind: WayKind::default(),
+            realm: WayRealm::default(),
+            geometry_claim: GeometryClaim::default(),
+            crossing_control: CrossingControl::default(),
             standing: TrailStanding::Unknown,
             marking: TrailMarking::default(),
             terrain: Terrain::Pavement,
@@ -1163,27 +1273,17 @@ fn road_fraction_counts_road_and_pavement_terrain() {
         &LoopConstraints {
             min_distance_m: 0.0,
             max_distance_m: 10_000.0,
-            max_difficulty: 10_000.0,
+            max_lower_limb_load_km: 10_000.0,
             max_road_fraction: 0.12,
             allowed_shapes: vec![RouteShape::Open],
             ..LoopConstraints::default()
         },
     );
 
-    assert!((route.metrics.road_fraction - 1.0).abs() <= f64::EPSILON);
-    assert!(
-        route
-            .verdict
-            .violations
-            .iter()
-            .any(|v| v == "road/pavement fraction 100.0% above maximum 12.0%")
-    );
+    assert!(route.metrics.road_fraction.abs() < f64::EPSILON);
+    assert!(route.verdict.satisfied);
     assert!(route.verdict.audit.iter().any(|row| {
-        row.metric == "maximum road/pavement exposure"
-            && row.measured == "100.0%"
-            && row.requirement == "≤ 12.0%"
-            && row.margin == "-88.0%"
-            && !row.satisfied
+        row.metric == "maximum road exposure" && row.measured == "0.0%" && row.satisfied
     }));
 }
 
@@ -1192,7 +1292,7 @@ fn pareto_ranking_preserves_tradeoffs_and_demotes_dominated_routes() {
     let constraints = LoopConstraints {
         min_distance_m: 3_000.0,
         max_distance_m: 8_000.0,
-        target_difficulty: Some(5.0),
+        target_lower_limb_load_km: Some(5.0),
         max_repeated_edge_fraction: 1.0,
         ..LoopConstraints::default()
     };
@@ -1217,7 +1317,7 @@ fn pareto_ranking_never_trades_constraint_satisfaction_for_quality() {
     let constraints = LoopConstraints {
         min_distance_m: 3_000.0,
         max_distance_m: 8_000.0,
-        max_difficulty: 1_000.0,
+        max_lower_limb_load_km: 1_000.0,
         max_road_fraction: 0.12,
         ..LoopConstraints::default()
     };
@@ -1239,13 +1339,13 @@ fn synthetic_rank_route(
     name: &str,
     constraints: &LoopConstraints,
     distance_m: f64,
-    difficulty: f64,
+    lower_limb_load_km: f64,
     road_fraction: f64,
 ) -> Route {
     let metrics = RouteMetrics {
         shape: RouteShape::Loop,
         distance_m,
-        difficulty,
+        lower_limb_load_km,
         road_fraction,
         quality: 70.0_f64.mul_add(-road_fraction, 100.0),
         terrain_m: BTreeMap::from([(Terrain::Trail, distance_m)]),
@@ -1267,10 +1367,15 @@ fn synthetic_rank_route(
 fn closure_overlay_closes_edges_and_records_provenance() {
     let drafts = geojson::network_from_str(include_str!("fixtures/mini_network.geojson")).unwrap();
     let mut graph = GraphBuilder::default().build(&drafts).unwrap();
+    let traversal_before = graph
+        .edges
+        .iter()
+        .map(|edge| edge.attr.traversal)
+        .collect::<Vec<_>>();
     let overlays =
         geojson::access_overlays_from_str(include_str!("fixtures/closure_overlay.geojson"))
             .unwrap();
-    let touched = apply_access_overlays(&mut graph, &overlays, None, DifficultyWeights::default());
+    let touched = apply_access_overlays(&mut graph, &overlays, None);
     assert!(touched > 0);
     let closed = graph
         .edges
@@ -1278,7 +1383,14 @@ fn closure_overlay_closes_edges_and_records_provenance() {
         .filter(|edge| edge.attr.access == Access::Closed)
         .collect::<Vec<_>>();
     assert!(!closed.is_empty());
-    assert!(closed.iter().all(|edge| edge.attr.difficulty > 1_000.0));
+    assert_eq!(
+        graph
+            .edges
+            .iter()
+            .map(|edge| edge.attr.traversal)
+            .collect::<Vec<_>>(),
+        traversal_before
+    );
     assert!(closed.iter().all(|edge| {
         edge.attr
             .access_provenance
@@ -1293,9 +1405,13 @@ fn polygon_overlay_bites_away_from_edge_midpoint() {
         .build(&[SegmentDraft {
             junctions: JunctionPolicy::default(),
             turn_ref: None,
+            junction_keys: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
-            trail_class: TrailClass::default(),
+            way_kind: WayKind::default(),
+            realm: WayRealm::default(),
+            geometry_claim: GeometryClaim::default(),
+            crossing_control: CrossingControl::default(),
             standing: TrailStanding::Unknown,
             marking: TrailMarking::default(),
             terrain: Terrain::Trail,
@@ -1313,10 +1429,7 @@ fn polygon_overlay_bites_away_from_edge_midpoint() {
     )
     .unwrap();
 
-    assert_eq!(
-        apply_access_overlays(&mut graph, &overlays, None, DifficultyWeights::default()),
-        1
-    );
+    assert_eq!(apply_access_overlays(&mut graph, &overlays, None), 1);
     assert_eq!(graph.edges[0].attr.access, Access::Closed);
 }
 
@@ -1356,13 +1469,11 @@ fn dated_access_overlay_only_bites_inside_active_window() {
         &mut spring,
         &overlays,
         Some(PlanningDate::new(2026, 5, 1).unwrap()),
-        DifficultyWeights::default(),
     );
     let summer_hits = apply_access_overlays(
         &mut summer,
         &overlays,
         Some(PlanningDate::new(2026, 7, 1).unwrap()),
-        DifficultyWeights::default(),
     );
 
     assert!(spring_hits > 0);
@@ -1417,13 +1528,11 @@ fn seasonal_access_overlay_recurs_across_years() {
         &mut spring,
         &overlays,
         Some(PlanningDate::new(2027, 5, 1).unwrap()),
-        DifficultyWeights::default(),
     );
     let winter_hits = apply_access_overlays(
         &mut winter,
         &overlays,
         Some(PlanningDate::new(2027, 1, 1).unwrap()),
-        DifficultyWeights::default(),
     );
 
     assert!(spring_hits > 0);
@@ -1540,7 +1649,6 @@ fn hourly_access_overlay_only_bites_inside_daily_window() {
             Some(date),
             Some("12:00".parse::<PlanningTime>().unwrap()),
         )),
-        DifficultyWeights::default(),
     );
     let evening_hits = apply_access_overlays_at(
         &mut evening,
@@ -1549,7 +1657,6 @@ fn hourly_access_overlay_only_bites_inside_daily_window() {
             Some(date),
             Some("18:00".parse::<PlanningTime>().unwrap()),
         )),
-        DifficultyWeights::default(),
     );
     let time_only_evening_hits = apply_access_overlays_at(
         &mut time_only_evening,
@@ -1558,7 +1665,6 @@ fn hourly_access_overlay_only_bites_inside_daily_window() {
             None,
             Some("18:00".parse::<PlanningTime>().unwrap()),
         )),
-        DifficultyWeights::default(),
     );
 
     assert!(midday_hits > 0);
@@ -1619,7 +1725,6 @@ fn reservation_required_overlay_normalizes_to_timed_restriction() {
             Some(PlanningDate::new(2026, 7, 6).unwrap()),
             Some("12:00".parse().unwrap()),
         )),
-        DifficultyWeights::default(),
     );
 
     assert!(hits > 0);
@@ -1672,13 +1777,11 @@ fn weekday_access_overlay_only_bites_on_listed_days() {
         &mut saturday,
         &overlays,
         Some(PlanningDate::new(2026, 7, 4).unwrap()),
-        DifficultyWeights::default(),
     );
     let monday_hits = apply_access_overlays(
         &mut monday,
         &overlays,
         Some(PlanningDate::new(2026, 7, 6).unwrap()),
-        DifficultyWeights::default(),
     );
 
     assert!(saturday_hits > 0);
@@ -1704,10 +1807,14 @@ fn multiline_access_overlay_hits_each_line_without_flattening() {
             SegmentDraft {
                 junctions: JunctionPolicy::default(),
                 turn_ref: None,
+                junction_keys: None,
                 turn_restrictions: Vec::new(),
                 geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)])
                     .unwrap(),
-                trail_class: TrailClass::default(),
+                way_kind: WayKind::default(),
+                realm: WayRealm::default(),
+                geometry_claim: GeometryClaim::default(),
+                crossing_control: CrossingControl::default(),
                 standing: TrailStanding::Unknown,
                 marking: TrailMarking::default(),
                 terrain: Terrain::Trail,
@@ -1722,10 +1829,14 @@ fn multiline_access_overlay_hits_each_line_without_flattening() {
             SegmentDraft {
                 junctions: JunctionPolicy::default(),
                 turn_ref: None,
+                junction_keys: None,
                 turn_restrictions: Vec::new(),
                 geometry: LineString::new(vec![Coord::new(0.0, 0.01), Coord::new(0.01, 0.01)])
                     .unwrap(),
-                trail_class: TrailClass::default(),
+                way_kind: WayKind::default(),
+                realm: WayRealm::default(),
+                geometry_claim: GeometryClaim::default(),
+                crossing_control: CrossingControl::default(),
                 standing: TrailStanding::Unknown,
                 marking: TrailMarking::default(),
                 terrain: Terrain::Trail,
@@ -1755,7 +1866,7 @@ fn multiline_access_overlay_hits_each_line_without_flattening() {
         &overlays[0].geometry,
         OverlayGeometry::MultiLine(lines) if lines.len() == 2
     ));
-    let touched = apply_access_overlays(&mut graph, &overlays, None, DifficultyWeights::default());
+    let touched = apply_access_overlays(&mut graph, &overlays, None);
 
     assert_eq!(touched, 2);
     assert!(
@@ -1773,7 +1884,7 @@ fn access_restrictions_are_hard_route_constraints() {
     let overlays =
         geojson::access_overlays_from_str(include_str!("fixtures/closure_overlay.geojson"))
             .unwrap();
-    apply_access_overlays(&mut graph, &overlays, None, DifficultyWeights::default());
+    apply_access_overlays(&mut graph, &overlays, None);
     let edge = graph
         .edges
         .iter()
@@ -1787,7 +1898,7 @@ fn access_restrictions_are_hard_route_constraints() {
         &LoopConstraints {
             min_distance_m: 0.0,
             max_distance_m: 10_000.0,
-            max_difficulty: 10_000.0,
+            max_lower_limb_load_km: 10_000.0,
             allowed_shapes: vec![RouteShape::Open],
             ..LoopConstraints::default()
         },
@@ -1818,7 +1929,7 @@ fn route_geojson_exports_full_diagnostics() {
     let overlays =
         geojson::access_overlays_from_str(include_str!("fixtures/closure_overlay.geojson"))
             .unwrap();
-    apply_access_overlays(&mut graph, &overlays, None, DifficultyWeights::default());
+    apply_access_overlays(&mut graph, &overlays, None);
     let closed_edge = graph
         .edges
         .iter()
@@ -1834,7 +1945,7 @@ fn route_geojson_exports_full_diagnostics() {
         &LoopConstraints {
             min_distance_m: 0.0,
             max_distance_m: 10_000.0,
-            max_difficulty: 10_000.0,
+            max_lower_limb_load_km: 10_000.0,
             allowed_shapes: vec![RouteShape::Open],
             ..LoopConstraints::default()
         },
@@ -1886,7 +1997,7 @@ fn route_geojson_exports_full_diagnostics() {
     );
     assert_eq!(properties["edge_count"], 1);
     assert_eq!(
-        properties["difficulty_hotspots"][0]["edge_id"],
+        properties["lower_limb_load_hotspots"][0]["edge_id"],
         closed_edge.0.0
     );
     assert_eq!(
@@ -1901,8 +2012,11 @@ fn route_geojson_exports_full_diagnostics() {
     );
     assert_eq!(properties["low_confidence_edges"][0]["confidence"], 0.42);
     assert!(properties["low_confidence_edges"][0]["terrain_evidence"].is_array());
-    assert!(properties["low_confidence_edges"][0]["difficulty"].is_number());
-    assert!(properties["low_confidence_edges"][0]["difficulty_breakdown"].is_object());
+    assert!(properties["low_confidence_edges"][0]["traversal"].is_object());
+    assert!(
+        properties["low_confidence_edges"][0]["traversal"]["forward"]["lower_limb_load_km"]
+            .is_number()
+    );
     assert!(properties["low_confidence_edges"][0]["elevation_provenance"].is_array());
     assert!(properties["low_confidence_edges"][0]["source_provenance"].is_array());
     assert!(properties["low_confidence_edges"][0]["road_exposure"].is_number());
@@ -1921,7 +2035,7 @@ fn context_overlays_infer_road_and_water_crossings() {
     let overlays =
         geojson::context_overlays_from_str(include_str!("fixtures/context_overlay.geojson"))
             .unwrap();
-    let crossings = apply_context_overlays(&mut graph, &overlays, DifficultyWeights::default());
+    let crossings = apply_context_overlays(&mut graph, &overlays);
     assert!(crossings >= 4);
     let once = graph
         .edges
@@ -1929,7 +2043,7 @@ fn context_overlays_infer_road_and_water_crossings() {
         .flat_map(|edge| edge.attr.crossings.iter())
         .map(|x| x.count)
         .sum::<u32>();
-    let _ = apply_context_overlays(&mut graph, &overlays, DifficultyWeights::default());
+    let _ = apply_context_overlays(&mut graph, &overlays);
     let twice = graph
         .edges
         .iter()
@@ -1950,12 +2064,7 @@ fn context_overlays_infer_road_and_water_crossings() {
             .any(|x| x.kind == CrossingKind::Water && x.count > 0)
     }));
     assert!(graph.edges.iter().any(|edge| edge.attr.road_exposure > 0.0));
-    assert!(
-        graph
-            .edges
-            .iter()
-            .all(|edge| edge.attr.difficulty_breakdown.road.abs() <= f64::EPSILON)
-    );
+    assert!(graph.edges.iter().all(|edge| edge.attr.traversal.valid()));
 
     let start = graph.nearest_vertex(Coord::new(-105.0, 40.0)).unwrap();
     let route = LoopHunter::default()
@@ -1965,7 +2074,7 @@ fn context_overlays_infer_road_and_water_crossings() {
             &LoopConstraints {
                 min_distance_m: 3_000.0,
                 max_distance_m: 8_000.0,
-                max_difficulty: 10_000.0,
+                max_lower_limb_load_km: 10_000.0,
                 ..LoopConstraints::default()
             },
             1,
@@ -2004,13 +2113,17 @@ fn osm_context_overlays_infer_road_and_water_crossings() {
         .build(&[SegmentDraft {
             junctions: JunctionPolicy::default(),
             turn_ref: None,
+            junction_keys: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![
                 Coord::new(-105.005, 39.995),
                 Coord::new(-105.005, 40.015),
             ])
             .unwrap(),
-            trail_class: TrailClass::default(),
+            way_kind: WayKind::default(),
+            realm: WayRealm::default(),
+            geometry_claim: GeometryClaim::default(),
+            crossing_control: CrossingControl::default(),
             standing: TrailStanding::Unknown,
             marking: TrailMarking::default(),
             terrain: Terrain::Trail,
@@ -2036,7 +2149,7 @@ fn osm_context_overlays_infer_road_and_water_crossings() {
     .unwrap();
 
     assert_eq!(overlays.len(), 2);
-    let crossings = apply_context_overlays(&mut graph, &overlays, DifficultyWeights::default());
+    let crossings = apply_context_overlays(&mut graph, &overlays);
     assert_eq!(crossings, 2);
     let edge = &graph.edges[0];
     assert!(edge.attr.road_exposure > 0.0);
@@ -2060,10 +2173,7 @@ fn osm_context_does_not_count_a_way_crossing_itself() {
     let mut graph = GraphBuilder::default().build(&drafts).unwrap();
     let overlays = osm::context_overlays_from_str(raw).unwrap();
 
-    assert_eq!(
-        apply_context_overlays(&mut graph, &overlays, DifficultyWeights::default()),
-        0
-    );
+    assert_eq!(apply_context_overlays(&mut graph, &overlays), 0);
     assert!(graph.edges[0].attr.crossings.is_empty());
 }
 
@@ -2073,9 +2183,13 @@ fn multiline_context_overlay_does_not_invent_joiner_crossings() {
         .build(&[SegmentDraft {
             junctions: JunctionPolicy::default(),
             turn_ref: None,
+            junction_keys: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![Coord::new(0.5, 0.4), Coord::new(0.5, 0.6)]).unwrap(),
-            trail_class: TrailClass::default(),
+            way_kind: WayKind::default(),
+            realm: WayRealm::default(),
+            geometry_claim: GeometryClaim::default(),
+            crossing_control: CrossingControl::default(),
             standing: TrailStanding::Unknown,
             marking: TrailMarking::default(),
             terrain: Terrain::Trail,
@@ -2101,20 +2215,20 @@ fn multiline_context_overlay_does_not_invent_joiner_crossings() {
     .unwrap();
 
     assert_eq!(overlays.len(), 2);
-    let crossings = apply_context_overlays(&mut graph, &overlays, DifficultyWeights::default());
+    let crossings = apply_context_overlays(&mut graph, &overlays);
 
     assert_eq!(crossings, 0);
     assert!(graph.edges[0].attr.crossings.is_empty());
 }
 
 #[test]
-fn terrain_overlays_override_edges_with_provenance_and_rerating() {
+fn terrain_overlays_override_edges_with_provenance_and_physical_estimates() {
     let drafts = geojson::network_from_str(include_str!("fixtures/mini_network.geojson")).unwrap();
     let mut graph = GraphBuilder::default().build(&drafts).unwrap();
     let overlays =
         geojson::terrain_overlays_from_str(include_str!("fixtures/terrain_overlay.geojson"))
             .unwrap();
-    let touched = apply_terrain_overlays(&mut graph, &overlays, DifficultyWeights::default());
+    let touched = apply_terrain_overlays(&mut graph, &overlays);
     assert!(touched > 0);
     let overlaid = graph
         .edges
@@ -2140,9 +2254,9 @@ fn terrain_overlays_override_edges_with_provenance_and_rerating() {
             .iter()
             .all(|edge| edge.attr.terrain_confidence >= 0.87)
     );
-    assert!(overlaid.iter().all(|edge| {
-        (edge.attr.difficulty - edge.attr.difficulty_breakdown.total()).abs() <= 1.0e-9
-    }));
+    assert!(overlaid.iter().all(|edge| edge.attr.traversal.valid()
+        && edge.attr.traversal.forward.lower_limb_load_km > 0.0
+        && edge.attr.traversal.forward.moving_time_s > 0.0));
     let overlaid_edge = overlaid[0];
     let rendered = report::render(
         &graph,
@@ -2154,7 +2268,7 @@ fn terrain_overlays_override_edges_with_provenance_and_rerating() {
             &LoopConstraints {
                 min_distance_m: 0.0,
                 max_distance_m: 10_000.0,
-                max_difficulty: 10_000.0,
+                max_lower_limb_load_km: 10_000.0,
                 allowed_shapes: vec![RouteShape::Open],
                 ..LoopConstraints::default()
             },
@@ -2168,7 +2282,7 @@ fn terrain_overlays_override_edges_with_provenance_and_rerating() {
         .flat_map(|edge| edge.attr.terrain_evidence.iter())
         .filter(|e| e.rationale == "terrain overlay")
         .count();
-    let _ = apply_terrain_overlays(&mut graph, &overlays, DifficultyWeights::default());
+    let _ = apply_terrain_overlays(&mut graph, &overlays);
     let evidence_count_again = graph
         .edges
         .iter()
@@ -2228,7 +2342,7 @@ fn fixture_generates_nontrivial_loops() {
         &LoopConstraints {
             min_distance_m: 3_000.0,
             max_distance_m: 8_000.0,
-            max_difficulty: 80.0,
+            max_lower_limb_load_km: 80.0,
             ..LoopConstraints::default()
         },
         4,
@@ -2239,7 +2353,10 @@ fn fixture_generates_nontrivial_loops() {
     assert!(routes.iter().all(|r| r.score.is_finite()));
     assert!(routes.windows(2).all(|w| w[0].score <= w[1].score));
     assert!(routes.iter().all(|r| {
-        (r.metrics.difficulty - r.metrics.difficulty_breakdown.total()).abs() <= 1.0e-9
+        r.metrics.lower_limb_load_km > 0.0
+            && r.metrics.lower_limb_load_km.is_finite()
+            && r.metrics.moving_time_s > 0.0
+            && r.metrics.moving_time_s.is_finite()
     }));
     assert!(
         routes
@@ -2249,7 +2366,7 @@ fn fixture_generates_nontrivial_loops() {
 }
 
 #[test]
-fn report_explains_difficulty_decomposition() {
+fn report_explains_physical_load_and_moving_time() {
     let drafts = geojson::network_from_str(include_str!("fixtures/mini_network.geojson")).unwrap();
     let mut graph = GraphBuilder::default().build(&drafts).unwrap();
     let start = graph.nearest_vertex(Coord::new(-105.0, 40.0)).unwrap();
@@ -2260,7 +2377,7 @@ fn report_explains_difficulty_decomposition() {
             &LoopConstraints {
                 min_distance_m: 3_000.0,
                 max_distance_m: 8_000.0,
-                max_difficulty: 10_000.0,
+                max_lower_limb_load_km: 10_000.0,
                 ..LoopConstraints::default()
             },
             1,
@@ -2276,12 +2393,13 @@ fn report_explains_difficulty_decomposition() {
     assert!(rendered.contains("- start vertex:"));
     assert!(rendered.contains("- edge ids:"));
     assert!(rendered.contains("- vertex ids:"));
-    assert!(rendered.contains("Difficulty decomposition:"));
+    assert!(rendered.contains("- lower-limb load:"));
+    assert!(rendered.contains("- population moving time:"));
     assert!(rendered.contains("- sustained steepness:"));
     assert!(rendered.contains("Grade distribution:"));
     assert!(rendered.contains("- distance:"));
-    assert!(rendered.contains("- ascent:"));
-    assert!(rendered.contains("Largest difficulty contributors:"));
+    assert!(rendered.contains("- ascent/descent:"));
+    assert!(rendered.contains("Largest lower-limb load contributors:"));
     assert!(rendered.contains("Low-confidence segments:"));
     assert!(rendered.contains("confidence 0.42"));
     assert!(rendered.contains("terrain evidence"));
@@ -2311,7 +2429,7 @@ fn shape_constraints_reject_and_allow_out_and_back_routes() {
         &LoopConstraints {
             min_distance_m: 0.0,
             max_distance_m: 10_000.0,
-            max_difficulty: 10_000.0,
+            max_lower_limb_load_km: 10_000.0,
             ..LoopConstraints::default()
         },
     );
@@ -2335,7 +2453,7 @@ fn shape_constraints_reject_and_allow_out_and_back_routes() {
         &LoopConstraints {
             min_distance_m: 0.0,
             max_distance_m: 10_000.0,
-            max_difficulty: 10_000.0,
+            max_lower_limb_load_km: 10_000.0,
             max_repeated_edge_fraction: 1.0,
             allowed_shapes: vec![RouteShape::OutAndBack],
             ..LoopConstraints::default()
@@ -2350,6 +2468,7 @@ fn repeated_edge_fraction_is_distance_weighted() {
         .build(&[SegmentDraft {
             junctions: JunctionPolicy::default(),
             turn_ref: None,
+            junction_keys: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![
                 Coord::new(0.0, 0.0),
@@ -2357,7 +2476,10 @@ fn repeated_edge_fraction_is_distance_weighted() {
                 Coord::new(0.021, 0.0),
             ])
             .unwrap(),
-            trail_class: TrailClass::default(),
+            way_kind: WayKind::default(),
+            realm: WayRealm::default(),
+            geometry_claim: GeometryClaim::default(),
+            crossing_control: CrossingControl::default(),
             standing: TrailStanding::Unknown,
             marking: TrailMarking::default(),
             terrain: Terrain::Trail,
@@ -2380,7 +2502,7 @@ fn repeated_edge_fraction_is_distance_weighted() {
         &LoopConstraints {
             min_distance_m: 0.0,
             max_distance_m: 10_000.0,
-            max_difficulty: 10_000.0,
+            max_lower_limb_load_km: 10_000.0,
             allowed_shapes: vec![RouteShape::Open],
             ..LoopConstraints::default()
         },
@@ -2411,7 +2533,7 @@ fn loop_hunter_emits_out_and_back_when_shape_allows_repeated_edges() {
         &LoopConstraints {
             min_distance_m: 100.0,
             max_distance_m: 10_000.0,
-            max_difficulty: 10_000.0,
+            max_lower_limb_load_km: 10_000.0,
             max_repeated_edge_fraction: 1.0,
             allowed_shapes: vec![RouteShape::OutAndBack],
             ..LoopConstraints::default()
@@ -2437,9 +2559,13 @@ fn loop_hunter_rejects_directionally_impossible_out_and_back() {
         .build(&[SegmentDraft {
             junctions: JunctionPolicy::default(),
             turn_ref: None,
+            junction_keys: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
-            trail_class: TrailClass::default(),
+            way_kind: WayKind::default(),
+            realm: WayRealm::default(),
+            geometry_claim: GeometryClaim::default(),
+            crossing_control: CrossingControl::default(),
             standing: TrailStanding::Unknown,
             marking: TrailMarking::default(),
             terrain: Terrain::Trail,
@@ -2467,7 +2593,7 @@ fn loop_hunter_rejects_directionally_impossible_out_and_back() {
         &LoopConstraints {
             min_distance_m: 0.0,
             max_distance_m: 10_000.0,
-            max_difficulty: 10_000.0,
+            max_lower_limb_load_km: 10_000.0,
             max_repeated_edge_fraction: 1.0,
             allowed_shapes: vec![RouteShape::OutAndBack],
             ..LoopConstraints::default()
@@ -2496,7 +2622,7 @@ fn loop_hunter_closes_sparse_frontier_with_shortest_return_path() {
         &LoopConstraints {
             min_distance_m: 0.0,
             max_distance_m: 10_000.0,
-            max_difficulty: 10_000.0,
+            max_lower_limb_load_km: 10_000.0,
             allowed_shapes: vec![RouteShape::Loop],
             ..LoopConstraints::default()
         },
@@ -2547,7 +2673,7 @@ fn loop_search_is_invariant_to_shape_point_resolution() {
         &LoopConstraints {
             min_distance_m: 4_000.0,
             max_distance_m: 5_000.0,
-            max_difficulty: 10_000.0,
+            max_lower_limb_load_km: 10_000.0,
             allowed_shapes: vec![RouteShape::Loop],
             ..LoopConstraints::default()
         },
@@ -2574,7 +2700,7 @@ fn loop_hunter_road_aversion_finds_a_clean_closure_without_extra_breadth() {
     let constraints = LoopConstraints {
         min_distance_m: 0.0,
         max_distance_m: 8_000.0,
-        max_difficulty: 10_000.0,
+        max_lower_limb_load_km: 10_000.0,
         max_road_fraction: 0.10,
         allowed_shapes: vec![RouteShape::Loop],
         ..LoopConstraints::default()
@@ -2611,7 +2737,7 @@ fn loop_hunter_seed_is_reproducible() {
     let constraints = LoopConstraints {
         min_distance_m: 0.0,
         max_distance_m: 10_000.0,
-        max_difficulty: 10_000.0,
+        max_lower_limb_load_km: 10_000.0,
         allowed_shapes: vec![RouteShape::Loop],
         ..LoopConstraints::default()
     };
@@ -2643,7 +2769,7 @@ fn exact_solver_enumerates_only_fully_bounded_loops() {
     let constraints = LoopConstraints {
         min_distance_m: 0.0,
         max_distance_m: 10_000.0,
-        max_difficulty: 10_000.0,
+        max_lower_limb_load_km: 10_000.0,
         allowed_shapes: vec![RouteShape::Loop],
         ..LoopConstraints::default()
     };
@@ -2679,6 +2805,7 @@ fn bent_branch(offset: f64, travel: EdgeTravel, provenance: &str) -> SegmentDraf
     SegmentDraft {
         junctions: JunctionPolicy::ExplicitEndpoints,
         turn_ref: None,
+        junction_keys: None,
         turn_restrictions: Vec::new(),
         geometry: LineString::new(vec![
             Coord::new(0.0, 0.0),
@@ -2686,7 +2813,10 @@ fn bent_branch(offset: f64, travel: EdgeTravel, provenance: &str) -> SegmentDraf
             Coord::new(0.01, 0.0),
         ])
         .unwrap(),
-        trail_class: TrailClass::default(),
+        way_kind: WayKind::default(),
+        realm: WayRealm::default(),
+        geometry_claim: GeometryClaim::default(),
+        crossing_control: CrossingControl::default(),
         standing: TrailStanding::Unknown,
         marking: TrailMarking::default(),
         terrain: Terrain::Trail,
@@ -2723,7 +2853,7 @@ fn exact_solver_accepts_two_edge_physically_distinct_loops() {
         &LoopConstraints {
             min_distance_m: 0.0,
             max_distance_m: 10_000.0,
-            max_difficulty: 10_000.0,
+            max_lower_limb_load_km: 10_000.0,
             allowed_shapes: vec![RouteShape::Loop],
             ..LoopConstraints::default()
         },
@@ -2747,10 +2877,14 @@ fn graph_builder_collapses_physical_support_duplicated_by_snapping() {
         SegmentDraft {
             junctions: JunctionPolicy::default(),
             turn_ref: None,
+            junction_keys: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![Coord::new(0.0, 0.000_05), Coord::new(0.01, 0.000_05)])
                 .unwrap(),
-            trail_class: TrailClass::default(),
+            way_kind: WayKind::default(),
+            realm: WayRealm::default(),
+            geometry_claim: GeometryClaim::default(),
+            crossing_control: CrossingControl::default(),
             standing: TrailStanding::Unknown,
             marking: TrailMarking::default(),
             terrain: Terrain::Trail,
@@ -2765,9 +2899,13 @@ fn graph_builder_collapses_physical_support_duplicated_by_snapping() {
         SegmentDraft {
             junctions: JunctionPolicy::default(),
             turn_ref: None,
+            junction_keys: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
-            trail_class: TrailClass::default(),
+            way_kind: WayKind::default(),
+            realm: WayRealm::default(),
+            geometry_claim: GeometryClaim::default(),
+            crossing_control: CrossingControl::default(),
             standing: TrailStanding::Unknown,
             marking: TrailMarking::default(),
             terrain: Terrain::Trail,
@@ -2818,7 +2956,7 @@ fn directed_travel_diagnostics_are_exported() {
         &LoopConstraints {
             min_distance_m: 0.0,
             max_distance_m: 10_000.0,
-            max_difficulty: 10_000.0,
+            max_lower_limb_load_km: 10_000.0,
             allowed_shapes: vec![RouteShape::Loop],
             ..LoopConstraints::default()
         },
@@ -2851,7 +2989,7 @@ fn temporal_direction_overlay_constrains_route_generation() {
     let constraints = LoopConstraints {
         min_distance_m: 0.0,
         max_distance_m: 10_000.0,
-        max_difficulty: 10_000.0,
+        max_lower_limb_load_km: 10_000.0,
         allowed_shapes: vec![RouteShape::Loop],
         ..LoopConstraints::default()
     };
@@ -2898,7 +3036,6 @@ fn temporal_direction_overlay_constrains_route_generation() {
         &mut graph,
         &overlays,
         Some(PlanningDate::new(2026, 7, 1).unwrap()),
-        DifficultyWeights::default(),
     );
 
     assert_eq!(touched, 2);
@@ -2963,9 +3100,13 @@ fn milp_formulation_respects_one_way_arc_feasibility() {
         .build(&[SegmentDraft {
             junctions: JunctionPolicy::default(),
             turn_ref: None,
+            junction_keys: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
-            trail_class: TrailClass::default(),
+            way_kind: WayKind::default(),
+            realm: WayRealm::default(),
+            geometry_claim: GeometryClaim::default(),
+            crossing_control: CrossingControl::default(),
             standing: TrailStanding::Unknown,
             marking: TrailMarking::default(),
             terrain: Terrain::Trail,
@@ -3039,9 +3180,13 @@ fn milp_incumbent_rejects_disconnected_subtours() {
         SegmentDraft {
             junctions: JunctionPolicy::default(),
             turn_ref: None,
+            junction_keys: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![detached_a, detached_b]).unwrap(),
-            trail_class: TrailClass::default(),
+            way_kind: WayKind::default(),
+            realm: WayRealm::default(),
+            geometry_claim: GeometryClaim::default(),
+            crossing_control: CrossingControl::default(),
             standing: TrailStanding::Unknown,
             marking: TrailMarking::default(),
             terrain: Terrain::Trail,
@@ -3056,9 +3201,13 @@ fn milp_incumbent_rejects_disconnected_subtours() {
         SegmentDraft {
             junctions: JunctionPolicy::default(),
             turn_ref: None,
+            junction_keys: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![detached_b, detached_a]).unwrap(),
-            trail_class: TrailClass::default(),
+            way_kind: WayKind::default(),
+            realm: WayRealm::default(),
+            geometry_claim: GeometryClaim::default(),
+            crossing_control: CrossingControl::default(),
             standing: TrailStanding::Unknown,
             marking: TrailMarking::default(),
             terrain: Terrain::Trail,
@@ -3101,13 +3250,17 @@ fn auto_solver_uses_exact_backend_only_for_small_graphs() {
         .map(|i| SegmentDraft {
             junctions: JunctionPolicy::default(),
             turn_ref: None,
+            junction_keys: None,
             turn_restrictions: Vec::new(),
             geometry: LineString::new(vec![
                 Coord::new(f64::from(i) * 0.01, 0.0),
                 Coord::new(f64::from(i + 1) * 0.01, 0.0),
             ])
             .unwrap(),
-            trail_class: TrailClass::default(),
+            way_kind: WayKind::default(),
+            realm: WayRealm::default(),
+            geometry_claim: GeometryClaim::default(),
+            crossing_control: CrossingControl::default(),
             standing: TrailStanding::Unknown,
             marking: TrailMarking::default(),
             terrain: Terrain::Trail,
@@ -3142,7 +3295,7 @@ fn loop_hunter_builds_figure_eights_when_shape_allows_two_lobes() {
         &LoopConstraints {
             min_distance_m: 0.0,
             max_distance_m: 10_000.0,
-            max_difficulty: 10_000.0,
+            max_lower_limb_load_km: 10_000.0,
             allowed_shapes: vec![RouteShape::FigureEight],
             ..LoopConstraints::default()
         },
@@ -3217,7 +3370,7 @@ fn elevation_bounds_reject_routes_outside_ascent_descent_window() {
             &LoopConstraints {
                 min_distance_m: 3_000.0,
                 max_distance_m: 8_000.0,
-                max_difficulty: 10_000.0,
+                max_lower_limb_load_km: 10_000.0,
                 ..LoopConstraints::default()
             },
             1,
@@ -3233,7 +3386,7 @@ fn elevation_bounds_reject_routes_outside_ascent_descent_window() {
         &LoopConstraints {
             min_distance_m: 3_000.0,
             max_distance_m: 8_000.0,
-            max_difficulty: 10_000.0,
+            max_lower_limb_load_km: 10_000.0,
             min_ascent_m: 10_000.0,
             max_ascent_m: 10.0,
             min_descent_m: 10_000.0,
@@ -3260,7 +3413,7 @@ fn elevation_bounds_reject_routes_outside_ascent_descent_window() {
 fn loop_constraints_deserialize_missing_fields_from_defaults() {
     let constraints = serde_json::from_str::<LoopConstraints>("{}").unwrap();
     assert_eq!(constraints, LoopConstraints::default());
-    assert!(constraints.max_difficulty > 1.0e300);
+    assert!(constraints.max_lower_limb_load_km > 1.0e300);
     let constraints =
         serde_json::from_str::<LoopConstraints>(r#"{"max_ascent_m": 1200.0}"#).unwrap();
     assert!((constraints.max_ascent_m - 1_200.0).abs() <= f64::EPSILON);
@@ -3271,24 +3424,32 @@ fn loop_constraints_deserialize_missing_fields_from_defaults() {
 }
 
 #[test]
-fn difficulty_is_a_target_until_a_hard_window_is_explicit() {
+fn physical_load_and_moving_time_windows_are_independent_constraints() {
     let metrics = RouteMetrics {
         shape: RouteShape::Loop,
         distance_m: 8_000.0,
-        difficulty: 10_000.0,
+        lower_limb_load_km: 10.0,
+        moving_time_s: 2.0 * 3_600.0,
         ..RouteMetrics::default()
     };
     let mut constraints = LoopConstraints::default();
     assert!(constraints.judge(&metrics).satisfied);
 
-    constraints.max_difficulty = 90.0;
+    constraints.max_lower_limb_load_km = 9.0;
+    constraints.min_moving_time_s = 3.0 * 3_600.0;
     let verdict = constraints.judge(&metrics);
     assert!(!verdict.satisfied);
     assert!(
         verdict
             .violations
             .iter()
-            .any(|violation| violation.starts_with("difficulty "))
+            .any(|violation| violation.starts_with("lower-limb load "))
+    );
+    assert!(
+        verdict
+            .violations
+            .iter()
+            .any(|violation| violation.starts_with("moving time "))
     );
 }
 
@@ -3554,8 +3715,12 @@ fn route_coverage_locates_disconnected_topology() {
         geometry: LineString::new(vec![a, b]).unwrap(),
         junctions: JunctionPolicy::ExplicitNodes,
         turn_ref: None,
+        junction_keys: None,
         turn_restrictions: Vec::new(),
-        trail_class: TrailClass::Path,
+        way_kind: WayKind::Path,
+        realm: WayRealm::default(),
+        geometry_claim: GeometryClaim::default(),
+        crossing_control: CrossingControl::default(),
         standing: TrailStanding::Established,
         marking: TrailMarking::default(),
         terrain: Terrain::Trail,
@@ -3593,7 +3758,7 @@ fn route_coverage_locates_disconnected_topology() {
     }
     left.vertices.extend(right.vertices);
     left.edges.extend(right.edges);
-    let graph = TrailGraph::new(left.vertices, left.edges);
+    let graph = WalkGraph::new(left.vertices, left.edges);
     let route = LineString::new(vec![
         Coord::new(0.0, 0.0),
         Coord::new(0.001, 0.0),
@@ -3621,8 +3786,12 @@ fn route_coverage_ignores_a_closer_disconnected_shadow_line() {
         geometry: LineString::new(points).unwrap(),
         junctions: JunctionPolicy::ExplicitNodes,
         turn_ref: None,
+        junction_keys: None,
         turn_restrictions: Vec::new(),
-        trail_class: TrailClass::Path,
+        way_kind: WayKind::Path,
+        realm: WayRealm::default(),
+        geometry_claim: GeometryClaim::default(),
+        crossing_control: CrossingControl::default(),
         standing: TrailStanding::Established,
         marking: TrailMarking::default(),
         terrain: Terrain::Trail,
@@ -4220,9 +4389,13 @@ fn elevation_enrichment_densifies_rates_and_infers_terrain() {
     let draft = SegmentDraft {
         junctions: JunctionPolicy::default(),
         turn_ref: None,
+        junction_keys: None,
         turn_restrictions: Vec::new(),
         geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.0, 0.01)]).unwrap(),
-        trail_class: TrailClass::default(),
+        way_kind: WayKind::default(),
+        realm: WayRealm::default(),
+        geometry_claim: GeometryClaim::default(),
+        crossing_control: CrossingControl::default(),
         standing: TrailStanding::Unknown,
         marking: TrailMarking::default(),
         terrain: Terrain::Unknown,
@@ -4310,9 +4483,13 @@ fn enrichment_does_not_invent_a_trail_under_a_bushwhack() {
     let draft = SegmentDraft {
         junctions: JunctionPolicy::default(),
         turn_ref: None,
+        junction_keys: None,
         turn_restrictions: Vec::new(),
         geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.0, 0.01)]).unwrap(),
-        trail_class: TrailClass::Bushwhack,
+        way_kind: WayKind::Bushwhack,
+        realm: WayRealm::default(),
+        geometry_claim: GeometryClaim::default(),
+        crossing_control: CrossingControl::default(),
         standing: TrailStanding::Unknown,
         marking: TrailMarking::default(),
         terrain: Terrain::Unknown,
@@ -4330,7 +4507,7 @@ fn enrichment_does_not_invent_a_trail_under_a_bushwhack() {
     let edge = &graph.edges[0];
     assert_eq!(edge.attr.terrain, Terrain::Unknown);
     assert!(edge.attr.terrain_confidence.abs() <= f64::EPSILON);
-    assert!(edge.attr.difficulty_breakdown.bushwhack > 0.0);
+    assert!(edge.attr.traversal.forward.lower_limb_load_km > edge.attr.length_m / 1_000.0);
     assert!(
         edge.attr
             .terrain_evidence
@@ -4339,7 +4516,7 @@ fn enrichment_does_not_invent_a_trail_under_a_bushwhack() {
     );
 }
 
-fn enrich_with_north_plane(graph: &mut TrailGraph, north_gain_m_per_degree: f64, confidence: f64) {
+fn enrich_with_north_plane(graph: &mut WalkGraph, north_gain_m_per_degree: f64, confidence: f64) {
     enrich_graph(
         graph,
         &PlaneElevation {
@@ -4353,7 +4530,6 @@ fn enrich_with_north_plane(graph: &mut TrailGraph, north_gain_m_per_degree: f64,
             sample_spacing_m: 50.0,
             steep_grade_threshold: 0.15,
         },
-        DifficultyWeights::default(),
     )
     .unwrap();
 }
@@ -4363,9 +4539,13 @@ fn partial_elevation_sampling_does_not_invent_flat_grade() {
     let draft = SegmentDraft {
         junctions: JunctionPolicy::default(),
         turn_ref: None,
+        junction_keys: None,
         turn_restrictions: Vec::new(),
         geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.0, 0.01)]).unwrap(),
-        trail_class: TrailClass::default(),
+        way_kind: WayKind::default(),
+        realm: WayRealm::default(),
+        geometry_claim: GeometryClaim::default(),
+        crossing_control: CrossingControl::default(),
         standing: TrailStanding::Unknown,
         marking: TrailMarking::default(),
         terrain: Terrain::Unknown,
@@ -4397,7 +4577,6 @@ fn partial_elevation_sampling_does_not_invent_flat_grade() {
             sample_spacing_m: 125.0,
             steep_grade_threshold: 0.05,
         },
-        DifficultyWeights::default(),
     )
     .unwrap();
 
@@ -4468,7 +4647,6 @@ fn arc_ascii_grid_samples_and_reenriches_graph() {
             sample_spacing_m: 100.0,
             steep_grade_threshold: 0.10,
         },
-        DifficultyWeights::default(),
     )
     .unwrap();
     assert!(graph.edges.iter().any(|edge| {
@@ -4512,7 +4690,6 @@ fn geotiff_dem_samples_and_reenriches_graph() {
             sample_spacing_m: 100.0,
             steep_grade_threshold: 0.10,
         },
-        DifficultyWeights::default(),
     )
     .unwrap();
     assert!(graph.edges.iter().any(|edge| {
@@ -5091,6 +5268,7 @@ fn simple_path_draft() -> SegmentDraft {
     SegmentDraft {
         junctions: JunctionPolicy::default(),
         turn_ref: None,
+        junction_keys: None,
         turn_restrictions: Vec::new(),
         geometry: LineString::new(vec![
             Coord::with_ele(0.0, 0.0, 1_000.0),
@@ -5098,7 +5276,10 @@ fn simple_path_draft() -> SegmentDraft {
             Coord::with_ele(0.02, 0.0, 1_060.0),
         ])
         .unwrap(),
-        trail_class: TrailClass::default(),
+        way_kind: WayKind::default(),
+        realm: WayRealm::default(),
+        geometry_claim: GeometryClaim::default(),
+        crossing_control: CrossingControl::default(),
         standing: TrailStanding::Unknown,
         marking: TrailMarking::default(),
         terrain: Terrain::Trail,
@@ -5127,9 +5308,13 @@ fn square_drafts() -> Vec<SegmentDraft> {
     .map(|(from, to, name)| SegmentDraft {
         junctions: JunctionPolicy::default(),
         turn_ref: None,
+        junction_keys: None,
         turn_restrictions: Vec::new(),
         geometry: LineString::new(vec![from, to]).unwrap(),
-        trail_class: TrailClass::default(),
+        way_kind: WayKind::default(),
+        realm: WayRealm::default(),
+        geometry_claim: GeometryClaim::default(),
+        crossing_control: CrossingControl::default(),
         standing: TrailStanding::Unknown,
         marking: TrailMarking::default(),
         terrain: Terrain::Trail,
@@ -5184,9 +5369,13 @@ fn closure_trap_drafts() -> Vec<SegmentDraft> {
     .map(|(from, to, terrain, travel, name)| SegmentDraft {
         junctions: JunctionPolicy::default(),
         turn_ref: None,
+        junction_keys: None,
         turn_restrictions: Vec::new(),
         geometry: LineString::new(vec![from, to]).unwrap(),
-        trail_class: TrailClass::default(),
+        way_kind: WayKind::default(),
+        realm: WayRealm::default(),
+        geometry_claim: GeometryClaim::default(),
+        crossing_control: CrossingControl::default(),
         standing: TrailStanding::Unknown,
         marking: TrailMarking::Unknown,
         terrain,
@@ -5219,9 +5408,13 @@ fn bowtie_drafts() -> Vec<SegmentDraft> {
     .map(|(from, to, name)| SegmentDraft {
         junctions: JunctionPolicy::default(),
         turn_ref: None,
+        junction_keys: None,
         turn_restrictions: Vec::new(),
         geometry: LineString::new(vec![from, to]).unwrap(),
-        trail_class: TrailClass::default(),
+        way_kind: WayKind::default(),
+        realm: WayRealm::default(),
+        geometry_claim: GeometryClaim::default(),
+        crossing_control: CrossingControl::default(),
         standing: TrailStanding::Unknown,
         marking: TrailMarking::default(),
         terrain: Terrain::Trail,
@@ -5264,6 +5457,7 @@ fn tiny_osm_pbf() -> Vec<u8> {
         "from",
         "to",
         "via",
+        "restriction:foot",
     ]
     .into_iter()
     .map(|s| s.as_bytes().to_vec())
@@ -5348,7 +5542,7 @@ fn pbf_turn_relation() -> osmpbfreader::osmformat::Relation {
 
     let mut relation = osmpbfreader::osmformat::Relation::new();
     relation.set_id(30);
-    relation.keys = vec![13, 18];
+    relation.keys = vec![13, 23];
     relation.vals = vec![18, 19];
     relation.roles_sid = vec![20, 22, 21];
     relation.memids = vec![10, -8, 9];

@@ -5,6 +5,8 @@
 //! in the application. Its name and repository are deliberately provisional
 //! until a second application proves the same boundary.
 
+pub mod responsiveness;
+
 use anyhow::{Context as _, Result, bail};
 use dwemer_poolrooms::water::{Engine, Frame as WaterFrame};
 use egui_wgpu::{
@@ -21,14 +23,38 @@ use egui_winit::winit::{
 use serde::Serialize;
 use std::{
     sync::{Arc, Mutex, MutexGuard},
-    time::Instant,
+    time::{Duration, Instant},
 };
+
+pub use responsiveness::TraceGuard;
+
+macro_rules! main_phase {
+    ($name:literal, $body:expr) => {{
+        let _phase = tracing::info_span!(target: "eternalist::main", $name).entered();
+        $body
+    }};
+}
 
 /// Stable top-level window identity and initial geometry.
 #[derive(Clone, Copy, Debug)]
 pub struct WindowSpec {
     pub title: &'static str,
     pub initial_size: [f64; 2],
+}
+
+/// Main-thread wall-time obligations owned by the native product.
+#[derive(Clone, Copy, Debug)]
+pub struct ResponsivenessSpec {
+    pub frame: Duration,
+}
+
+impl ResponsivenessSpec {
+    #[must_use]
+    pub const fn interactive() -> Self {
+        Self {
+            frame: Duration::from_millis(40),
+        }
+    }
 }
 
 impl WindowSpec {
@@ -44,6 +70,7 @@ impl WindowSpec {
 /// The narrow product seam admitted by the native host.
 pub trait NativeApp {
     const WINDOW: WindowSpec;
+    const RESPONSIVENESS: ResponsivenessSpec = ResponsivenessSpec::interactive();
 
     /// Current top-level window identity.
     fn window_title(&self) -> String {
@@ -103,6 +130,7 @@ pub fn run<A: NativeApp>(ctx: egui::Context, app: A) -> Result<()> {
         force_redraw: false,
         window_title: A::WINDOW.title.to_owned(),
         fault: None,
+        trace_deadline: responsiveness::deadline()?,
         #[cfg(feature = "egui-test")]
         witness,
     };
@@ -143,6 +171,7 @@ struct Shell<A: NativeApp> {
     force_redraw: bool,
     window_title: String,
     fault: Option<anyhow::Error>,
+    trace_deadline: Option<Instant>,
     #[cfg(feature = "egui-test")]
     witness: Option<egui_tester_witness::Publisher<A::Observation>>,
 }
@@ -152,25 +181,49 @@ impl<A: NativeApp> Shell<A> {
         let Some(rig) = self.rig.as_mut() else {
             return Ok(());
         };
+        let begun = Instant::now();
+        let frame = self.ctx.cumulative_frame_nr();
+        let frame_span = tracing::info_span!(
+            target: "eternalist::main",
+            "frame",
+            frame,
+            primitives = tracing::field::Empty,
+            pixels_per_point = tracing::field::Empty,
+            presented = tracing::field::Empty,
+        );
+        let _frame = frame_span.enter();
         #[cfg(feature = "egui-test")]
         let pulse = self
             .witness
             .as_ref()
             .map(|_| egui_tester_witness::FramePulse::begin());
-        let raw_input = rig.input.take_egui_input(&rig.window);
-        let output = self.ctx.run_ui(raw_input, |ui| self.app.draw(ui));
+        let raw_input = main_phase!("frame.input", rig.input.take_egui_input(&rig.window));
+        let output = main_phase!(
+            "frame.ui",
+            self.ctx.run_ui(raw_input, |ui| self.app.draw(ui))
+        );
+        frame_span.record("pixels_per_point", output.pixels_per_point);
         let title = self.app.window_title();
         if title != self.window_title {
             rig.window.set_title(&title);
             self.window_title = title;
         }
-        rig.input
-            .handle_platform_output(&rig.window, output.platform_output);
-        let primitives = self.ctx.tessellate(output.shapes, output.pixels_per_point);
-        let tooltip_rects = tooltip_rects(&self.ctx);
-        let water = self
-            .app
-            .water(&self.ctx, output.pixels_per_point, &tooltip_rects);
+        main_phase!(
+            "frame.platform_output",
+            rig.input
+                .handle_platform_output(&rig.window, output.platform_output)
+        );
+        let primitives = main_phase!(
+            "frame.tessellate",
+            self.ctx.tessellate(output.shapes, output.pixels_per_point)
+        );
+        frame_span.record("primitives", primitives.len());
+        let tooltip_rects = main_phase!("frame.tooltip_geometry", tooltip_rects(&self.ctx));
+        let water = main_phase!(
+            "frame.water",
+            self.app
+                .water(&self.ctx, output.pixels_per_point, &tooltip_rects)
+        );
         if water.wants_repaint() {
             rig.window.request_redraw();
         }
@@ -187,12 +240,16 @@ impl<A: NativeApp> Shell<A> {
             })
             .transpose()
             .context("stage egui-tester witness")?;
-        let presented = rig.render(
-            &primitives,
-            &output.textures_delta,
-            output.pixels_per_point,
-            &water,
-        )?;
+        let presented = main_phase!(
+            "frame.render",
+            rig.render(
+                &primitives,
+                &output.textures_delta,
+                output.pixels_per_point,
+                &water,
+            )?
+        );
+        frame_span.record("presented", presented);
         #[cfg(not(feature = "egui-test"))]
         let _ = presented;
         #[cfg(feature = "egui-test")]
@@ -202,8 +259,8 @@ impl<A: NativeApp> Shell<A> {
                 .surface_present_at(pending, surface_presented)
                 .context("publish egui-tester witness")?;
         }
-        if presented && self.app.after_present() {
-            self.force_redraw = true;
+        if presented {
+            self.force_redraw |= main_phase!("frame.after_present", self.app.after_present());
         }
         if let Some(viewport) = output.viewport_output.get(&egui::ViewportId::ROOT) {
             if viewport.repaint_delay.is_zero() {
@@ -212,6 +269,7 @@ impl<A: NativeApp> Shell<A> {
                 advance_alarm(&self.alarm, when);
             }
         }
+        warn_frame_overrun(begun.elapsed(), A::RESPONSIVENESS.frame);
         Ok(())
     }
 
@@ -238,6 +296,20 @@ impl<A: NativeApp> Shell<A> {
         }
         event_loop.exit();
     }
+}
+
+fn warn_frame_overrun(elapsed: Duration, budget: Duration) {
+    if elapsed <= budget {
+        return;
+    }
+    let micros = |duration: Duration| u64::try_from(duration.as_micros()).unwrap_or(u64::MAX);
+    tracing::warn!(
+        target: "eternalist::latency",
+        operation = "frame",
+        elapsed_us = micros(elapsed),
+        budget_us = micros(budget),
+        "main-thread budget exceeded"
+    );
 }
 
 fn tooltip_rects(ctx: &egui::Context) -> Vec<egui::Rect> {
@@ -278,6 +350,22 @@ impl<A: NativeApp> ApplicationHandler<Spark> for Shell<A> {
         _window_id: egui_winit::winit::window::WindowId,
         event: WindowEvent,
     ) {
+        let event_name = match &event {
+            WindowEvent::RedrawRequested => "redraw",
+            WindowEvent::CursorMoved { .. } => "cursor_moved",
+            WindowEvent::MouseWheel { .. } => "mouse_wheel",
+            WindowEvent::MouseInput { .. } => "mouse_input",
+            WindowEvent::KeyboardInput { .. } => "keyboard_input",
+            WindowEvent::Resized(_) => "resized",
+            WindowEvent::CloseRequested => "close_requested",
+            _ => "other",
+        };
+        let _event = tracing::info_span!(
+            target: "eternalist::main",
+            "window.event",
+            kind = event_name
+        )
+        .entered();
         match &event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
@@ -306,6 +394,13 @@ impl<A: NativeApp> ApplicationHandler<Spark> for Shell<A> {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self
+            .trace_deadline
+            .is_some_and(|deadline| deadline <= Instant::now())
+        {
+            event_loop.exit();
+            return;
+        }
         if std::mem::take(&mut self.force_redraw) {
             if let Some(rig) = &self.rig {
                 rig.window.request_redraw();
@@ -315,6 +410,7 @@ impl<A: NativeApp> ApplicationHandler<Spark> for Shell<A> {
         }
         self.tend_alarm();
         let deadline = *lock_alarm(&self.alarm);
+        let deadline = deadline.into_iter().chain(self.trace_deadline).min();
         event_loop.set_control_flow(deadline.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
     }
 }
@@ -410,13 +506,15 @@ impl Rig {
             size_in_pixels: [self.config.width, self.config.height],
             pixels_per_point,
         };
-        let mut encoder = self
-            .gpu
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("native-app-shell"),
-            });
-        let user_commands = {
+        let mut encoder = main_phase!(
+            "render.encoder",
+            self.gpu
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("native-app-shell"),
+                })
+        );
+        let user_commands = main_phase!("render.prepare", {
             let mut renderer = self.gpu.renderer.write();
             for (id, image_delta) in &delta.set {
                 renderer.update_texture(&self.gpu.device, &self.gpu.queue, *id, image_delta);
@@ -428,30 +526,33 @@ impl Rig {
                 primitives,
                 &screen,
             )
-        };
-        let frame = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
-            wgpu::CurrentSurfaceTexture::Timeout => {
-                self.free_textures(delta);
-                self.window.request_redraw();
-                return Ok(false);
+        });
+        let frame = main_phase!(
+            "render.acquire_surface",
+            match self.surface.get_current_texture() {
+                wgpu::CurrentSurfaceTexture::Success(frame)
+                | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+                wgpu::CurrentSurfaceTexture::Timeout => {
+                    self.free_textures(delta);
+                    self.window.request_redraw();
+                    return Ok(false);
+                }
+                wgpu::CurrentSurfaceTexture::Occluded => {
+                    self.free_textures(delta);
+                    return Ok(false);
+                }
+                wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                    self.free_textures(delta);
+                    self.surface.configure(&self.gpu.device, &self.config);
+                    self.window.request_redraw();
+                    return Ok(false);
+                }
+                wgpu::CurrentSurfaceTexture::Validation => {
+                    self.free_textures(delta);
+                    bail!("surface texture validation failure");
+                }
             }
-            wgpu::CurrentSurfaceTexture::Occluded => {
-                self.free_textures(delta);
-                return Ok(false);
-            }
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                self.free_textures(delta);
-                self.surface.configure(&self.gpu.device, &self.config);
-                self.window.request_redraw();
-                return Ok(false);
-            }
-            wgpu::CurrentSurfaceTexture::Validation => {
-                self.free_textures(delta);
-                bail!("surface texture validation failure");
-            }
-        };
+        );
         let surface_view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -459,7 +560,7 @@ impl Rig {
             self.water.becalm(&self.gpu.queue);
         }
         let frosted = water.live() && self.water.scene_view().is_some();
-        {
+        main_phase!("render.egui_pass", {
             let target = if frosted {
                 self.water.scene_view().unwrap_or(&surface_view)
             } else {
@@ -487,29 +588,35 @@ impl Rig {
                 .renderer
                 .read()
                 .render(&mut pass, primitives, &screen);
-        }
+        });
         if frosted {
-            self.water.compose(
-                &self.gpu.device,
-                &self.gpu.queue,
-                &mut encoder,
-                &surface_view,
-                water,
+            main_phase!(
+                "render.water_compose",
+                self.water.compose(
+                    &self.gpu.device,
+                    &self.gpu.queue,
+                    &mut encoder,
+                    &surface_view,
+                    water,
+                )
             );
         }
-        let _submission = self
-            .gpu
-            .queue
-            .submit(user_commands.into_iter().chain([encoder.finish()]));
-        if self
-            .water
-            .after_submit(&self.gpu.device, &self.gpu.queue, water)
-        {
+        let _submission = main_phase!(
+            "render.submit",
+            self.gpu
+                .queue
+                .submit(user_commands.into_iter().chain([encoder.finish()]))
+        );
+        if main_phase!(
+            "render.water_after_submit",
+            self.water
+                .after_submit(&self.gpu.device, &self.gpu.queue, water)
+        ) {
             self.window.request_redraw();
         }
-        self.free_textures(delta);
+        main_phase!("render.free_textures", self.free_textures(delta));
         self.window.pre_present_notify();
-        frame.present();
+        main_phase!("render.present", frame.present());
         Ok(true)
     }
 

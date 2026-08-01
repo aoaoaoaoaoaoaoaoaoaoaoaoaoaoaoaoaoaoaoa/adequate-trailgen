@@ -1,8 +1,7 @@
 use crate::constraints::{ConstraintVerdict, LoopConstraints};
-use crate::difficulty::DifficultyBreakdown;
 use crate::geo::LineString;
 use crate::model::{
-    Access, CrossingKind, EdgeAttr, EdgeId, GradeDistribution, Terrain, TrailGraph, VertexId,
+    Access, CrossingKind, EdgeAttr, EdgeId, GradeDistribution, Terrain, VertexId, WalkGraph,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -38,7 +37,7 @@ impl Route {
     #[must_use]
     pub fn from_edges(
         name: impl Into<String>,
-        graph: &TrailGraph,
+        graph: &WalkGraph,
         start: VertexId,
         edges: Vec<EdgeId>,
         constraints: &LoopConstraints,
@@ -63,7 +62,7 @@ impl Route {
     }
 
     #[must_use]
-    pub fn geometry(&self, graph: &TrailGraph) -> LineString {
+    pub fn geometry(&self, graph: &WalkGraph) -> LineString {
         let mut at = self.start;
         let mut previous = None;
         let mut points = Vec::new();
@@ -138,7 +137,8 @@ struct ParetoPoint {
     distance_deviation_m: f64,
     ascent_deviation_m: f64,
     descent_deviation_m: f64,
-    difficulty_deviation: f64,
+    lower_limb_load_deviation_km: f64,
+    moving_time_deviation_s: f64,
     quality_loss: f64,
     restricted_access_fraction: f64,
     repeated_edge_fraction: f64,
@@ -164,15 +164,20 @@ impl ParetoPoint {
                 constraints.min_descent_m,
                 constraints.max_descent_m,
             ),
-            difficulty_deviation: constraints.target_difficulty.map_or_else(
+            lower_limb_load_deviation_km: constraints.target_lower_limb_load_km.map_or_else(
                 || {
                     range_deviation(
-                        m.difficulty,
-                        constraints.min_difficulty,
-                        constraints.max_difficulty,
+                        m.lower_limb_load_km,
+                        constraints.min_lower_limb_load_km,
+                        constraints.max_lower_limb_load_km,
                     )
                 },
-                |target| (m.difficulty - target).abs(),
+                |target| (m.lower_limb_load_km - target).abs(),
+            ),
+            moving_time_deviation_s: range_deviation(
+                m.moving_time_s,
+                constraints.min_moving_time_s,
+                constraints.max_moving_time_s,
             ),
             quality_loss: 100.0 - m.quality,
             restricted_access_fraction: m.restricted_access_fraction,
@@ -192,13 +197,14 @@ impl ParetoPoint {
                 .any(|(a, b)| a < b)
     }
 
-    const fn objectives(self) -> [f64; 8] {
+    const fn objectives(self) -> [f64; 9] {
         [
             self.constraint_penalty,
             self.distance_deviation_m,
             self.ascent_deviation_m,
             self.descent_deviation_m,
-            self.difficulty_deviation,
+            self.lower_limb_load_deviation_km,
+            self.moving_time_deviation_s,
             self.quality_loss,
             self.restricted_access_fraction,
             self.repeated_edge_fraction,
@@ -223,13 +229,14 @@ pub struct RouteMetrics {
     pub distance_m: f64,
     pub ascent_m: f64,
     pub descent_m: f64,
-    pub difficulty: f64,
-    /// Length-normalized desirability in 0–100. Difficulty is deliberately
-    /// absent: a hard route may still be an excellent route.
+    #[serde(default)]
+    pub lower_limb_load_km: f64,
+    #[serde(default)]
+    pub moving_time_s: f64,
+    /// Length-normalized desirability in 0–100. Physical load and moving time
+    /// are deliberately absent: a severe route may still be an excellent one.
     #[serde(default)]
     pub quality: f64,
-    #[serde(default)]
-    pub difficulty_breakdown: DifficultyBreakdown,
     #[serde(default)]
     pub sustained_steep_m: f64,
     #[serde(default)]
@@ -250,7 +257,7 @@ pub struct RouteMetrics {
 
 impl RouteMetrics {
     #[must_use]
-    pub fn measure(graph: &TrailGraph, start: VertexId, edges: &[EdgeId]) -> Self {
+    pub fn measure(graph: &WalkGraph, start: VertexId, edges: &[EdgeId]) -> Self {
         let mut m = Self::default();
         let mut seen = BTreeMap::<EdgeId, usize>::new();
         let mut vertex_visits = BTreeMap::<VertexId, usize>::from([(start, 1)]);
@@ -269,6 +276,7 @@ impl RouteMetrics {
             );
             let edge = &graph.edges[edge_id.0];
             let from = at;
+            let traversal = edge.traversal_from(from);
             at = edge.traverse(from).expect("route edge must be traversable");
             previous = Some(*edge_id);
             *vertex_visits.entry(at).or_default() += 1;
@@ -281,8 +289,8 @@ impl RouteMetrics {
             };
             m.ascent_m += ascent_m;
             m.descent_m += descent_m;
-            m.difficulty += a.difficulty;
-            m.difficulty_breakdown += a.difficulty_breakdown;
+            m.lower_limb_load_km += traversal.lower_limb_load_km;
+            m.moving_time_s += traversal.moving_time_s;
             m.sustained_steep_m += a.sustained_steep_m;
             m.grade_distribution += a.grade_distribution;
             quality_m = edge_quality(a).mul_add(a.length_m, quality_m);
@@ -295,7 +303,7 @@ impl RouteMetrics {
                 .sum::<f64>();
             road_m = a
                 .length_m
-                .mul_add(road_pavement_exposure(a.terrain, a.road_exposure), road_m);
+                .mul_add(road_exposure_fraction(a.terrain, a.road_exposure), road_m);
             if a.confidence < LOW_CONFIDENCE_THRESHOLD {
                 low_conf_m += a.length_m;
             }
@@ -343,7 +351,7 @@ impl RouteMetrics {
 }
 
 fn edge_quality(attr: &EdgeAttr) -> f64 {
-    let road = road_pavement_exposure(attr.terrain, attr.road_exposure);
+    let road = road_exposure_fraction(attr.terrain, attr.road_exposure);
     let uncertainty = 1.0 - attr.confidence.clamp(0.0, 1.0);
     let access = match attr.access {
         Access::Closed | Access::Private => 1.0,
@@ -363,10 +371,10 @@ pub const fn is_restricted_access(access: Access) -> bool {
     )
 }
 
-const fn road_pavement_exposure(terrain: Terrain, road_exposure: f64) -> f64 {
+const fn road_exposure_fraction(terrain: Terrain, road_exposure: f64) -> f64 {
     road_exposure
         .clamp(0.0, 1.0)
-        .max(if matches!(terrain, Terrain::Pavement | Terrain::Road) {
+        .max(if matches!(terrain, Terrain::Road) {
             1.0
         } else {
             0.0

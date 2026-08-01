@@ -9,7 +9,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 use wgpu::util::DeviceExt as _;
 
@@ -17,6 +17,8 @@ const GPU_CEILING: usize = 384 * 1_048_576;
 const MAX_WRAP_RADIUS: u32 = 2;
 const MAX_WRAP_INSTANCES: usize = (MAX_WRAP_RADIUS * 2 + 1) as usize;
 const MAX_GAPS: usize = 32;
+const GPU_UPLOAD_BUDGET: Duration = Duration::from_millis(3);
+const GPU_UPLOAD_BYTES: usize = 8 * 1_048_576;
 static NEXT_CORPUS: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -36,6 +38,10 @@ pub struct VectorPaint {
     pub geometry: GeometryPass,
     pub gaps: Arc<[VectorGap]>,
     pub patches: Arc<[VectorPatch]>,
+    /// Resident refinements prepared before the CPU presentation promotes
+    /// them. They are uploaded but never drawn by this callback.
+    pub prewarm: Arc<[VectorPatch]>,
+    pub repaint: egui::Context,
     pub center_world: [f64; 2],
     pub world_points: f32,
     pub viewport_points: [f32; 2],
@@ -368,52 +374,38 @@ impl VectorMapGpu {
     }
 
     fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, paint: &VectorPaint) {
+        let _phase = tracing::info_span!(
+            target: "eternalist::main",
+            "gpu.vector_prepare",
+            patches = paint.patches.len(),
+            prewarm = paint.prewarm.len(),
+        )
+        .entered();
         let begun = Instant::now();
         let mut incoming = paint
             .patches
             .iter()
+            .chain(paint.prewarm.iter())
             .map(|patch| (patch.detail, patch.tile.key))
             .collect::<Vec<_>>();
         incoming.sort_unstable();
         incoming.dedup();
-        let changed = self
-            .active
-            .get(&paint.layer)
-            .is_none_or(|active| active.corpus != paint.corpus || active.tiles != incoming);
-        if changed {
-            self.epoch = self.epoch.saturating_add(1);
-            self.active.insert(
-                paint.layer,
-                ActiveCorpus {
-                    corpus: paint.corpus,
-                    tiles: incoming.clone(),
-                },
-            );
-            self.active_set.clear();
-            self.active_set
-                .extend(self.active.iter().flat_map(|(layer, active)| {
-                    active.tiles.iter().map(|(detail, tile)| GpuKey {
-                        layer: *layer,
-                        corpus: active.corpus,
-                        tile: *tile,
-                        detail: *detail,
-                    })
-                }));
-            for key in incoming.iter().map(|(detail, tile)| GpuKey {
-                layer: paint.layer,
-                corpus: paint.corpus,
-                tile: *tile,
-                detail: *detail,
-            }) {
-                if let Some(resident) = self.tiles.get_mut(&key) {
-                    resident.touched = self.epoch;
-                    self.order.push_back((key, self.epoch));
-                }
-            }
-        }
+        let changed = self.reconcile_active(paint, &incoming);
         let mut uploaded = 0_usize;
         let mut opacity_uploaded = 0_usize;
-        for patch in paint.patches.iter() {
+        let visible = paint
+            .patches
+            .iter()
+            .map(|patch| GpuKey {
+                layer: paint.layer,
+                corpus: paint.corpus,
+                tile: patch.tile.key,
+                detail: patch.detail,
+            })
+            .collect::<HashSet<_>>();
+        let mut seen = HashSet::new();
+        let mut deferred = false;
+        for patch in paint.patches.iter().chain(paint.prewarm.iter()) {
             let tile = &patch.tile;
             let key = GpuKey {
                 layer: paint.layer,
@@ -421,15 +413,29 @@ impl VectorMapGpu {
                 tile: tile.key,
                 detail: patch.detail,
             };
-            if let Some(resident) = self.tiles.get_mut(&key) {
-                opacity_uploaded += resident.refresh_opacity(queue, patch.opacity);
+            if !seen.insert(key) {
                 continue;
+            }
+            if let Some(resident) = self.tiles.get_mut(&key) {
+                if visible.contains(&key) {
+                    opacity_uploaded += resident.refresh_opacity(queue, patch.opacity);
+                }
+                continue;
+            }
+            if uploaded > 0
+                && (uploaded >= GPU_UPLOAD_BYTES || begun.elapsed() >= GPU_UPLOAD_BUDGET)
+            {
+                deferred = true;
+                break;
             }
             let resident = GpuTile::raise(device, tile, patch.opacity, self.epoch);
             uploaded = uploaded.saturating_add(resident.bytes);
             self.bytes = self.bytes.saturating_add(resident.bytes);
             self.order.push_back((key, self.epoch));
             let _prior = self.tiles.insert(key, resident);
+        }
+        if deferred {
+            paint.repaint.request_repaint();
         }
         let uniform = Uniform::forge(paint);
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniform));
@@ -447,6 +453,46 @@ impl VectorMapGpu {
                 incoming.len(),
             );
         }
+    }
+
+    fn reconcile_active(&mut self, paint: &VectorPaint, incoming: &[(u8, TileKey)]) -> bool {
+        let changed = self
+            .active
+            .get(&paint.layer)
+            .is_none_or(|active| active.corpus != paint.corpus || active.tiles != incoming);
+        if !changed {
+            return false;
+        }
+        self.epoch = self.epoch.saturating_add(1);
+        self.active.insert(
+            paint.layer,
+            ActiveCorpus {
+                corpus: paint.corpus,
+                tiles: incoming.to_vec(),
+            },
+        );
+        self.active_set.clear();
+        self.active_set
+            .extend(self.active.iter().flat_map(|(layer, active)| {
+                active.tiles.iter().map(|(detail, tile)| GpuKey {
+                    layer: *layer,
+                    corpus: active.corpus,
+                    tile: *tile,
+                    detail: *detail,
+                })
+            }));
+        for key in incoming.iter().map(|(detail, tile)| GpuKey {
+            layer: paint.layer,
+            corpus: paint.corpus,
+            tile: *tile,
+            detail: *detail,
+        }) {
+            if let Some(resident) = self.tiles.get_mut(&key) {
+                resident.touched = self.epoch;
+                self.order.push_back((key, self.epoch));
+            }
+        }
+        true
     }
 
     fn reap(&mut self) {

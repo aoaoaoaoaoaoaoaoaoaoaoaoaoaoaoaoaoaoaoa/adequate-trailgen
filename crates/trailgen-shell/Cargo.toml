@@ -24,6 +24,9 @@ egui-winit.workspace = true
 egui-tester-witness = { workspace = true, optional = true, features = ["egui"] }
 pollster.workspace = true
 serde = { workspace = true, optional = true }
+tracing.workspace = true
+tracing-chrome.workspace = true
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

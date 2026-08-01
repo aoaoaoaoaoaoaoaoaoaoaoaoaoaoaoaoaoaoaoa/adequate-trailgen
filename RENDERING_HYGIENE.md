@@ -5,6 +5,10 @@ when its corpus changes; a frame supplies only camera, disclosure, interaction,
 and other genuinely volatile state. New rendering code must preserve that
 division.
 
+Event-loop measurement, latency budgets, startup publication, and trace
+artifacts are governed by
+[Native Responsiveness Doctrine](design/RESPONSIVENESS_DOCTRINE.md).
+
 ## Frame Law
 
 A camera-only frame may:
@@ -18,10 +22,17 @@ It may not rebuild geographic geometry, rescan complete routes, retessellate
 immutable map lines through egui, or allocate per edge. Work proportional to
 `routes × edges × route points` is categorically a preparation bug.
 
+Spatial predicates use a prepared index owned by the active corpus. Tile
+annotation, parking adjacency, picking, and viewport selection may query that
+index; they may not scan the graph once per feature, tile, label, or frame.
+
 GPU geometry is keyed by corpus and detail band. Multiple callbacks must own
 independent camera uniforms, protect the union of the current frame’s resources
 from eviction, and remain bounded by the shared residency ceiling. A new corpus
 must not alias an old corpus merely because its tile coordinates agree.
+Cadence laws belong once to their trail corpus, and transition opacity belongs
+once to its detail layer. Replicating either into every spatial tile turns a
+zoom boundary into an unbounded queue-write storm.
 
 ## Responsiveness
 
@@ -35,6 +46,18 @@ Delayed content is lawful and must expose a named preparing state. A frozen
 window is not. Background work carries generation identity, cooperates with
 cancellation between indivisible operations, and cannot publish stale results.
 Decorative animation must never enlarge the visibility-critical transaction.
+
+Event absorption and GPU publication are separately budgeted. Visible tiles
+upload before speculative refinements; exact resident refinements may prewarm
+behind the currently presented fallback. When the budget is exhausted, the
+remainder stays queued and requests another frame. One frame may not drain an
+unbounded worker backlog or upload every newly available tile.
+
+Corpus retargeting is a monotone presentation handoff. The last presented
+basemap and relief remain resident and drawable while the successor source is
+acquired and prepared. Successor tiles replace retained fallbacks only after
+they are resident under a distinct corpus identity. Adding, resizing, or
+refreshing a map area must never clear the map to advertise progress.
 
 ## Detail
 
@@ -61,6 +84,12 @@ Never submit a primitive whose identical successor wholly occludes it. Candidate
 routes sharing one canonical physical support may collapse to the topmost
 occurrence when width and styling semantics make the discarded draws
 pixel-equivalent. Distinct parallel supports must survive.
+
+The routable walking corpus exclusively owns trail, cycleway, footway,
+sidewalk, and crossing geometry inside live areas. The basemap must not submit
+lower-fidelity copies with an independent disclosure schedule. Duplicate
+ownership creates nonmonotone visibility and misrepresents dead areas as
+routable.
 
 Privileged routes are style-continuous chains, not bags of provider or graph
 fragments. Fuse consecutive supports through degree-two vertices; split at
@@ -110,7 +139,9 @@ Every material renderer change must be exercised in at least these states:
 2. a full candidate portfolio on the map and in the gallery;
 3. one focused candidate at trail-scale zoom;
 4. pan and zoom across at least one detail-band boundary;
-5. return to the prior viewport.
+5. return to the prior viewport;
+6. add or resize a map area while the prior basemap remains continuously
+   presented and the camera remains responsive.
 
 Use the isolated native acceptance harness; never test against the live
 desktop:

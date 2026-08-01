@@ -13,6 +13,7 @@ use crate::observation::{View, shows};
 const ROOT: &str = "/test/refine";
 const INDEX: &str = "refine/library/index.json";
 const RENAMED: &str = "Acceptance Ridge";
+const EDITOR_RENAMED: &str = "Acceptance Ridge Refined";
 const TARGET: [f64; 2] = [-105.0, 40.012];
 
 pub fn run(harness: &Harness<'_>) -> Result<()> {
@@ -104,6 +105,32 @@ fn save_refinement(
     let editor = enter_editor(story)?;
     let before_signature = signature(editor.value())
         .ok_or_else(|| verdict("reopened editor omitted its route signature"))?;
+    let support_count = editor
+        .value()
+        .state
+        .editor
+        .as_ref()
+        .map_or(0, |editor| editor.support_points.len());
+    let _rename = story
+        .key(Key::Function(2))?
+        .until(shows::view(View::Edit) & shows::rename(true) & shows::text_focused())?;
+    let _typed = story
+        .replace_text(
+            Target::EditorRenameField,
+            EDITOR_RENAMED,
+            shows::text_focused(),
+        )?
+        .next_frame()?;
+    let _committed = story.key(Key::Return)?.until(
+        shows::view(View::Edit)
+            & shows::rename(false)
+            & shows::signature(before_signature)
+            & shows::supports(support_count),
+    )?;
+    demand(
+        only_trail(&read_json(testbed, INDEX)?)?["name"] == RENAMED,
+        "renaming inside the editor mutated the Library before Save",
+    )?;
     let _dragged = drag_support(story, editor.value(), 1, TARGET, before_signature)?;
     let _saved = story
         .click(Target::EditorSave)?
@@ -111,7 +138,7 @@ fn save_refinement(
     let durable = read_json(testbed, INDEX)?;
     let trail = only_trail(&durable)?;
     demand(
-        trail["name"] == RENAMED,
+        trail["name"] == EDITOR_RENAMED,
         "refinement discarded the trail name",
     )?;
     demand(

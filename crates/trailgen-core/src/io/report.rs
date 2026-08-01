@@ -1,16 +1,15 @@
-use crate::difficulty::DifficultyFactor;
-use crate::model::{Edge, EdgeTravel, Provenance, TerrainEvidence, TrailGraph};
+use crate::model::{Edge, EdgeTravel, Provenance, TerrainEvidence, WalkGraph};
 use crate::route::{LOW_CONFIDENCE_THRESHOLD, Route, is_restricted_access};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 #[must_use]
-pub fn render(graph: &TrailGraph, routes: &[Route]) -> String {
+pub fn render(graph: &WalkGraph, routes: &[Route]) -> String {
     render_titled("Generated Hiking Routes", graph, routes)
 }
 
 #[must_use]
-pub fn render_titled(title: &str, graph: &TrailGraph, routes: &[Route]) -> String {
+pub fn render_titled(title: &str, graph: &WalkGraph, routes: &[Route]) -> String {
     let mut s = format!("# {title}\n\n");
     if routes.is_empty() {
         s.push_str("No candidate routes were generated.\n");
@@ -22,11 +21,11 @@ pub fn render_titled(title: &str, graph: &TrailGraph, routes: &[Route]) -> Strin
     s
 }
 
-fn render_route(graph: &TrailGraph, route: &Route, s: &mut String) {
+fn render_route(graph: &WalkGraph, route: &Route, s: &mut String) {
     let _ = write!(s, "## {}\n\n", route.name);
     let _ = write!(
         s,
-        "- score: {:.2}\n- pareto rank: {}\n- shape: {:?}\n- distance: {:.2} km\n- ascent/descent: {:.0} m / {:.0} m\n- sustained steepness: {:.2} km\n- scalar difficulty: {:.2}\n- road/pavement exposure: {:.1}%\n- low-confidence fraction: {:.1}%\n- restricted-access fraction: {:.1}%\n- repeated-edge fraction: {:.1}%\n- constraint verdict: {}\n",
+        "- score: {:.2}\n- pareto rank: {}\n- shape: {:?}\n- distance: {:.2} km\n- ascent/descent: {:.0} m / {:.0} m\n- sustained steepness: {:.2} km\n- lower-limb load: {:.2} FGJW km\n- population moving time: {}\n- road exposure: {:.1}%\n- low-confidence fraction: {:.1}%\n- restricted-access fraction: {:.1}%\n- repeated-edge fraction: {:.1}%\n- constraint verdict: {}\n",
         route.computed_score(),
         route.pareto_rank,
         route.metrics.shape,
@@ -34,7 +33,8 @@ fn render_route(graph: &TrailGraph, route: &Route, s: &mut String) {
         route.metrics.ascent_m,
         route.metrics.descent_m,
         route.metrics.sustained_steep_m / 1_000.0,
-        route.metrics.difficulty,
+        route.metrics.lower_limb_load_km,
+        moving_time(route.metrics.moving_time_s),
         route.metrics.road_fraction * 100.0,
         route.metrics.low_confidence_fraction * 100.0,
         route.metrics.restricted_access_fraction * 100.0,
@@ -48,7 +48,6 @@ fn render_route(graph: &TrailGraph, route: &Route, s: &mut String) {
     render_route_sequence(graph, route, s);
     render_violations(route, s);
     render_constraint_audit(route, s);
-    render_difficulty(route, s);
     render_route_grade_distribution(route, s);
     render_access_mix(route, s);
     render_access_warnings(graph, route, s);
@@ -56,7 +55,7 @@ fn render_route(graph: &TrailGraph, route: &Route, s: &mut String) {
     render_crossings(route, s);
     render_terrain_mix(route, s);
     render_source_provenance(graph, route, s);
-    render_difficulty_hotspots(graph, route, s);
+    render_lower_limb_load_hotspots(graph, route, s);
     render_low_confidence_segments(graph, route, s);
     render_dubious_edges(graph, route, s);
     render_evidence(graph, route, s);
@@ -85,7 +84,7 @@ fn render_route_grade_distribution(route: &Route, s: &mut String) {
     }
 }
 
-fn render_route_sequence(graph: &TrailGraph, route: &Route, s: &mut String) {
+fn render_route_sequence(graph: &WalkGraph, route: &Route, s: &mut String) {
     s.push_str("\nRoute sequence:\n");
     let edges = route.edges.iter().map(|id| id.0).collect::<Vec<_>>();
     let vertices = route_vertex_sequence(graph, route);
@@ -94,7 +93,7 @@ fn render_route_sequence(graph: &TrailGraph, route: &Route, s: &mut String) {
     let _ = writeln!(s, "- vertex ids: {}", grouped_ids(&vertices));
 }
 
-fn route_vertex_sequence(graph: &TrailGraph, route: &Route) -> Vec<usize> {
+fn route_vertex_sequence(graph: &WalkGraph, route: &Route) -> Vec<usize> {
     let mut at = route.start;
     let mut vertices = vec![at.0];
     for id in &route.edges {
@@ -142,31 +141,6 @@ fn render_crossings(route: &Route, s: &mut String) {
     }
 }
 
-fn render_difficulty(route: &Route, s: &mut String) {
-    s.push_str("\nDifficulty decomposition:\n");
-    let total = route.metrics.difficulty_breakdown.total();
-    if total <= f64::EPSILON && route.metrics.difficulty > f64::EPSILON {
-        let _ = writeln!(
-            s,
-            "- legacy scalar-only difficulty: {:.2}",
-            route.metrics.difficulty
-        );
-        return;
-    }
-    let denominator = total.max(1.0);
-    for (factor, value) in sorted_factors(route.metrics.difficulty_breakdown.factors()) {
-        if value <= f64::EPSILON {
-            continue;
-        }
-        let _ = writeln!(
-            s,
-            "- {factor}: {:.2} ({:.1}%)",
-            value,
-            value / denominator * 100.0
-        );
-    }
-}
-
 fn render_violations(route: &Route, s: &mut String) {
     if route.verdict.violations.is_empty() {
         return;
@@ -199,7 +173,7 @@ fn render_access_mix(route: &Route, s: &mut String) {
     }
 }
 
-fn render_access_warnings(graph: &TrailGraph, route: &Route, s: &mut String) {
+fn render_access_warnings(graph: &WalkGraph, route: &Route, s: &mut String) {
     let warnings = route
         .edges
         .iter()
@@ -226,7 +200,7 @@ fn render_access_warnings(graph: &TrailGraph, route: &Route, s: &mut String) {
     }
 }
 
-fn render_directed_travel(graph: &TrailGraph, route: &Route, s: &mut String) {
+fn render_directed_travel(graph: &WalkGraph, route: &Route, s: &mut String) {
     let directed = route
         .edges
         .iter()
@@ -263,7 +237,7 @@ fn render_terrain_mix(route: &Route, s: &mut String) {
     }
 }
 
-fn render_source_provenance(graph: &TrailGraph, route: &Route, s: &mut String) {
+fn render_source_provenance(graph: &WalkGraph, route: &Route, s: &mut String) {
     let mut meters_by_source = BTreeMap::<String, f64>::new();
     for edge in route.edges.iter().map(|id| &graph.edges[id.0]) {
         *meters_by_source
@@ -291,40 +265,39 @@ fn render_source_provenance(graph: &TrailGraph, route: &Route, s: &mut String) {
     }
 }
 
-fn render_difficulty_hotspots(graph: &TrailGraph, route: &Route, s: &mut String) {
+fn render_lower_limb_load_hotspots(graph: &WalkGraph, route: &Route, s: &mut String) {
+    let mut at = route.start;
     let mut hotspots = route
         .edges
         .iter()
-        .flat_map(|id| {
+        .map(|id| {
             let edge = &graph.edges[id.0];
-            edge.attr
-                .difficulty_breakdown
-                .factors()
-                .into_iter()
-                .filter(|(_, value)| *value > f64::EPSILON)
-                .map(move |(factor, value)| (edge, factor, value))
+            let estimate = edge.traversal_from(at);
+            at = edge.traverse(at).expect("a route is a legal directed walk");
+            (edge, estimate)
         })
         .collect::<Vec<_>>();
     if hotspots.is_empty() {
         return;
     }
-    hotspots.sort_by(|a, b| b.2.total_cmp(&a.2));
-    s.push_str("\nLargest difficulty contributors:\n");
-    let denominator = route.metrics.difficulty.max(1.0);
-    for (edge, factor, value) in hotspots.into_iter().take(5) {
+    hotspots.sort_by(|a, b| b.1.lower_limb_load_km.total_cmp(&a.1.lower_limb_load_km));
+    s.push_str("\nLargest lower-limb load contributors:\n");
+    let denominator = route.metrics.lower_limb_load_km.max(1.0);
+    for (edge, estimate) in hotspots.into_iter().take(5) {
         let _ = writeln!(
             s,
-            "- edge {} {factor}: {:.2} ({:.1}% of route), {:?}, {:.0} m",
+            "- edge {}: {:.2} FGJW km ({:.1}% of route), {}, {:?}, {:.0} m",
             edge.id.0,
-            value,
-            value / denominator * 100.0,
+            estimate.lower_limb_load_km,
+            estimate.lower_limb_load_km / denominator * 100.0,
+            moving_time(estimate.moving_time_s),
             edge.attr.terrain,
             edge.attr.length_m
         );
     }
 }
 
-fn render_low_confidence_segments(graph: &TrailGraph, route: &Route, s: &mut String) {
+fn render_low_confidence_segments(graph: &WalkGraph, route: &Route, s: &mut String) {
     s.push_str("\nLow-confidence segments:\n");
     let mut edges = route
         .edges
@@ -342,7 +315,7 @@ fn render_low_confidence_segments(graph: &TrailGraph, route: &Route, s: &mut Str
     }
 }
 
-fn render_dubious_edges(graph: &TrailGraph, route: &Route, s: &mut String) {
+fn render_dubious_edges(graph: &WalkGraph, route: &Route, s: &mut String) {
     s.push_str("\nMost dubious segments:\n");
     let mut dubious = route
         .edges
@@ -392,7 +365,7 @@ fn grade_bins(edge: &Edge) -> String {
     )
 }
 
-fn render_evidence(graph: &TrailGraph, route: &Route, s: &mut String) {
+fn render_evidence(graph: &WalkGraph, route: &Route, s: &mut String) {
     s.push_str("\nTerrain/elevation evidence:\n");
     for edge_id in route.edges.iter().take(8) {
         let edge = &graph.edges[edge_id.0];
@@ -447,10 +420,11 @@ fn provenance_label(p: &Provenance) -> String {
         .map_or_else(|| p.source.clone(), |id| format!("{}:{id}", p.source))
 }
 
-fn sorted_factors<const N: usize>(
-    factors: [(DifficultyFactor, f64); N],
-) -> Vec<(DifficultyFactor, f64)> {
-    let mut factors = Vec::from(factors);
-    factors.sort_by(|a, b| b.1.total_cmp(&a.1));
-    factors
+fn moving_time(seconds: f64) -> String {
+    let minutes = (seconds.max(0.0) / 60.0).round();
+    format!(
+        "{:.0} h {:02.0} min",
+        (minutes / 60.0).floor(),
+        minutes % 60.0
+    )
 }

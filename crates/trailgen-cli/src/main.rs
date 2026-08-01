@@ -18,14 +18,15 @@ use trailgen_core::source::{
 };
 use trailgen_core::{
     Access, AccessOverlay, AccessWindow, ArcAsciiGrid, ConstraintAudit, Coord, CrossingKind,
-    DEFAULT_MAX_DISTANCE_M, DEFAULT_MIN_DISTANCE_M, DEFAULT_SNAP_TOLERANCE_M, DifficultyBreakdown,
-    DifficultyWeights, EdgeAttr, EdgeId, EdgeTravel, ElevationMosaic, EnrichmentConfig, GeoTiffDem,
-    GradeDistribution, GraphBuilder, JunctionPolicy, LOW_CONFIDENCE_THRESHOLD, LineString,
-    LoopConstraints, LoopMilpFormulation, PlanningDate, PlanningMoment, PlanningTime, Provenance,
-    RasterDem, Route, RouteMetrics, RouteShape, RouteSnapStats, SearchParams, SeedRoute,
-    SegmentDraft, SolverKind, Terrain, TrailClass, TrailGraph, TrailMarking, TrailStanding,
-    VertexId, VrtDem, apply_access_overlays, apply_access_overlays_at, apply_context_overlays,
-    apply_terrain_overlays, artifact_key, enrich_graph, rank_routes, route_edges_from_solution,
+    DEFAULT_MAX_DISTANCE_M, DEFAULT_MIN_DISTANCE_M, DEFAULT_SNAP_TOLERANCE_M, EdgeAttr, EdgeId,
+    EdgeTravel, ElevationMosaic, EnrichmentConfig, GRAPH_CACHE, GeoTiffDem, GradeDistribution,
+    GraphBuilder, JunctionPolicy, LOW_CONFIDENCE_THRESHOLD, LineString, LoopConstraints,
+    LoopMilpFormulation, PlanningDate, PlanningMoment, PlanningTime, Provenance, RasterDem, Route,
+    RouteMetrics, RouteShape, RouteSnapStats, SearchParams, SeedRoute, SegmentDraft, SolverKind,
+    Terrain, TrailMarking, TrailStanding, VertexId, VrtDem, WalkGraph, WayKind,
+    apply_access_overlays, apply_access_overlays_at, apply_context_overlays,
+    apply_terrain_overlays, artifact_key, decode_graph, enrich_graph, rank_routes,
+    route_edges_from_solution,
 };
 use trailgen_data::{
     DEFAULT_OVERPASS_ENDPOINT, OsmProfile, Overpass, Surveyor, TrailDataConfig, inspect_osm,
@@ -80,12 +81,12 @@ enum Cmd {
     },
     /// Print graph terrain, access, provenance, confidence, direction, turn-ban, crossing, and seed statistics.
     Stats {
-        /// Project directory containing cache/graph.json.
+        /// Project directory containing the binary graph cache.
         project: PathBuf,
     },
     /// Locate route segments absent from or disconnected in the indexed graph.
     Coverage {
-        /// Project directory containing cache/graph.json.
+        /// Project directory containing the binary graph cache.
         project: PathBuf,
         /// GPX, KML/KMZ, CSV, or route JSON to test against the graph.
         #[arg(long)]
@@ -188,7 +189,7 @@ enum Cmd {
         #[arg(long = "require", value_parser = parse_source_kind)]
         require: Vec<SourceKind>,
     },
-    /// Build and enrich cache/graph.json from sources/manifest.json.
+    /// Build and enrich the binary graph cache from sources/manifest.json.
     Assemble {
         /// Project directory containing trailgen.toml and sources/manifest.json.
         project: PathBuf,
@@ -248,12 +249,21 @@ enum Cmd {
         /// Planning local time used to materialize hourly access/closure overlays.
         #[arg(long, value_parser = parse_planning_time)]
         time: Option<PlanningTime>,
-        /// Minimum scalar route difficulty.
+        /// Minimum lower-limb load in flat-gravel joint-work-equivalent kilometers.
         #[arg(long)]
-        min_difficulty: Option<f64>,
-        /// Maximum scalar route difficulty.
+        min_lower_limb_load_km: Option<f64>,
+        /// Maximum lower-limb load in flat-gravel joint-work-equivalent kilometers.
         #[arg(long)]
-        max_difficulty: Option<f64>,
+        max_lower_limb_load_km: Option<f64>,
+        /// Preferred lower-limb load in flat-gravel joint-work-equivalent kilometers.
+        #[arg(long)]
+        target_lower_limb_load_km: Option<f64>,
+        /// Minimum population moving-time estimate in hours.
+        #[arg(long)]
+        min_moving_time_h: Option<f64>,
+        /// Maximum population moving-time estimate in hours.
+        #[arg(long)]
+        max_moving_time_h: Option<f64>,
         /// Minimum route ascent in meters.
         #[arg(long)]
         min_ascent_m: Option<f64>,
@@ -266,7 +276,7 @@ enum Cmd {
         /// Maximum route descent in meters.
         #[arg(long)]
         max_descent_m: Option<f64>,
-        /// Maximum road or pavement distance fraction in 0–1.
+        /// Maximum road-exposed distance fraction in 0–1.
         #[arg(long)]
         max_road_fraction: Option<f64>,
         /// Maximum low-confidence edge distance fraction in 0–1.
@@ -387,7 +397,7 @@ enum Cmd {
     },
     /// Rate a supplied route file against the current project graph.
     Rate {
-        /// Project directory containing cache/graph.json.
+        /// Project directory containing the binary graph cache.
         project: PathBuf,
         /// `GPX`, `GeoJSON`, `KML`/`KMZ`, `CSV`, or route `JSON` file to snap and rate.
         #[arg(long)]
@@ -399,34 +409,9 @@ enum Cmd {
         #[arg(long)]
         output: Option<PathBuf>,
     },
-    /// Recompute cached edge costs after hand-editing difficulty weights.
-    Rerate {
-        /// Project directory containing cache/graph.json.
-        project: PathBuf,
-    },
-    /// Fit difficulty weights from a completed route and optional target scalar.
-    Calibrate {
-        /// Project directory containing cache/graph.json.
-        project: PathBuf,
-        /// Completed route file to snap and use as calibration evidence.
-        #[arg(long)]
-        route: PathBuf,
-        /// Desired scalar difficulty for the completed route.
-        #[arg(long)]
-        target_difficulty: f64,
-        /// Weight family to scale.
-        #[arg(long, value_enum, default_value = "all")]
-        family: CalibrationFamily,
-        /// Maximum allowed route snap distance in meters.
-        #[arg(long)]
-        max_route_snap_m: Option<f64>,
-        /// Persist the calibrated weights and rerate the cached graph.
-        #[arg(long)]
-        write: bool,
-    },
     /// Archive, snap, and register a user-supplied seed route.
     ImportSeed {
-        /// Project directory containing cache/graph.json.
+        /// Project directory containing the binary graph cache.
         project: PathBuf,
         /// `GPX`, `GeoJSON`, `KML`/`KMZ`, `CSV`, or route `JSON` file to import.
         #[arg(long)]
@@ -440,7 +425,7 @@ enum Cmd {
     },
     /// Apply one or more access/closure overlays from a shared graph baseline.
     ApplyAccess {
-        /// Project directory containing cache/graph.json.
+        /// Project directory containing the binary graph cache.
         project: PathBuf,
         /// Access, ownership, restriction, or closure overlay; repeat to compose sources.
         #[arg(long = "source", required = true)]
@@ -452,17 +437,17 @@ enum Cmd {
         #[arg(long, value_parser = parse_planning_time)]
         time: Option<PlanningTime>,
     },
-    /// Apply terrain, surface, or land-cover overlays and rerate touched edges.
+    /// Apply terrain, surface, or land-cover overlays and recompute physical estimates.
     ApplyTerrain {
-        /// Project directory containing cache/graph.json.
+        /// Project directory containing the binary graph cache.
         project: PathBuf,
         /// `GeoJSON` or shapefile terrain overlay.
         #[arg(long)]
         source: PathBuf,
     },
-    /// Sample a local DEM and recompute edge ascent, descent, grade, and difficulty.
+    /// Sample a local DEM and recompute elevation, lower-limb load, and moving time.
     ApplyElevation {
-        /// Project directory containing cache/graph.json.
+        /// Project directory containing the binary graph cache.
         project: PathBuf,
         /// Arc/Info ASCII Grid, affine WGS84/NAD83/EPSG:3857/UTM `GeoTIFF`, or simple `VRT` `DEM`.
         #[arg(long)]
@@ -473,7 +458,7 @@ enum Cmd {
     },
     /// Apply road and hydrology context linework for crossings and road exposure.
     ApplyContext {
-        /// Project directory containing cache/graph.json.
+        /// Project directory containing the binary graph cache.
         project: PathBuf,
         /// `GeoJSON`, shapefile, OSM XML, or OSM PBF road/hydrology context layer.
         #[arg(long)]
@@ -494,8 +479,6 @@ struct ProjectConfig {
     snap_tolerance_m: f64,
     #[serde(default)]
     enrichment: EnrichmentConfig,
-    #[serde(default)]
-    difficulty: DifficultyWeights,
     #[serde(default)]
     constraints: LoopConstraints,
     #[serde(default)]
@@ -522,7 +505,6 @@ impl ProjectConfig {
             area,
             snap_tolerance_m: DEFAULT_SNAP_TOLERANCE_M,
             enrichment: EnrichmentConfig::default(),
-            difficulty: DifficultyWeights::default(),
             constraints: LoopConstraints::default(),
             search: SearchParams::default(),
             max_start_snap_m: default_max_start_snap_m(),
@@ -563,72 +545,7 @@ impl ProjectConfig {
                 "{name} must be finite and positive"
             );
         }
-        for (name, value) in difficulty_values(self.difficulty) {
-            ensure!(
-                value.is_finite() && value >= 0.0,
-                "{name} must be finite and nonnegative"
-            );
-        }
-        let c = &self.constraints;
-        for (name, value) in [
-            ("min_distance_m", c.min_distance_m),
-            ("max_distance_m", c.max_distance_m),
-            ("min_difficulty", c.min_difficulty),
-            ("max_difficulty", c.max_difficulty),
-            ("min_ascent_m", c.min_ascent_m),
-            ("max_ascent_m", c.max_ascent_m),
-            ("min_descent_m", c.min_descent_m),
-            ("max_descent_m", c.max_descent_m),
-        ] {
-            ensure!(
-                value.is_finite() && value >= 0.0,
-                "{name} must be finite and nonnegative"
-            );
-        }
-        for (name, min, max) in [
-            ("distance", c.min_distance_m, c.max_distance_m),
-            ("difficulty", c.min_difficulty, c.max_difficulty),
-            ("ascent", c.min_ascent_m, c.max_ascent_m),
-            ("descent", c.min_descent_m, c.max_descent_m),
-        ] {
-            ensure!(min <= max, "minimum {name} exceeds maximum {name}");
-        }
-        for (name, value) in [
-            ("max_road_fraction", c.max_road_fraction),
-            ("max_low_confidence_fraction", c.max_low_confidence_fraction),
-            (
-                "max_restricted_access_fraction",
-                c.max_restricted_access_fraction,
-            ),
-            ("max_repeated_edge_fraction", c.max_repeated_edge_fraction),
-        ]
-        .into_iter()
-        .chain(
-            c.min_terrain_fraction
-                .values()
-                .copied()
-                .map(|value| ("min_terrain_fraction", value)),
-        )
-        .chain(
-            c.max_terrain_fraction
-                .values()
-                .copied()
-                .map(|value| ("max_terrain_fraction", value)),
-        ) {
-            ensure!((0.0..=1.0).contains(&value), "{name} must be within 0..=1");
-        }
-        ensure!(
-            !c.allowed_shapes.is_empty(),
-            "allowed_shapes must not be empty"
-        );
-        for (terrain, minimum) in &c.min_terrain_fraction {
-            if let Some(maximum) = c.max_terrain_fraction.get(terrain) {
-                ensure!(
-                    minimum <= maximum,
-                    "minimum {terrain:?} fraction exceeds maximum"
-                );
-            }
-        }
+        validate_constraints(&self.constraints)?;
         ensure!(
             self.search.max_hops > 0
                 && self.search.max_frontier > 0
@@ -640,29 +557,100 @@ impl ProjectConfig {
     }
 }
 
-const fn difficulty_values(weights: DifficultyWeights) -> [(&'static str, f64); 19] {
-    let terrain = weights.terrain_multipliers;
-    [
-        ("distance_per_km", weights.distance_per_km),
-        ("ascent_per_m", weights.ascent_per_m),
-        ("descent_per_m", weights.descent_per_m),
-        ("grade_per_abs_fraction", weights.grade_per_abs_fraction),
-        ("terrain.unknown", terrain.unknown),
-        ("terrain.trail", terrain.trail),
-        ("terrain.forest", terrain.forest),
-        ("terrain.alpine", terrain.alpine),
-        ("terrain.talus", terrain.talus),
-        ("terrain.scramble", terrain.scramble),
-        ("terrain.pavement", terrain.pavement),
-        ("terrain.road", terrain.road),
-        ("terrain.water", terrain.water),
-        ("road_effort_penalty", weights.road_effort_penalty),
-        ("technical_penalty", weights.technical_penalty),
-        ("navigation_penalty", weights.navigation_penalty),
-        ("bushwhack_penalty", weights.bushwhack_penalty),
-        ("low_confidence_penalty", weights.low_confidence_penalty),
-        ("closed_access_penalty", weights.closed_access_penalty),
+fn validate_constraints(constraints: &LoopConstraints) -> Result<()> {
+    for (name, value) in [
+        ("min_distance_m", constraints.min_distance_m),
+        ("max_distance_m", constraints.max_distance_m),
+        ("min_lower_limb_load_km", constraints.min_lower_limb_load_km),
+        ("max_lower_limb_load_km", constraints.max_lower_limb_load_km),
+        ("min_moving_time_s", constraints.min_moving_time_s),
+        ("max_moving_time_s", constraints.max_moving_time_s),
+        ("min_ascent_m", constraints.min_ascent_m),
+        ("max_ascent_m", constraints.max_ascent_m),
+        ("min_descent_m", constraints.min_descent_m),
+        ("max_descent_m", constraints.max_descent_m),
+    ] {
+        ensure!(
+            value.is_finite() && value >= 0.0,
+            "{name} must be finite and nonnegative"
+        );
+    }
+    for (name, min, max) in [
+        (
+            "distance",
+            constraints.min_distance_m,
+            constraints.max_distance_m,
+        ),
+        (
+            "lower-limb load",
+            constraints.min_lower_limb_load_km,
+            constraints.max_lower_limb_load_km,
+        ),
+        (
+            "moving time",
+            constraints.min_moving_time_s,
+            constraints.max_moving_time_s,
+        ),
+        ("ascent", constraints.min_ascent_m, constraints.max_ascent_m),
+        (
+            "descent",
+            constraints.min_descent_m,
+            constraints.max_descent_m,
+        ),
+    ] {
+        ensure!(min <= max, "minimum {name} exceeds maximum {name}");
+    }
+    ensure!(
+        constraints
+            .target_lower_limb_load_km
+            .is_none_or(|target| target.is_finite() && target >= 0.0),
+        "target_lower_limb_load_km must be finite and nonnegative"
+    );
+    for (name, value) in [
+        ("max_road_fraction", constraints.max_road_fraction),
+        (
+            "max_low_confidence_fraction",
+            constraints.max_low_confidence_fraction,
+        ),
+        (
+            "max_restricted_access_fraction",
+            constraints.max_restricted_access_fraction,
+        ),
+        (
+            "max_repeated_edge_fraction",
+            constraints.max_repeated_edge_fraction,
+        ),
     ]
+    .into_iter()
+    .chain(
+        constraints
+            .min_terrain_fraction
+            .values()
+            .copied()
+            .map(|value| ("min_terrain_fraction", value)),
+    )
+    .chain(
+        constraints
+            .max_terrain_fraction
+            .values()
+            .copied()
+            .map(|value| ("max_terrain_fraction", value)),
+    ) {
+        ensure!((0.0..=1.0).contains(&value), "{name} must be within 0..=1");
+    }
+    ensure!(
+        !constraints.allowed_shapes.is_empty(),
+        "allowed_shapes must not be empty"
+    );
+    for (terrain, minimum) in &constraints.min_terrain_fraction {
+        if let Some(maximum) = constraints.max_terrain_fraction.get(terrain) {
+            ensure!(
+                minimum <= maximum,
+                "minimum {terrain:?} fraction exceeds maximum"
+            );
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -672,23 +660,6 @@ enum ExportFormat {
     Csv,
     Kml,
     Kmz,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum CalibrationFamily {
-    All,
-    Distance,
-    Elevation,
-    Ascent,
-    Descent,
-    Grade,
-    Terrain,
-    Road,
-    Technical,
-    Navigation,
-    Bushwhack,
-    Confidence,
-    Access,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -878,8 +849,11 @@ fn dispatch(cmd: Cmd) -> Result<()> {
             source_gate,
             date,
             time,
-            min_difficulty,
-            max_difficulty,
+            min_lower_limb_load_km,
+            max_lower_limb_load_km,
+            target_lower_limb_load_km,
+            min_moving_time_h,
+            max_moving_time_h,
             min_ascent_m,
             max_ascent_m,
             min_descent_m,
@@ -910,8 +884,11 @@ fn dispatch(cmd: Cmd) -> Result<()> {
                 source_gate,
                 date,
                 time,
-                min_difficulty,
-                max_difficulty,
+                min_lower_limb_load_km,
+                max_lower_limb_load_km,
+                target_lower_limb_load_km,
+                min_moving_time_h,
+                max_moving_time_h,
                 min_ascent_m,
                 max_ascent_m,
                 min_descent_m,
@@ -990,22 +967,6 @@ fn dispatch(cmd: Cmd) -> Result<()> {
             max_route_snap_m,
             output,
         } => rate(&project, &route, max_route_snap_m, output.as_deref()),
-        Cmd::Rerate { project } => rerate(&project),
-        Cmd::Calibrate {
-            project,
-            route,
-            target_difficulty,
-            family,
-            max_route_snap_m,
-            write,
-        } => calibrate(
-            &project,
-            &route,
-            target_difficulty,
-            family,
-            max_route_snap_m,
-            write,
-        ),
         Cmd::ImportSeed {
             project,
             route,
@@ -1094,7 +1055,6 @@ fn build_many<'a>(
     let graph = GraphBuilder {
         snap_tolerance_m: config.snap_tolerance_m,
         enrichment: config.enrichment,
-        weights: config.difficulty,
     }
     .build(&drafts)
     .with_context(|| "build graph")?;
@@ -1206,9 +1166,13 @@ fn route_source_draft_from_line(source: &Path, line: LineString) -> SegmentDraft
     SegmentDraft {
         junctions: JunctionPolicy::default(),
         turn_ref: None,
+        junction_keys: None,
         turn_restrictions: Vec::new(),
         geometry: line,
-        trail_class: TrailClass::default(),
+        way_kind: WayKind::default(),
+        realm: trailgen_core::WayRealm::default(),
+        geometry_claim: trailgen_core::GeometryClaim::default(),
+        crossing_control: trailgen_core::CrossingControl::default(),
         standing: TrailStanding::Unknown,
         marking: TrailMarking::default(),
         terrain: Terrain::Unknown,
@@ -1283,7 +1247,7 @@ fn diagnose_coverage(
     Ok(())
 }
 
-fn stats_text(graph: &TrailGraph) -> String {
+fn stats_text(graph: &WalkGraph) -> String {
     let mut text = String::new();
     let mut terrain_m = BTreeMap::<Terrain, f64>::new();
     let mut standing_m = BTreeMap::<TrailStanding, f64>::new();
@@ -1295,7 +1259,7 @@ fn stats_text(graph: &TrailGraph) -> String {
     let mut low_conf_m = 0.0;
     let mut restricted_m = 0.0;
     let mut seed_m = 0.0;
-    let mut difficulty = 0.0;
+    let mut lower_limb_load_km = 0.0;
     let elevation = graph_elevation_stats(graph);
     for edge in &graph.edges {
         let a = &edge.attr;
@@ -1308,7 +1272,7 @@ fn stats_text(graph: &TrailGraph) -> String {
             .entry(ConfidenceBand::from_confidence(a.confidence))
             .or_default() += a.length_m;
         road_m = a.length_m.mul_add(
-            edge_road_pavement_exposure(a.terrain, a.road_exposure),
+            edge_road_exposure_fraction(a.terrain, a.road_exposure),
             road_m,
         );
         if a.confidence < LOW_CONFIDENCE_THRESHOLD {
@@ -1323,7 +1287,9 @@ fn stats_text(graph: &TrailGraph) -> String {
         if a.seed_count > 0 {
             seed_m += a.length_m;
         }
-        difficulty += a.difficulty;
+        lower_limb_load_km = (a.traversal.forward.lower_limb_load_km
+            + a.traversal.reverse.lower_limb_load_km)
+            .mul_add(0.5, lower_limb_load_km);
     }
     let total_m = graph
         .edges
@@ -1341,8 +1307,8 @@ fn stats_text(graph: &TrailGraph) -> String {
     let _ = writeln!(text, "edge-km: {:.2}", total_m / 1_000.0);
     let _ = writeln!(
         text,
-        "mean difficulty per km: {:.2}",
-        difficulty / (total_m / 1_000.0).max(1.0e-9)
+        "mean bidirectional lower-limb load factor: {:.2} FGJW km/km",
+        lower_limb_load_km / (total_m / 1_000.0).max(1.0e-9)
     );
     let _ = writeln!(
         text,
@@ -1358,7 +1324,7 @@ fn stats_text(graph: &TrailGraph) -> String {
     );
     let _ = writeln!(
         text,
-        "road/pavement edge-km: {:.2} ({:.1}%)",
+        "road-exposed edge-km: {:.2} ({:.1}%)",
         road_m / 1_000.0,
         percent(road_m, total_m)
     );
@@ -1441,7 +1407,7 @@ fn write_elevation_provenance(text: &mut String, provenance: &BTreeMap<String, u
     }
 }
 
-fn write_turn_ban_provenance(text: &mut String, graph: &TrailGraph) {
+fn write_turn_ban_provenance(text: &mut String, graph: &WalkGraph) {
     text.push_str("Turn-ban provenance:\n");
     let sources = turn_ban_sources(graph);
     if sources.is_empty() {
@@ -1453,7 +1419,7 @@ fn write_turn_ban_provenance(text: &mut String, graph: &TrailGraph) {
     }
 }
 
-fn write_crossing_totals(text: &mut String, graph: &TrailGraph) {
+fn write_crossing_totals(text: &mut String, graph: &WalkGraph) {
     text.push_str("Crossings:\n");
     let crossings = crossing_totals(graph);
     if crossings.is_empty() {
@@ -1465,10 +1431,10 @@ fn write_crossing_totals(text: &mut String, graph: &TrailGraph) {
     }
 }
 
-const fn edge_road_pavement_exposure(terrain: Terrain, road_exposure: f64) -> f64 {
+const fn edge_road_exposure_fraction(terrain: Terrain, road_exposure: f64) -> f64 {
     road_exposure
         .clamp(0.0, 1.0)
-        .max(if matches!(terrain, Terrain::Pavement | Terrain::Road) {
+        .max(if matches!(terrain, Terrain::Road) {
             1.0
         } else {
             0.0
@@ -1849,7 +1815,7 @@ fn verify_generated_run_metadata(project: &Path, ledger: &GeneratedRunLedger) ->
 fn verify_generated_run_identity(
     ledger: &GeneratedRunLedger,
     config: &ProjectConfig,
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     failures: &mut Vec<String>,
 ) {
     match ledger.schema_version {
@@ -1903,7 +1869,7 @@ fn verify_generated_run_identity(
 fn verify_generated_start_metadata(
     ledger: &GeneratedRunLedger,
     config: &ProjectConfig,
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     failures: &mut Vec<String>,
 ) {
     if ledger.requested_start.is_none() {
@@ -2079,15 +2045,11 @@ fn verify_forbidden_area_ledger(project: &Path, ledger: &GeneratedRunLedger) -> 
     if ledger.forbidden_areas.is_empty() {
         return Ok(());
     }
-    let config = ledger
-        .effective_config
-        .as_ref()
-        .with_context(|| "generated manifest lacks effective_config snapshot")?;
     let graph = load_generated_graph(project)?;
     let mut failures = Vec::new();
     let mut seen = BTreeSet::new();
     for area in &ledger.forbidden_areas {
-        verify_forbidden_area(area, &graph, config, &mut seen, &mut failures);
+        verify_forbidden_area(area, &graph, &mut seen, &mut failures);
     }
     if !failures.is_empty() {
         bail!(
@@ -2100,8 +2062,7 @@ fn verify_forbidden_area_ledger(project: &Path, ledger: &GeneratedRunLedger) -> 
 
 fn verify_forbidden_area(
     area: &ForbiddenAreaLedger,
-    graph: &TrailGraph,
-    config: &ProjectConfig,
+    graph: &WalkGraph,
     seen: &mut BTreeSet<String>,
     failures: &mut Vec<String>,
 ) {
@@ -2155,7 +2116,7 @@ fn verify_forbidden_area(
         ));
     }
     let mut graph = graph.clone();
-    let touched_edges = apply_access_overlays(&mut graph, &overlays, None, config.difficulty);
+    let touched_edges = apply_access_overlays(&mut graph, &overlays, None);
     if area.touched_edges != touched_edges {
         failures.push(format!(
             "{} forbidden-area touched edge count mismatch: {} != {}",
@@ -2574,18 +2535,13 @@ fn verify_route_metrics(
         distance_m,
         ascent_m,
         descent_m,
-        difficulty,
+        lower_limb_load_km,
+        moving_time_s,
         sustained_steep_m,
         road_fraction,
         low_confidence_fraction,
         restricted_access_fraction,
         repeated_edge_fraction,
-    );
-    verify_difficulty_breakdown(
-        &format!("{label}.difficulty_breakdown"),
-        actual.difficulty_breakdown,
-        expected.difficulty_breakdown,
-        failures,
     );
     verify_grade_distribution(
         &format!("{label}.grade_distribution"),
@@ -2629,20 +2585,6 @@ fn verify_grade_distribution(
         steep_m,
         savage_m,
     );
-}
-
-fn verify_difficulty_breakdown(
-    label: &str,
-    actual: DifficultyBreakdown,
-    expected: DifficultyBreakdown,
-    failures: &mut Vec<String>,
-) {
-    for ((factor, actual), (expected_factor, expected)) in
-        actual.factors().into_iter().zip(expected.factors())
-    {
-        debug_assert_eq!(factor, expected_factor);
-        verify_f64(&format!("{label}.{factor:?}"), actual, expected, failures);
-    }
 }
 
 fn verify_f64_map<K: Ord + Debug>(
@@ -2698,7 +2640,7 @@ fn nearly_equal(a: f64, b: f64) -> bool {
     (a - b).abs() <= 1.0e-7_f64.max(a.abs().max(b.abs()) * 1.0e-9)
 }
 
-fn verify_route_edge_walk(graph: &TrailGraph, start: VertexId, edges: &[EdgeId]) -> Result<()> {
+fn verify_route_edge_walk(graph: &WalkGraph, start: VertexId, edges: &[EdgeId]) -> Result<()> {
     if graph
         .vertices
         .get(start.0)
@@ -2956,8 +2898,11 @@ struct GenerateOptions {
     source_gate: Option<GenerationSourceGate>,
     date: Option<PlanningDate>,
     time: Option<PlanningTime>,
-    min_difficulty: Option<f64>,
-    max_difficulty: Option<f64>,
+    min_lower_limb_load_km: Option<f64>,
+    max_lower_limb_load_km: Option<f64>,
+    target_lower_limb_load_km: Option<f64>,
+    min_moving_time_h: Option<f64>,
+    max_moving_time_h: Option<f64>,
     min_ascent_m: Option<f64>,
     max_ascent_m: Option<f64>,
     min_descent_m: Option<f64>,
@@ -3181,7 +3126,7 @@ struct EdgeAccessBaseline {
 }
 
 impl AccessBaseline {
-    fn capture(graph: &TrailGraph) -> Self {
+    fn capture(graph: &WalkGraph) -> Self {
         Self {
             edges: graph
                 .edges
@@ -3198,7 +3143,7 @@ impl AccessBaseline {
         }
     }
 
-    fn restore(&self, graph: &mut TrailGraph, weights: DifficultyWeights) -> Result<()> {
+    fn restore(&self, graph: &mut WalkGraph) -> Result<()> {
         if self.edges.len() != graph.edges.len() {
             bail!(
                 "access baseline has {} edge(s), cached graph has {}; rebuild graph before changing planning-date access overlays",
@@ -3225,27 +3170,10 @@ impl AccessBaseline {
             edge.attr
                 .access_provenance
                 .clone_from(&baseline.access_provenance);
-            weights.apply_edge(edge);
         }
         graph.rebuild_adjacency();
         Ok(())
     }
-}
-
-#[derive(Clone, Debug)]
-struct Calibration {
-    family: CalibrationFamily,
-    before: f64,
-    target: f64,
-    selected: f64,
-    fixed: f64,
-    multiplier: f64,
-    weights: DifficultyWeights,
-}
-
-#[derive(Serialize)]
-struct DifficultySnippet {
-    difficulty: DifficultyWeights,
 }
 
 fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
@@ -3271,8 +3199,7 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
     config.validate()?;
     enforce_generation_source_gate(project, config.generation_source_gate)?;
     let mut graph = materialize_effective_graph(project, &config)?;
-    let forbidden_areas =
-        apply_forbidden_area_sources(&mut graph, &options.forbidden_area, config.difficulty)?;
+    let forbidden_areas = apply_forbidden_area_sources(&mut graph, &options.forbidden_area)?;
     let start_coord = parse_coord(&options.start)?;
     let start = snap_generation_start(&graph, start_coord, config.max_start_snap_m)?;
     let solver = config.solver.resolve(&graph);
@@ -3293,7 +3220,7 @@ fn generate(project: &Path, options: &GenerateOptions) -> Result<()> {
 
 fn solve_generation_routes(
     project: &Path,
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     config: &ProjectConfig,
     start: VertexId,
     count: usize,
@@ -3314,9 +3241,9 @@ fn solve_generation_routes(
 
 fn write_generated_snapshots(
     project: &Path,
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     routes: &[Route],
-) -> Result<(TrailGraph, Vec<Route>)> {
+) -> Result<(WalkGraph, Vec<Route>)> {
     write_json(project.join("routes/generated.graph.json"), graph)?;
     write_json(project.join("routes/generated.routes.json"), routes)?;
     Ok((
@@ -3471,8 +3398,11 @@ fn milp_incumbent_generate_options(
         source_gate: None,
         date: config.planning_date,
         time: config.planning_time,
-        min_difficulty: None,
-        max_difficulty: None,
+        min_lower_limb_load_km: None,
+        max_lower_limb_load_km: None,
+        target_lower_limb_load_km: None,
+        min_moving_time_h: None,
+        max_moving_time_h: None,
         min_ascent_m: None,
         max_ascent_m: None,
         min_descent_m: None,
@@ -3489,7 +3419,7 @@ fn milp_incumbent_generate_options(
     }
 }
 
-fn write_route_artifacts(project: &Path, graph: &TrailGraph, routes: &[Route]) -> Result<()> {
+fn write_route_artifacts(project: &Path, graph: &WalkGraph, routes: &[Route]) -> Result<()> {
     for route in routes {
         ensure_route_artifact_key(&route.name)?;
         write_json(
@@ -3532,7 +3462,7 @@ fn write_route_artifacts(project: &Path, graph: &TrailGraph, routes: &[Route]) -
 }
 
 fn snap_generation_start(
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     requested: Coord,
     max_snap_m: f64,
 ) -> Result<StartSnap> {
@@ -3558,11 +3488,20 @@ fn snap_generation_start(
 fn apply_generate_options(constraints: &mut LoopConstraints, options: &GenerateOptions) {
     constraints.min_distance_m = options.min_km * 1_000.0;
     constraints.max_distance_m = options.max_km * 1_000.0;
-    if let Some(min_difficulty) = options.min_difficulty {
-        constraints.min_difficulty = min_difficulty;
+    if let Some(min_lower_limb_load_km) = options.min_lower_limb_load_km {
+        constraints.min_lower_limb_load_km = min_lower_limb_load_km;
     }
-    if let Some(max_difficulty) = options.max_difficulty {
-        constraints.max_difficulty = max_difficulty;
+    if let Some(max_lower_limb_load_km) = options.max_lower_limb_load_km {
+        constraints.max_lower_limb_load_km = max_lower_limb_load_km;
+    }
+    if let Some(target_lower_limb_load_km) = options.target_lower_limb_load_km {
+        constraints.target_lower_limb_load_km = Some(target_lower_limb_load_km);
+    }
+    if let Some(min_moving_time_h) = options.min_moving_time_h {
+        constraints.min_moving_time_s = min_moving_time_h * 3_600.0;
+    }
+    if let Some(max_moving_time_h) = options.max_moving_time_h {
+        constraints.max_moving_time_s = max_moving_time_h * 3_600.0;
     }
     if let Some(min_ascent_m) = options.min_ascent_m {
         constraints.min_ascent_m = min_ascent_m;
@@ -3650,53 +3589,8 @@ fn rate(
     Ok(())
 }
 
-fn rerate(project: &Path) -> Result<()> {
-    let config = load_config(project)?;
-    let count = rerate_cached_graph(project, config.difficulty)?;
-    println!("rerated {count} cached edge(s)");
-    Ok(())
-}
-
-fn calibrate(
-    project: &Path,
-    route_path: &Path,
-    target_difficulty: f64,
-    family: CalibrationFamily,
-    max_route_snap_m: Option<f64>,
-    write: bool,
-) -> Result<()> {
-    let mut config = load_config(project)?;
-    let graph = load_graph(project)?;
-    let route = snapped_route(
-        &graph,
-        route_path,
-        &config.constraints,
-        "calibration-route",
-        max_route_snap_m.unwrap_or(config.max_route_snap_m),
-    )?;
-    let calibration = calibrate_weights(
-        config.difficulty,
-        route.metrics.difficulty_breakdown,
-        target_difficulty,
-        family,
-    )?;
-    println!("{}", render_calibration(&calibration));
-    if write {
-        config.difficulty = calibration.weights;
-        save_config(project, &config)?;
-        let count = rerate_cached_graph(project, config.difficulty)?;
-        println!(
-            "wrote {}; rerated {count} cached edge(s)",
-            project.join("trailgen.toml").display()
-        );
-    } else {
-        println!("dry run; pass --write to update trailgen.toml and rerate cached graph surfaces");
-    }
-    Ok(())
-}
-
 fn snapped_route(
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     route_path: &Path,
     constraints: &LoopConstraints,
     name: &str,
@@ -3750,199 +3644,6 @@ fn ensure_route_snap_accepted(
     Ok(())
 }
 
-fn calibrate_weights(
-    weights: DifficultyWeights,
-    breakdown: DifficultyBreakdown,
-    target: f64,
-    family: CalibrationFamily,
-) -> Result<Calibration> {
-    if !target.is_finite() || target <= 0.0 {
-        bail!("target difficulty must be a positive finite number");
-    }
-    let before = breakdown.total();
-    let selected = family.contribution(breakdown);
-    if selected.abs() <= f64::EPSILON {
-        bail!("calibration family {family:?} has zero contribution on this route");
-    }
-    let fixed = before - selected;
-    let required = target - fixed;
-    let multiplier = required / selected;
-    if !multiplier.is_finite() || multiplier <= 0.0 {
-        bail!(
-            "target {target:.2} is unreachable by positively scaling {family:?}; fixed contribution is {fixed:.2}, selected contribution is {selected:.2}"
-        );
-    }
-    let mut calibrated = weights;
-    family.scale_weights(&mut calibrated, multiplier)?;
-    Ok(Calibration {
-        family,
-        before,
-        target,
-        selected,
-        fixed,
-        multiplier,
-        weights: calibrated,
-    })
-}
-
-fn render_calibration(calibration: &Calibration) -> String {
-    let mut text = String::new();
-    let after = calibration
-        .selected
-        .mul_add(calibration.multiplier, calibration.fixed);
-    let _ = writeln!(text, "family: {:?}", calibration.family);
-    let _ = writeln!(text, "before difficulty: {:.2}", calibration.before);
-    let _ = writeln!(text, "target difficulty: {:.2}", calibration.target);
-    let _ = writeln!(
-        text,
-        "selected/fixed contribution: {:.2} / {:.2}",
-        calibration.selected, calibration.fixed
-    );
-    let _ = writeln!(text, "weight multiplier: {:.6}", calibration.multiplier);
-    let _ = writeln!(text, "projected difficulty: {after:.2}");
-    let _ = writeln!(text, "\n{}", difficulty_toml(calibration.weights));
-    text
-}
-
-fn difficulty_toml(difficulty: DifficultyWeights) -> String {
-    toml::to_string_pretty(&DifficultySnippet { difficulty })
-        .expect("serializing difficulty snippet must not fail")
-}
-
-impl CalibrationFamily {
-    fn contribution(self, breakdown: DifficultyBreakdown) -> f64 {
-        match self {
-            Self::All => breakdown.total(),
-            Self::Distance => breakdown.distance,
-            Self::Elevation => breakdown.ascent + breakdown.descent,
-            Self::Ascent => breakdown.ascent,
-            Self::Descent => breakdown.descent,
-            Self::Grade => breakdown.grade,
-            Self::Terrain => breakdown.terrain,
-            Self::Road => breakdown.road,
-            Self::Technical => breakdown.technical,
-            Self::Navigation => breakdown.navigation,
-            Self::Bushwhack => breakdown.bushwhack,
-            Self::Confidence => breakdown.confidence,
-            Self::Access => breakdown.access,
-        }
-    }
-
-    fn scale_weights(self, weights: &mut DifficultyWeights, multiplier: f64) -> Result<()> {
-        match self {
-            Self::All => {
-                scale_global_weights(weights, multiplier);
-            }
-            Self::Distance => weights.distance_per_km *= multiplier,
-            Self::Elevation => {
-                weights.ascent_per_m *= multiplier;
-                weights.descent_per_m *= multiplier;
-            }
-            Self::Ascent => weights.ascent_per_m *= multiplier,
-            Self::Descent => weights.descent_per_m *= multiplier,
-            Self::Grade => weights.grade_per_abs_fraction *= multiplier,
-            Self::Terrain => scale_terrain_offsets(weights, multiplier),
-            Self::Road => weights.road_effort_penalty *= multiplier,
-            Self::Technical => weights.technical_penalty *= multiplier,
-            Self::Navigation => weights.navigation_penalty *= multiplier,
-            Self::Bushwhack => weights.bushwhack_penalty *= multiplier,
-            Self::Confidence => weights.low_confidence_penalty *= multiplier,
-            Self::Access => weights.closed_access_penalty *= multiplier,
-        }
-        ensure_valid_difficulty_weights(*weights)
-    }
-}
-
-fn scale_global_weights(weights: &mut DifficultyWeights, multiplier: f64) {
-    weights.distance_per_km *= multiplier;
-    weights.ascent_per_m *= multiplier;
-    weights.descent_per_m *= multiplier;
-    weights.grade_per_abs_fraction *= multiplier;
-    scale_terrain_offsets(weights, multiplier);
-    weights.road_effort_penalty *= multiplier;
-    weights.technical_penalty *= multiplier;
-    weights.navigation_penalty *= multiplier;
-    weights.bushwhack_penalty *= multiplier;
-    weights.low_confidence_penalty *= multiplier;
-    weights.closed_access_penalty *= multiplier;
-}
-
-fn scale_terrain_offsets(weights: &mut DifficultyWeights, multiplier: f64) {
-    macro_rules! scale {
-        ($field:ident) => {
-            weights.terrain_multipliers.$field =
-                (weights.terrain_multipliers.$field - 1.0).mul_add(multiplier, 1.0);
-        };
-    }
-    scale!(unknown);
-    scale!(trail);
-    scale!(forest);
-    scale!(alpine);
-    scale!(talus);
-    scale!(scramble);
-    scale!(pavement);
-    scale!(road);
-    scale!(water);
-}
-
-fn ensure_valid_difficulty_weights(weights: DifficultyWeights) -> Result<()> {
-    let scalar_weights = [
-        ("distance_per_km", weights.distance_per_km),
-        ("ascent_per_m", weights.ascent_per_m),
-        ("descent_per_m", weights.descent_per_m),
-        ("grade_per_abs_fraction", weights.grade_per_abs_fraction),
-        ("technical_penalty", weights.technical_penalty),
-        ("navigation_penalty", weights.navigation_penalty),
-        ("bushwhack_penalty", weights.bushwhack_penalty),
-        ("low_confidence_penalty", weights.low_confidence_penalty),
-        ("closed_access_penalty", weights.closed_access_penalty),
-        (
-            "terrain_multipliers.unknown",
-            weights.terrain_multipliers.unknown,
-        ),
-        (
-            "terrain_multipliers.trail",
-            weights.terrain_multipliers.trail,
-        ),
-        (
-            "terrain_multipliers.forest",
-            weights.terrain_multipliers.forest,
-        ),
-        (
-            "terrain_multipliers.alpine",
-            weights.terrain_multipliers.alpine,
-        ),
-        (
-            "terrain_multipliers.talus",
-            weights.terrain_multipliers.talus,
-        ),
-        (
-            "terrain_multipliers.scramble",
-            weights.terrain_multipliers.scramble,
-        ),
-        (
-            "terrain_multipliers.pavement",
-            weights.terrain_multipliers.pavement,
-        ),
-        ("terrain_multipliers.road", weights.terrain_multipliers.road),
-        (
-            "terrain_multipliers.water",
-            weights.terrain_multipliers.water,
-        ),
-    ];
-    for (name, value) in scalar_weights {
-        if !value.is_finite() || value <= 0.0 {
-            bail!("calibration produced invalid {name}={value}");
-        }
-    }
-    ensure!(
-        weights.road_effort_penalty.is_finite() && weights.road_effort_penalty >= 0.0,
-        "calibration produced invalid road_effort_penalty={}",
-        weights.road_effort_penalty
-    );
-    Ok(())
-}
-
 fn export_route(
     project: &Path,
     route_name: &str,
@@ -3993,7 +3694,7 @@ fn report_generated(project: &Path, route_name: Option<&str>, output: Option<&Pa
 
 fn render_selected_generated_report(
     project: &Path,
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     route: &Route,
 ) -> Result<String> {
     render_generated_report_with_title(
@@ -4004,14 +3705,14 @@ fn render_selected_generated_report(
     )
 }
 
-fn render_generated_report(project: &Path, graph: &TrailGraph, routes: &[Route]) -> Result<String> {
+fn render_generated_report(project: &Path, graph: &WalkGraph, routes: &[Route]) -> Result<String> {
     render_generated_report_with_title(project, "Generated Hiking Routes", graph, routes)
 }
 
 fn render_generated_report_with_title(
     project: &Path,
     title: &str,
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     routes: &[Route],
 ) -> Result<String> {
     let constraints = load_generated_constraints(project)?.unwrap_or_else(|| {
@@ -4052,7 +3753,7 @@ fn map_html(project: &Path, output: Option<&Path>) -> Result<()> {
     clippy::too_many_lines,
     reason = "A self-contained offline HTML artifact is clearer as one template than as scattered string shards."
 )]
-fn render_map_html(project_name: &str, graph: &TrailGraph, routes: &[Route]) -> Result<String> {
+fn render_map_html(project_name: &str, graph: &WalkGraph, routes: &[Route]) -> Result<String> {
     let graph_json = js_json(&geojson::graph_to_geojson(graph))?;
     let routes_json = js_json(&geojson::routes_to_geojson(graph, routes))?;
     let title = html_text(project_name);
@@ -4110,7 +3811,7 @@ small {{ color: #a0aec0; }}
 <h2>Encoding</h2>
 <div class="diag">
 <dt>edge color</dt><dd>terrain bucket</dd>
-<dt>edge width</dt><dd>scalar difficulty</dd>
+<dt>edge width</dt><dd>mean bidirectional lower-limb load</dd>
 <dt>edge opacity</dt><dd>confidence</dd>
 <dt>dashed edge</dt><dd>closed access</dd>
 </div>
@@ -4162,13 +3863,10 @@ function el(name, attrs) {{
 }}
 function pct(x) {{ return `${{(100 * (x || 0)).toFixed(1)}}%`; }}
 function km(x) {{ return `${{((x || 0) / 1000).toFixed(2)}} km`; }}
+function hours(x) {{ return `${{(Number(x || 0) / 3600).toFixed(2)}} h`; }}
 function scalar(x, digits = 1) {{ return Number(x || 0).toFixed(digits); }}
 function topEntries(obj, n = 4) {{
   return Object.entries(obj || {{}}).filter(([, v]) => Number(v) > 0).sort((a, b) => Number(b[1]) - Number(a[1])).slice(0, n);
-}}
-function difficultyText(breakdown) {{
-  const xs = topEntries(breakdown, 5);
-  return xs.length ? xs.map(([k, v]) => `${{k}} ${{scalar(v)}}`).join(', ') : 'none';
 }}
 function mixText(obj) {{
   const xs = topEntries(obj, 6);
@@ -4200,7 +3898,7 @@ function directedTravelText(e) {{
   return `edge ${{e.edge_id}} ${{e.travel || 'unknown'}} ${{km(e.length_m)}} ${{pct(e.confidence)}}`;
 }}
 function routeText(p) {{
-  return `${{p.name}} | rank ${{p.pareto_rank}} | ${{km(p.distance_m)}} | ascent ${{(p.ascent_m || 0).toFixed(0)}} m | difficulty ${{(p.difficulty || 0).toFixed(1)}} | road ${{pct(p.road_fraction)}} | low confidence ${{pct(p.low_confidence_fraction)}} | restricted ${{pct(p.restricted_access_fraction)}}`;
+  return `${{p.name}} | rank ${{p.pareto_rank}} | ${{km(p.distance_m)}} | ascent ${{(p.ascent_m || 0).toFixed(0)}} m | load ${{scalar(p.lower_limb_load_km)}} FGJW km | moving ${{hours(p.moving_time_s)}} | road ${{pct(p.road_fraction)}} | low confidence ${{pct(p.low_confidence_fraction)}} | restricted ${{pct(p.restricted_access_fraction)}}`;
 }}
 function escapeHtml(x) {{
   return String(x).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
@@ -4222,27 +3920,29 @@ function edgeSummary(p) {{
     ${{metricRow('length', km(p.length_m))}}
     ${{metricRow('ascent/descent', `${{scalar(p.ascent_m, 0)}} m / ${{scalar(p.descent_m, 0)}} m`)}}
     ${{metricRow('max grade', pct(p.grade_abs_max))}}
-    ${{metricRow('difficulty', scalar(p.difficulty))}}
+    ${{metricRow('forward lower-limb load', `${{scalar(p.traversal?.forward?.lower_limb_load_km)}} FGJW km`)}}
+    ${{metricRow('forward moving time', hours(p.traversal?.forward?.moving_time_s))}}
+    ${{metricRow('reverse lower-limb load', `${{scalar(p.traversal?.reverse?.lower_limb_load_km)}} FGJW km`)}}
+    ${{metricRow('reverse moving time', hours(p.traversal?.reverse?.moving_time_s))}}
     ${{metricRow('confidence', pct(p.confidence))}}
     ${{metricRow('terrain evidence', (p.terrain_evidence || []).slice(0, 2).map(e => `${{e.terrain}} ${{pct(e.confidence)}}: ${{e.rationale}}`).join(' | ') || 'none')}}
-    ${{metricRow('difficulty factors', difficultyText(p.difficulty_breakdown))}}
   </dl>${{confidenceMeter(p.confidence)}}${{rawBlock('edge', p)}}`;
 }}
 function routeDiagnostics(p) {{
   const edges = (p.edges || []).map(id => edgeById[id]).filter(Boolean);
   const dubious = edges.slice().sort((a, b) => Number(a.confidence || 0) - Number(b.confidence || 0)).slice(0, 5);
-  const brutal = edges.slice().sort((a, b) => Number(b.difficulty || 0) - Number(a.difficulty || 0)).slice(0, 5);
+  const brutal = edges.slice().sort((a, b) => Number(b.traversal?.forward?.lower_limb_load_km || 0) - Number(a.traversal?.forward?.lower_limb_load_km || 0)).slice(0, 5);
   const routeDubious = (p.dubious_edges || []).map(e => `edge ${{e.edge_id}} ${{pct(e.confidence)}} ${{e.terrain || 'unknown'}}`);
   const routeLowConfidence = (p.low_confidence_edges || []).map(e => `edge ${{e.edge_id}} ${{pct(e.confidence)}} ${{e.terrain || 'unknown'}}`);
   const routeAccessWarnings = (p.access_warning_edges || []).map(accessWarningText);
   const routeDirectedTravel = (p.directed_travel_edges || []).map(directedTravelText);
-  const routeHotspots = (p.difficulty_hotspots || []).map(e => `edge ${{e.edge_id}} ${{e.factor}} ${{scalar(e.value)}} ${{e.terrain || 'unknown'}}`);
+  const routeHotspots = (p.lower_limb_load_hotspots || []).map(e => `edge ${{e.edge_id}} ${{scalar(e.lower_limb_load_km)}} FGJW km ${{e.terrain || 'unknown'}}`);
   return {{
     accessWarnings: routeAccessWarnings.join(', ') || 'none',
     directedTravel: routeDirectedTravel.join(', ') || 'none',
     lowConfidence: routeLowConfidence.join(', ') || 'none',
     dubious: routeDubious.join(', ') || dubious.map(e => `edge ${{e.edge_id}} ${{pct(e.confidence)}} ${{e.terrain || 'unknown'}}`).join(', ') || 'none',
-    brutal: routeHotspots.join(', ') || brutal.map(e => `edge ${{e.edge_id}} ${{scalar(e.difficulty)}} ${{e.terrain || 'unknown'}}`).join(', ') || 'none'
+    brutal: routeHotspots.join(', ') || brutal.map(e => `edge ${{e.edge_id}} ${{scalar(e.traversal?.forward?.lower_limb_load_km)}} FGJW km ${{e.terrain || 'unknown'}}`).join(', ') || 'none'
   }};
 }}
 function constraintAudit(p) {{
@@ -4262,9 +3962,9 @@ function routeSummary(p) {{
     ${{metricRow('ascent/descent', `${{scalar(p.ascent_m, 0)}} m / ${{scalar(p.descent_m, 0)}} m`)}}
     ${{metricRow('sustained steepness', km(p.sustained_steep_m))}}
     ${{metricRow('grade distribution', gradeText(p.grade_distribution))}}
-    ${{metricRow('difficulty', scalar(p.difficulty))}}
-    ${{metricRow('difficulty factors', difficultyText(p.difficulty_breakdown))}}
-    ${{metricRow('road/pavement', pct(p.road_fraction))}}
+    ${{metricRow('lower-limb load', `${{scalar(p.lower_limb_load_km)}} FGJW km`)}}
+    ${{metricRow('population moving time', hours(p.moving_time_s))}}
+    ${{metricRow('road exposure', pct(p.road_fraction))}}
     ${{metricRow('low confidence', pct(p.low_confidence_fraction))}}
     ${{metricRow('restricted access', pct(p.restricted_access_fraction))}}
     ${{metricRow('repeated edge', pct(p.repeated_edge_fraction))}}
@@ -4275,7 +3975,7 @@ function routeSummary(p) {{
     ${{metricRow('directed travel constraints', d.directedTravel)}}
     ${{metricRow('low-confidence segments', d.lowConfidence)}}
     ${{metricRow('dubious segments', d.dubious)}}
-    ${{metricRow('largest difficulty contributors', d.brutal)}}
+    ${{metricRow('largest lower-limb load contributors', d.brutal)}}
   </dl>${{constraintAudit(p)}}${{rawBlock('route', p)}}`;
 }}
 function refreshRouteSelection() {{
@@ -4314,7 +4014,7 @@ for (const f of graph.features) {{
     d: path(f),
     class: `edge ${{p.access === 'closed' ? 'closed' : ''}}`,
     stroke: terrainColors[terrain] || terrainColors.unknown,
-    'stroke-width': Math.max(1, Math.min(5, 1 + Math.log10(1 + (p.difficulty || 0)))),
+    'stroke-width': Math.max(1, Math.min(5, 1 + Math.log10(1 + ((p.traversal?.forward?.lower_limb_load_km || 0) + (p.traversal?.reverse?.lower_limb_load_km || 0)) / 2))),
     opacity: Math.max(.18, Math.min(.9, p.confidence || .5))
   }});
   edge.addEventListener('click', () => show('edge', p));
@@ -4359,7 +4059,7 @@ fn html_text(raw: &str) -> String {
 fn render_project_report(
     project: &Path,
     title: &str,
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     routes: &[Route],
     constraints: &LoopConstraints,
 ) -> Result<String> {
@@ -4376,7 +4076,7 @@ fn render_project_report(
 
 fn render_report(
     title: &str,
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     routes: &[Route],
     constraints: &LoopConstraints,
     ledger: Option<&GenerationLedger>,
@@ -4392,7 +4092,7 @@ fn render_report(
 fn render_generation_ledger_section(
     text: &mut String,
     ledger: Option<&GenerationLedger>,
-    graph: &TrailGraph,
+    graph: &WalkGraph,
 ) {
     let Some(ledger) = ledger else {
         return;
@@ -4459,7 +4159,7 @@ fn render_generation_seed_ledger(text: &mut String, seed_ledger: Option<&SeedLed
     }
 }
 
-fn render_generation_graph_ledger(text: &mut String, graph: &TrailGraph) {
+fn render_generation_graph_ledger(text: &mut String, graph: &WalkGraph) {
     let elevation = graph_elevation_stats(graph);
     let edge_km = graph
         .edges
@@ -4501,8 +4201,17 @@ fn render_constraints_section(text: &mut String, constraints: &LoopConstraints) 
     );
     let _ = writeln!(
         text,
-        "- scalar difficulty: {:.2}–{:.2}",
-        constraints.min_difficulty, constraints.max_difficulty
+        "- lower-limb load: {:.2}–{:.2} FGJW km",
+        constraints.min_lower_limb_load_km, constraints.max_lower_limb_load_km
+    );
+    if let Some(target) = constraints.target_lower_limb_load_km {
+        let _ = writeln!(text, "- target lower-limb load: {target:.2} FGJW km");
+    }
+    let _ = writeln!(
+        text,
+        "- population moving time: {:.2}–{:.2} h",
+        constraints.min_moving_time_s / 3_600.0,
+        constraints.max_moving_time_s / 3_600.0
     );
     let _ = writeln!(
         text,
@@ -4516,7 +4225,7 @@ fn render_constraints_section(text: &mut String, constraints: &LoopConstraints) 
     );
     let _ = writeln!(
         text,
-        "- max road/pavement exposure: {:.1}%",
+        "- max road exposure: {:.1}%",
         constraints.max_road_fraction * 100.0
     );
     let _ = writeln!(
@@ -4991,9 +4700,6 @@ fn import_seed(
     let archived_route = archive_seed_route(project, route, &seed.name)?;
     seed.source_path = archived_route.display().to_string();
     graph.apply_seed_hints(&seed);
-    for edge in &mut graph.edges {
-        config.difficulty.apply_edge(edge);
-    }
     save_graph(project, &graph)?;
 
     seeds.retain(|old| old.name != seed.name);
@@ -5103,13 +4809,8 @@ fn apply_access(
         .iter()
         .flat_map(|bundle| bundle.overlays.iter().cloned())
         .collect::<Vec<_>>();
-    restore_or_capture_access_baseline(project, &mut graph, &overlays, config.difficulty)?;
-    let touched = apply_access_overlays_at(
-        &mut graph,
-        &overlays,
-        config.planning_moment(),
-        config.difficulty,
-    );
+    restore_or_capture_access_baseline(project, &mut graph, &overlays)?;
+    let touched = apply_access_overlays_at(&mut graph, &overlays, config.planning_moment());
     save_graph(project, &graph)?;
     fs::create_dir_all(project.join("sources"))?;
     write_json(project.join("sources/access-overlays.json"), &overlays)?;
@@ -5139,12 +4840,11 @@ fn access_overlays(source: &Path) -> Result<Vec<trailgen_core::AccessOverlay>> {
 
 fn restore_or_capture_access_baseline(
     project: &Path,
-    graph: &mut TrailGraph,
+    graph: &mut WalkGraph,
     overlays: &[AccessOverlay],
-    weights: DifficultyWeights,
 ) -> Result<()> {
     if let Some(baseline) = load_access_baseline(project)? {
-        baseline.restore(graph, weights)?;
+        baseline.restore(graph)?;
         return Ok(());
     }
     if graph_contains_access_overlays(graph, overlays) {
@@ -5158,43 +4858,36 @@ fn restore_or_capture_access_baseline(
     )
 }
 
-fn materialize_effective_graph(project: &Path, config: &ProjectConfig) -> Result<TrailGraph> {
+fn materialize_effective_graph(project: &Path, config: &ProjectConfig) -> Result<WalkGraph> {
     let mut graph = load_graph(project)?;
     let overlays = load_stored_access_overlays(project)?;
     if overlays.is_empty() {
         return Ok(graph);
     }
     if let Some(baseline) = load_access_baseline(project)? {
-        baseline.restore(&mut graph, config.difficulty)?;
+        baseline.restore(&mut graph)?;
     } else if graph_contains_access_overlays(&graph, &overlays) {
         bail!(
             "cached graph contains access-overlay provenance but sources/access-baseline.json is missing; rebuild graph and rerun apply-access before date-specific generation"
         );
     }
-    apply_access_overlays_at(
-        &mut graph,
-        &overlays,
-        config.planning_moment(),
-        config.difficulty,
-    );
+    apply_access_overlays_at(&mut graph, &overlays, config.planning_moment());
     Ok(graph)
 }
 
 fn apply_forbidden_area_sources(
-    graph: &mut TrailGraph,
+    graph: &mut WalkGraph,
     sources: &[PathBuf],
-    weights: DifficultyWeights,
 ) -> Result<Vec<ForbiddenAreaManifest>> {
     sources
         .iter()
-        .map(|source| apply_forbidden_area_source(graph, source, weights))
+        .map(|source| apply_forbidden_area_source(graph, source))
         .collect()
 }
 
 fn apply_forbidden_area_source(
-    graph: &mut TrailGraph,
+    graph: &mut WalkGraph,
     source: &Path,
-    weights: DifficultyWeights,
 ) -> Result<ForbiddenAreaManifest> {
     let fingerprint = source_fingerprint(source)?;
     let mut overlays = access_overlays(source)
@@ -5206,7 +4899,7 @@ fn apply_forbidden_area_source(
         );
     }
     force_forbidden_area_overlays(source, &mut overlays);
-    let touched_edges = apply_access_overlays(graph, &overlays, None, weights);
+    let touched_edges = apply_access_overlays(graph, &overlays, None);
     if touched_edges == 0 {
         bail!(
             "forbidden area source {} touched no graph edges; check CRS, AOI, and overlay geometry",
@@ -5260,7 +4953,7 @@ fn forbidden_area_adapter_id(source: &Path) -> String {
     )
 }
 
-fn graph_contains_access_overlays(graph: &TrailGraph, overlays: &[AccessOverlay]) -> bool {
+fn graph_contains_access_overlays(graph: &WalkGraph, overlays: &[AccessOverlay]) -> bool {
     graph.edges.iter().any(|edge| {
         overlays.iter().any(|overlay| {
             edge.attr
@@ -5272,10 +4965,9 @@ fn graph_contains_access_overlays(graph: &TrailGraph, overlays: &[AccessOverlay]
 }
 
 fn apply_terrain(project: &Path, source: &Path) -> Result<()> {
-    let config = load_config(project)?;
     let mut graph = load_graph(project)?;
     let overlays = terrain_overlays(source)?;
-    let touched = apply_terrain_overlays(&mut graph, &overlays, config.difficulty);
+    let touched = apply_terrain_overlays(&mut graph, &overlays);
     save_graph(project, &graph)?;
     fs::create_dir_all(project.join("sources"))?;
     write_json(project.join("sources/terrain-overlays.json"), &overlays)?;
@@ -5341,7 +5033,7 @@ impl AppliedElevation {
 }
 
 fn apply_elevation_source(
-    graph: &mut TrailGraph,
+    graph: &mut WalkGraph,
     source: &Path,
     confidence: f64,
     config: &ProjectConfig,
@@ -5400,7 +5092,7 @@ fn apply_elevation_mosaic(project: &Path, sources: &[PathBuf], confidence: f64) 
         rasters.push(loaded.dem);
     }
     let mosaic = ElevationMosaic::new(rasters)?;
-    enrich_graph(&mut graph, &mosaic, config.enrichment, config.difficulty)
+    enrich_graph(&mut graph, &mosaic, config.enrichment)
         .with_context(|| "apply elevation mosaic")?;
     save_graph(project, &graph)?;
     write_json(
@@ -5417,13 +5109,13 @@ fn apply_elevation_mosaic(project: &Path, sources: &[PathBuf], confidence: f64) 
 }
 
 fn apply_arc_ascii_elevation(
-    graph: &mut TrailGraph,
+    graph: &mut WalkGraph,
     source: &Path,
     confidence: f64,
     config: &ProjectConfig,
 ) -> Result<AppliedElevation> {
     let raster = load_arc_ascii_grid(source, confidence)?;
-    enrich_graph(graph, &raster, config.enrichment, config.difficulty)
+    enrich_graph(graph, &raster, config.enrichment)
         .with_context(|| "apply Arc/Info ASCII elevation raster")?;
     let (ncols, nrows) = (raster.ncols, raster.nrows);
     Ok(AppliedElevation {
@@ -5447,13 +5139,13 @@ fn apply_arc_ascii_elevation(
 }
 
 fn apply_geotiff_elevation(
-    graph: &mut TrailGraph,
+    graph: &mut WalkGraph,
     source: &Path,
     confidence: f64,
     config: &ProjectConfig,
 ) -> Result<AppliedElevation> {
     let raster = load_geotiff_dem(source, confidence)?;
-    enrich_graph(graph, &raster, config.enrichment, config.difficulty)
+    enrich_graph(graph, &raster, config.enrichment)
         .with_context(|| "apply GeoTIFF elevation raster")?;
     let (width, height) = (raster.width, raster.height);
     Ok(AppliedElevation {
@@ -5477,13 +5169,13 @@ fn apply_geotiff_elevation(
 }
 
 fn apply_vrt_elevation(
-    graph: &mut TrailGraph,
+    graph: &mut WalkGraph,
     source: &Path,
     confidence: f64,
     config: &ProjectConfig,
 ) -> Result<AppliedElevation> {
     let raster = load_vrt_dem(source, confidence)?;
-    enrich_graph(graph, &raster, config.enrichment, config.difficulty)
+    enrich_graph(graph, &raster, config.enrichment)
         .with_context(|| "apply VRT elevation raster")?;
     let (width, height) = (raster.width, raster.height);
     Ok(AppliedElevation {
@@ -5559,10 +5251,9 @@ fn load_vrt_dem(source: &Path, confidence: f64) -> Result<VrtDem> {
 }
 
 fn apply_context(project: &Path, source: &Path) -> Result<()> {
-    let config = load_config(project)?;
     let mut graph = load_graph(project)?;
     let overlays = context_overlays(source)?;
-    let crossings = apply_context_overlays(&mut graph, &overlays, config.difficulty);
+    let crossings = apply_context_overlays(&mut graph, &overlays);
     save_graph(project, &graph)?;
     fs::create_dir_all(project.join("sources"))?;
     write_json(project.join("sources/context-overlays.json"), &overlays)?;
@@ -5615,13 +5306,13 @@ fn save_config(project: &Path, config: &ProjectConfig) -> Result<()> {
     .with_context(|| format!("write {}", project.join("trailgen.toml").display()))
 }
 
-fn load_graph(project: &Path) -> Result<TrailGraph> {
-    let raw = fs::read_to_string(project.join("cache/graph.json"))
-        .with_context(|| "read cache/graph.json; run `trailgen build` first")?;
-    load_graph_json(&raw)
+fn load_graph(project: &Path) -> Result<WalkGraph> {
+    let raw = fs::read(project.join(GRAPH_CACHE))
+        .with_context(|| format!("read {GRAPH_CACHE}; run `trailgen build` first"))?;
+    decode_graph(&raw).map_err(Into::into)
 }
 
-fn load_generated_graph(project: &Path) -> Result<TrailGraph> {
+fn load_generated_graph(project: &Path) -> Result<WalkGraph> {
     let path = project.join("routes/generated.graph.json");
     if path.exists() {
         let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
@@ -5635,11 +5326,11 @@ fn load_generated_graph(project: &Path) -> Result<TrailGraph> {
     materialize_effective_graph(project, &config)
 }
 
-fn load_graph_json(raw: &str) -> Result<TrailGraph> {
+fn load_graph_json(raw: &str) -> Result<WalkGraph> {
     Ok(serde_json::from_str(raw)?)
 }
 
-fn save_graph(project: &Path, graph: &TrailGraph) -> Result<()> {
+fn save_graph(project: &Path, graph: &WalkGraph) -> Result<()> {
     trailgen_data::store_graph(project, graph)
 }
 
@@ -5663,16 +5354,6 @@ fn load_stored_access_overlays(project: &Path) -> Result<Vec<AccessOverlay>> {
     }
     let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     serde_json::from_str(&raw).map_err(Into::into)
-}
-
-fn rerate_cached_graph(project: &Path, weights: DifficultyWeights) -> Result<usize> {
-    let mut graph = load_graph(project)?;
-    for edge in &mut graph.edges {
-        weights.apply_edge(edge);
-    }
-    let count = graph.edges.len();
-    save_graph(project, &graph)?;
-    Ok(count)
 }
 
 fn load_route_line(path: &Path) -> Result<LineString> {
@@ -6184,7 +5865,7 @@ struct GenerationManifestInput<'a> {
     options: &'a GenerateOptions,
     config: &'a ProjectConfig,
     forbidden_areas: &'a [ForbiddenAreaManifest],
-    graph: &'a TrailGraph,
+    graph: &'a WalkGraph,
     start: StartSnap,
     routes: &'a [Route],
     solver_label: &'static str,
@@ -6286,7 +5967,7 @@ fn remove_obsolete_generation_artifacts(
     Ok(())
 }
 
-fn graph_manifest(graph: &TrailGraph) -> GraphManifest {
+fn graph_manifest(graph: &WalkGraph) -> GraphManifest {
     let mut terrain_km = BTreeMap::<Terrain, f64>::new();
     for edge in &graph.edges {
         *terrain_km.entry(edge.attr.terrain).or_default() += edge.attr.length_m / 1_000.0;
@@ -6316,7 +5997,7 @@ fn graph_manifest(graph: &TrailGraph) -> GraphManifest {
     }
 }
 
-fn graph_elevation_stats(graph: &TrailGraph) -> GraphElevationStats {
+fn graph_elevation_stats(graph: &WalkGraph) -> GraphElevationStats {
     let mut stats = GraphElevationStats::default();
     for edge in &graph.edges {
         let a = &edge.attr;
@@ -6341,7 +6022,7 @@ fn graph_elevation_stats(graph: &TrailGraph) -> GraphElevationStats {
     stats
 }
 
-fn directed_travel_edge_count(graph: &TrailGraph) -> usize {
+fn directed_travel_edge_count(graph: &WalkGraph) -> usize {
     graph
         .edges
         .iter()
@@ -6349,7 +6030,7 @@ fn directed_travel_edge_count(graph: &TrailGraph) -> usize {
         .count()
 }
 
-fn turn_ban_sources(graph: &TrailGraph) -> BTreeMap<String, usize> {
+fn turn_ban_sources(graph: &WalkGraph) -> BTreeMap<String, usize> {
     graph
         .turn_bans
         .iter()
@@ -6718,7 +6399,7 @@ fn local_input_path(input: &str) -> Option<PathBuf> {
     }
 }
 
-fn crossing_totals(graph: &TrailGraph) -> BTreeMap<CrossingKind, u32> {
+fn crossing_totals(graph: &WalkGraph) -> BTreeMap<CrossingKind, u32> {
     let mut totals = BTreeMap::new();
     for crossing in graph
         .edges
@@ -6963,8 +6644,11 @@ mod tests {
             source_gate: None,
             date: None,
             time: None,
-            min_difficulty: None,
-            max_difficulty: None,
+            min_lower_limb_load_km: None,
+            max_lower_limb_load_km: None,
+            target_lower_limb_load_km: None,
+            min_moving_time_h: None,
+            max_moving_time_h: None,
             min_ascent_m: None,
             max_ascent_m: None,
             min_descent_m: None,
@@ -6984,7 +6668,7 @@ mod tests {
     fn forbidden_area_generate_options(forbidden: PathBuf) -> GenerateOptions {
         GenerateOptions {
             solver: Some(SolverKind::Exact),
-            max_difficulty: Some(10_000.0),
+            max_lower_limb_load_km: Some(10_000.0),
             forbidden_area: vec![forbidden],
             ..mini_generate_options()
         }
@@ -7033,11 +6717,16 @@ mod tests {
     }
 
     #[test]
-    fn generate_options_can_override_terrain_mix_constraints() {
+    fn generate_options_project_physical_and_terrain_constraints() {
         let mut constraints = LoopConstraints::default();
         apply_generate_options(
             &mut constraints,
             &GenerateOptions {
+                min_lower_limb_load_km: Some(40.0),
+                max_lower_limb_load_km: Some(80.0),
+                target_lower_limb_load_km: Some(60.0),
+                min_moving_time_h: Some(8.0),
+                max_moving_time_h: Some(14.0),
                 max_restricted_access_fraction: Some(0.25),
                 forbidden_terrain: vec![Terrain::Pavement, Terrain::Road],
                 min_terrain: vec![TerrainFraction {
@@ -7052,6 +6741,11 @@ mod tests {
             },
         );
 
+        assert!(nearly_equal(constraints.min_lower_limb_load_km, 40.0));
+        assert!(nearly_equal(constraints.max_lower_limb_load_km, 80.0));
+        assert_eq!(constraints.target_lower_limb_load_km, Some(60.0));
+        assert!(nearly_equal(constraints.min_moving_time_s, 28_800.0));
+        assert!(nearly_equal(constraints.max_moving_time_s, 50_400.0));
         assert_eq!(
             constraints.forbidden_terrain,
             vec![Terrain::Pavement, Terrain::Road]
@@ -7087,9 +6781,11 @@ mod tests {
             SegmentDraft {
                 junctions: JunctionPolicy::default(),
                 turn_ref: Some("trail".to_owned()),
+                junction_keys: None,
                 turn_restrictions: vec![trailgen_core::TurnRestrictionDraft {
                     from: "trail".to_owned(),
                     via: Coord::new(0.01, 0.0),
+                    via_key: None,
                     to: "restricted-road".to_owned(),
                     rule: trailgen_core::TurnRestrictionRule::No,
                     provenance: turn_source,
@@ -7099,7 +6795,10 @@ mod tests {
                     Coord::with_ele(0.01, 0.0, 1_030.0),
                 ])
                 .unwrap(),
-                trail_class: TrailClass::default(),
+                way_kind: WayKind::default(),
+                realm: trailgen_core::WayRealm::default(),
+                geometry_claim: trailgen_core::GeometryClaim::default(),
+                crossing_control: trailgen_core::CrossingControl::default(),
                 standing: TrailStanding::Unknown,
                 marking: TrailMarking::default(),
                 terrain: Terrain::Trail,
@@ -7114,10 +6813,14 @@ mod tests {
             SegmentDraft {
                 junctions: JunctionPolicy::default(),
                 turn_ref: Some("restricted-road".to_owned()),
+                junction_keys: None,
                 turn_restrictions: Vec::new(),
                 geometry: LineString::new(vec![Coord::new(0.01, 0.0), Coord::new(0.02, 0.0)])
                     .unwrap(),
-                trail_class: TrailClass::default(),
+                way_kind: WayKind::default(),
+                realm: trailgen_core::WayRealm::default(),
+                geometry_claim: trailgen_core::GeometryClaim::default(),
+                crossing_control: trailgen_core::CrossingControl::default(),
                 standing: TrailStanding::Unknown,
                 marking: TrailMarking::default(),
                 terrain: Terrain::Road,
@@ -7170,13 +6873,17 @@ mod tests {
         build(project, &fixture)?;
 
         let vertices = fs::read_to_string(project.join("cache/vertices.csv"))?;
-        assert!(vertices.starts_with("vertex_id,lon,lat,elevation_m,wkt\n"));
+        assert!(vertices.starts_with("vertex_id,junction_id,lon,lat,elevation_m,wkt\n"));
         assert!(vertices.contains("POINT Z ("));
 
         let edges = fs::read_to_string(project.join("cache/edges.csv"))?;
         assert!(edges.starts_with("edge_id,from_vertex,to_vertex,travel,length_m,"));
+        assert!(edges.contains("way_kind,realm,geometry_claim,crossing_control"));
         assert!(edges.contains("terrain_confidence,terrain_evidence,access,access_confidence"));
-        assert!(edges.contains("access_provenance,road_exposure,confidence,difficulty"));
+        assert!(
+            edges.contains("access_provenance,road_exposure,confidence,lower_limb_load_forward_km")
+        );
+        assert!(edges.contains("moving_time_forward_s,lower_limb_load_reverse_km"));
         assert!(edges.contains("seed_provenance,elevation_provenance"));
         assert!(edges.contains("LINESTRING Z ("));
         assert!(edges.contains("fixture:north"));
@@ -7217,6 +6924,10 @@ mod tests {
         assert!(lp.contains("flow_start_supplies_visited_vertices"));
         assert!(lp.contains("distance_min:"));
         assert!(lp.contains("distance_max:"));
+        assert!(lp.contains("lower_limb_load_min:"));
+        assert!(lp.contains("lower_limb_load_max:"));
+        assert!(lp.contains("moving_time_min:"));
+        assert!(lp.contains("moving_time_max:"));
         assert!(lp.contains("Binary\n"));
         Ok(())
     }
@@ -7282,7 +6993,7 @@ mod tests {
         Ok(())
     }
 
-    fn milp_solution_from_route(graph: &TrailGraph, route: &Route) -> String {
+    fn milp_solution_from_route(graph: &WalkGraph, route: &Route) -> String {
         let mut at = route.start;
         let mut out = String::new();
         for edge_id in &route.edges {
@@ -7443,16 +7154,13 @@ mod tests {
         let trails = overpass_query(OsmProfile::Trails, area, 45);
         assert!(trails.starts_with("[out:xml][timeout:45];"));
         assert!(trails.contains(&format!(
-            r#"way["highway"~"^(path|track|steps|bridleway)$"]{bbox};"#
+            r#"way["highway"~"^(path|footway|cycleway|pedestrian|track|steps|bridleway)$"]{bbox};"#
         )));
         assert!(trails.contains(&format!(
-            r#"way["highway"="footway"]["footway"!~"^(sidewalk|crossing|traffic_island)$"]{bbox};"#
+            r#"way["disused:highway"~"^(path|footway|cycleway|track|pedestrian|steps|bridleway)$"]{bbox};"#
         )));
         assert!(trails.contains(&format!(
-            r#"way["disused:highway"~"^(path|footway|track|pedestrian|steps|bridleway)$"]{bbox};"#
-        )));
-        assert!(trails.contains(&format!(
-            r#"way["abandoned:highway"~"^(path|footway|track|pedestrian|steps|bridleway)$"]{bbox};"#
+            r#"way["abandoned:highway"~"^(path|footway|cycleway|track|pedestrian|steps|bridleway)$"]{bbox};"#
         )));
         assert!(trails.contains(&format!(r#"way["route"~"^(hiking|foot|walking)$"]{bbox};"#)));
         assert!(
@@ -8034,8 +7742,11 @@ mod tests {
             source_gate: None,
             date: None,
             time: None,
-            min_difficulty: None,
-            max_difficulty: None,
+            min_lower_limb_load_km: None,
+            max_lower_limb_load_km: None,
+            target_lower_limb_load_km: None,
+            min_moving_time_h: None,
+            max_moving_time_h: None,
             min_ascent_m: None,
             max_ascent_m: None,
             min_descent_m: None,
@@ -8174,7 +7885,8 @@ mod tests {
         let report = fs::read_to_string(report)?;
         assert!(report.starts_with("# Rated Hiking Route"));
         assert!(report.contains("rated-route"));
-        assert!(report.contains("Difficulty decomposition"));
+        assert!(report.contains("lower-limb load"));
+        assert!(report.contains("population moving time"));
         assert!(report.contains("Low-confidence segments"));
         assert!(report.contains("Most dubious segments"));
         assert!(report.contains("## Constraint Envelope"));
@@ -8321,7 +8033,11 @@ mod tests {
         let selected_properties = &selected_geojson["features"][0]["properties"];
         assert!(selected_properties["restricted_access_fraction"].is_number());
         assert!(selected_properties["terrain_fraction"].is_object());
-        assert!(selected_properties["difficulty_hotspots"].is_array());
+        assert!(
+            selected_properties["lower_limb_load_hotspots"]
+                .as_array()
+                .is_some_and(|hotspots| !hotspots.is_empty())
+        );
         Ok(())
     }
 
@@ -8855,81 +8571,6 @@ mod tests {
         );
 
         Ok(())
-    }
-
-    #[test]
-    fn calibration_write_updates_config_and_rerates_cached_graph() -> Result<()> {
-        let tmp = tempfile::tempdir()?;
-        let project = tmp.path();
-        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../trailgen-core/tests/fixtures/mini_network.geojson");
-
-        init(project, "Calibration Test".to_owned(), None)?;
-        build(project, &fixture)?;
-        generate(
-            project,
-            &GenerateOptions {
-                count: 1,
-                max_difficulty: Some(10_000.0),
-                ..mini_generate_options()
-            },
-        )?;
-
-        let route_path = project.join("routes/candidate-1.gpx");
-        let before_config = load_config(project)?;
-        let before_weight = before_config.difficulty.distance_per_km;
-        let before_graph = load_graph(project)?;
-        let before_route = snapped_route(
-            &before_graph,
-            &route_path,
-            &before_config.constraints,
-            "rated",
-            before_config.max_route_snap_m,
-        )?;
-        let target = before_route.metrics.difficulty * 1.25;
-        calibrate(
-            project,
-            &route_path,
-            target,
-            CalibrationFamily::All,
-            None,
-            true,
-        )?;
-        let config = load_config(project)?;
-        assert!(config.difficulty.distance_per_km > before_weight);
-
-        let graph = load_graph(project)?;
-        let rated = snapped_route(
-            &graph,
-            &route_path,
-            &config.constraints,
-            "rated",
-            config.max_route_snap_m,
-        )?;
-        assert!(
-            (rated.metrics.difficulty - target).abs() <= 1.0e-6,
-            "rated {} target {}",
-            rated.metrics.difficulty,
-            target
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn calibration_rejects_zero_contribution_family() {
-        let error = calibrate_weights(
-            DifficultyWeights::default(),
-            DifficultyBreakdown {
-                distance: 10.0,
-                ..DifficultyBreakdown::default()
-            },
-            20.0,
-            CalibrationFamily::Grade,
-        )
-        .expect_err("zero selected contribution should fail");
-
-        assert!(format!("{error:#}").contains("zero contribution"));
     }
 
     #[test]

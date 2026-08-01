@@ -18,8 +18,8 @@ use std::{
     time::{Duration, Instant},
 };
 use trailgen_core::{
-    EdgeEdicts, LoopConstraints, Route, SearchMonitor, SearchParams, SearchProgress, SearchScope,
-    SearchStage, SolverKind, TrailGraph, VertexId,
+    EdgeEdicts, GRAPH_CACHE, LoopConstraints, Route, SearchMonitor, SearchParams, SearchProgress,
+    SearchScope, SearchStage, SolverKind, VertexId, WalkGraph, WalkRealmIndex, decode_graph,
 };
 
 #[derive(Clone, Debug, Deserialize)]
@@ -55,7 +55,7 @@ const fn interactive_search() -> SearchParams {
 
 pub struct Project {
     pub root: PathBuf,
-    pub graph: Arc<TrailGraph>,
+    pub graph: Arc<WalkGraph>,
     pub config: WorkbenchConfig,
     pub library: Library,
 }
@@ -65,24 +65,33 @@ impl Project {
         let root = root
             .canonicalize()
             .with_context(|| format!("open project {}", root.display()))?;
-        let config: WorkbenchConfig = read_toml(&root.join("trailgen.toml"))?;
-        let graph = Arc::new(
-            match read_optional_json::<TrailGraph>(&root.join("cache/graph.json"))? {
-                Some(graph) => graph,
-                None => {
-                    read_optional_json::<TrailGraph>(&root.join("routes/generated.graph.json"))?
-                        .context("project has no trail data")?
-                }
-            },
+        let config: WorkbenchConfig = product_phase!(
+            "project.read_config",
+            read_toml(&root.join("trailgen.toml"))?
         );
-        ensure!(!graph.vertices.is_empty(), "project has no usable trails");
-        let library = Library::open(&root, &graph, &config.constraints)?;
+        let graph = product_phase!("project.load_graph", Self::load_graph(&root)?);
+        let library = product_phase!(
+            "project.load_library",
+            Library::open(&root, &graph, &config.constraints)?
+        );
         Ok(Self {
             root,
             graph,
             config,
             library,
         })
+    }
+
+    /// Load only the immutable routing corpus. Corpus replacement uses this
+    /// boundary off the event loop before forging its spatial projections.
+    pub fn load_graph(root: &Path) -> Result<Arc<WalkGraph>> {
+        let graph = Arc::new(match read_optional_graph(&root.join(GRAPH_CACHE))? {
+            Some(graph) => graph,
+            None => read_optional_json::<WalkGraph>(&root.join("routes/generated.graph.json"))?
+                .context("project has no trail data")?,
+        });
+        ensure!(!graph.vertices.is_empty(), "project has no usable trails");
+        Ok(graph)
     }
 }
 
@@ -96,6 +105,19 @@ fn read_optional_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Optio
         Ok(raw) => serde_json::from_slice(&raw)
             .with_context(|| format!("parse {}", path.display()))
             .map(Some),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err).with_context(|| format!("read {}", path.display())),
+    }
+}
+
+fn read_optional_graph(path: &Path) -> Result<Option<WalkGraph>> {
+    match fs::read(path) {
+        Ok(raw) => product_phase!(
+            "project.decode_graph",
+            decode_graph(&raw)
+                .with_context(|| format!("parse {}", path.display()))
+                .map(Some)
+        ),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(err) => Err(err).with_context(|| format!("read {}", path.display())),
     }
@@ -116,7 +138,7 @@ pub struct SearchRequest {
 }
 
 impl SearchRequest {
-    pub fn validate(&self, graph: &TrailGraph) -> Result<()> {
+    pub fn validate(&self, graph: &WalkGraph) -> Result<()> {
         ensure!(
             self.start.0 < graph.vertices.len(),
             "trailhead is outside downloaded trail data"
@@ -167,8 +189,16 @@ fn validate_constraints(constraints: &LoopConstraints) -> Result<()> {
     for (name, value) in [
         ("minimum distance", constraints.min_distance_m),
         ("maximum distance", constraints.max_distance_m),
-        ("minimum difficulty", constraints.min_difficulty),
-        ("maximum difficulty", constraints.max_difficulty),
+        (
+            "minimum lower-limb load",
+            constraints.min_lower_limb_load_km,
+        ),
+        (
+            "maximum lower-limb load",
+            constraints.max_lower_limb_load_km,
+        ),
+        ("minimum moving time", constraints.min_moving_time_s),
+        ("maximum moving time", constraints.max_moving_time_s),
         ("minimum ascent", constraints.min_ascent_m),
         ("maximum ascent", constraints.max_ascent_m),
         ("minimum descent", constraints.min_descent_m),
@@ -181,9 +211,9 @@ fn validate_constraints(constraints: &LoopConstraints) -> Result<()> {
     }
     ensure!(
         constraints
-            .target_difficulty
+            .target_lower_limb_load_km
             .is_none_or(|target| target.is_finite() && target >= 0.0),
-        "target difficulty must be finite and nonnegative"
+        "target lower-limb load must be finite and nonnegative"
     );
     for (name, low, high) in [
         (
@@ -192,9 +222,14 @@ fn validate_constraints(constraints: &LoopConstraints) -> Result<()> {
             constraints.max_distance_m,
         ),
         (
-            "difficulty",
-            constraints.min_difficulty,
-            constraints.max_difficulty,
+            "lower-limb load",
+            constraints.min_lower_limb_load_km,
+            constraints.max_lower_limb_load_km,
+        ),
+        (
+            "moving time",
+            constraints.min_moving_time_s,
+            constraints.max_moving_time_s,
         ),
         ("ascent", constraints.min_ascent_m, constraints.max_ascent_m),
         (
@@ -301,7 +336,7 @@ impl Drop for SearchHandle {
 
 struct ForgeMonitor<'a> {
     serial: u64,
-    graph: &'a TrailGraph,
+    graph: &'a WalkGraph,
     halt: Arc<AtomicBool>,
     events: Sender<SearchEvent>,
     ctx: Context,
@@ -362,14 +397,14 @@ impl SearchMonitor for ForgeMonitor<'_> {
 }
 
 pub struct SearchForge {
-    graph: Arc<TrailGraph>,
+    graph: Arc<WalkGraph>,
     command: Sender<SearchJob>,
     pub events: Receiver<SearchEvent>,
     _thread: thread::JoinHandle<()>,
 }
 
 impl SearchForge {
-    pub fn spawn(ctx: Context, graph: Arc<TrailGraph>) -> Result<Self> {
+    pub fn spawn(ctx: Context, graph: Arc<WalkGraph>, finder: Arc<WalkRealmIndex>) -> Result<Self> {
         let (command, commands) = bounded::<SearchJob>(1);
         let (events_tx, events) = unbounded();
         let worker_graph = Arc::clone(&graph);
@@ -377,7 +412,7 @@ impl SearchForge {
             .name("trail-search".to_owned())
             .spawn(move || {
                 while let Ok(job) = commands.recv() {
-                    if !forge_search(&worker_graph, &events_tx, &ctx, job) {
+                    if !forge_search(&worker_graph, &finder, &events_tx, &ctx, job) {
                         break;
                     }
                 }
@@ -405,7 +440,8 @@ impl SearchForge {
 }
 
 fn forge_search(
-    graph: &TrailGraph,
+    graph: &WalkGraph,
+    finder: &WalkRealmIndex,
     events: &Sender<SearchEvent>,
     ctx: &Context,
     job: SearchJob,
@@ -425,9 +461,18 @@ fn forge_search(
         previewed: Cell::new(false),
     };
     let mask = forge_boundary_mask(graph, &request, &monitor);
+    let clipped;
     let scope = match &mask {
-        BoundaryMask::All => SearchScope::all(graph),
-        BoundaryMask::Edges(mask) => SearchScope::restricted(graph, mask),
+        BoundaryMask::All => SearchScope::projected(graph, finder.allowed(), finder.adjacency()),
+        BoundaryMask::Edges(mask) => {
+            clipped = finder
+                .allowed()
+                .iter()
+                .zip(mask)
+                .map(|(realm, boundary)| *realm && *boundary)
+                .collect::<Vec<_>>();
+            SearchScope::projected(graph, &clipped, finder.adjacency())
+        }
         BoundaryMask::Halted => {
             return publish(
                 events,
@@ -500,7 +545,7 @@ fn forge_search(
 }
 
 fn forge_boundary_mask(
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     request: &SearchRequest,
     monitor: &ForgeMonitor<'_>,
 ) -> BoundaryMask {
@@ -544,7 +589,7 @@ mod tests {
     use super::*;
     use trailgen_core::{GraphBuilder, Terrain, io::geojson};
 
-    fn fixture_graph() -> Result<TrailGraph> {
+    fn fixture_graph() -> Result<WalkGraph> {
         Ok(
             GraphBuilder::default().build(&geojson::network_from_str(include_str!(
                 "../../trailgen-core/tests/fixtures/mini_network.geojson"
@@ -617,8 +662,8 @@ mod tests {
         fs::write(temp.path().join("trailgen.toml"), "name = 'live project'\n")?;
         let cached = fixture_graph()?;
         fs::write(
-            temp.path().join("cache/graph.json"),
-            serde_json::to_vec_pretty(&cached)?,
+            temp.path().join(GRAPH_CACHE),
+            trailgen_core::encode_graph(&cached)?,
         )?;
         fs::write(temp.path().join("routes/generated.graph.json"), b"obsolete")?;
         Library::default().save(temp.path())?;

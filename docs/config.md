@@ -1,6 +1,6 @@
 # Project Config
 
-`trailgen init` writes `trailgen.toml` with an optional area of interest, graph snapping, difficulty weights, route-constraint defaults, and advanced search parameters. The GUI owns `[trail_data].regions`: every rectangle drawn with **ADD MAP AREA** is persisted with a content-derived identity and the routable graph is clipped to their geometric union.
+`trailgen init` writes `trailgen.toml` with an optional area of interest, graph snapping, route-constraint defaults, and advanced search parameters. The GUI owns `[trail_data].regions`: every rectangle drawn with **ADD MAP AREA** is persisted with a content-derived identity and the routable graph is clipped to their geometric union.
 
 ```toml
 [trail_data]
@@ -45,7 +45,7 @@ north = 40.02
 
 For a GUI-managed corpus, `[area]` is the derived bounding hull of the live rectangles. It remains a compatibility surface for discovery and provider-neutral CLI tooling; `[trail_data].regions` is the exact acquisition and routing boundary. In a manual project with no live rectangles, the AOI is not a routing constraint. In both cases source recommendations in `sources/manifest.json` carry the hull so future elevation, terrain, access, road, hydrology, and seed-route acquisition stays tied to the territory that produced the graph.
 
-`snap_tolerance_m` controls cautious graph-construction repair and defaults to `15`. Generic lines still split at exact planar intersections. Provider-aware polylines retain only authored junctions as topology, then nearby eligible endpoints form bounded clusters before any unmatched endpoint may project onto a line interior. Distances use local metres; `ExplicitNodes` inputs and grade-separated OSM bridges, tunnels, or nonzero layers are never repaired. Snapped edges receive `graph-builder` / `near-miss-snap` provenance and capped confidence. `trailgen build --snap-tolerance-m N` persists this law before writing `cache/graph.json` so later rebuilds reproduce the topology.
+`snap_tolerance_m` controls cautious graph-construction repair and defaults to `15`. Generic lines still split at exact planar intersections. Provider-aware polylines retain only authored junctions as topology, then nearby eligible endpoints form bounded clusters before any unmatched endpoint may project onto a line interior. Distances use local metres; `ExplicitNodes` inputs and grade-separated OSM bridges, tunnels, or nonzero layers are never repaired. Snapped edges receive `graph-builder` / `near-miss-snap` provenance and capped confidence. `trailgen build --snap-tolerance-m N` persists this law before writing `cache/graph.bin` so later rebuilds reproduce the topology.
 
 `planning_date = "YYYY-MM-DD"` is the civil date used when applying dated or recurring seasonal access/closure overlays. `planning_time = "HH:MM"` is the local civil time used for hourly windows. `trailgen assemble --date YYYY-MM-DD --time HH:MM` and `trailgen apply-access --source ownership.geojson --source closures.geojson --date YYYY-MM-DD --time HH:MM` persist that planning moment while mutating the cached graph. `trailgen generate --date YYYY-MM-DD --time HH:MM` records a one-run override in the effective config and materializes a generation-time graph snapshot from stored overlays. Access application captures `sources/access-baseline.json` before the first access mutation, restores that baseline on later access applications, and then filters the composed overlay set. Apply access after graph-building, elevation, terrain, context, and seed imports; if graph topology or pre-access attribution changes, rebuild and reapply those phases before changing access dates or times. `assemble` performs those phases from `sources/manifest.json` in one deterministic sequence. Dated, seasonal, weekday, or hourly overlays without enough planning context are treated as active, a conservative default that avoids silently routing through unknown closures.
 
@@ -61,19 +61,49 @@ For a GUI-managed corpus, `[area]` is the derived bounding hull of the live rect
 
 `max_start_snap_m` bounds trailhead snapping during `generate`, defaulting to `500`. The requested `--start lon,lat` must be within this many meters of the nearest graph vertex, otherwise generation fails before emitting routes. Override one run with `--max-start-snap-m N` only when the coordinate is deliberately coarse. `routes/generated.manifest.json` records the requested coordinate, snapped vertex, snapped coordinate, and realized `start_snap_m`.
 
-`max_route_snap_m` bounds connected route matching during `rate`, `calibrate`, and `import-seed`, defaulting to `100`. Every supplied GPX, GeoJSON, KML, KMZ, or CSV route segment must lie inside this distance and consecutive oriented anchors must admit a legal local connector through the graph; otherwise the command fails with snap or disconnected-transition diagnostics. Override one run with `--max-route-snap-m N` only when the source route is deliberately coarse or generalized. Imported seeds persist their snap statistics beside point count, snapped edge IDs, and metrics.
+`max_route_snap_m` bounds connected route matching during `rate` and `import-seed`, defaulting to `100`. Every supplied GPX, GeoJSON, KML, KMZ, or CSV route segment must lie inside this distance and consecutive oriented anchors must admit a legal local connector through the graph; otherwise the command fails with snap or disconnected-transition diagnostics. Override one run with `--max-route-snap-m N` only when the source route is deliberately coarse or generalized. Imported seeds persist their snap statistics beside point count, snapped edge IDs, and metrics.
 
-`[difficulty]` controls additive physical effort. The supported weights are `distance_per_km`, `ascent_per_m`, `descent_per_m`, `grade_per_abs_fraction`, `road_effort_penalty`, `technical_penalty`, `navigation_penalty`, `bushwhack_penalty`, `low_confidence_penalty`, and `closed_access_penalty`. `[difficulty.terrain_multipliers]` overrides the per-terrain distance multiplier table for `unknown`, `trail`, `forest`, `alpine`, `talus`, `scramble`, `pavement`, `road`, and `water`; omitted buckets use defaults. Use `trailgen rerate <project>` after hand edits to push the current weights into cached edge costs. Use `trailgen calibrate <project> --route completed.gpx --target-difficulty N [--family elevation] [--write]` to solve and optionally persist a completed-hike calibration. See [difficulty.md](difficulty.md) for the factor formula and calibration workflow.
+Lower-limb load and moving time use fixed, population-level physical models,
+not project-tunable coefficients. Their direction-specific estimates are
+recomputed whenever geometry, elevation, or terrain changes. See
+[physical load and moving time](physical-load.md) for formulas, evidence, and
+limits.
 
-Distance and elevation constraints are stored in meters. Each project persists one compact GUI search recipe in `library/index.json`: optional geographic trailhead, distance range, climb range, target difficulty, and shape. That recipe overlays the advanced defaults in `trailgen.toml`; graph-local vertex IDs and solver controls are never durable GUI state. CLI `generate --min-km --max-km` overrides defaults for one diagnostic run. It can also override scalar difficulty, ascent/descent, road/pavement exposure, access restriction exposure, low-confidence limits, terrain mix, and one-run forbidden areas with `--min-difficulty`, `--max-difficulty`, `--min-ascent-m`, `--max-ascent-m`, `--min-descent-m`, `--max-descent-m`, `--max-road-fraction`, `--max-restricted-access-fraction`, `--max-low-confidence-fraction`, `--forbid-terrain`, `--forbid-area path.geojson|path.shp`, `--min-terrain terrain:fraction`, and `--max-terrain terrain:fraction`. Confidence is a scalar in `[0,1]`; low-confidence route fraction is measured by distance over edges below `0.6`.
+Distance and elevation constraints are stored in meters; moving-time
+constraints are stored in seconds; lower-limb load is stored in `FGJW km`.
+Each project persists one compact GUI search recipe in `library/index.json`:
+optional geographic trailhead and boundary, distance range, moving-time
+range, climb range, target lower-limb load, and shape. That recipe overlays
+the advanced defaults in `trailgen.toml`; graph-local vertex IDs and solver
+controls are never durable GUI state.
 
-Difficulty has no implicit hard ceiling. The GUI value is a ranking target;
-`constraints.min_difficulty` or `constraints.max_difficulty` becomes a hard
-window only when a project sets it explicitly.
+CLI `generate --min-km --max-km` overrides distance for one diagnostic run.
+It can also override load and time with
+`--min-lower-limb-load-km`, `--max-lower-limb-load-km`,
+`--target-lower-limb-load-km`, `--min-moving-time-h`, and
+`--max-moving-time-h`. Ascent/descent, road exposure, access exposure,
+low-confidence limits, terrain mix, and one-run forbidden areas remain
+available through `--min-ascent-m`, `--max-ascent-m`,
+`--min-descent-m`, `--max-descent-m`, `--max-road-fraction`,
+`--max-restricted-access-fraction`, `--max-low-confidence-fraction`,
+`--forbid-terrain`, `--forbid-area path.geojson|path.shp`,
+`--min-terrain terrain:fraction`, and `--max-terrain terrain:fraction`.
+Confidence is a scalar in `[0,1]`; low-confidence route fraction is measured
+by distance over edges below `0.6`.
+
+The GUI lower-limb value is a ranking target, not a capacity claim or hard
+ceiling. `constraints.min_lower_limb_load_km` and
+`constraints.max_lower_limb_load_km` create a hard project window only when
+set explicitly. Moving-time bounds are always a window; the GUI gives a new
+recipe a practical `0–48 h` envelope when project defaults are unbounded.
 
 `closure_paths` controls how many legal return paths `LoopHunter` tries from each outward frontier before ranking full candidates. Raising it explores non-shortest closures that may avoid road, access, terrain, elevation, or confidence violations; lowering it makes the heuristic more parsimonious. `[search.routing].road_aversion` is the finite detour cost for road exposure: the default `2.0` makes a fully road-bound meter cost three routing meters, without banning it. Closed and private edges remain unlawful. With no explicit `[search]` table, the GUI uses an interactive envelope of 5,000 frontier states, one shortest closure, 12 retained candidates, diversification seed 2, and the default routing law. A project may opt into a larger diagnostic search in TOML; the CLI retains its exhaustive debug-oriented defaults.
 
-`max_road_fraction` measures distance over explicit road-exposure hints plus any edge whose normalized terrain is `road` or `pavement`. It defaults to `1.0`: road use is normally governed by finite routing aversion and route quality, not an ad hoc ban. An explicit lower cap remains available as a hard project constraint.
+`max_road_fraction` measures distance over explicit road-exposure hints plus
+edges whose normalized terrain is `road`. Paved sidewalks remain pavement,
+not roadway exposure. The default `1.0` leaves ordinary road use to finite
+routing aversion and route quality; an explicit lower cap remains available as
+a hard project constraint.
 
 Elevation constraints in `[constraints]`:
 

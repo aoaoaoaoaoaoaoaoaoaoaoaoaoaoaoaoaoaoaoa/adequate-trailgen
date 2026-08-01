@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use egui_tester::{Button, PixelRegion, Result, Stroke, Timed};
+use egui_tester::{Button, Key, Modifiers, PixelRegion, Result, Stroke, Timed};
 
 use crate::{
     harness::{Target, TrailFrame, TrailStory, demand, map_pixel, screen_point, verdict},
@@ -81,6 +81,38 @@ pub fn drag_support(
         "pin drag recomputed route geometry before release",
     )?;
     Ok(reforged)
+}
+
+pub fn delete_support(
+    story: &mut TrailStory<'_, '_>,
+    slot: usize,
+    expected: usize,
+) -> Result<Timed<TrailFrame>> {
+    story
+        .modified_click(Target::Support(slot), Button::Primary, Modifiers::SHIFT)?
+        .until(shows::supports(expected) & shows::editor_ready())
+}
+
+pub fn exercise_support_delete_affordance(
+    story: &mut TrailStory<'_, '_>,
+    slot: usize,
+    expected: usize,
+) -> Result<()> {
+    let region = PixelRegion::anchor(&story.anchor(Target::Support(slot))?);
+    let numbered = story.capture()?;
+    let press = story.session().key_down(Key::Shift)?;
+    let _armed = story.reaction(press).until(shows::supports(expected))?;
+    let marked =
+        story
+            .session()
+            .wait_changed_region(&numbered, region, 0.001, 2, Duration::from_secs(4))?;
+    demand(
+        numbered.difference_region(&marked, region, 2)? >= 0.001,
+        "Shift armed support deletion without replacing its numbered pin head",
+    )?;
+    let release = story.session().key_up(Key::Shift)?;
+    let _disarmed = story.reaction(release).until(shows::supports(expected))?;
+    Ok(())
 }
 
 pub fn lasso_boundary(story: &mut TrailStory<'_, '_>, inset: f32) -> Result<Timed<TrailFrame>> {

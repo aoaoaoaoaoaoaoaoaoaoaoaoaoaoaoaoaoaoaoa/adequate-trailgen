@@ -1,12 +1,11 @@
 use crate::{
-    Access, Coord, DifficultyBreakdown, Edge, EdgeAttr, EdgeId, GradeDistribution, LineString,
-    LoopConstraints, Route, RouteShape, Terrain, TrailGraph, TrailgenError, TurnBan, Vertex,
-    VertexId,
+    Access, Coord, Edge, EdgeAttr, EdgeId, EdgeIndex, EdgeProjection, GradeDistribution,
+    HikingModel, LineString, LoopConstraints, Route, RouteShape, Terrain, TrailgenError, TurnBan,
+    Vertex, VertexId, WalkGraph,
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    cmp::Ordering,
-    collections::{BTreeMap, BTreeSet, BinaryHeap},
+    collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
 
@@ -58,18 +57,19 @@ impl RoutingLaw {
     }
 
     #[must_use]
-    pub fn edge_cost(self, graph: &TrailGraph, edge: EdgeId) -> Option<f64> {
+    pub fn edge_cost(self, graph: &WalkGraph, edge: EdgeId) -> Option<f64> {
         let attr = &graph.edges[edge.0].attr;
         if matches!(attr.access, Access::Closed | Access::Private) {
             return None;
         }
-        let road = attr.road_exposure.clamp(0.0, 1.0).max(
-            if matches!(attr.terrain, Terrain::Road | Terrain::Pavement) {
-                1.0
-            } else {
-                0.0
-            },
-        );
+        let road =
+            attr.road_exposure
+                .clamp(0.0, 1.0)
+                .max(if matches!(attr.terrain, Terrain::Road) {
+                    1.0
+                } else {
+                    0.0
+                });
         Some(attr.length_m * self.road_aversion.mul_add(road, 1.0))
     }
 }
@@ -128,9 +128,9 @@ impl Trail {
 
     /// Recovers a compact, lossless support design. Globally shortest spans
     /// remain single legs; an irreducible non-shortest edge receives an
-    /// interior support so incision compels that physical segment.
+    /// interior support so the design compels that physical segment.
     #[must_use]
-    pub fn infer(graph: &TrailGraph, route: &Route, routing: RoutingLaw) -> Option<Self> {
+    pub fn infer(graph: &WalkGraph, route: &Route, routing: RoutingLaw) -> Option<Self> {
         routing.validate().ok()?;
         let vertices = route_vertices(graph, route)?;
         let n = route.edges.len();
@@ -179,7 +179,21 @@ impl Trail {
     pub fn realize(
         &self,
         name: impl Into<String>,
-        graph: &TrailGraph,
+        graph: &WalkGraph,
+        constraints: &LoopConstraints,
+        max_snap_m: f64,
+    ) -> crate::Result<TrailRealization> {
+        let index = EdgeIndex::forge(graph);
+        let router = crate::WalkRouter::forge(graph);
+        self.realize_indexed(name, graph, &index, &router, constraints, max_snap_m)
+    }
+
+    pub fn realize_indexed(
+        &self,
+        name: impl Into<String>,
+        graph: &WalkGraph,
+        index: &EdgeIndex,
+        router: &crate::WalkRouter,
         constraints: &LoopConstraints,
         max_snap_m: f64,
     ) -> crate::Result<TrailRealization> {
@@ -189,74 +203,23 @@ impl Trail {
                 "support-point snap distance must be positive".to_owned(),
             ));
         }
-        let (incised, bindings) = bind(graph, &self.support_points, max_snap_m)?;
-        let graph = incised.as_deref().unwrap_or(graph);
-        let start = bindings[0].vertex;
-        let mut edges = Vec::new();
-        let mut support_offsets = vec![0];
-        let mut previous = None;
-        for targets in bindings.windows(2) {
-            let leg = shortest_path(
-                graph,
-                targets[0].vertex,
-                targets[1].vertex,
-                previous,
-                self.routing,
-                None,
-            )
+        let anchors = bind_projections(graph, index, &self.support_points, max_snap_m)?;
+        let RoutedDesign {
+            spans,
+            support_span_offsets,
+        } = self.strike_spans(graph, router, &anchors)?;
+        let realized = materialize_walk(graph, &anchors, &spans, &support_span_offsets)?;
+        let start = realized.bindings[0].vertex;
+        let end = realized
+            .graph
+            .walk_edges(start, &realized.edges)
             .ok_or_else(|| {
                 TrailgenError::InvalidData(
-                    "no lawful trail connects consecutive support points".to_owned(),
+                    "support points induce an illegal directed trail".to_owned(),
                 )
             })?;
-            previous = leg.last().copied().or(previous);
-            edges.extend(leg);
-            support_offsets.push(edges.len());
-        }
-        match self.shape {
-            RouteShape::Open => {}
-            RouteShape::OutAndBack => {
-                let spine = edges.len();
-                edges.extend_from_within(..);
-                edges[spine..].reverse();
-            }
-            RouteShape::Loop => {
-                let end = bindings
-                    .last()
-                    .expect("validated support points are nonempty")
-                    .vertex;
-                let forbidden_edges = edges.iter().copied().collect::<BTreeSet<_>>();
-                let mut forbidden_vertices = walked_vertices(graph, start, &edges)?;
-                forbidden_vertices.remove(&start);
-                forbidden_vertices.remove(&end);
-                let return_path = shortest_path_avoiding(
-                    graph,
-                    end,
-                    start,
-                    previous,
-                    self.routing,
-                    &forbidden_edges,
-                    &forbidden_vertices,
-                )
-                // Preserve the specific shape mismatch when no simple closure
-                // exists; the GUI uses it to offer bounded trailhead rounding.
-                .or_else(|| shortest_path(graph, end, start, previous, self.routing, None))
-                .ok_or_else(|| {
-                    TrailgenError::InvalidData(
-                        "no lawful return connects the final support point".to_owned(),
-                    )
-                })?;
-                edges.extend(return_path);
-            }
-            RouteShape::FigureEight => unreachable!("figure-eight rejected by validation"),
-        }
-        if graph.walk_edges(start, &edges).is_none() {
-            return Err(TrailgenError::InvalidData(
-                "support points induce an illegal directed trail".to_owned(),
-            ));
-        }
-        let route = Route::from_edges(name, graph, start, edges, constraints);
-        if route.metrics.shape != self.shape {
+        let route = Route::from_edges(name, &realized.graph, start, realized.edges, constraints);
+        if !walk_fulfills_design(self.shape, route.metrics.shape, start == end) {
             return Err(TrailgenError::ShapeMismatch {
                 actual: route.metrics.shape,
                 expected: self.shape,
@@ -265,34 +228,123 @@ impl Trail {
         Ok(TrailRealization {
             trail: Self {
                 shape: self.shape,
-                support_points: bindings.iter().map(|binding| binding.anchor).collect(),
+                support_points: realized
+                    .bindings
+                    .iter()
+                    .map(|binding| binding.anchor)
+                    .collect(),
                 routing: self.routing,
             },
-            bindings,
+            bindings: realized.bindings,
             route,
-            incised,
-            support_offsets,
+            walk: Arc::new(realized.graph),
+            support_offsets: realized.support_offsets,
+            source_spans: spans,
+            support_span_offsets,
+        })
+    }
+
+    fn strike_spans(
+        &self,
+        graph: &WalkGraph,
+        router: &crate::WalkRouter,
+        anchors: &[BoundProjection],
+    ) -> crate::Result<RoutedDesign> {
+        let mut workspace = router.workspace(graph);
+        let mut forge = PathForge {
+            router,
+            workspace: &mut workspace,
+            graph,
+            law: self.routing,
+        };
+        let mut spans = Vec::new();
+        let mut support_span_offsets = vec![0];
+        let mut previous = None;
+        for targets in anchors.windows(2) {
+            let leg = forge
+                .route(
+                    targets[0].projection,
+                    targets[1].projection,
+                    previous,
+                    PathVeto::default(),
+                )
+                .ok_or_else(|| {
+                    TrailgenError::InvalidData(
+                        "no lawful trail connects consecutive support points".to_owned(),
+                    )
+                })?;
+            previous = leg.last().map(|span| span.edge).or(previous);
+            spans.extend(leg);
+            support_span_offsets.push(spans.len());
+        }
+        match self.shape {
+            RouteShape::Open => {}
+            RouteShape::OutAndBack => {
+                let mut reverse = spans
+                    .iter()
+                    .rev()
+                    .map(|span| span.reversed())
+                    .collect::<Vec<_>>();
+                spans.append(&mut reverse);
+            }
+            RouteShape::Loop => {
+                let forbidden_edges = spans.iter().map(|span| span.edge).collect::<BTreeSet<_>>();
+                let forbidden_vertices = walked_span_vertices(graph, &spans);
+                let return_path = forge
+                    .route(
+                        anchors.last().expect("validated anchors").projection,
+                        anchors[0].projection,
+                        previous,
+                        PathVeto {
+                            edges: Some(&forbidden_edges),
+                            vertices: Some(&forbidden_vertices),
+                            ..PathVeto::default()
+                        },
+                    )
+                    // Prefer a simple closure, then admit the shortest lawful
+                    // closed walk when the network topology compels a retrace.
+                    .or_else(|| {
+                        forge.route(
+                            anchors.last().expect("validated anchors").projection,
+                            anchors[0].projection,
+                            previous,
+                            PathVeto::default(),
+                        )
+                    })
+                    .ok_or_else(|| {
+                        TrailgenError::InvalidData(
+                            "no lawful return connects the final support point".to_owned(),
+                        )
+                    })?;
+                spans.extend(return_path);
+            }
+            RouteShape::FigureEight => unreachable!("figure-eight rejected by validation"),
+        }
+        Ok(RoutedDesign {
+            spans,
+            support_span_offsets,
         })
     }
 }
 
-fn walked_vertices(
-    graph: &TrailGraph,
-    start: VertexId,
-    edges: &[EdgeId],
-) -> crate::Result<BTreeSet<VertexId>> {
-    let mut vertices = BTreeSet::from([start]);
-    let mut at = start;
-    for edge in edges {
-        at = graph.edges[edge.0].traverse(at).ok_or_else(|| {
-            TrailgenError::InvalidData("support points induce an illegal directed trail".to_owned())
-        })?;
-        vertices.insert(at);
-    }
-    Ok(vertices)
+struct RoutedDesign {
+    spans: Vec<PartialSpan>,
+    support_span_offsets: Vec<usize>,
 }
 
-fn route_vertices(graph: &TrailGraph, route: &Route) -> Option<Vec<VertexId>> {
+/// A trail shape is design intent; route shape is observed walk morphology.
+/// In particular, a manually designed loop may revisit a junction or retrace
+/// an edge while still fulfilling its sole topological promise: returning to
+/// its trailhead.
+fn walk_fulfills_design(design: RouteShape, morphology: RouteShape, closed: bool) -> bool {
+    match design {
+        RouteShape::Loop => closed,
+        RouteShape::Open | RouteShape::OutAndBack => morphology == design,
+        RouteShape::FigureEight => false,
+    }
+}
+
+fn route_vertices(graph: &WalkGraph, route: &Route) -> Option<Vec<VertexId>> {
     let mut vertices = Vec::with_capacity(route.edges.len() + 1);
     let mut at = route.start;
     let mut previous = None;
@@ -310,7 +362,7 @@ fn route_vertices(graph: &TrailGraph, route: &Route) -> Option<Vec<VertexId>> {
 }
 
 fn compress_arc(
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     route: &Route,
     vertices: &[VertexId],
     routing: RoutingLaw,
@@ -339,7 +391,57 @@ fn compress_arc(
     compress_arc(graph, route, vertices, routing, split, hi, supports)
 }
 
-fn vertex_support(graph: &TrailGraph, vertex: VertexId) -> Option<SupportPoint> {
+fn compress_span_arc(
+    forge: &mut PathForge<'_>,
+    spans: &[PartialSpan],
+    lo: usize,
+    hi: usize,
+    supports: &mut Vec<SupportPoint>,
+) -> Option<()> {
+    let start = span_projection(forge.graph, spans[lo], true);
+    let target = span_projection(forge.graph, spans[hi - 1], false);
+    let previous = lo.checked_sub(1).map(|slot| spans[slot].edge);
+    if forge
+        .route(start, target, previous, PathVeto::default())
+        .is_some_and(|shortest| same_spans(&shortest, &spans[lo..hi]))
+    {
+        supports.push(SupportPoint::forge(start.coord)?);
+        return Some(());
+    }
+    if hi - lo <= 1 {
+        supports.push(SupportPoint::forge(start.coord)?);
+        let span = spans[lo];
+        supports.push(SupportPoint::forge(line_coord_at(
+            &forge.graph.edges[span.edge.0].geometry,
+            (span.from_m + span.to_m) * 0.5,
+        ))?);
+        return Some(());
+    }
+    let split = lo + (hi - lo) / 2;
+    compress_span_arc(forge, spans, lo, split, supports)?;
+    compress_span_arc(forge, spans, split, hi, supports)
+}
+
+fn span_projection(graph: &WalkGraph, span: PartialSpan, start: bool) -> EdgeProjection {
+    let progress_m = if start { span.from_m } else { span.to_m };
+    EdgeProjection {
+        edge: span.edge,
+        coord: line_coord_at(&graph.edges[span.edge.0].geometry, progress_m),
+        progress_m,
+        distance_m: 0.0,
+    }
+}
+
+fn same_spans(left: &[PartialSpan], right: &[PartialSpan]) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right).all(|(left, right)| {
+            left.edge == right.edge
+                && (left.from_m - right.from_m).abs() <= SUPPORT_EPSILON_M
+                && (left.to_m - right.to_m).abs() <= SUPPORT_EPSILON_M
+        })
+}
+
+fn vertex_support(graph: &WalkGraph, vertex: VertexId) -> Option<SupportPoint> {
     SupportPoint::forge(graph.vertices[vertex.0].coord)
 }
 
@@ -357,8 +459,10 @@ pub struct TrailRealization {
     pub trail: Trail,
     pub bindings: Vec<SupportBinding>,
     pub route: Route,
-    incised: Option<Arc<TrailGraph>>,
+    walk: Arc<WalkGraph>,
     support_offsets: Vec<usize>,
+    source_spans: Vec<PartialSpan>,
+    support_span_offsets: Vec<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -375,54 +479,68 @@ pub struct SupportInsertion {
 
 impl TrailRealization {
     #[must_use]
-    pub fn graph<'a>(&'a self, source: &'a TrailGraph) -> &'a TrailGraph {
-        self.incised.as_deref().unwrap_or(source)
+    pub fn graph(&self) -> &WalkGraph {
+        &self.walk
+    }
+
+    /// Direction-sensitive identity for this realization's ordered physical
+    /// walk. The value is an ephemeral comparison key, not durable project
+    /// identity or a cryptographic digest.
+    #[must_use]
+    pub fn walk_fingerprint(&self) -> u64 {
+        self.source_spans.iter().fold(
+            (self.source_spans.len() as u64) ^ 0xa076_1d64_78bd_642f,
+            |state, span| {
+                [
+                    span.edge.0 as u64,
+                    span.from_m.to_bits(),
+                    span.to_m.to_bits(),
+                ]
+                .into_iter()
+                .fold(state, |state, word| {
+                    (state ^ word.wrapping_mul(0xe703_7ed1_a0b4_28db))
+                        .rotate_left(23)
+                        .wrapping_mul(0x8ebc_6af0_9c88_c6e3)
+                })
+            },
+        )
     }
 
     /// Inverts a loop's exact physical walk while retaining every existing
     /// support. The support tail is reversed; compact repairs are inserted
     /// only where that program would otherwise select another path.
-    pub fn reverse_loop(
-        &self,
-        graph: &TrailGraph,
-        constraints: &LoopConstraints,
-    ) -> crate::Result<TrailReversal> {
-        if self.route.metrics.shape != RouteShape::Loop {
+    pub fn reverse_loop(&self, source: &WalkGraph) -> crate::Result<TrailReversal> {
+        if self.trail.shape != RouteShape::Loop {
             return Err(TrailgenError::ShapeMismatch {
-                actual: self.route.metrics.shape,
+                actual: self.trail.shape,
                 expected: RouteShape::Loop,
             });
         }
-        if self.route.edges.iter().any(|edge| {
-            graph
+        if self.source_spans.iter().any(|span| {
+            source
                 .edges
-                .get(edge.0)
+                .get(span.edge.0)
                 .is_none_or(|edge| edge.attr.travel != crate::EdgeTravel::Both)
         }) {
             return Err(TrailgenError::OneWayReversal);
         }
 
-        let mut edges = self.route.edges.clone();
-        edges.reverse();
-        if graph.walk_edges(self.route.start, &edges) != Some(self.route.start) {
-            return Err(TrailgenError::TurnRestrictedReversal);
-        }
-        let reversed = Route::from_edges(
-            self.route.name.clone(),
-            graph,
-            self.route.start,
-            edges,
-            constraints,
+        let reversed = self
+            .source_spans
+            .iter()
+            .rev()
+            .map(|span| span.reversed())
+            .collect::<Vec<_>>();
+        let span_count = reversed.len();
+        debug_assert_eq!(
+            self.support_span_offsets.len(),
+            self.trail.support_points.len()
         );
-        let vertices =
-            route_vertices(graph, &reversed).ok_or(TrailgenError::TurnRestrictedReversal)?;
-        let edge_count = reversed.edges.len();
-        debug_assert_eq!(self.support_offsets.len(), self.trail.support_points.len());
 
         let fixed = std::iter::once((0, self.trail.support_points[0]))
             .chain((1..self.trail.support_points.len()).rev().map(|slot| {
                 (
-                    edge_count - self.support_offsets[slot],
+                    span_count - self.support_span_offsets[slot],
                     self.trail.support_points[slot],
                 )
             }))
@@ -430,24 +548,24 @@ impl TrailRealization {
         let mut support_points = Vec::with_capacity(fixed.len());
         support_points.push(fixed[0].1);
         let mut added_supports = 0;
+        let router = crate::WalkRouter::forge(source);
+        let mut workspace = router.workspace(source);
+        let mut forge = PathForge {
+            router: &router,
+            workspace: &mut workspace,
+            graph: source,
+            law: self.trail.routing,
+        };
         for slot in 0..fixed.len() {
             let lo = fixed[slot].0;
-            let hi = fixed.get(slot + 1).map_or(edge_count, |next| next.0);
+            let hi = fixed.get(slot + 1).map_or(span_count, |next| next.0);
             if lo < hi {
-                let mut incision = Vec::new();
-                compress_arc(
-                    graph,
-                    &reversed,
-                    &vertices,
-                    self.trail.routing,
-                    lo,
-                    hi,
-                    &mut incision,
-                )
-                .ok_or(TrailgenError::UnrepresentableReversal)?;
-                debug_assert_eq!(incision.first(), Some(&fixed[slot].1));
-                added_supports += incision.len() - 1;
-                support_points.extend(incision.into_iter().skip(1));
+                let mut repaired = Vec::new();
+                compress_span_arc(&mut forge, &reversed, lo, hi, &mut repaired)
+                    .ok_or(TrailgenError::UnrepresentableReversal)?;
+                debug_assert_eq!(repaired.first(), Some(&fixed[slot].1));
+                added_supports += repaired.len() - 1;
+                support_points.extend(repaired.into_iter().skip(1));
             }
             if let Some(next) = fixed.get(slot + 1) {
                 support_points.push(next.1);
@@ -464,12 +582,8 @@ impl TrailRealization {
     /// admit their closing arc after the final explicit support; out-and-backs
     /// index only their outward spine because the return is its exact reverse.
     #[must_use]
-    pub fn support_insertion(
-        &self,
-        source: &TrailGraph,
-        requested: Coord,
-    ) -> Option<SupportInsertion> {
-        let graph = self.graph(source);
+    pub fn support_insertion(&self, requested: Coord) -> Option<SupportInsertion> {
+        let graph = self.graph();
         let routed = if self.trail.shape == RouteShape::OutAndBack {
             *self.support_offsets.last()?
         } else {
@@ -491,178 +605,540 @@ impl TrailRealization {
     }
 }
 
-const INCISION_EPSILON_M: f64 = 0.05;
+const SUPPORT_EPSILON_M: f64 = 0.05;
 
-struct Incision {
-    progress_m: f64,
-    vertex: VertexId,
-    supports: Vec<usize>,
+#[derive(Clone, Copy)]
+struct BoundProjection {
+    requested: SupportPoint,
+    projection: EdgeProjection,
 }
 
-type PendingBindings = Vec<Option<SupportBinding>>;
-type IncisionMap = BTreeMap<EdgeId, Vec<Incision>>;
-
-fn bind(
-    graph: &TrailGraph,
-    supports: &[SupportPoint],
-    max_snap_m: f64,
-) -> crate::Result<(Option<Arc<TrailGraph>>, Vec<SupportBinding>)> {
-    let (mut bindings, mut incisions) = locate_supports(graph, supports, max_snap_m)?;
-    if incisions.is_empty() {
-        return Ok((None, complete_bindings(bindings)?));
-    }
-    let incised = incise(graph, supports, &mut bindings, &mut incisions)?;
-    Ok((Some(Arc::new(incised)), complete_bindings(bindings)?))
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PartialSpan {
+    edge: EdgeId,
+    from_m: f64,
+    to_m: f64,
 }
 
-fn locate_supports(
-    graph: &TrailGraph,
-    supports: &[SupportPoint],
-    max_snap_m: f64,
-) -> crate::Result<(PendingBindings, IncisionMap)> {
-    let mut bindings = vec![None; supports.len()];
-    let mut incisions = IncisionMap::new();
-    for (slot, requested) in supports.iter().copied().enumerate() {
-        let projection = graph.project_onto_edge(requested.coord()).ok_or_else(|| {
-            TrailgenError::InvalidData("cannot bind a support point to an empty network".to_owned())
-        })?;
-        if projection.distance_m > max_snap_m {
-            return Err(TrailgenError::InvalidData(format!(
-                "support point lies {:.0} m from the trail network",
-                projection.distance_m
-            )));
+impl PartialSpan {
+    const fn reversed(self) -> Self {
+        Self {
+            edge: self.edge,
+            from_m: self.to_m,
+            to_m: self.from_m,
         }
-        let edge = &graph.edges[projection.edge.0];
-        let span_m = edge.geometry.length_m();
-        let endpoint = if projection.progress_m <= INCISION_EPSILON_M {
-            Some(edge.a)
-        } else if span_m - projection.progress_m <= INCISION_EPSILON_M {
-            Some(edge.b)
-        } else {
-            None
-        };
-        if let Some(vertex) = endpoint {
-            bindings[slot] = Some(SupportBinding {
+    }
+}
+
+fn bind_projections(
+    graph: &WalkGraph,
+    index: &EdgeIndex,
+    supports: &[SupportPoint],
+    max_snap_m: f64,
+) -> crate::Result<Vec<BoundProjection>> {
+    supports
+        .iter()
+        .copied()
+        .map(|requested| {
+            let projection = index.project(graph, requested.coord()).ok_or_else(|| {
+                TrailgenError::InvalidData(
+                    "cannot bind a support point to an empty network".to_owned(),
+                )
+            })?;
+            if projection.distance_m > max_snap_m {
+                return Err(TrailgenError::InvalidData(format!(
+                    "support point lies {:.0} m from the walking network",
+                    projection.distance_m
+                )));
+            }
+            Ok(BoundProjection {
                 requested,
-                anchor: SupportPoint(graph.vertices[vertex.0].coord),
-                vertex,
-                snap_m: projection.distance_m,
-            });
-            continue;
-        }
-        let cuts = incisions.entry(projection.edge).or_default();
-        if let Some(cut) = cuts
-            .iter_mut()
-            .find(|cut| (cut.progress_m - projection.progress_m).abs() <= INCISION_EPSILON_M)
-        {
-            cut.supports.push(slot);
-        } else {
-            cuts.push(Incision {
-                progress_m: projection.progress_m,
-                vertex: VertexId(usize::MAX),
-                supports: vec![slot],
-            });
-        }
-    }
-    Ok((bindings, incisions))
+                projection,
+            })
+        })
+        .collect()
 }
 
-fn incise(
-    graph: &TrailGraph,
-    supports: &[SupportPoint],
-    bindings: &mut [Option<SupportBinding>],
-    incisions: &mut IncisionMap,
-) -> crate::Result<TrailGraph> {
-    let mut vertices = graph.vertices.clone();
-    for (edge, cuts) in incisions.iter_mut() {
-        cuts.sort_by(|left, right| left.progress_m.total_cmp(&right.progress_m));
-        for cut in cuts {
-            cut.vertex = VertexId(vertices.len());
-            let anchor = SupportPoint(line_coord_at(&graph.edges[edge.0].geometry, cut.progress_m));
-            vertices.push(Vertex {
-                id: cut.vertex,
-                coord: anchor.coord(),
-            });
-            for slot in &cut.supports {
-                bindings[*slot] = Some(SupportBinding {
-                    requested: supports[*slot],
-                    anchor,
-                    vertex: cut.vertex,
-                    snap_m: supports[*slot].coord().haversine_m(anchor.coord()),
-                });
+#[derive(Clone, Copy)]
+struct EndpointRoute {
+    vertex: VertexId,
+    span: Option<PartialSpan>,
+    cost: f64,
+    previous: Option<EdgeId>,
+}
+
+struct PathForge<'a> {
+    router: &'a crate::WalkRouter,
+    workspace: &'a mut crate::RoutingWorkspace,
+    graph: &'a WalkGraph,
+    law: RoutingLaw,
+}
+
+impl PathForge<'_> {
+    fn route(
+        &mut self,
+        from: EdgeProjection,
+        target: EdgeProjection,
+        previous: Option<EdgeId>,
+        veto: PathVeto<'_>,
+    ) -> Option<Vec<PartialSpan>> {
+        let mut alternatives = Vec::<(f64, Vec<PartialSpan>)>::new();
+        if from.edge == target.edge
+            && span_allowed(self.graph, from.edge, from.progress_m, target.progress_m)
+            && veto.edges.is_none_or(|edges| !edges.contains(&from.edge))
+        {
+            let edge = &self.graph.edges[from.edge.0];
+            let at_endpoint = endpoint_at(edge, from.progress_m);
+            if at_endpoint.is_none_or(|via| self.graph.turn_allowed(previous, via, from.edge)) {
+                let span = PartialSpan {
+                    edge: from.edge,
+                    from_m: from.progress_m,
+                    to_m: target.progress_m,
+                };
+                if let Some(cost) = partial_cost(self.graph, self.law, span)
+                    && veto.cost_ceiling.is_none_or(|ceiling| cost <= ceiling)
+                {
+                    alternatives.push((cost, vec![span]));
+                }
             }
         }
+
+        for departure in departure_routes(self.graph, from, previous, self.law) {
+            if departure
+                .span
+                .is_some_and(|span| veto.edges.is_some_and(|edges| edges.contains(&span.edge)))
+            {
+                continue;
+            }
+            for arrival in arrival_routes(self.graph, target, self.law) {
+                if arrival
+                    .span
+                    .is_some_and(|span| veto.edges.is_some_and(|edges| edges.contains(&span.edge)))
+                {
+                    continue;
+                }
+                let fixed_cost = departure.cost + arrival.cost;
+                let ceiling = veto.cost_ceiling.map(|ceiling| ceiling - fixed_cost);
+                if ceiling.is_some_and(|ceiling| ceiling < 0.0) {
+                    continue;
+                }
+                let Some(path) = self.router.shortest_path(
+                    self.graph,
+                    self.workspace,
+                    crate::RouteRequest {
+                        from: departure.vertex,
+                        target: arrival.vertex,
+                        previous: departure.previous,
+                        law: self.law,
+                        cost_ceiling: ceiling,
+                        forbidden_edges: veto.edges,
+                        forbidden_vertices: veto.vertices,
+                    },
+                ) else {
+                    continue;
+                };
+                if let Some(span) = arrival.span
+                    && !self.graph.turn_allowed(
+                        path.last().copied().or(departure.previous),
+                        arrival.vertex,
+                        span.edge,
+                    )
+                {
+                    continue;
+                }
+                let mut spans = Vec::with_capacity(path.len() + 2);
+                if let Some(prefix) = departure.span {
+                    spans.push(prefix);
+                }
+                append_full_spans(self.graph, departure.vertex, &path, &mut spans)?;
+                if let Some(suffix) = arrival.span {
+                    spans.push(suffix);
+                }
+                let cost = fixed_cost
+                    + path
+                        .iter()
+                        .map(|edge| self.law.edge_cost(self.graph, *edge))
+                        .sum::<Option<f64>>()?;
+                alternatives.push((cost, spans));
+            }
+        }
+        alternatives
+            .into_iter()
+            .min_by(|left, right| {
+                left.0
+                    .total_cmp(&right.0)
+                    .then_with(|| span_key(&left.1).cmp(&span_key(&right.1)))
+            })
+            .map(|(_, spans)| spans)
+    }
+}
+
+fn departure_routes(
+    graph: &WalkGraph,
+    projection: EdgeProjection,
+    previous: Option<EdgeId>,
+    law: RoutingLaw,
+) -> Vec<EndpointRoute> {
+    let edge = &graph.edges[projection.edge.0];
+    if let Some(vertex) = endpoint_at(edge, projection.progress_m) {
+        return vec![EndpointRoute {
+            vertex,
+            span: None,
+            cost: 0.0,
+            previous,
+        }];
+    }
+    [(edge.a, 0.0), (edge.b, edge.geometry.length_m())]
+        .into_iter()
+        .filter_map(|(vertex, to_m)| {
+            let span = PartialSpan {
+                edge: projection.edge,
+                from_m: projection.progress_m,
+                to_m,
+            };
+            if !span_allowed(graph, span.edge, span.from_m, span.to_m) {
+                return None;
+            }
+            Some(EndpointRoute {
+                vertex,
+                span: Some(span),
+                cost: partial_cost(graph, law, span)?,
+                previous: Some(span.edge),
+            })
+        })
+        .collect()
+}
+
+fn arrival_routes(
+    graph: &WalkGraph,
+    projection: EdgeProjection,
+    law: RoutingLaw,
+) -> Vec<EndpointRoute> {
+    let edge = &graph.edges[projection.edge.0];
+    if let Some(vertex) = endpoint_at(edge, projection.progress_m) {
+        return vec![EndpointRoute {
+            vertex,
+            span: None,
+            cost: 0.0,
+            previous: None,
+        }];
+    }
+    [(edge.a, 0.0), (edge.b, edge.geometry.length_m())]
+        .into_iter()
+        .filter_map(|(vertex, from_m)| {
+            let span = PartialSpan {
+                edge: projection.edge,
+                from_m,
+                to_m: projection.progress_m,
+            };
+            if !span_allowed(graph, span.edge, span.from_m, span.to_m) {
+                return None;
+            }
+            Some(EndpointRoute {
+                vertex,
+                span: Some(span),
+                cost: partial_cost(graph, law, span)?,
+                previous: None,
+            })
+        })
+        .collect()
+}
+
+fn span_allowed(graph: &WalkGraph, edge: EdgeId, from_m: f64, to_m: f64) -> bool {
+    use crate::EdgeTravel;
+    match graph.edges[edge.0].attr.travel {
+        EdgeTravel::Both => true,
+        EdgeTravel::Forward => to_m >= from_m,
+        EdgeTravel::Backward => to_m <= from_m,
+    }
+}
+
+fn partial_cost(graph: &WalkGraph, law: RoutingLaw, span: PartialSpan) -> Option<f64> {
+    let full_m = graph.edges[span.edge.0].geometry.length_m();
+    let ratio = (span.to_m - span.from_m).abs() / full_m.max(f64::EPSILON);
+    Some(law.edge_cost(graph, span.edge)? * ratio)
+}
+
+fn endpoint_at(edge: &Edge, progress_m: f64) -> Option<VertexId> {
+    if progress_m <= SUPPORT_EPSILON_M {
+        Some(edge.a)
+    } else if edge.geometry.length_m() - progress_m <= SUPPORT_EPSILON_M {
+        Some(edge.b)
+    } else {
+        None
+    }
+}
+
+fn append_full_spans(
+    graph: &WalkGraph,
+    mut at: VertexId,
+    path: &[EdgeId],
+    spans: &mut Vec<PartialSpan>,
+) -> Option<()> {
+    for edge_id in path {
+        let edge = &graph.edges[edge_id.0];
+        let to = edge.traverse(at)?;
+        spans.push(PartialSpan {
+            edge: *edge_id,
+            from_m: if at == edge.a {
+                0.0
+            } else {
+                edge.geometry.length_m()
+            },
+            to_m: if to == edge.b {
+                edge.geometry.length_m()
+            } else {
+                0.0
+            },
+        });
+        at = to;
+    }
+    Some(())
+}
+
+fn span_key(spans: &[PartialSpan]) -> Vec<(EdgeId, u64, u64)> {
+    spans
+        .iter()
+        .map(|span| (span.edge, span.from_m.to_bits(), span.to_m.to_bits()))
+        .collect()
+}
+
+fn walked_span_vertices(graph: &WalkGraph, spans: &[PartialSpan]) -> BTreeSet<VertexId> {
+    spans
+        .iter()
+        .flat_map(|span| {
+            let edge = &graph.edges[span.edge.0];
+            [endpoint_at(edge, span.from_m), endpoint_at(edge, span.to_m)]
+        })
+        .flatten()
+        .collect()
+}
+
+struct MaterializedWalk {
+    graph: WalkGraph,
+    bindings: Vec<SupportBinding>,
+    edges: Vec<EdgeId>,
+    support_offsets: Vec<usize>,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum LocalVertex {
+    Base(VertexId),
+    Interior(EdgeId, u64),
+}
+
+fn materialize_walk(
+    source: &WalkGraph,
+    anchors: &[BoundProjection],
+    spans: &[PartialSpan],
+    support_span_offsets: &[usize],
+) -> crate::Result<MaterializedWalk> {
+    let mut cuts = BTreeMap::<EdgeId, Vec<f64>>::new();
+    for span in spans {
+        cuts.entry(span.edge)
+            .or_default()
+            .extend([span.from_m, span.to_m]);
+    }
+    for anchor in anchors {
+        cuts.entry(anchor.projection.edge)
+            .or_default()
+            .push(anchor.projection.progress_m);
+    }
+    for (edge, marks) in &mut cuts {
+        let length_m = source.edges[edge.0].geometry.length_m();
+        marks.extend([0.0, length_m]);
+        marks.sort_by(f64::total_cmp);
+        marks.dedup_by(|left, right| (*left - *right).abs() <= SUPPORT_EPSILON_M);
     }
 
-    let mut edges = Vec::with_capacity(graph.edges.len() + vertices.len() - graph.vertices.len());
-    let mut heirs = vec![Vec::new(); graph.edges.len()];
-    for source in &graph.edges {
-        let Some(cuts) = incisions.get(&source.id) else {
-            let mut edge = source.clone();
-            edge.id = EdgeId(edges.len());
-            heirs[source.id.0].push(edge.id);
-            edges.push(edge);
-            continue;
-        };
-        let span_m = source.geometry.length_m();
-        let mut marks = Vec::with_capacity(cuts.len() + 2);
-        marks.push((0.0, source.a));
-        marks.extend(cuts.iter().map(|cut| (cut.progress_m, cut.vertex)));
-        marks.push((span_m, source.b));
-        for (segment, marks) in marks.windows(2).enumerate() {
-            let geometry = line_slice(&source.geometry, marks[0].0, marks[1].0);
-            // Crossings have no along-edge coordinate; charge them once to
-            // the median heir so subdivision preserves the known total.
-            let carries_crossings = segment == cuts.len() / 2;
-            let mut edge = Edge {
-                id: EdgeId(edges.len()),
-                a: marks[0].1,
-                b: marks[1].1,
-                attr: cleaved_attr(source, &geometry, span_m, carries_crossings),
-                geometry,
-            };
-            edge.attr.length_m = source.attr.length_m * (marks[1].0 - marks[0].0) / span_m;
-            heirs[source.id.0].push(edge.id);
-            edges.push(edge);
+    let mut vertices = Vec::new();
+    let mut vertex_ids = BTreeMap::<LocalVertex, VertexId>::new();
+    let mut edges = Vec::new();
+    let mut edge_ids = BTreeMap::<(EdgeId, u64, u64), EdgeId>::new();
+    let mut lineage = Vec::new();
+    let mut route = Vec::new();
+    let mut span_offsets = Vec::with_capacity(spans.len() + 1);
+    span_offsets.push(0);
+    for span in spans {
+        let marks = &cuts[&span.edge];
+        let from = canonical_mark(marks, span.from_m);
+        let to = canonical_mark(marks, span.to_m);
+        let lo = from.min(to);
+        let hi = from.max(to);
+        let mut intervals = marks
+            .windows(2)
+            .filter(|pair| pair[0] >= lo - SUPPORT_EPSILON_M && pair[1] <= hi + SUPPORT_EPSILON_M)
+            .map(|pair| (pair[0], pair[1]))
+            .collect::<Vec<_>>();
+        if to < from {
+            intervals.reverse();
         }
+        for (lo, hi) in intervals {
+            let edge = materialized_edge(
+                source,
+                span.edge,
+                lo,
+                hi,
+                &mut vertices,
+                &mut vertex_ids,
+                &mut edges,
+                &mut edge_ids,
+                &mut lineage,
+            );
+            route.push(edge);
+        }
+        span_offsets.push(route.len());
     }
-    let mut incised = TrailGraph::new(vertices, edges);
-    incised.turn_bans = graph
+
+    let bindings = anchors
+        .iter()
+        .map(|bound| {
+            let marks = &cuts[&bound.projection.edge];
+            let progress_m = canonical_mark(marks, bound.projection.progress_m);
+            let vertex = materialized_vertex(
+                source,
+                bound.projection.edge,
+                progress_m,
+                &mut vertices,
+                &mut vertex_ids,
+            );
+            let anchor = SupportPoint(line_coord_at(
+                &source.edges[bound.projection.edge.0].geometry,
+                progress_m,
+            ));
+            SupportBinding {
+                requested: bound.requested,
+                anchor,
+                vertex,
+                snap_m: bound.requested.coord().haversine_m(anchor.coord()),
+            }
+        })
+        .collect::<Vec<_>>();
+    let support_offsets = support_span_offsets
+        .iter()
+        .map(|offset| span_offsets[*offset])
+        .collect();
+    let mut graph = WalkGraph::new(vertices, edges);
+    graph.turn_bans = inherited_turn_bans(source, &graph, &lineage);
+    graph.validate()?;
+    Ok(MaterializedWalk {
+        graph,
+        bindings,
+        edges: route,
+        support_offsets,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn materialized_edge(
+    source: &WalkGraph,
+    source_edge: EdgeId,
+    lo: f64,
+    hi: f64,
+    vertices: &mut Vec<Vertex>,
+    vertex_ids: &mut BTreeMap<LocalVertex, VertexId>,
+    edges: &mut Vec<Edge>,
+    edge_ids: &mut BTreeMap<(EdgeId, u64, u64), EdgeId>,
+    lineage: &mut Vec<EdgeId>,
+) -> EdgeId {
+    let key = (source_edge, lo.to_bits(), hi.to_bits());
+    if let Some(edge) = edge_ids.get(&key) {
+        return *edge;
+    }
+    let a = materialized_vertex(source, source_edge, lo, vertices, vertex_ids);
+    let b = materialized_vertex(source, source_edge, hi, vertices, vertex_ids);
+    let original = &source.edges[source_edge.0];
+    let span_m = original.geometry.length_m();
+    let geometry = line_slice(&original.geometry, lo, hi);
+    let carries_crossings = lo <= span_m * 0.5 && span_m * 0.5 < hi;
+    let id = EdgeId(edges.len());
+    edges.push(Edge {
+        id,
+        a,
+        b,
+        attr: cleaved_attr(original, &geometry, span_m, carries_crossings),
+        geometry,
+    });
+    lineage.push(source_edge);
+    edge_ids.insert(key, id);
+    id
+}
+
+fn materialized_vertex(
+    source: &WalkGraph,
+    source_edge: EdgeId,
+    progress_m: f64,
+    vertices: &mut Vec<Vertex>,
+    vertex_ids: &mut BTreeMap<LocalVertex, VertexId>,
+) -> VertexId {
+    let edge = &source.edges[source_edge.0];
+    let key = if progress_m <= SUPPORT_EPSILON_M {
+        LocalVertex::Base(edge.a)
+    } else if edge.geometry.length_m() - progress_m <= SUPPORT_EPSILON_M {
+        LocalVertex::Base(edge.b)
+    } else {
+        LocalVertex::Interior(source_edge, progress_m.to_bits())
+    };
+    if let Some(vertex) = vertex_ids.get(&key) {
+        return *vertex;
+    }
+    let id = VertexId(vertices.len());
+    let (coord, junction) = match key {
+        LocalVertex::Base(base) => {
+            let base = &source.vertices[base.0];
+            (base.coord, base.junction.clone())
+        }
+        LocalVertex::Interior(_, _) => (line_coord_at(&edge.geometry, progress_m), None),
+    };
+    vertices.push(Vertex {
+        id,
+        coord,
+        junction,
+    });
+    vertex_ids.insert(key, id);
+    id
+}
+
+fn canonical_mark(marks: &[f64], progress_m: f64) -> f64 {
+    marks
+        .iter()
+        .copied()
+        .find(|mark| (*mark - progress_m).abs() <= SUPPORT_EPSILON_M)
+        .unwrap_or(progress_m)
+}
+
+fn inherited_turn_bans(
+    source: &WalkGraph,
+    realized: &WalkGraph,
+    lineage: &[EdgeId],
+) -> Vec<TurnBan> {
+    source
         .turn_bans
         .iter()
-        .map(|ban| inherit_ban(graph, &heirs, ban))
-        .collect::<Option<Vec<_>>>()
-        .ok_or_else(|| TrailgenError::InvalidData("turn-ban inheritance failed".to_owned()))?;
-    incised.validate()?;
-    Ok(incised)
-}
-
-fn complete_bindings(bindings: Vec<Option<SupportBinding>>) -> crate::Result<Vec<SupportBinding>> {
-    bindings
-        .into_iter()
-        .collect::<Option<Vec<_>>>()
-        .ok_or_else(|| {
-            TrailgenError::InvalidData("support-point binding was incomplete".to_owned())
+        .filter_map(|ban| {
+            let via = realized
+                .vertices
+                .iter()
+                .find(|vertex| {
+                    vertex.coord == source.vertices[ban.via.0].coord
+                        && vertex.junction == source.vertices[ban.via.0].junction
+                })?
+                .id;
+            let incident = |source_edge: EdgeId| {
+                lineage.iter().enumerate().find_map(|(slot, lineage)| {
+                    (*lineage == source_edge
+                        && [realized.edges[slot].a, realized.edges[slot].b].contains(&via))
+                    .then_some(EdgeId(slot))
+                })
+            };
+            Some(TurnBan {
+                via,
+                from: incident(ban.from)?,
+                to: incident(ban.to)?,
+                provenance: ban.provenance.clone(),
+            })
         })
-}
-
-fn inherit_ban(graph: &TrailGraph, heirs: &[Vec<EdgeId>], ban: &TurnBan) -> Option<TurnBan> {
-    let incident = |edge: EdgeId| {
-        let source = &graph.edges[edge.0];
-        if ban.via == source.a {
-            heirs[edge.0].first().copied()
-        } else if ban.via == source.b {
-            heirs[edge.0].last().copied()
-        } else {
-            None
-        }
-    };
-    Some(TurnBan {
-        via: ban.via,
-        from: incident(ban.from)?,
-        to: incident(ban.to)?,
-        provenance: ban.provenance.clone(),
-    })
+        .collect()
 }
 
 fn line_coord_at(line: &LineString, progress_m: f64) -> Coord {
@@ -726,13 +1202,7 @@ fn cleaved_attr(
     attr.descent_m = descent_m;
     attr.sustained_steep_m *= ratio;
     attr.grade_distribution = scale_grades(attr.grade_distribution, ratio);
-    attr.difficulty_breakdown = scale_difficulty(
-        attr.difficulty_breakdown,
-        ratio,
-        ascent_m / source.attr.ascent_m.max(f64::EPSILON),
-        descent_m / source.attr.descent_m.max(f64::EPSILON),
-    );
-    attr.difficulty = attr.difficulty_breakdown.total();
+    attr.traversal = HikingModel.estimate(geometry, &attr);
     if !carries_crossings {
         attr.crossings.clear();
     }
@@ -748,55 +1218,6 @@ const fn scale_grades(grades: GradeDistribution, ratio: f64) -> GradeDistributio
     }
 }
 
-const fn scale_difficulty(
-    difficulty: DifficultyBreakdown,
-    ratio: f64,
-    ascent_ratio: f64,
-    descent_ratio: f64,
-) -> DifficultyBreakdown {
-    DifficultyBreakdown {
-        distance: difficulty.distance * ratio,
-        ascent: difficulty.ascent * ascent_ratio,
-        descent: difficulty.descent * descent_ratio,
-        grade: difficulty.grade * ratio,
-        terrain: difficulty.terrain * ratio,
-        road: difficulty.road * ratio,
-        technical: difficulty.technical * ratio,
-        navigation: difficulty.navigation * ratio,
-        bushwhack: difficulty.bushwhack * ratio,
-        confidence: difficulty.confidence * ratio,
-        access: difficulty.access * ratio,
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct Walk {
-    at: VertexId,
-    previous: Option<EdgeId>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Frontier {
-    cost: f64,
-    walk: Walk,
-}
-
-impl Eq for Frontier {}
-
-impl Ord for Frontier {
-    fn cmp(&self, rhs: &Self) -> Ordering {
-        rhs.cost
-            .total_cmp(&self.cost)
-            .then_with(|| rhs.walk.cmp(&self.walk))
-    }
-}
-
-impl PartialOrd for Frontier {
-    fn partial_cmp(&self, rhs: &Self) -> Option<Ordering> {
-        Some(self.cmp(rhs))
-    }
-}
-
 #[derive(Clone, Copy, Default)]
 struct PathVeto<'a> {
     cost_ceiling: Option<f64>,
@@ -805,7 +1226,7 @@ struct PathVeto<'a> {
 }
 
 pub(crate) fn shortest_path(
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     from: VertexId,
     target: VertexId,
     previous: Option<EdgeId>,
@@ -825,112 +1246,67 @@ pub(crate) fn shortest_path(
     )
 }
 
-fn shortest_path_avoiding(
-    graph: &TrailGraph,
-    from: VertexId,
-    target: VertexId,
-    previous: Option<EdgeId>,
-    law: RoutingLaw,
-    forbidden_edges: &BTreeSet<EdgeId>,
-    forbidden_vertices: &BTreeSet<VertexId>,
-) -> Option<Vec<EdgeId>> {
-    shortest_path_excluding(
-        graph,
-        from,
-        target,
-        previous,
-        law,
-        PathVeto {
-            cost_ceiling: None,
-            edges: Some(forbidden_edges),
-            vertices: Some(forbidden_vertices),
-        },
-    )
-}
-
 fn shortest_path_excluding(
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     from: VertexId,
     target: VertexId,
     previous: Option<EdgeId>,
     law: RoutingLaw,
     veto: PathVeto<'_>,
 ) -> Option<Vec<EdgeId>> {
-    if from == target {
-        return Some(Vec::new());
-    }
-    let origin = Walk { at: from, previous };
-    let mut frontier = BinaryHeap::from([Frontier {
-        cost: 0.0,
-        walk: origin,
-    }]);
-    let mut distance = BTreeMap::from([(origin, 0.0)]);
-    let mut predecessor = BTreeMap::<Walk, (Walk, EdgeId)>::new();
-    while let Some(Frontier { cost, walk }) = frontier.pop() {
-        if veto.cost_ceiling.is_some_and(|maximum| cost > maximum)
-            || distance
-                .get(&walk)
-                .is_some_and(|best| cost > *best + f64::EPSILON)
-        {
-            continue;
-        }
-        if walk.at == target {
-            let mut edges = Vec::new();
-            let mut cursor = walk;
-            while cursor != origin {
-                let (prior, edge) = predecessor.get(&cursor).copied()?;
-                edges.push(edge);
-                cursor = prior;
-            }
-            edges.reverse();
-            return Some(edges);
-        }
-        for edge in graph.adjacency[walk.at.0].iter().copied() {
-            if veto.edges.is_some_and(|edges| edges.contains(&edge))
-                || !graph.turn_allowed(walk.previous, walk.at, edge)
-            {
-                continue;
-            }
-            let Some(edge_cost) = law.edge_cost(graph, edge) else {
-                continue;
-            };
-            let next_cost = cost + edge_cost;
-            if veto.cost_ceiling.is_some_and(|maximum| next_cost > maximum) {
-                continue;
-            }
-            let at = graph.edges[edge.0].traverse(walk.at)?;
-            if at != target && veto.vertices.is_some_and(|vertices| vertices.contains(&at)) {
-                continue;
-            }
-            let next = Walk {
-                at,
-                previous: Some(edge),
-            };
-            if distance
-                .get(&next)
-                .is_none_or(|best| next_cost < *best - f64::EPSILON)
-            {
-                distance.insert(next, next_cost);
-                predecessor.insert(next, (walk, edge));
-                frontier.push(Frontier {
-                    cost: next_cost,
-                    walk: next,
-                });
-            }
-        }
-    }
-    None
+    let router = crate::WalkRouter::forge(graph);
+    let mut workspace = router.workspace(graph);
+    route_path_excluding(
+        &router,
+        &mut workspace,
+        graph,
+        from,
+        target,
+        previous,
+        law,
+        veto.edges,
+        veto.vertices,
+        veto.cost_ceiling,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn route_path_excluding(
+    router: &crate::WalkRouter,
+    workspace: &mut crate::RoutingWorkspace,
+    graph: &WalkGraph,
+    from: VertexId,
+    target: VertexId,
+    previous: Option<EdgeId>,
+    law: RoutingLaw,
+    forbidden_edges: Option<&BTreeSet<EdgeId>>,
+    forbidden_vertices: Option<&BTreeSet<VertexId>>,
+    cost_ceiling: Option<f64>,
+) -> Option<Vec<EdgeId>> {
+    router.shortest_path(
+        graph,
+        workspace,
+        crate::RouteRequest {
+            from,
+            target,
+            previous,
+            law,
+            cost_ceiling,
+            forbidden_edges,
+            forbidden_vertices,
+        },
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
-        EdgeTravel, GraphBuilder, JunctionPolicy, LineString, Provenance, SegmentDraft, TrailClass,
-        TrailStanding, io::geojson,
+        CrossingControl, EdgeTravel, GeometryClaim, GraphBuilder, JunctionPolicy, LineString,
+        Provenance, SegmentDraft, TrailStanding, WayKind, WayRealm, io::geojson,
     };
 
-    fn graph() -> TrailGraph {
+    fn graph() -> WalkGraph {
         GraphBuilder::default()
             .build(
                 &geojson::network_from_str(include_str!("../tests/fixtures/mini_network.geojson"))
@@ -944,8 +1320,12 @@ mod tests {
             geometry: LineString::new(vec![from, to]).expect("valid line"),
             junctions: JunctionPolicy::Planar,
             turn_ref: None,
+            junction_keys: None,
             turn_restrictions: Vec::new(),
-            trail_class: TrailClass::Path,
+            way_kind: WayKind::Path,
+            realm: WayRealm::default(),
+            geometry_claim: GeometryClaim::default(),
+            crossing_control: CrossingControl::default(),
             standing: TrailStanding::Established,
             marking: crate::TrailMarking::default(),
             terrain: Terrain::Trail,
@@ -959,7 +1339,7 @@ mod tests {
         }
     }
 
-    fn vertex_at(graph: &TrailGraph, coord: Coord) -> VertexId {
+    fn vertex_at(graph: &WalkGraph, coord: Coord) -> VertexId {
         graph
             .vertices
             .iter()
@@ -968,7 +1348,7 @@ mod tests {
             .id
     }
 
-    fn edge_between(graph: &TrailGraph, from: VertexId, to: VertexId) -> EdgeId {
+    fn edge_between(graph: &WalkGraph, from: VertexId, to: VertexId) -> EdgeId {
         graph.adjacency[from.0]
             .iter()
             .copied()
@@ -1031,8 +1411,12 @@ mod tests {
                     .expect("valid line"),
                 junctions: JunctionPolicy::Planar,
                 turn_ref: None,
+                junction_keys: None,
                 turn_restrictions: Vec::new(),
-                trail_class: TrailClass::Path,
+                way_kind: WayKind::Path,
+                realm: WayRealm::default(),
+                geometry_claim: GeometryClaim::default(),
+                crossing_control: CrossingControl::default(),
                 standing: TrailStanding::Established,
                 marking: crate::TrailMarking::default(),
                 terrain: Terrain::Trail,
@@ -1066,12 +1450,16 @@ mod tests {
         let realized = trail
             .realize("partial", &graph, &constraints, 2.0)
             .expect("realize partial edge");
-        let incised = realized.graph(&graph);
+        let local = realized.graph();
 
         assert_eq!(graph.vertices.len(), 2, "the corpus remains immutable");
         assert_eq!(graph.edges.len(), 1, "the corpus remains immutable");
-        assert_eq!(incised.vertices.len(), 3);
-        assert_eq!(incised.edges.len(), 2);
+        assert_eq!(local.vertices.len(), 2, "the realized graph is route-local");
+        assert_eq!(
+            local.edges.len(),
+            1,
+            "only the walked half-edge is materialized"
+        );
         assert_eq!(realized.route.edges.len(), 2);
         assert_eq!(realized.route.edges[0], realized.route.edges[1]);
         assert!((realized.route.metrics.distance_m - source_length_m / 2.0).abs() < 0.5);
@@ -1080,7 +1468,7 @@ mod tests {
         let anchor = realized.trail.support_points[1].coord();
         assert!(anchor.lat.abs() < 1.0e-10);
         assert!((anchor.lon - 0.001).abs() < 1.0e-8);
-        assert!(realized.bindings[1].vertex.0 >= graph.vertices.len());
+        assert_eq!(local.vertices[realized.bindings[1].vertex.0].coord, anchor);
     }
 
     #[test]
@@ -1142,6 +1530,72 @@ mod tests {
     }
 
     #[test]
+    fn loop_design_admits_and_reverses_a_retraced_bridge() {
+        let trailhead = Coord::new(0.0, 0.0);
+        let junction = Coord::new(0.001, 0.0);
+        let east = Coord::new(0.002, 0.0);
+        let north = Coord::new(0.001, 0.001);
+        let graph = GraphBuilder::default()
+            .build(&[
+                draft("bridge", trailhead, junction),
+                draft("lower", junction, east),
+                draft("upper", east, north),
+                draft("west", north, junction),
+            ])
+            .expect("build lollipop network");
+        let trail = Trail::forge(
+            RouteShape::Loop,
+            [trailhead, east, north]
+                .map(|coord| SupportPoint::forge(coord).expect("valid support"))
+                .to_vec(),
+            RoutingLaw::default(),
+        )
+        .expect("valid loop design");
+        let constraints = LoopConstraints {
+            min_distance_m: 0.0,
+            max_distance_m: f64::MAX,
+            max_repeated_edge_fraction: 1.0,
+            allowed_shapes: vec![
+                RouteShape::Loop,
+                RouteShape::FigureEight,
+                RouteShape::OutAndBack,
+            ],
+            ..LoopConstraints::default()
+        };
+
+        let realized = trail
+            .realize("lollipop", &graph, &constraints, 1.0)
+            .expect("a retraced bridge is a lawful manual loop");
+
+        assert_eq!(realized.trail.shape, RouteShape::Loop);
+        assert_eq!(realized.route.metrics.shape, RouteShape::OutAndBack);
+        assert!(realized.route.metrics.repeated_edge_fraction > 0.0);
+        assert!(realized.route.verdict.satisfied);
+        assert_eq!(
+            graph.walk_edges(realized.route.start, &realized.route.edges),
+            Some(realized.route.start)
+        );
+
+        let reversal = realized
+            .reverse_loop(&graph)
+            .expect("closed design remains reversible despite its morphology");
+        let reversed = reversal
+            .trail
+            .realize("lollipop", &graph, &constraints, 1.0)
+            .expect("reversed supports reproduce the reversed closed walk");
+        assert_eq!(reversed.trail.shape, RouteShape::Loop);
+        assert_eq!(reversed.route.metrics.shape, RouteShape::OutAndBack);
+        assert_ne!(realized.walk_fingerprint(), reversed.walk_fingerprint());
+        let expected = realized
+            .source_spans
+            .iter()
+            .rev()
+            .map(|span| span.reversed())
+            .collect::<Vec<_>>();
+        assert!(same_spans(&reversed.source_spans, &expected));
+    }
+
+    #[test]
     fn reversal_retains_pins_and_repairs_only_ambiguous_spans() {
         let trailhead = Coord::new(0.0, 0.0);
         let east = Coord::new(0.001, 0.0);
@@ -1179,7 +1633,7 @@ mod tests {
             .realize("detour", &graph, &constraints, 1.0)
             .expect("turn ban creates a lawful loop");
         let reversal = realized
-            .reverse_loop(&graph, &constraints)
+            .reverse_loop(&graph)
             .expect("bidirectional loop is reversible");
 
         assert_eq!(reversal.added_supports, 1);
@@ -1192,16 +1646,13 @@ mod tests {
             .trail
             .realize("detour", &graph, &constraints, 1.0)
             .expect("repaired controls realize");
-        assert_eq!(
-            reversed.route.edges,
-            realized
-                .route
-                .edges
-                .iter()
-                .rev()
-                .copied()
-                .collect::<Vec<_>>()
-        );
+        let expected = realized
+            .source_spans
+            .iter()
+            .rev()
+            .map(|span| span.reversed())
+            .collect::<Vec<_>>();
+        assert!(same_spans(&reversed.source_spans, &expected));
     }
 
     #[test]
@@ -1233,7 +1684,7 @@ mod tests {
             .expect("forward direction is lawful");
 
         assert!(matches!(
-            realized.reverse_loop(&graph, &constraints),
+            realized.reverse_loop(&graph),
             Err(TrailgenError::OneWayReversal)
         ));
     }
@@ -1258,7 +1709,7 @@ mod tests {
         let realized = trail
             .realize("editable", &graph, &constraints, 1.0)
             .expect("realize recovered loop");
-        let routed = realized.graph(&graph);
+        let routed = realized.graph();
 
         for slot in 1..realized.support_offsets.len() {
             let first = realized.support_offsets[slot - 1];
@@ -1268,10 +1719,10 @@ mod tests {
             }
             let edge = &routed.edges[realized.route.edges[first].0];
             let insertion = realized
-                .support_insertion(
-                    &graph,
-                    line_coord_at(&edge.geometry, edge.geometry.length_m() / 2.0),
-                )
+                .support_insertion(line_coord_at(
+                    &edge.geometry,
+                    edge.geometry.length_m() / 2.0,
+                ))
                 .expect("route edge admits insertion");
             assert_eq!(insertion.slot, slot);
             assert!(insertion.distance_m < 0.01);
@@ -1281,10 +1732,10 @@ mod tests {
         if closure < realized.route.edges.len() {
             let edge = &routed.edges[realized.route.edges[closure].0];
             let insertion = realized
-                .support_insertion(
-                    &graph,
-                    line_coord_at(&edge.geometry, edge.geometry.length_m() / 2.0),
-                )
+                .support_insertion(line_coord_at(
+                    &edge.geometry,
+                    edge.geometry.length_m() / 2.0,
+                ))
                 .expect("closure edge admits insertion");
             assert_eq!(insertion.slot, realized.bindings.len());
         }
@@ -1299,8 +1750,12 @@ mod tests {
             geometry: LineString::new(vec![from, to]).expect("valid segment"),
             junctions: JunctionPolicy::Planar,
             turn_ref: None,
+            junction_keys: None,
             turn_restrictions: Vec::new(),
-            trail_class: TrailClass::Path,
+            way_kind: WayKind::Path,
+            realm: WayRealm::default(),
+            geometry_claim: GeometryClaim::default(),
+            crossing_control: CrossingControl::default(),
             standing: TrailStanding::Established,
             marking: crate::TrailMarking::default(),
             terrain: Terrain::Trail,
@@ -1384,8 +1839,12 @@ mod tests {
             geometry: LineString::new(points).expect("valid line"),
             junctions: JunctionPolicy::Planar,
             turn_ref: None,
+            junction_keys: None,
             turn_restrictions: Vec::new(),
-            trail_class: TrailClass::Path,
+            way_kind: WayKind::Path,
+            realm: WayRealm::default(),
+            geometry_claim: GeometryClaim::default(),
+            crossing_control: CrossingControl::default(),
             standing: TrailStanding::Established,
             marking: crate::TrailMarking::default(),
             terrain,

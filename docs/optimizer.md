@@ -2,21 +2,23 @@
 
 ## Objective
 
-Trailgen separates physical effort from desirability:
+Trailgen separates physical load, duration, and desirability:
 
-- **Difficulty** is a target. Distance, climb, grade, substrate, technical pressure, navigation,
-  confidence, and access evidence produce the scalar; ranking minimizes distance from the requested
-  target. The default hard window is unbounded; a project may impose one explicitly.
-- **Quality** is maximized. It is a length-normalized 0–100 score reduced by road exposure,
-  uncertainty, and dubious access. Difficulty is deliberately absent, so a severe route can still
-  be excellent.
+- **Lower-limb load** is a target in flat-gravel joint-work-equivalent
+  kilometers. Ranking minimizes distance from the requested target. The
+  default hard load window is unbounded; a project may impose one explicitly.
+- **Moving time** has independent lower and upper bounds. It is a
+  population prediction, not another synonym for load.
+- **Quality** is maximized. It is a length-normalized 0–100 score reduced by
+  road exposure, uncertainty, and dubious access. Load and time are
+  deliberately absent, so a severe route can still be excellent.
 
-Roads are not banned by default. `search.routing.road_aversion = 2` makes a fully road-exposed meter
-cost three routing meters, while `constraints.max_road_fraction` remains available for an explicit
-hard cap and defaults to `1`. Closed and private edges are never traversable. Pavement and road
-terrain remain physically easier under the default difficulty multipliers; the optional
-`difficulty.road_effort_penalty` is zero unless a project intentionally defines road walking as
-extra effort.
+Roads are not banned by default. `search.routing.road_aversion = 2` makes a
+fully road-exposed meter cost three routing meters, while
+`constraints.max_road_fraction` remains available for an explicit hard cap
+and defaults to `1`. Closed and private edges are never traversable. Road
+aversion affects route choice and quality, not the physically named load
+unit.
 
 ## Support Designs
 
@@ -63,8 +65,9 @@ aversion 2. The CLI retains a larger diagnostic envelope.
 
 Every route is fully measured and judged before ranking. Hard constraint satisfaction is
 lexicographic: no attractive violation outranks a lawful route. Within each tier, Pareto fronts use
-constraint penalty, distance/ascent/descent window deviations, difficulty-target deviation, quality
-loss, restricted-access fraction, and repeated-edge fraction. Scalar score then orders a front:
+constraint penalty, distance/ascent/descent and moving-time window deviations,
+lower-limb-load target deviation, quality loss, restricted-access fraction,
+and repeated-edge fraction. Scalar score then orders a front:
 
 ```text
 score = constraint_penalty + 0.1 × (100 - quality)

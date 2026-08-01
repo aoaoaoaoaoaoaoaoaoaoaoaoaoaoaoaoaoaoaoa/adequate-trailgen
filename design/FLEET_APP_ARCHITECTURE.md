@@ -26,6 +26,9 @@ Rust. Proc macros remain the expected eventual authoring surface, but their
 natural language must be recovered from a proven runtime rather than invented
 in advance.
 
+The local [Native Responsiveness Doctrine](RESPONSIVENESS_DOCTRINE.md) governs
+the current shell instrumentation experiment and its promotion gates.
+
 `egui-tester` and the future shell remain separate repositories for now. Their
 only required runtime seam is `egui-tester-witness`. Co-location may be
 reconsidered if sustained co-evolution supplies evidence for it.

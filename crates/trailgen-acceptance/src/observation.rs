@@ -2,7 +2,8 @@ use egui_tester::{Condition, field};
 use serde::Deserialize;
 
 pub use trailgen_contract::{
-    CorpusPhase, EditorOrigin, RouteShape, SearchPhase, TrailColoring, View, Workspace,
+    AreaCorner, CorpusPhase, EditorOrigin, ResultsPhase, RouteShape, SearchPhase, TrailColoring,
+    View, Workspace,
 };
 
 #[derive(Debug, Deserialize)]
@@ -11,10 +12,12 @@ pub struct Observation {
     pub workspace: Workspace,
     pub view: View,
     pub rename_active: bool,
+    pub shortcut_help: bool,
     pub text_edit_focused: bool,
     pub saved_trails: usize,
     pub candidates: usize,
     pub map: Option<MapState>,
+    pub areas: Option<AreaState>,
     pub editor: Option<EditorState>,
     pub search: Option<SearchState>,
     pub survey: Option<SurveyState>,
@@ -27,6 +30,20 @@ pub struct MapState {
     pub center: [f64; 2],
     pub world_points: f64,
     pub coloring: TrailColoring,
+    pub basemap_tiles: usize,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AreaState {
+    pub regions: usize,
+    pub drawing: bool,
+    pub resizing: Option<AreaResizeState>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+pub struct AreaResizeState {
+    pub slot: usize,
+    pub corner: AreaCorner,
 }
 
 #[derive(Debug, Deserialize)]
@@ -44,6 +61,7 @@ pub struct EditorState {
 pub struct SearchState {
     pub phase: SearchPhase,
     pub corpus: CorpusPhase,
+    pub results: ResultsPhase,
     pub trailhead: bool,
     pub boundary: bool,
     pub required: usize,
@@ -53,9 +71,7 @@ pub struct SearchState {
 
 #[derive(Debug, Deserialize)]
 pub struct SurveyState {
-    pub regions: usize,
     pub acquiring: bool,
-    pub drawing: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -67,8 +83,8 @@ pub struct ProfileState {
 
 pub mod shows {
     use super::{
-        Condition, CorpusPhase, EditorOrigin, Observation, RouteShape, SearchPhase, TrailColoring,
-        View, Workspace, field,
+        AreaCorner, Condition, CorpusPhase, EditorOrigin, Observation, ResultsPhase, RouteShape,
+        SearchPhase, TrailColoring, View, Workspace, field,
     };
 
     pub fn condition(
@@ -122,6 +138,55 @@ pub mod shows {
         })
     }
 
+    pub fn basemap_tiles_at_least(minimum: usize) -> Condition<Observation> {
+        condition(
+            format!("at least {minimum} presented basemap tile(s)"),
+            move |state| {
+                state
+                    .map
+                    .as_ref()
+                    .is_some_and(|map| map.basemap_tiles >= minimum)
+            },
+        )
+    }
+
+    pub fn areas(expected: usize) -> Condition<Observation> {
+        condition(format!("{expected} map area(s)"), move |state| {
+            state
+                .areas
+                .as_ref()
+                .is_some_and(|areas| areas.regions == expected)
+        })
+    }
+
+    pub fn area_drawing(active: bool) -> Condition<Observation> {
+        condition(
+            if active {
+                "map-area selection to be armed"
+            } else {
+                "map-area selection to be idle"
+            },
+            move |state| {
+                state
+                    .areas
+                    .as_ref()
+                    .is_some_and(|areas| areas.drawing == active)
+            },
+        )
+    }
+
+    pub fn area_resizing(expected: Option<(usize, AreaCorner)>) -> Condition<Observation> {
+        condition(format!("map-area resize {expected:?}"), move |state| {
+            state.areas.as_ref().is_some_and(|areas| {
+                areas
+                    .resizing
+                    .as_ref()
+                    .map(|resize| (resize.slot, resize.corner))
+                    == expected
+            })
+        })
+    }
+
     pub fn coloring(expected: TrailColoring) -> Condition<Observation> {
         condition(format!("trail coloring {expected:?}"), move |state| {
             state
@@ -132,19 +197,18 @@ pub mod shows {
     }
 
     pub fn survey_drawing() -> Condition<Observation> {
-        condition("map-area selection to be armed", |state| {
-            state.survey.as_ref().is_some_and(|survey| survey.drawing)
-        })
+        area_drawing(true)
     }
 
     pub fn survey_acquiring(regions: usize) -> Condition<Observation> {
         condition(
             format!("acquisition of {regions} selected region(s)"),
             move |state| {
-                state
-                    .survey
-                    .as_ref()
-                    .is_some_and(|survey| survey.acquiring && survey.regions == regions)
+                state.survey.as_ref().is_some_and(|survey| survey.acquiring)
+                    && state
+                        .areas
+                        .as_ref()
+                        .is_some_and(|areas| areas.regions == regions)
             },
         )
     }
@@ -156,6 +220,26 @@ pub mod shows {
                 .as_ref()
                 .is_some_and(|search| search.phase == phase)
         })
+    }
+
+    pub fn results_open(expected: bool) -> Condition<Observation> {
+        condition(
+            if expected {
+                "an open Results shelf"
+            } else {
+                "a dormant Results shelf"
+            },
+            move |state| {
+                state.search.as_ref().is_some_and(|search| {
+                    search.results
+                        == if expected {
+                            ResultsPhase::Open
+                        } else {
+                            ResultsPhase::Dormant
+                        }
+                })
+            },
+        )
     }
 
     pub fn corpus(expected: CorpusPhase) -> Condition<Observation> {
@@ -210,6 +294,10 @@ pub mod shows {
             state.rename_active
         })
         .eq(active)
+    }
+
+    pub fn shortcut_help(active: bool) -> Condition<Observation> {
+        field("shortcut guide", |state: &Observation| state.shortcut_help).eq(active)
     }
 
     pub fn editor_origin(expected: EditorOrigin) -> Condition<Observation> {

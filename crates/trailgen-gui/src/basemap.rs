@@ -30,7 +30,7 @@ use std::{
     thread,
     time::{Duration, Instant, SystemTime},
 };
-use trailgen_core::{TrailGraph, source::GeoBounds};
+use trailgen_core::{WalkGraph, source::GeoBounds};
 
 pub const ARCHIVE_NAME: &str = "basemap.pmtiles";
 pub const MAX_SOURCE_ZOOM: u8 = 15;
@@ -62,8 +62,10 @@ pub struct Source {
 }
 
 impl Source {
-    pub fn project(root: &FsPath, graph: &TrailGraph, regions: &[GeoBounds]) -> Result<Self> {
-        let roaming_cache = platform_dirs()?.cache_dir().join(ROAMING_CACHE);
+    pub fn project(root: &FsPath, graph: &WalkGraph, regions: &[GeoBounds]) -> Result<Self> {
+        if !regions.is_empty() {
+            return Self::regions(root, regions);
+        }
         if let Some(override_path) = std::env::var_os("TRAILGEN_BASEMAP_ARCHIVE") {
             return Ok(Self {
                 archive: override_path.into(),
@@ -72,22 +74,33 @@ impl Source {
                 roaming_cache: None,
             });
         }
-        let forge_regions = if regions.is_empty() {
-            vec![forge_bounds(graph)?]
-        } else {
-            regions.to_vec()
-        };
-        let archive = if regions.is_empty() {
-            root.join("cache").join(ARCHIVE_NAME)
-        } else {
-            root.join("cache")
-                .join(format!("basemap-{}.pmtiles", region_key(regions)))
-        };
+        let roaming_cache = platform_dirs()?.cache_dir().join(ROAMING_CACHE);
         Ok(Self {
-            archive,
-            forge_regions: Some(forge_regions),
+            archive: root.join("cache").join(ARCHIVE_NAME),
+            forge_regions: Some(vec![forge_bounds(graph)?]),
             forge_zoom: MAX_SOURCE_ZOOM,
             roaming_cache: Some(roaming_cache),
+        })
+    }
+
+    /// Build a managed project's basemap source without loading its trail graph.
+    pub fn regions(root: &FsPath, regions: &[GeoBounds]) -> Result<Self> {
+        ensure!(!regions.is_empty(), "a managed basemap requires a map area");
+        if let Some(override_path) = std::env::var_os("TRAILGEN_BASEMAP_ARCHIVE") {
+            return Ok(Self {
+                archive: override_path.into(),
+                forge_regions: None,
+                forge_zoom: MAX_SOURCE_ZOOM,
+                roaming_cache: None,
+            });
+        }
+        Ok(Self {
+            archive: root
+                .join("cache")
+                .join(format!("basemap-{}.pmtiles", region_key(regions))),
+            forge_regions: Some(regions.to_vec()),
+            forge_zoom: MAX_SOURCE_ZOOM,
+            roaming_cache: Some(platform_dirs()?.cache_dir().join(ROAMING_CACHE)),
         })
     }
 
@@ -380,10 +393,19 @@ pub struct Parking {
     pub onset_zoom: f32,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Mesh<V> {
     pub vertices: Arc<[V]>,
     pub indices: Arc<[u32]>,
+}
+
+impl<V> Default for Mesh<V> {
+    fn default() -> Self {
+        Self {
+            vertices: Arc::from([]),
+            indices: Arc::from([]),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1701,6 +1723,12 @@ fn road_style(
     min_zoom: Option<f64>,
     source_zoom: u8,
 ) -> Option<StrokeStyle> {
+    // The routable corpus exclusively owns pedestrian geometry. A second,
+    // lower-fidelity PMTiles copy would disclose on an independent zoom
+    // schedule and make paths appear, vanish, then reappear.
+    if kind == Some("path") {
+        return None;
+    }
     let (color, radius, fallback_onset) = match (kind, detail) {
         (Some("highway"), Some("motorway")) => ([84, 73, 57, 235], 1.40, 4.0),
         (Some("highway"), Some("motorway_link")) => ([91, 80, 63, 220], 1.05, 7.0),
@@ -1716,9 +1744,6 @@ fn road_style(
         (Some("minor_road"), Some("service" | "alley" | "parking_aisle" | "driveway")) => {
             ([119, 111, 95, 132], 0.50, 11.5)
         }
-        (Some("path"), Some("pedestrian" | "cycleway" | "track" | "path" | "footway")) => {
-            ([130, 126, 110, 42], 0.10, 11.5)
-        }
         (Some("rail"), _) | (_, Some("rail" | "light_rail" | "tram" | "subway")) => {
             ([104, 101, 94, 62], 0.15, 9.0)
         }
@@ -1726,7 +1751,6 @@ fn road_style(
         (Some("highway"), _) => ([86, 75, 59, 230], 1.25, 5.0),
         (Some("major_road"), _) => ([92, 82, 67, 215], 1.05, 8.0),
         (Some("minor_road"), _) => ([109, 101, 86, 165], 0.70, 10.5),
-        (Some("path"), _) => ([130, 126, 110, 38], 0.10, 11.5),
         _ => return None,
     };
     let onset_zoom = disclosure_onset(min_zoom, fallback_onset);
@@ -2013,7 +2037,7 @@ pub fn same_point(left: [f32; 2], right: [f32; 2]) -> bool {
     left.map(f32::to_bits) == right.map(f32::to_bits)
 }
 
-fn forge_bounds(graph: &TrailGraph) -> Result<GeoBounds> {
+fn forge_bounds(graph: &WalkGraph) -> Result<GeoBounds> {
     let first = graph
         .vertices
         .first()
@@ -2539,6 +2563,14 @@ mod tests {
         assert!(arterial.onset_zoom < local.onset_zoom);
         assert!(road_label_style(Some("path"), Some("footway"), Some(14.0)).is_none());
         Ok(())
+    }
+
+    #[test]
+    fn walking_corpus_exclusively_owns_pedestrian_geometry() {
+        for detail in ["pedestrian", "cycleway", "track", "path", "footway"] {
+            assert!(road_style(Some("path"), Some(detail), Some(11.5), 15).is_none());
+        }
+        assert!(road_style(Some("path"), None, None, 15).is_none());
     }
 
     #[test]

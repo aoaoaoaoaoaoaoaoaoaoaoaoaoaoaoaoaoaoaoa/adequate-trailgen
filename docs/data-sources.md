@@ -15,7 +15,7 @@ default US provider batch is:
 
 Each region-provider pair has its own immutable raw shard, exact request sidecar, and fingerprinted
 receipt beneath `sources/<provider>/`. A damaged derived index rebuilds from those shards. A missing,
-drifted, or obsolete provider receipt refetches only that provider and rectangle. `cache/graph.json`
+drifted, or obsolete provider receipt refetches only that provider and rectangle. `cache/graph.bin`
 is written last and is the GUI readiness marker. State providers carry explicit geographic coverage;
 an irrelevant rectangle receives a deterministic empty receipt without a network request.
 
@@ -57,14 +57,18 @@ The TPWD adapter queries only `Official = Yes` lines whose use includes hiking. 
 a live closure field in this layer, so access remains unknown and may be filled by corroborating
 evidence rather than fabricated as open. Provider IDs, park identity, and TPWD attribution survive.
 
-The OSM adapter accepts path, non-sidewalk footway, track, steps, and bridleway geometry as trail
-evidence. A street is never a trail merely because walking is legal there: service, pedestrian, and
-road segments survive only when they form the nearest bridge of at most 1 km between two genuine
-trail junctions. The unpruned road layer remains sequestered as context for crossings and exposure.
-Hiking, foot, and walking route relations raise evidence; simple node-via foot turn restrictions
-become graph turn bans. `foot`/`access`, direction, surface, trail visibility, wayfinding marks,
-maintenance, `informal`, `disused`, and `abandoned` tags remain semantic input rather than display
-trivia.
+The OSM adapter retains one pedestrian graph. Paths and explicitly evidenced recreational ways enter
+Finder; sidewalks, crossings, pedestrian streets, pedestrian-admitted cycleways, and walkable roads
+remain Manual-only unless a bounded connector or hiking relation admits them. The US automatic
+corpus applies the US pedestrian default to an unqualified `highway=cycleway`; explicit
+`foot=designated|yes|permissive` confirms pedestrian use, while `foot=no|private` remains evidence but
+is never routable. Separately mapped sidewalks and bicycle carriageways remain distinct from roads
+even when their coordinates coincide. A road that asserts a sidewalk may supply a declared
+centerline proxy, but `sidewalk=separate` and `foot=use_sidepath` forbid that substitution. Vehicle
+one-way tags do not constrain walking; `oneway:foot` does. OSM node identity, node crossing control,
+hiking relations, and simple node-via foot turn restrictions survive ingestion. `foot`/`access`,
+surface, trail visibility, wayfinding marks, maintenance, `informal`, `disused`, and `abandoned` tags
+remain semantic input rather than display trivia.
 
 ## Standing, Marking, And Access
 
@@ -105,7 +109,7 @@ defaults to nationwide applicability and lets regional authorities reject foreig
 contacting their servers. Acquisition must be bounded and return raw bytes, the exact request, and an
 origin. Normalization must preserve provider identity and licensing in provenance. Provider-native
 types stop at this boundary;
-`TrailGraph`, routing, the library, and the GUI remain provider-neutral. Adapter revision changes
+`WalkGraph`, routing, the library, and the GUI remain provider-neutral. Adapter revision changes
 invalidate only that provider's receipts.
 
 ## Debug Frontend

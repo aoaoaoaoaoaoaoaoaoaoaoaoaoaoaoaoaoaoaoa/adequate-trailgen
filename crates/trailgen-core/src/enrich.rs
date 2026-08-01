@@ -1,6 +1,6 @@
-use crate::difficulty::DifficultyWeights;
 use crate::geo::{Coord, LineString};
-use crate::model::{Edge, GradeDistribution, Provenance, Terrain, TerrainEvidence, TrailGraph};
+use crate::hiking::HikingModel;
+use crate::model::{Edge, GradeDistribution, Provenance, Terrain, TerrainEvidence, WalkGraph};
 use crate::{Result, TrailgenError};
 use serde::{Deserialize, Serialize};
 
@@ -101,10 +101,9 @@ impl ElevationSampler for PlaneElevation {
 }
 
 pub fn enrich_graph<S: ElevationSampler>(
-    graph: &mut TrailGraph,
+    graph: &mut WalkGraph,
     sampler: &S,
     config: EnrichmentConfig,
-    weights: DifficultyWeights,
 ) -> Result<()> {
     if config.sample_spacing_m <= 0.0 {
         return Err(TrailgenError::InvalidData(
@@ -112,7 +111,7 @@ pub fn enrich_graph<S: ElevationSampler>(
         ));
     }
     for edge in &mut graph.edges {
-        enrich_edge(edge, sampler, config, weights)?;
+        enrich_edge(edge, sampler, config)?;
     }
     Ok(())
 }
@@ -121,7 +120,6 @@ fn enrich_edge<S: ElevationSampler>(
     edge: &mut Edge,
     sampler: &S,
     config: EnrichmentConfig,
-    weights: DifficultyWeights,
 ) -> Result<()> {
     let (sampled_line, elevation_provenance, elevation_confidence) =
         densify_and_sample(&edge.geometry, sampler, config.sample_spacing_m)?;
@@ -134,13 +132,45 @@ fn enrich_edge<S: ElevationSampler>(
     edge.attr.grade_abs_max = profile.grade_abs_max;
     edge.attr.sustained_steep_m = profile.sustained_steep_m;
     edge.attr.grade_distribution = profile.grade_distribution;
+    edge.attr.hill_slope_deg = mean_hill_slope_deg(&edge.geometry, sampler);
     edge.attr.elevation_provenance = elevation_provenance;
     if elevation_confidence > 0.0 {
         edge.attr.confidence = edge.attr.confidence.min(elevation_confidence);
     }
     infer_terrain(edge, &profile);
-    weights.apply_edge(edge);
+    HikingModel.apply(edge);
     Ok(())
+}
+
+fn mean_hill_slope_deg<S: ElevationSampler>(line: &LineString, sampler: &S) -> Option<f64> {
+    const RADIUS_M: f64 = 10.0;
+    const METERS_PER_LATITUDE_DEGREE: f64 = 111_195.0;
+    let mut weighted_slope = 0.0;
+    let mut measured_m = 0.0;
+    for segment in line.points.windows(2) {
+        let distance_m = segment[0].haversine_m(segment[1]);
+        if distance_m <= f64::EPSILON {
+            continue;
+        }
+        let center = segment[0].lerp(segment[1], 0.5);
+        let latitude_delta = RADIUS_M / METERS_PER_LATITUDE_DEGREE;
+        let longitude_delta =
+            RADIUS_M / (METERS_PER_LATITUDE_DEGREE * center.lat.to_radians().cos().max(0.01));
+        let [Some(west), Some(east), Some(south), Some(north)] = [
+            sampler.sample(Coord::new(center.lon - longitude_delta, center.lat)),
+            sampler.sample(Coord::new(center.lon + longitude_delta, center.lat)),
+            sampler.sample(Coord::new(center.lon, center.lat - latitude_delta)),
+            sampler.sample(Coord::new(center.lon, center.lat + latitude_delta)),
+        ] else {
+            continue;
+        };
+        let east_grade = (east.ele_m - west.ele_m) / (2.0 * RADIUS_M);
+        let north_grade = (north.ele_m - south.ele_m) / (2.0 * RADIUS_M);
+        let slope_deg = east_grade.hypot(north_grade).atan().to_degrees();
+        weighted_slope = slope_deg.mul_add(distance_m, weighted_slope);
+        measured_m += distance_m;
+    }
+    (measured_m > 0.0).then_some(weighted_slope / measured_m)
 }
 
 fn densify_and_sample<S: ElevationSampler>(
@@ -388,7 +418,7 @@ fn terrain_inference(edge: &Edge, profile: &GradeProfile) -> TerrainInference {
                 .cloned()
                 .or(edge_provenance),
         }
-    } else if edge.attr.trail_class.pathless() {
+    } else if edge.attr.way_kind.pathless() {
         TerrainInference {
             terrain: Terrain::Unknown,
             confidence: 0.0,

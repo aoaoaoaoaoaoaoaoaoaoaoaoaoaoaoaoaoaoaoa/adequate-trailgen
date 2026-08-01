@@ -2,7 +2,8 @@ use crate::builder::{JunctionPolicy, SegmentDraft};
 use crate::crs::{CoordProjector, CrsVerdict, projector, validate_prj_wkt};
 use crate::geo::{Coord, LineString};
 use crate::model::{
-    Access, CrossingKind, EdgeTravel, Provenance, Terrain, TrailClass, TrailMarking, TrailStanding,
+    Access, CrossingControl, CrossingKind, EdgeTravel, GeometryClaim, Provenance, Terrain,
+    TrailMarking, TrailStanding, WayKind, WayRealm,
 };
 use crate::overlay::{
     AccessOverlay, AccessWindow, ContextOverlay, DailyTimeWindow, MonthDay, OverlayGeometry,
@@ -35,10 +36,19 @@ pub fn network_from_path(path: &Path) -> Result<Vec<SegmentDraft>> {
             terrain_tag.is_some(),
             surface_terrain != Terrain::Unknown,
         );
-        let trail_class = props
-            .str("trail_class")
+        let way_kind = props
+            .str("way_kind")
             .or_else(|| props.str("highway"))
-            .map_or(TrailClass::Unknown, TrailClass::from_tag);
+            .map_or(WayKind::Unknown, WayKind::from_tag);
+        let realm = props
+            .str("realm")
+            .map_or(WayRealm::Recreational, WayRealm::from_tag);
+        let geometry_claim = props
+            .str("geometry_claim")
+            .map_or(GeometryClaim::Surveyed, GeometryClaim::from_tag);
+        let crossing_control = props
+            .str("crossing_control")
+            .map_or(CrossingControl::None, CrossingControl::from_tag);
         let standing = props
             .str("trail_standing")
             .or_else(|| props.str("standing"))
@@ -58,7 +68,7 @@ pub fn network_from_path(path: &Path) -> Result<Vec<SegmentDraft>> {
         let road_exposure = props
             .f64("road_exposure")
             .or_else(|| props.bool("road").map(f64::from))
-            .unwrap_or_else(|| f64::from(matches!(terrain, Terrain::Road | Terrain::Pavement)));
+            .unwrap_or_else(|| f64::from(terrain == Terrain::Road));
         let provenance = Provenance {
             source: props
                 .str("source")
@@ -76,9 +86,13 @@ pub fn network_from_path(path: &Path) -> Result<Vec<SegmentDraft>> {
             drafts.push(SegmentDraft {
                 junctions: JunctionPolicy::default(),
                 turn_ref: None,
+                junction_keys: None,
                 turn_restrictions: Vec::new(),
                 geometry: line,
-                trail_class,
+                way_kind,
+                realm,
+                geometry_claim,
+                crossing_control,
                 standing,
                 marking,
                 terrain,

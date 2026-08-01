@@ -1,8 +1,8 @@
-use crate::difficulty::DifficultyWeights;
 use crate::geo::{Coord, LineString};
+use crate::hiking::HikingModel;
 use crate::model::{
     Access, CrossingEvidence, CrossingKind, Edge, EdgeTravel, Provenance, Terrain, TerrainEvidence,
-    TrailGraph,
+    WalkGraph,
 };
 use crate::{Result, TrailgenError};
 use rstar::{AABB, RTree, RTreeObject};
@@ -777,24 +777,21 @@ impl TerrainOverlay {
 }
 
 pub fn apply_access_overlays(
-    graph: &mut TrailGraph,
+    graph: &mut WalkGraph,
     overlays: &[AccessOverlay],
     planning_date: Option<PlanningDate>,
-    weights: DifficultyWeights,
 ) -> usize {
     apply_access_overlays_at(
         graph,
         overlays,
         Some(PlanningMoment::new(planning_date, None)),
-        weights,
     )
 }
 
 pub fn apply_access_overlays_at(
-    graph: &mut TrailGraph,
+    graph: &mut WalkGraph,
     overlays: &[AccessOverlay],
     planning_moment: Option<PlanningMoment>,
-    weights: DifficultyWeights,
 ) -> usize {
     let mut touched = 0usize;
     let mut travel_changed = false;
@@ -815,7 +812,6 @@ pub fn apply_access_overlays_at(
                 edge.attr.access_provenance.push(overlay.provenance.clone());
             }
         }
-        weights.apply_edge(edge);
     }
     if travel_changed {
         graph.rebuild_adjacency();
@@ -823,11 +819,7 @@ pub fn apply_access_overlays_at(
     touched
 }
 
-pub fn apply_terrain_overlays(
-    graph: &mut TrailGraph,
-    overlays: &[TerrainOverlay],
-    weights: DifficultyWeights,
-) -> usize {
+pub fn apply_terrain_overlays(graph: &mut WalkGraph, overlays: &[TerrainOverlay]) -> usize {
     let mut touched = 0usize;
     for edge in &mut graph.edges {
         let mut changed = false;
@@ -846,7 +838,7 @@ pub fn apply_terrain_overlays(
             push_terrain_evidence(edge, overlay);
         }
         if changed {
-            weights.apply_edge(edge);
+            HikingModel.apply(edge);
         }
     }
     touched
@@ -866,11 +858,7 @@ const fn is_leap_year(year: u16) -> bool {
     year.is_multiple_of(4) && !year.is_multiple_of(100) || year.is_multiple_of(400)
 }
 
-pub fn apply_context_overlays(
-    graph: &mut TrailGraph,
-    overlays: &[ContextOverlay],
-    weights: DifficultyWeights,
-) -> usize {
+pub fn apply_context_overlays(graph: &mut WalkGraph, overlays: &[ContextOverlay]) -> usize {
     let mut crossings = 0usize;
     let index = RTree::bulk_load(
         overlays
@@ -902,9 +890,7 @@ pub fn apply_context_overlays(
             }
             edge.attr.confidence = edge.attr.confidence.min(overlay.confidence);
         }
-        if touched {
-            weights.apply_edge(edge);
-        }
+        let _ = touched;
     }
     crossings
 }

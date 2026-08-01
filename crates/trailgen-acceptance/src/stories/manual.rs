@@ -6,16 +6,18 @@ use crate::harness::{
     DataMode, Harness, RunClass, Target, TargetClass, TrailFrame, TrailStory, first_anchor,
     read_json, verdict,
 };
-use crate::interactions::{add_support, exercise_profile};
+use crate::interactions::{
+    add_support, delete_support, exercise_profile, exercise_support_delete_affordance,
+};
 use crate::observation::{EditorOrigin, RouteShape, View, shows};
 
 const ROOT: &str = "/test/manual";
 const SUPPORTS: [[f64; 2]; 5] = [
-    [-105.0, 40.0],
-    [-104.994, 40.0],
+    [-104.984, 40.0],
     [-104.988, 40.0],
     [-104.988, 40.012],
     [-105.0, 40.012],
+    [-105.0, 40.0],
 ];
 
 pub fn run(harness: &Harness<'_>) -> Result<()> {
@@ -42,24 +44,41 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
 }
 
 fn draw_open_route(story: &mut TrailStory<'_, '_>) -> Result<(u64, [f64; 2])> {
+    let _dormant = story.wait(shows::results_open(false))?;
+    let _manual = story.click(Target::Manual)?.until(
+        shows::view(View::Edit) & shows::editor_origin(EditorOrigin::New) & shows::supports(0),
+    )?;
+    let _finder = story
+        .click(Target::Finder)?
+        .until(shows::view(View::Browse) & shows::results_open(false))?;
     let _editor = story.click(Target::Manual)?.until(
         shows::view(View::Edit) & shows::editor_origin(EditorOrigin::New) & shows::supports(0),
     )?;
-    let _first = add_support(story, SUPPORTS[0], 1)?;
-    let second = add_support(story, SUPPORTS[1], 2)?;
+    let first = add_support(story, SUPPORTS[0], 1)?;
     demand(
-        support(second.value(), 1).is_some_and(|point| near(point, SUPPORTS[1])),
-        "manual editor could not retain a support in the middle of an edge",
+        support(first.value(), 0).is_some_and(|point| near(point, SUPPORTS[0])),
+        "manual editor could not retain its trailhead in the middle of an edge",
     )?;
+    let _second = add_support(story, SUPPORTS[1], 2)?;
     let _undone = story
         .chord(Modifiers::CTRL, Key::Character('z'))?
         .until(shows::supports(1) & shows::redoable())?;
     let _redone = story
         .chord(Modifiers::CTRL, Key::Character('y'))?
-        .until(shows::supports(2) & shows::support(1, SUPPORTS[1]))?;
+        .until(shows::supports(2) & shows::support(1, SUPPORTS[1]) & shows::editor_ready())?;
     for (slot, coordinate) in SUPPORTS.iter().copied().enumerate().skip(2) {
         let _added = add_support(story, coordinate, slot + 1)?;
     }
+    exercise_support_delete_affordance(story, 2, SUPPORTS.len())?;
+    let _deleted = delete_support(story, 2, SUPPORTS.len() - 1)?;
+    let renumbered = story.frame()?;
+    demand(
+        support(&renumbered, 2).is_some_and(|point| near(point, SUPPORTS[3])),
+        "deleting support 2 did not renumber its successor into slot 2",
+    )?;
+    let _restored = story.chord(Modifiers::CTRL, Key::Character('z'))?.until(
+        shows::supports(SUPPORTS.len()) & shows::support(2, SUPPORTS[2]) & shows::editor_ready(),
+    )?;
     let before_reverse = story.frame()?;
     let before_signature = signature(&before_reverse)
         .ok_or_else(|| verdict("ready manual route omitted its signature"))?;
@@ -116,8 +135,8 @@ fn verify_saved(harness: &Harness<'_>) -> Result<()> {
         return Err(verdict("manual story must save exactly one trail"));
     };
     demand(
-        trail["metrics"]["shape"] == "loop",
-        "saved manual trail is not a loop",
+        trail["design_shape"] == "loop",
+        "saved manual trail lost its authored loop intent",
     )?;
     demand(
         trail["support_points"]

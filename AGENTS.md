@@ -10,6 +10,14 @@ the many-candidate dogfood trace and its visual states have been checked.
 Before changing workbench navigation, tools, search sessions, overlays, or
 persistence, read and obey [spec/UI_STATE_MODEL.md](spec/UI_STATE_MODEL.md).
 
+Before changing startup publication, event-loop work, background drains, frame
+production, or latency evidence, read and obey
+[design/RESPONSIVENESS_DOCTRINE.md](design/RESPONSIVENESS_DOCTRINE.md).
+
+Before changing pedestrian ingestion, graph topology, support binding, routing,
+or routing realms, read and obey
+[design/URBAN_WALK_ROUTING.md](design/URBAN_WALK_ROUTING.md).
+
 Before changing a critical GUI behavior or its witness surface, read and obey
 [spec/GUI_ACCEPTANCE.md](spec/GUI_ACCEPTANCE.md). Acceptance scenarios are
 full user stories; xdotool choreography is forbidden.

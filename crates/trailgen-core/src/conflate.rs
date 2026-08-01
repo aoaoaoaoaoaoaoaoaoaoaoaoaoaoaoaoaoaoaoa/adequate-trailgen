@@ -1,6 +1,4 @@
-use crate::{
-    Access, Coord, JunctionPolicy, LineString, Provenance, SegmentDraft, Terrain, TrailClass,
-};
+use crate::{Access, Coord, LineString, Provenance, SegmentDraft, Terrain, WayKind};
 use rstar::{AABB, RTree, RTreeObject};
 use serde::{Deserialize, Serialize};
 
@@ -117,7 +115,7 @@ pub fn conflate(mut strata: Vec<NetworkStratum>, policy: ConflationPolicy) -> Co
             let mut run = Vec::<Coord>::new();
             for segment in draft.geometry.points.windows(2) {
                 let [a, b] = [segment[0], segment[1]];
-                if let Some(parallel) = nearest_parallel(a, b, &index, policy) {
+                if let Some(parallel) = nearest_parallel(&draft, a, b, &canonical, &index, policy) {
                     seal_run(&draft, &mut run, &mut admitted);
                     report.suppressed_parallel_segments += 1;
                     corroborate(&mut canonical[parallel.draft], &draft);
@@ -155,8 +153,10 @@ pub fn conflate(mut strata: Vec<NetworkStratum>, policy: ConflationPolicy) -> Co
 }
 
 fn nearest_parallel(
+    draft: &SegmentDraft,
     a: Coord,
     b: Coord,
+    canonical: &[SegmentDraft],
     index: &RTree<IndexedPrimitive>,
     policy: ConflationPolicy,
 ) -> Option<ParallelMatch> {
@@ -179,6 +179,9 @@ fn nearest_parallel(
     index
         .locate_in_envelope_intersecting(&envelope)
         .filter_map(|candidate| {
+            if !same_facility(draft, &canonical[candidate.draft]) {
+                return None;
+            }
             let (separation_m, projection) =
                 point_segment_distance(midpoint, candidate.a, candidate.b);
             (separation_m <= policy.parallel_tolerance_m
@@ -190,6 +193,25 @@ fn nearest_parallel(
                 })
         })
         .min_by(|left, right| left.separation_m.total_cmp(&right.separation_m))
+}
+
+fn same_facility(left: &SegmentDraft, right: &SegmentDraft) -> bool {
+    if left.geometry_claim != right.geometry_claim {
+        return false;
+    }
+    let protected = |kind| {
+        matches!(
+            kind,
+            WayKind::Sidewalk
+                | WayKind::Crossing
+                | WayKind::PedestrianStreet
+                | WayKind::Roadway
+                | WayKind::ServiceRoad
+                | WayKind::Cycleway
+                | WayKind::Bushwhack
+        )
+    };
+    !(protected(left.way_kind) || protected(right.way_kind)) || left.way_kind == right.way_kind
 }
 
 fn point_segment_distance(point: Coord, a: Coord, b: Coord) -> (f64, f64) {
@@ -236,20 +258,7 @@ fn seal_run(draft: &SegmentDraft, run: &mut Vec<Coord>, admitted: &mut Vec<Segme
         run.clear();
         return;
     }
-    let mut fragment = draft.clone();
-    fragment.geometry = LineString::unchecked(std::mem::take(run));
-    let whole = fragment.geometry.points.len() == draft.geometry.points.len()
-        && same_location(fragment.geometry.start(), draft.geometry.start())
-        && same_location(fragment.geometry.end(), draft.geometry.end());
-    fragment.junctions = if !whole && fragment.junctions == JunctionPolicy::ExplicitNodes {
-        JunctionPolicy::ExplicitEndpoints
-    } else {
-        fragment.junctions
-    };
-    if !whole {
-        fragment.turn_restrictions.clear();
-    }
-    admitted.push(fragment);
+    admitted.push(draft.fragment(LineString::unchecked(std::mem::take(run))));
 }
 
 fn draft_order(left: &SegmentDraft, right: &SegmentDraft) -> std::cmp::Ordering {
@@ -278,8 +287,8 @@ fn corroborate(preferred: &mut SegmentDraft, suppressed: &SegmentDraft) {
         }
     }
     preferred.confidence = preferred.confidence.max(suppressed.confidence);
-    if preferred.trail_class == TrailClass::Unknown {
-        preferred.trail_class = suppressed.trail_class;
+    if preferred.way_kind == WayKind::Unknown {
+        preferred.way_kind = suppressed.way_kind;
     }
     if preferred.standing == crate::TrailStanding::Unknown {
         preferred.standing = suppressed.standing;
@@ -306,7 +315,10 @@ const fn same_location(left: Coord, right: Coord) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EdgeTravel, TrailMarking, TrailStanding};
+    use crate::{
+        CrossingControl, EdgeTravel, GeometryClaim, JunctionPolicy, TrailMarking, TrailStanding,
+        WayRealm,
+    };
 
     fn draft(name: &str, latitude: f64, standing: TrailStanding) -> SegmentDraft {
         SegmentDraft {
@@ -316,8 +328,12 @@ mod tests {
             ]),
             junctions: JunctionPolicy::Planar,
             turn_ref: None,
+            junction_keys: None,
             turn_restrictions: Vec::new(),
-            trail_class: TrailClass::Path,
+            way_kind: WayKind::Path,
+            realm: WayRealm::default(),
+            geometry_claim: GeometryClaim::default(),
+            crossing_control: CrossingControl::default(),
             standing,
             marking: TrailMarking::Unknown,
             terrain: Terrain::Trail,
@@ -381,6 +397,35 @@ mod tests {
             ConflationPolicy::default(),
         );
         assert_eq!(network.drafts.len(), 3);
+        assert_eq!(network.report.suppressed_parallel_segments, 0);
+    }
+
+    #[test]
+    fn conflation_cannot_erase_distinct_pedestrian_facilities() {
+        let mut road = draft("road", 41.2, TrailStanding::Established);
+        road.way_kind = WayKind::Roadway;
+        road.realm = WayRealm::Urban;
+        road.terrain = Terrain::Road;
+        let mut sidewalk = draft("sidewalk", 41.2, TrailStanding::Established);
+        sidewalk.way_kind = WayKind::Sidewalk;
+        sidewalk.realm = WayRealm::Urban;
+        sidewalk.terrain = Terrain::Pavement;
+
+        let network = conflate(
+            vec![
+                NetworkStratum {
+                    precedence: 0,
+                    drafts: vec![road],
+                },
+                NetworkStratum {
+                    precedence: 10,
+                    drafts: vec![sidewalk],
+                },
+            ],
+            ConflationPolicy::default(),
+        );
+
+        assert_eq!(network.drafts.len(), 2);
         assert_eq!(network.report.suppressed_parallel_segments, 0);
     }
 

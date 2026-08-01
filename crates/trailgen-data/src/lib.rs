@@ -26,9 +26,10 @@ use std::{
     time::Duration,
 };
 use trailgen_core::{
-    Access, ContextOverlay, Coord, CrossingKind, DEFAULT_SNAP_TOLERANCE_M, DifficultyWeights, Edge,
-    EdgeTravel, EnrichmentConfig, GraphBuilder, LineString, Provenance, SegmentDraft, Terrain,
-    TrailClass, TrailGraph, TrailMarking, TrailStanding, apply_context_overlays,
+    Access, ContextOverlay, Coord, CrossingControl, CrossingKind, DEFAULT_SNAP_TOLERANCE_M, Edge,
+    EdgeTravel, EnrichmentConfig, GRAPH_CACHE, GeometryClaim, GraphBuilder, JunctionKey,
+    LineString, Provenance, SegmentDraft, Terrain, TrailMarking, TrailStanding, WalkGraph, WayKind,
+    WayRealm, apply_context_overlays, decode_graph, encode_graph,
     io::{geojson, osm},
     model::TerrainEvidence,
     source::{
@@ -46,20 +47,24 @@ pub const FALLBACK_OVERPASS_ENDPOINT: &str = "https://overpass.private.coffee/ap
 pub const MAX_REGION_DEG2: f64 = 4.0;
 pub(crate) const MAX_SOURCE_BYTES: u64 = 256 * 1024 * 1024;
 const AUTOMATIC_OSM_PROFILE: OsmProfile = OsmProfile::All;
-const INDEX_SCHEMA: u8 = 14;
+const INDEX_SCHEMA: u8 = 17;
 const RAW_SCHEMA: u8 = 4;
 const MAX_OSM_CONNECTOR_M: f64 = 1_000.0;
 const LOCATION_CACHE: &str = "sources/location.json";
 const TRAIL_INDEX: &str = "cache/trails.json";
-const GRAPH: &str = "cache/graph.json";
 const GRAPH_GEOJSON: &str = "cache/graph.geojson";
 const CONFLATION_REPORT: &str = "cache/conflation.json";
 const SOURCE_MANIFEST: &str = "sources/manifest.json";
+const GRAPH_AUXILIARIES: &[&str] = &[
+    "cache/graph.json",
+    GRAPH_GEOJSON,
+    "cache/edges.csv",
+    "cache/vertices.csv",
+];
 const OSM_TRAIL_SELECTORS: &[&str] = &[
-    r#"way["highway"~"^(path|track|steps|bridleway)$"]"#,
-    r#"way["highway"="footway"]["footway"!~"^(sidewalk|crossing|traffic_island)$"]"#,
-    r#"way["disused:highway"~"^(path|footway|track|pedestrian|steps|bridleway)$"]"#,
-    r#"way["abandoned:highway"~"^(path|footway|track|pedestrian|steps|bridleway)$"]"#,
+    r#"way["highway"~"^(path|footway|cycleway|pedestrian|track|steps|bridleway)$"]"#,
+    r#"way["disused:highway"~"^(path|footway|cycleway|track|pedestrian|steps|bridleway)$"]"#,
+    r#"way["abandoned:highway"~"^(path|footway|cycleway|track|pedestrian|steps|bridleway)$"]"#,
     r#"way["route"~"^(hiking|foot|walking)$"]"#,
 ];
 const OSM_ROAD_SELECTORS: &[&str] = &[
@@ -571,6 +576,7 @@ where
         let config = project_config(project)?;
         if config.regions.is_empty() {
             clear_corpus(project)?;
+            reap_provider_receipts(project, &[], &self.provider_descriptors())?;
             return Ok(None);
         }
         // Reading refines legacy region identities from their bounds. A refresh
@@ -599,9 +605,48 @@ where
         configure_project(project, &config)?;
         if config.regions.is_empty() {
             clear_corpus(project)?;
+            reap_provider_receipts(project, &[], &self.provider_descriptors())?;
             return Ok(None);
         }
         self.reconcile(project, &config, false, &mut emit).map(Some)
+    }
+
+    /// Move one live rectangle while preserving its ordered slot and human name.
+    /// The desired area is committed before acquisition, just like `add_region`,
+    /// so an interrupted fetch remains restartable through `refresh`.
+    pub fn replace_region(
+        &self,
+        project: &Path,
+        id: &str,
+        bounds: GeoBounds,
+        mut emit: impl FnMut(Event),
+    ) -> Result<Summary> {
+        validate_project(project)?;
+        let replacement = SurveyRegion::new(bounds)?;
+        let mut config = project_config(project)?;
+        let slot = config
+            .regions
+            .iter()
+            .position(|region| region.id == id)
+            .with_context(|| format!("project has no survey region {id}"))?;
+        ensure!(
+            config
+                .regions
+                .iter()
+                .enumerate()
+                .all(|(known_slot, known)| known_slot == slot || known.id != replacement.id),
+            "that map area duplicates another downloaded area"
+        );
+        if replacement.id == id {
+            return self.reconcile(project, &config, true, &mut emit);
+        }
+        config.regions[slot] = replacement;
+        let replacement_id = config.regions[slot].id.clone();
+        if let Some(name) = config.region_names.remove(id) {
+            let _old = config.region_names.insert(replacement_id, name);
+        }
+        configure_project(project, &config)?;
+        self.reconcile(project, &config, true, &mut emit)
     }
 
     fn reconcile(
@@ -700,6 +745,7 @@ where
         };
         emit(Event::Indexing);
         let summary = index_corpus(project, config, &sources, &providers, &terrain)?;
+        reap_provider_receipts(project, &sources, &self.provider_descriptors())?;
         emit(Event::Ready(summary.clone()));
         Ok(summary)
     }
@@ -713,6 +759,13 @@ where
         ids.sort();
         ids.dedup();
         ids
+    }
+
+    fn provider_descriptors(&self) -> Vec<ProviderDescriptor> {
+        self.providers
+            .iter()
+            .map(|provider| provider.descriptor())
+            .collect()
     }
 
     fn active_providers(&self, config: &TrailDataConfig) -> Result<Vec<&dyn NetworkProvider>> {
@@ -741,7 +794,7 @@ impl NetworkProvider for Overpass {
         ProviderDescriptor {
             id: ProviderId::new("osm").expect("static provider id is valid"),
             label: "OpenStreetMap",
-            adapter_revision: 5,
+            adapter_revision: 7,
             precedence: 10,
             extension: "osm",
             request_extension: "overpassql",
@@ -760,22 +813,15 @@ impl NetworkProvider for Overpass {
     fn normalize(&self, shards: &[RawShard<'_>]) -> Result<NormalizedNetwork> {
         let merged = merge_osm(shards)?;
         Ok(NormalizedNetwork {
-            drafts: sever_osm_street_mesh(osm::network_from_str(&merged)?),
+            drafts: classify_osm_realms(osm::network_from_str(&merged)?),
             context: osm::context_overlays_from_str(&merged)?,
         })
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct OsmJunction(u64, u64);
+type OsmJunction = JunctionKey;
 
-impl From<Coord> for OsmJunction {
-    fn from(coord: Coord) -> Self {
-        Self(coord.lon.to_bits(), coord.lat.to_bits())
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct OsmConnector {
     draft: usize,
     a: OsmJunction,
@@ -783,10 +829,26 @@ struct OsmConnector {
     length_m: f64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct OsmWalk {
     junction: OsmJunction,
+    owner: OsmJunction,
     distance_m: f64,
+}
+
+#[derive(Clone, Debug)]
+struct OsmReach {
+    owner: OsmJunction,
+    distance_m: f64,
+    predecessor: Option<(OsmJunction, usize)>,
+}
+
+#[derive(Clone, Debug)]
+struct OsmBridge {
+    distance_m: f64,
+    edge: usize,
+    a: OsmJunction,
+    b: OsmJunction,
 }
 
 impl Eq for OsmWalk {}
@@ -796,6 +858,7 @@ impl Ord for OsmWalk {
         other
             .distance_m
             .total_cmp(&self.distance_m)
+            .then_with(|| other.owner.cmp(&self.owner))
             .then_with(|| self.junction.cmp(&other.junction))
     }
 }
@@ -806,19 +869,20 @@ impl PartialOrd for OsmWalk {
     }
 }
 
-/// Admit streets only when they form the nearest short bridge between two
-/// genuine trail junctions. Road geometry remains in the context stratum, so
-/// this excision does not discard crossing or exposure evidence.
-fn sever_osm_street_mesh(mut drafts: Vec<SegmentDraft>) -> Vec<SegmentDraft> {
-    let mut keep = drafts.iter().map(osm_trail_anchor).collect::<Vec<_>>();
+/// Materialize Finder as a strict projection without amputating Manual's
+/// pedestrian graph. Only the nearest short street bridges are promoted from
+/// urban circulation into Finder connectors.
+fn classify_osm_realms(mut drafts: Vec<SegmentDraft>) -> Vec<SegmentDraft> {
+    let mut finder = drafts.iter().map(osm_trail_anchor).collect::<Vec<_>>();
     let mut anchor_junctions = BTreeSet::new();
     let mut connectors = Vec::new();
     for (index, draft) in drafts.iter().enumerate() {
-        let a = OsmJunction::from(draft.geometry.start());
-        let b = OsmJunction::from(draft.geometry.end());
-        if keep[index] {
-            let _ = anchor_junctions.insert(a);
-            let _ = anchor_junctions.insert(b);
+        let Some([a, b]) = draft.junction_keys.clone() else {
+            continue;
+        };
+        if finder[index] {
+            let _ = anchor_junctions.insert(a.clone());
+            let _ = anchor_junctions.insert(b.clone());
         } else if osm_connector(draft) {
             connectors.push(OsmConnector {
                 draft: index,
@@ -831,123 +895,160 @@ fn sever_osm_street_mesh(mut drafts: Vec<SegmentDraft>) -> Vec<SegmentDraft> {
 
     let mut adjacency = BTreeMap::<OsmJunction, Vec<usize>>::new();
     for (index, connector) in connectors.iter().enumerate() {
-        adjacency.entry(connector.a).or_default().push(index);
-        adjacency.entry(connector.b).or_default().push(index);
+        adjacency
+            .entry(connector.a.clone())
+            .or_default()
+            .push(index);
+        adjacency
+            .entry(connector.b.clone())
+            .or_default()
+            .push(index);
     }
     let terminals = adjacency
         .keys()
         .filter(|junction| anchor_junctions.contains(junction))
-        .copied()
+        .cloned()
         .collect::<BTreeSet<_>>();
-    for terminal in terminals.iter().copied() {
-        retain_nearest_connector(terminal, &terminals, &adjacency, &connectors, &mut keep);
+    retain_nearest_connectors(&terminals, &adjacency, &connectors, &mut finder);
+    for (draft, admitted) in drafts.iter_mut().zip(finder) {
+        if admitted && draft.realm == WayRealm::Urban {
+            draft.realm = WayRealm::Connector;
+        }
     }
-
-    let mut restrictions = drafts
-        .iter_mut()
-        .flat_map(|draft| std::mem::take(&mut draft.turn_restrictions))
-        .collect::<Vec<_>>();
-    let retained_refs = drafts
-        .iter()
-        .zip(&keep)
-        .filter(|(_, keep)| **keep)
-        .filter_map(|(draft, _)| draft.turn_ref.clone())
-        .collect::<BTreeSet<_>>();
-    restrictions.retain(|restriction| {
-        retained_refs.contains(&restriction.from) && retained_refs.contains(&restriction.to)
-    });
-    let mut retained = drafts
-        .into_iter()
-        .zip(keep)
-        .filter_map(|(draft, keep)| keep.then_some(draft))
-        .collect::<Vec<_>>();
-    if let Some(carrier) = retained.first_mut() {
-        carrier.turn_restrictions = restrictions;
-    }
-    retained
+    drafts
 }
 
-fn retain_nearest_connector(
-    start: OsmJunction,
+fn retain_nearest_connectors(
     terminals: &BTreeSet<OsmJunction>,
     adjacency: &BTreeMap<OsmJunction, Vec<usize>>,
     connectors: &[OsmConnector],
-    keep: &mut [bool],
+    finder: &mut [bool],
 ) {
-    let mut distance = BTreeMap::from([(start, 0.0)]);
-    let mut predecessor = BTreeMap::<OsmJunction, (OsmJunction, usize)>::new();
-    let mut frontier = BinaryHeap::from([OsmWalk {
-        junction: start,
-        distance_m: 0.0,
-    }]);
-    let mut destination = None;
+    let mut reach = terminals
+        .iter()
+        .cloned()
+        .map(|terminal| {
+            (
+                terminal.clone(),
+                OsmReach {
+                    owner: terminal,
+                    distance_m: 0.0,
+                    predecessor: None,
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut frontier = terminals
+        .iter()
+        .cloned()
+        .map(|terminal| OsmWalk {
+            junction: terminal.clone(),
+            owner: terminal,
+            distance_m: 0.0,
+        })
+        .collect::<BinaryHeap<_>>();
     while let Some(walk) = frontier.pop() {
         if walk.distance_m > MAX_OSM_CONNECTOR_M
-            || distance
+            || reach
                 .get(&walk.junction)
-                .is_some_and(|known| walk.distance_m > *known)
+                .is_none_or(|known| known.owner != walk.owner || walk.distance_m > known.distance_m)
         {
             continue;
         }
-        if walk.junction != start && terminals.contains(&walk.junction) {
-            destination = Some(walk.junction);
-            break;
-        }
         for edge in adjacency.get(&walk.junction).into_iter().flatten() {
-            let connector = connectors[*edge];
+            let connector = &connectors[*edge];
             let next = if connector.a == walk.junction {
-                connector.b
+                connector.b.clone()
             } else {
-                connector.a
+                connector.a.clone()
             };
             let candidate = walk.distance_m + connector.length_m;
-            if candidate <= MAX_OSM_CONNECTOR_M
-                && distance.get(&next).is_none_or(|known| candidate < *known)
-            {
-                let _ = distance.insert(next, candidate);
-                let _ = predecessor.insert(next, (walk.junction, *edge));
+            let improves = reach.get(&next).is_none_or(|known| {
+                candidate.total_cmp(&known.distance_m).is_lt()
+                    || candidate.total_cmp(&known.distance_m).is_eq() && walk.owner < known.owner
+            });
+            if candidate <= MAX_OSM_CONNECTOR_M && improves {
+                let _ = reach.insert(
+                    next.clone(),
+                    OsmReach {
+                        owner: walk.owner.clone(),
+                        distance_m: candidate,
+                        predecessor: Some((walk.junction.clone(), *edge)),
+                    },
+                );
                 frontier.push(OsmWalk {
                     junction: next,
+                    owner: walk.owner.clone(),
                     distance_m: candidate,
                 });
             }
         }
     }
-    let Some(mut junction) = destination else {
-        return;
-    };
-    while junction != start {
-        let Some((prior, edge)) = predecessor.get(&junction).copied() else {
-            break;
+
+    let mut nearest = BTreeMap::<OsmJunction, OsmBridge>::new();
+    for (edge, connector) in connectors.iter().enumerate() {
+        let (Some(a), Some(b)) = (reach.get(&connector.a), reach.get(&connector.b)) else {
+            continue;
         };
-        keep[connectors[edge].draft] = true;
+        if a.owner == b.owner {
+            continue;
+        }
+        let distance_m = a.distance_m + connector.length_m + b.distance_m;
+        if distance_m > MAX_OSM_CONNECTOR_M {
+            continue;
+        }
+        let bridge = OsmBridge {
+            distance_m,
+            edge,
+            a: connector.a.clone(),
+            b: connector.b.clone(),
+        };
+        for owner in [&a.owner, &b.owner] {
+            let replace = nearest
+                .get(owner)
+                .is_none_or(|known| bridge_order(&bridge, known).is_lt());
+            if replace {
+                let _ = nearest.insert(owner.clone(), bridge.clone());
+            }
+        }
+    }
+    for bridge in nearest.into_values() {
+        finder[connectors[bridge.edge].draft] = true;
+        retain_reach(&bridge.a, &reach, connectors, finder);
+        retain_reach(&bridge.b, &reach, connectors, finder);
+    }
+}
+
+fn bridge_order(left: &OsmBridge, right: &OsmBridge) -> Ordering {
+    left.distance_m
+        .total_cmp(&right.distance_m)
+        .then_with(|| left.edge.cmp(&right.edge))
+        .then_with(|| left.a.cmp(&right.a))
+        .then_with(|| left.b.cmp(&right.b))
+}
+
+fn retain_reach(
+    start: &OsmJunction,
+    reach: &BTreeMap<OsmJunction, OsmReach>,
+    connectors: &[OsmConnector],
+    finder: &mut [bool],
+) {
+    let mut junction = start.clone();
+    while let Some((prior, edge)) = reach
+        .get(&junction)
+        .and_then(|label| label.predecessor.clone())
+    {
+        finder[connectors[edge].draft] = true;
         junction = prior;
     }
 }
 
 fn osm_trail_anchor(draft: &SegmentDraft) -> bool {
-    matches!(
-        draft.trail_class,
-        TrailClass::Path
-            | TrailClass::Footway
-            | TrailClass::Track
-            | TrailClass::Steps
-            | TrailClass::Bridleway
-            | TrailClass::Bushwhack
-    ) || draft.standing != TrailStanding::Established
-        || draft.provenance.iter().any(|provenance| {
-            provenance
-                .layer
-                .as_deref()
-                .is_some_and(|layer| layer.contains("route-relation"))
-        })
+    draft.realm == WayRealm::Recreational
 }
 
-const fn osm_connector(draft: &SegmentDraft) -> bool {
-    matches!(
-        draft.trail_class,
-        TrailClass::Service | TrailClass::Pedestrian | TrailClass::Road
-    )
+fn osm_connector(draft: &SegmentDraft) -> bool {
+    draft.realm == WayRealm::Urban
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1119,7 +1220,6 @@ struct GraphLaw {
     snap_tolerance_m: f64,
     conflation: trailgen_core::ConflationPolicy,
     enrichment: EnrichmentConfig,
-    difficulty: DifficultyWeights,
 }
 
 impl Default for GraphLaw {
@@ -1128,7 +1228,6 @@ impl Default for GraphLaw {
             snap_tolerance_m: DEFAULT_SNAP_TOLERANCE_M,
             conflation: trailgen_core::ConflationPolicy::default(),
             enrichment: EnrichmentConfig::default(),
-            difficulty: DifficultyWeights::default(),
         }
     }
 }
@@ -1187,8 +1286,9 @@ fn index_corpus(
             .count(),
     };
     let graph = forge_graph(&drafts, &overlays, terrain, law)?;
-    let surfaces = GraphSurfaces::engrave(&graph)?;
-    GraphSurfaces::write_auxiliaries(project, &graph)?;
+    let graph_cache = encode_graph(&graph)?;
+    let graph_fingerprint = fingerprint(&graph_cache);
+    clear_graph_auxiliaries(project)?;
     write_json_atomic(project.join(CONFLATION_REPORT), &conflated.report)?;
     let bounds = live_bounds(&config.regions).context("live area has no bounds")?;
     store_area(project, Some(bounds))?;
@@ -1227,12 +1327,12 @@ fn index_corpus(
                 .iter()
                 .map(|source| source.receipt.clone())
                 .collect(),
-            graph: surfaces.fingerprint(),
+            graph: graph_fingerprint,
         },
     )?;
-    // graph.json is the workbench commit marker. No GUI can mistake an
+    // The binary graph is the workbench commit marker. No GUI can mistake an
     // interrupted indexing pass for a ready corpus.
-    surfaces.commit(project)?;
+    write_atomic(&project.join(GRAPH_CACHE), &graph_cache)?;
     Ok(summary)
 }
 
@@ -1241,17 +1341,16 @@ fn forge_graph(
     overlays: &[ContextOverlay],
     terrain: &[terrain::TerrainSource],
     law: GraphLaw,
-) -> Result<TrailGraph> {
+) -> Result<WalkGraph> {
     let mut graph = GraphBuilder {
         snap_tolerance_m: law.snap_tolerance_m,
         enrichment: law.enrichment,
-        weights: law.difficulty,
     }
     .build(drafts)
     .context("index live-area trail topology")?;
-    apply_context_overlays(&mut graph, overlays, law.difficulty);
+    apply_context_overlays(&mut graph, overlays);
     if let Some(atlas) = terrain::TerrainAtlas::decode(terrain)? {
-        trailgen_core::enrich_graph(&mut graph, &atlas, law.enrichment, law.difficulty)
+        trailgen_core::enrich_graph(&mut graph, &atlas, law.enrichment)
             .context("sample live-area topography")?;
     }
     Ok(graph)
@@ -1316,17 +1415,7 @@ fn clip_drafts(drafts: Vec<SegmentDraft>, regions: &[SurveyRegion]) -> Vec<Segme
         .flat_map(|draft| {
             clip_line(&draft.geometry, regions)
                 .into_iter()
-                .map(move |geometry| {
-                    let mut clipped = draft.clone();
-                    clipped.turn_restrictions.retain(|restriction| {
-                        geometry
-                            .points
-                            .iter()
-                            .any(|point| same_location(*point, restriction.via))
-                    });
-                    clipped.geometry = geometry;
-                    clipped
-                })
+                .map(move |geometry| draft.fragment(geometry))
         })
         .collect()
 }
@@ -1515,7 +1604,7 @@ fn reusable_index(
         return Ok(None);
     };
     if !index_matches_config(&index, config)
-        || !project.join(GRAPH).is_file()
+        || !project.join(GRAPH_CACHE).is_file()
         || !project.join(CONFLATION_REPORT).is_file()
     {
         return Ok(None);
@@ -1578,11 +1667,11 @@ fn reusable_index(
     } else if !index.elevation.is_empty() {
         return Ok(None);
     }
-    let graph_bytes = fs::read(project.join(GRAPH)).context("read cached trail graph")?;
+    let graph_bytes = fs::read(project.join(GRAPH_CACHE)).context("read cached trail graph")?;
     if fingerprint(&graph_bytes) != index.graph {
         return Ok(None);
     }
-    let Ok(graph) = serde_json::from_slice::<TrailGraph>(&graph_bytes) else {
+    let Ok(graph) = decode_graph(&graph_bytes) else {
         return Ok(None);
     };
     if graph.vertices.len() != index.summary.vertices || graph.edges.len() != index.summary.edges {
@@ -1768,7 +1857,7 @@ pub fn indexed_summary(project: &Path) -> Result<Option<Summary>> {
     if !index_matches_config(&index, &config) {
         return Ok(None);
     }
-    let graph = match fs::metadata(project.join(GRAPH)) {
+    let graph = match fs::metadata(project.join(GRAPH_CACHE)) {
         Ok(graph) => graph,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(err).context("inspect cached trail graph"),
@@ -1962,20 +2051,8 @@ fn write_source_manifest(
 }
 
 fn clear_corpus(project: &Path) -> Result<()> {
-    for relative in [
-        TRAIL_INDEX,
-        GRAPH,
-        GRAPH_GEOJSON,
-        CONFLATION_REPORT,
-        "cache/edges.csv",
-        "cache/vertices.csv",
-    ] {
-        match fs::remove_file(project.join(relative)) {
-            Ok(()) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => return Err(err).with_context(|| format!("remove {relative}")),
-        }
-    }
+    clear_graph_auxiliaries(project)?;
+    remove_files(project, &[TRAIL_INDEX, GRAPH_CACHE, CONFLATION_REPORT])?;
     store_area(project, None)?;
     let manifest_path = project.join(SOURCE_MANIFEST);
     match fs::read_to_string(&manifest_path) {
@@ -2000,6 +2077,67 @@ fn clear_corpus(project: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn remove_files(project: &Path, relatives: &[&str]) -> Result<()> {
+    for relative in relatives {
+        match fs::remove_file(project.join(relative)) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err).with_context(|| format!("remove {relative}")),
+        }
+    }
+    Ok(())
+}
+
+fn reap_provider_receipts(
+    project: &Path,
+    sources: &[ProviderSource],
+    descriptors: &[ProviderDescriptor],
+) -> Result<()> {
+    let desired = sources
+        .iter()
+        .flat_map(|source| {
+            let raw = project.join(&source.raw_relative);
+            [
+                raw.clone(),
+                raw.with_extension(source.descriptor.request_extension),
+                raw.with_extension("json"),
+            ]
+        })
+        .collect::<BTreeSet<_>>();
+    for descriptor in descriptors {
+        let root = project.join("sources").join(descriptor.id.as_str());
+        let entries = match fs::read_dir(&root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error).with_context(|| format!("inspect {}", root.display()));
+            }
+        };
+        let owned_extensions = [descriptor.extension, descriptor.request_extension, "json"];
+        for entry in entries {
+            let path = entry?.path();
+            let owned = path.is_file()
+                && path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .is_some_and(region_receipt_stem)
+                && path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| owned_extensions.contains(&extension));
+            if owned && !desired.contains(&path) {
+                fs::remove_file(&path)
+                    .with_context(|| format!("reap obsolete receipt {}", path.display()))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn region_receipt_stem(stem: &str) -> bool {
+    stem.len() == 24 && stem.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn is_live_provider_candidate(candidate: &SourceCandidate) -> bool {
@@ -2068,56 +2206,38 @@ fn fingerprint(bytes: &[u8]) -> SourceFingerprint {
     }
 }
 
-struct GraphSurfaces {
-    graph: Vec<u8>,
+/// Persist explicit CLI audit surfaces, publishing the binary graph last.
+pub fn store_graph(project: &Path, graph: &WalkGraph) -> Result<()> {
+    let graph_cache = encode_graph(graph)?;
+    clear_graph_auxiliaries(project)?;
+    write_atomic(
+        &project.join(GRAPH_GEOJSON),
+        &serde_json::to_vec_pretty(&geojson::graph_to_geojson(graph))?,
+    )?;
+    write_atomic(
+        &project.join("cache/edges.csv"),
+        graph_edges_csv(graph).as_bytes(),
+    )?;
+    write_atomic(
+        &project.join("cache/vertices.csv"),
+        graph_vertices_csv(graph).as_bytes(),
+    )?;
+    write_atomic(&project.join(GRAPH_CACHE), &graph_cache)
 }
 
-impl GraphSurfaces {
-    fn engrave(graph: &TrailGraph) -> Result<Self> {
-        Ok(Self {
-            graph: serde_json::to_vec_pretty(graph)?,
-        })
-    }
-
-    fn fingerprint(&self) -> SourceFingerprint {
-        fingerprint(&self.graph)
-    }
-
-    fn write_auxiliaries(project: &Path, graph: &TrailGraph) -> Result<()> {
-        write_atomic(
-            &project.join(GRAPH_GEOJSON),
-            &serde_json::to_vec_pretty(&geojson::graph_to_geojson(graph))?,
-        )?;
-        write_atomic(
-            &project.join("cache/edges.csv"),
-            graph_edges_csv(graph).as_bytes(),
-        )?;
-        write_atomic(
-            &project.join("cache/vertices.csv"),
-            graph_vertices_csv(graph).as_bytes(),
-        )
-    }
-
-    fn commit(self, project: &Path) -> Result<()> {
-        write_atomic(&project.join(GRAPH), &self.graph)
-    }
+fn clear_graph_auxiliaries(project: &Path) -> Result<()> {
+    remove_files(project, GRAPH_AUXILIARIES)
 }
 
-/// Persist every canonical graph surface, publishing `graph.json` last.
-pub fn store_graph(project: &Path, graph: &TrailGraph) -> Result<()> {
-    let surfaces = GraphSurfaces::engrave(graph)?;
-    GraphSurfaces::write_auxiliaries(project, graph)?;
-    surfaces.commit(project)
-}
-
-fn graph_vertices_csv(graph: &TrailGraph) -> String {
-    let mut out = String::from("vertex_id,lon,lat,elevation_m,wkt\n");
+fn graph_vertices_csv(graph: &WalkGraph) -> String {
+    let mut out = String::from("vertex_id,junction_id,lon,lat,elevation_m,wkt\n");
     for vertex in &graph.vertices {
         let Coord { lon, lat, ele } = vertex.coord;
         writeln!(
             out,
-            "{},{lon:.7},{lat:.7},{},{}",
+            "{},{},{lon:.7},{lat:.7},{},{}",
             vertex.id.0,
+            csv_cell(vertex.junction.as_ref().map_or("", |key| key.0.as_str())),
             csv_f64(ele),
             csv_cell(&point_wkt(vertex.coord))
         )
@@ -2126,47 +2246,52 @@ fn graph_vertices_csv(graph: &TrailGraph) -> String {
     out
 }
 
-fn graph_edges_csv(graph: &TrailGraph) -> String {
+fn graph_edges_csv(graph: &WalkGraph) -> String {
     let mut out = String::from(
-        "edge_id,from_vertex,to_vertex,travel,length_m,ascent_m,descent_m,grade_abs_mean,grade_abs_max,sustained_steep_m,trail_class,trail_standing,trail_marking,terrain,surface,terrain_confidence,terrain_evidence,access,access_confidence,access_provenance,road_exposure,confidence,difficulty,seed_count,seed_provenance,elevation_provenance,road_crossings,water_crossings,provenance,wkt\n",
+        "edge_id,from_vertex,to_vertex,travel,length_m,ascent_m,descent_m,grade_abs_mean,grade_abs_max,sustained_steep_m,hill_slope_deg,way_kind,realm,geometry_claim,crossing_control,trail_standing,trail_marking,terrain,surface,terrain_confidence,terrain_evidence,access,access_confidence,access_provenance,road_exposure,confidence,lower_limb_load_forward_km,moving_time_forward_s,lower_limb_load_reverse_km,moving_time_reverse_s,seed_count,seed_provenance,elevation_provenance,road_crossings,water_crossings,provenance,wkt\n",
     );
     for edge in &graph.edges {
         let (roads, water) = edge_crossing_counts(edge);
-        writeln!(
-            out,
-            "{},{},{},{},{:.3},{:.3},{:.3},{:.6},{:.6},{:.3},{},{},{},{},{},{:.6},{},{},{:.6},{},{:.6},{:.6},{:.6},{},{},{},{},{},{},{}",
-            edge.id.0,
-            edge.a.0,
-            edge.b.0,
-            edge_travel_tag(edge.attr.travel),
-            edge.attr.length_m,
-            edge.attr.ascent_m,
-            edge.attr.descent_m,
-            edge.attr.grade_abs_mean,
-            edge.attr.grade_abs_max,
-            edge.attr.sustained_steep_m,
-            trail_class_tag(edge.attr.trail_class),
-            trail_standing_tag(edge.attr.standing),
-            trail_marking_tag(edge.attr.marking),
-            terrain_tag(edge.attr.terrain),
+        let row = [
+            edge.id.0.to_string(),
+            edge.a.0.to_string(),
+            edge.b.0.to_string(),
+            edge_travel_tag(edge.attr.travel).to_owned(),
+            format!("{:.3}", edge.attr.length_m),
+            format!("{:.3}", edge.attr.ascent_m),
+            format!("{:.3}", edge.attr.descent_m),
+            format!("{:.6}", edge.attr.grade_abs_mean),
+            format!("{:.6}", edge.attr.grade_abs_max),
+            format!("{:.3}", edge.attr.sustained_steep_m),
+            csv_f64(edge.attr.hill_slope_deg),
+            way_kind_tag(edge.attr.way_kind).to_owned(),
+            way_realm_tag(edge.attr.realm).to_owned(),
+            geometry_claim_tag(edge.attr.geometry_claim).to_owned(),
+            crossing_control_tag(edge.attr.crossing_control).to_owned(),
+            trail_standing_tag(edge.attr.standing).to_owned(),
+            trail_marking_tag(edge.attr.marking).to_owned(),
+            terrain_tag(edge.attr.terrain).to_owned(),
             csv_cell(edge.attr.surface.as_deref().unwrap_or("")),
-            edge.attr.terrain_confidence,
+            format!("{:.6}", edge.attr.terrain_confidence),
             csv_cell(&terrain_evidence_summary(&edge.attr.terrain_evidence)),
-            access_tag(edge.attr.access),
-            edge.attr.access_confidence,
+            access_tag(edge.attr.access).to_owned(),
+            format!("{:.6}", edge.attr.access_confidence),
             csv_cell(&provenance_summary(&edge.attr.access_provenance)),
-            edge.attr.road_exposure,
-            edge.attr.confidence,
-            edge.attr.difficulty,
-            edge.attr.seed_count,
+            format!("{:.6}", edge.attr.road_exposure),
+            format!("{:.6}", edge.attr.confidence),
+            format!("{:.6}", edge.attr.traversal.forward.lower_limb_load_km),
+            format!("{:.3}", edge.attr.traversal.forward.moving_time_s),
+            format!("{:.6}", edge.attr.traversal.reverse.lower_limb_load_km),
+            format!("{:.3}", edge.attr.traversal.reverse.moving_time_s),
+            edge.attr.seed_count.to_string(),
             csv_cell(&provenance_summary(&edge.attr.seed_provenance)),
             csv_cell(&provenance_summary(&edge.attr.elevation_provenance)),
-            roads,
-            water,
+            roads.to_string(),
+            water.to_string(),
             csv_cell(&provenance_summary(&edge.attr.provenance)),
-            csv_cell(&line_wkt(&edge.geometry))
-        )
-        .expect("write to string");
+            csv_cell(&line_wkt(&edge.geometry)),
+        ];
+        writeln!(out, "{}", row.join(",")).expect("write to string");
     }
     out
 }
@@ -2255,18 +2380,21 @@ fn csv_f64(value: Option<f64>) -> String {
     value.map_or_else(String::new, |value| format!("{value:.3}"))
 }
 
-const fn trail_class_tag(class: TrailClass) -> &'static str {
+const fn way_kind_tag(class: WayKind) -> &'static str {
     match class {
-        TrailClass::Unknown => "unknown",
-        TrailClass::Path => "path",
-        TrailClass::Footway => "footway",
-        TrailClass::Track => "track",
-        TrailClass::Service => "service",
-        TrailClass::Pedestrian => "pedestrian",
-        TrailClass::Steps => "steps",
-        TrailClass::Bridleway => "bridleway",
-        TrailClass::Bushwhack => "bushwhack",
-        TrailClass::Road => "road",
+        WayKind::Unknown => "unknown",
+        WayKind::Path => "path",
+        WayKind::Footway => "footway",
+        WayKind::Sidewalk => "sidewalk",
+        WayKind::Crossing => "crossing",
+        WayKind::Track => "track",
+        WayKind::ServiceRoad => "service",
+        WayKind::PedestrianStreet => "pedestrian",
+        WayKind::Steps => "steps",
+        WayKind::Bridleway => "bridleway",
+        WayKind::Bushwhack => "bushwhack",
+        WayKind::Roadway => "road",
+        WayKind::Cycleway => "cycleway",
     }
 }
 
@@ -2277,6 +2405,31 @@ const fn trail_standing_tag(standing: TrailStanding) -> &'static str {
         TrailStanding::Unmaintained => "unmaintained",
         TrailStanding::Informal => "informal",
         TrailStanding::Historical => "historical",
+    }
+}
+
+const fn way_realm_tag(realm: WayRealm) -> &'static str {
+    match realm {
+        WayRealm::Recreational => "recreational",
+        WayRealm::Connector => "connector",
+        WayRealm::Urban => "urban",
+    }
+}
+
+const fn geometry_claim_tag(claim: GeometryClaim) -> &'static str {
+    match claim {
+        GeometryClaim::Surveyed => "surveyed",
+        GeometryClaim::CenterlineProxy => "centerline-proxy",
+    }
+}
+
+const fn crossing_control_tag(control: CrossingControl) -> &'static str {
+    match control {
+        CrossingControl::None => "none",
+        CrossingControl::Uncontrolled => "uncontrolled",
+        CrossingControl::Marked => "marked",
+        CrossingControl::Signals => "signals",
+        CrossingControl::GradeSeparated => "grade-separated",
     }
 }
 
@@ -2434,6 +2587,7 @@ mod tests {
     #[derive(Clone, Default)]
     struct FixedProvider {
         calls: Rc<Cell<usize>>,
+        fail_at: Option<usize>,
     }
 
     impl NetworkProvider for FixedProvider {
@@ -2450,7 +2604,11 @@ mod tests {
 
         fn acquire(&self, bounds: GeoBounds) -> Result<ProviderPayload> {
             assert!(bounds.is_valid());
-            self.calls.set(self.calls.get() + 1);
+            let call = self.calls.get() + 1;
+            self.calls.set(call);
+            if self.fail_at == Some(call) {
+                anyhow::bail!("fixture acquisition failure");
+            }
             Ok(ProviderPayload {
                 bytes: include_bytes!("../tests/fixtures/tiny-overpass.osm").to_vec(),
                 request: "fixture request".to_owned(),
@@ -2634,9 +2792,9 @@ mod tests {
             .split(")->.trailways")
             .next()
             .expect("query has a trail seed");
-        assert!(!trail_seed.contains("residential"));
-        assert!(!trail_seed.contains("service"));
-        assert!(trail_seed.contains(r#"["footway"!~"^(sidewalk|crossing|traffic_island)$"]"#));
+        assert!(trail_seed.contains(
+            r#"["highway"~"^(path|footway|cycleway|pedestrian|track|steps|bridleway)$"]"#
+        ));
         assert!(
             query.contains("residential"),
             "roads remain context evidence"
@@ -2644,7 +2802,7 @@ mod tests {
     }
 
     #[test]
-    fn osm_streets_survive_only_as_sparse_trail_bridges() -> Result<()> {
+    fn osm_streets_survive_intact_while_finder_gets_only_bounded_connectors() -> Result<()> {
         let raw = r#"<osm version="0.6">
           <node id="1" lon="0.000" lat="0.000"/><node id="2" lon="0.001" lat="0.000"/>
           <node id="3" lon="0.002" lat="0.000"/><node id="4" lon="0.003" lat="0.000"/>
@@ -2662,7 +2820,7 @@ mod tests {
           <way id="trail-d"><nd ref="11"/><nd ref="12"/><tag k="highway" v="path"/></way>
         </osm>"#;
 
-        let drafts = sever_osm_street_mesh(osm::network_from_str(raw)?);
+        let drafts = classify_osm_realms(osm::network_from_str(raw)?);
         let source_ids = drafts
             .iter()
             .flat_map(|draft| &draft.provenance)
@@ -2671,8 +2829,32 @@ mod tests {
 
         assert_eq!(
             source_ids,
-            BTreeSet::from(["bridge", "trail-a", "trail-b", "trail-c", "trail-d"])
+            BTreeSet::from([
+                "bridge",
+                "street-island",
+                "street-spur",
+                "street-too-long",
+                "trail-a",
+                "trail-b",
+                "trail-c",
+                "trail-d",
+            ])
         );
+        let realm = |source_id| {
+            drafts
+                .iter()
+                .find(|draft| {
+                    draft
+                        .provenance
+                        .iter()
+                        .any(|provenance| provenance.source_id.as_deref() == Some(source_id))
+                })
+                .map(|draft| draft.realm)
+        };
+        assert_eq!(realm("bridge"), Some(WayRealm::Connector));
+        assert_eq!(realm("street-spur"), Some(WayRealm::Urban));
+        assert_eq!(realm("street-island"), Some(WayRealm::Urban));
+        assert_eq!(realm("street-too-long"), Some(WayRealm::Urban));
         Ok(())
     }
 
@@ -2685,7 +2867,7 @@ mod tests {
           <way id="street-closure"><nd ref="1"/><nd ref="3"/><tag k="highway" v="service"/></way>
         </osm>"#;
 
-        let drafts = sever_osm_street_mesh(osm::network_from_str(raw)?);
+        let drafts = classify_osm_realms(osm::network_from_str(raw)?);
 
         assert!(drafts.iter().any(|draft| {
             draft
@@ -2742,6 +2924,31 @@ mod tests {
             .find(|vertex| same_location(vertex.coord, Coord::new(0.0, 0.0)))
             .context("shared OSM node should survive clipping")?;
         assert_eq!(graph.adjacency[junction.id.0].len(), 3);
+        Ok(())
+    }
+
+    #[test]
+    fn clipping_does_not_join_distinct_osm_ways_at_a_shared_boundary_coordinate() -> Result<()> {
+        let raw = r#"<osm version="0.6">
+          <node id="1" lon="-1" lat="0"/><node id="2" lon="0" lat="0"/>
+          <node id="3" lon="-1" lat="0"/><node id="4" lon="0.5" lat="0"/>
+          <way id="10"><nd ref="1"/><nd ref="2"/><tag k="highway" v="path"/></way>
+          <way id="11"><nd ref="3"/><nd ref="4"/><tag k="highway" v="path"/></way>
+        </osm>"#;
+        let region = SurveyRegion::new(GeoBounds::new(-0.5, -0.5, 0.5, 0.5))?;
+
+        let drafts = clip_drafts(osm::network_from_str(raw)?, &[region]);
+        let graph = GraphBuilder::default().build(&drafts)?;
+
+        assert_eq!(graph.edges.len(), 2);
+        assert_eq!(
+            graph
+                .vertices
+                .iter()
+                .filter(|vertex| same_location(vertex.coord, Coord::new(-0.5, 0.0)))
+                .count(),
+            2
+        );
         Ok(())
     }
 
@@ -2811,16 +3018,11 @@ mod tests {
                 .with_extension("request")
                 .is_file()
         );
-        for artifact in [
-            LOCATION_CACHE,
-            TRAIL_INDEX,
-            GRAPH,
-            GRAPH_GEOJSON,
-            "cache/edges.csv",
-            "cache/vertices.csv",
-            SOURCE_MANIFEST,
-        ] {
+        for artifact in [LOCATION_CACHE, TRAIL_INDEX, GRAPH_CACHE, SOURCE_MANIFEST] {
             assert!(project.join(artifact).is_file(), "missing {artifact}");
+        }
+        for absent in [GRAPH_GEOJSON, "cache/edges.csv", "cache/vertices.csv"] {
+            assert!(!project.join(absent).exists(), "unsolicited {absent}");
         }
         let manifest = serde_json::from_str::<SourceManifest>(&fs::read_to_string(
             project.join(SOURCE_MANIFEST),
@@ -2863,7 +3065,7 @@ mod tests {
         assert_eq!(first.providers.len(), 2);
         assert_eq!(first.raw_paths.len(), 2);
         assert_eq!(first.conflation.strata, 2);
-        let graph = serde_json::from_slice::<TrailGraph>(&fs::read(project.join(GRAPH))?)?;
+        let graph = decode_graph(&fs::read(project.join(GRAPH_CACHE))?)?;
         let sources = graph
             .edges
             .iter()
@@ -2899,7 +3101,7 @@ mod tests {
         fs::write(project.join("trailgen.toml"), "name = 'Harriman'\n")?;
         let (surveyor, calls) = fixed_surveyor();
         surveyor.survey(project, "Harriman", 20.0, drop)?;
-        fs::write(project.join(GRAPH), b"drift")?;
+        fs::write(project.join(GRAPH_CACHE), b"drift")?;
 
         assert!(indexed_summary(project)?.is_none());
 
@@ -2907,7 +3109,7 @@ mod tests {
 
         assert!(!repaired.reused);
         assert_eq!(calls.get(), 1);
-        serde_json::from_slice::<TrailGraph>(&fs::read(project.join(GRAPH))?)?;
+        decode_graph(&fs::read(project.join(GRAPH_CACHE))?)?;
         Ok(())
     }
 
@@ -2958,6 +3160,12 @@ mod tests {
             .context("one region should survive")?;
         assert_eq!(shorn.regions, first.regions);
         assert_eq!(calls.get(), 2);
+        let removed = joined
+            .raw_paths
+            .iter()
+            .find(|path| path.to_string_lossy().contains(&joined.regions[1].id))
+            .context("second region receipt missing")?;
+        assert!(!project.join(removed).exists());
         assert!(
             surveyor
                 .remove_region(project, &first.regions[0].id, drop)?
@@ -2965,7 +3173,91 @@ mod tests {
         );
         assert!(project_config(project)?.regions.is_empty());
         assert!(project_config(project)?.managed);
-        assert!(!project.join(GRAPH).exists());
+        assert!(!project.join(GRAPH_CACHE).exists());
+        assert!(!project.join(&first.raw_paths[0]).exists());
+        Ok(())
+    }
+
+    #[test]
+    fn replacing_a_region_preserves_its_slot_name_and_project_law() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let project = temp.path();
+        fs::write(
+            project.join("trailgen.toml"),
+            "name = 'Harriman'\nproject_marker = 'untouched'\n",
+        )?;
+        let (surveyor, calls) = fixed_surveyor();
+        let west = GeoBounds::new(-74.130, 41.225, -74.120, 41.235);
+        let east = GeoBounds::new(-74.127, 41.228, -74.123, 41.234);
+        let moved = GeoBounds::new(-74.131, 41.224, -74.119, 41.236);
+        let first = surveyor.add_region(project, west, drop)?;
+        let joined = surveyor.add_region(project, east, drop)?;
+        let displaced = first.regions[0].id.clone();
+        let survivor = joined.regions[1].clone();
+        name_region(project, &displaced, "West Gate")?;
+
+        let replaced = surveyor.replace_region(project, &displaced, moved, drop)?;
+        let replacement = SurveyRegion::new(moved)?;
+        let config = project_config(project)?;
+
+        assert_eq!(calls.get(), 3);
+        assert_eq!(replaced.regions, vec![replacement.clone(), survivor]);
+        assert_eq!(config.regions, replaced.regions);
+        assert!(config.managed);
+        assert_eq!(config.providers, vec![ProviderId::new("fixture")?]);
+        assert_eq!(
+            config.region_names.get(&replacement.id).map(String::as_str),
+            Some("West Gate")
+        );
+        assert!(!config.region_names.contains_key(&displaced));
+        assert_eq!(indexed_summary(project)?, Some(replaced));
+        let document = fs::read_to_string(project.join("trailgen.toml"))?;
+        let document = toml::from_str::<toml::Value>(&document)?;
+        assert_eq!(
+            document.get("name").and_then(toml::Value::as_str),
+            Some("Harriman")
+        );
+        assert_eq!(
+            document.get("project_marker").and_then(toml::Value::as_str),
+            Some("untouched")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replacement_intent_survives_an_interrupted_acquisition() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let project = temp.path();
+        fs::write(project.join("trailgen.toml"), "name = 'Harriman'\n")?;
+        let provider = FixedProvider {
+            fail_at: Some(3),
+            ..FixedProvider::default()
+        };
+        let calls = Rc::clone(&provider.calls);
+        let surveyor = Surveyor::new(FixedPlace, provider);
+        let west = GeoBounds::new(-74.130, 41.225, -74.120, 41.235);
+        let east = GeoBounds::new(-74.127, 41.228, -74.123, 41.234);
+        let moved = GeoBounds::new(-74.131, 41.224, -74.119, 41.236);
+        let first = surveyor.add_region(project, west, drop)?;
+        let joined = surveyor.add_region(project, east, drop)?;
+        let displaced = first.regions[0].id.clone();
+        let survivor = joined.regions[1].clone();
+        name_region(project, &displaced, "West Gate")?;
+
+        let fault = surveyor
+            .replace_region(project, &displaced, moved, drop)
+            .expect_err("the fixture's third acquisition must fail");
+        let replacement = SurveyRegion::new(moved)?;
+        let config = project_config(project)?;
+
+        assert!(fault.to_string().contains("fixture acquisition failure"));
+        assert_eq!(calls.get(), 3);
+        assert_eq!(config.regions, vec![replacement.clone(), survivor]);
+        assert_eq!(
+            config.region_names,
+            BTreeMap::from([(replacement.id, "West Gate".to_owned())])
+        );
+        assert!(indexed_summary(project)?.is_none());
         Ok(())
     }
 }

@@ -4,33 +4,36 @@ use crate::{
     chrome,
     gallery::{self, TrailSort},
     library::{Library, SavedTrail, SearchRecipe, TrailId, Trailhead},
-    live_area::{self, RegionScribe, ScribeEvent},
+    live_area::{self, RegionHandles, RegionScribe, ResizeEvent, ScribeEvent},
     map::{self, Atlas, SELECTED_TRAIL_COLOR, Viewport},
     portfolio::{self, CandidatePortfolio, CandidateWarmth},
     profile::ElevationProfile,
     project::{Project, SearchEvent, SearchForge, SearchHandle, SearchRequest},
     relief::Relief,
     search_boundary::{self, BoundaryEvent, BoundaryScribe},
+    shortcut_help::{Mode as ShortcutMode, ShortcutHelp},
     slate::Slate,
     trail_data::{
         Event as TrailDataEvent, Mutation as TrailDataMutation, TrailData, progress_status,
     },
     vector_field::VectorField,
 };
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, ensure};
+use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, unbounded};
 use dwemer_poolrooms::water::{Domain, Frame as WaterFrame, Surface, Wetness};
 use egui::{Color32, RichText, Stroke, vec2};
 use std::{
     collections::{BTreeMap, VecDeque},
     path::{Path, PathBuf},
     sync::Arc,
+    thread,
     time::{Duration, Instant},
 };
 use trailgen_contract::Target;
 use trailgen_core::{
     Coord, EdgeDisposition, EdgeEdicts, EdgeIndex, LoopConstraints, RouteMetrics, RouteShape,
     RoutingLaw, SearchParams, SearchProgress, SearchStage, SolverKind, SupportPoint, Trail,
-    TrailGraph, TrailRealization, TrailStanding, TrailgenError,
+    TrailRealization, TrailStanding, TrailgenError, WalkGraph, WalkRealmIndex, WalkRouter,
 };
 use trailgen_data::SurveyRegion;
 
@@ -41,7 +44,6 @@ const STATE_SETTLE: Duration = Duration::from_millis(400);
 const SEARCH_SETTLE: Duration = Duration::from_millis(350);
 const CANDIDATE_COUNT: usize = 12;
 const TRAILHEAD_SNAP_M: f64 = 500.0;
-const LOOP_TRAILHEAD_ROUNDING_M: f64 = 20.0;
 const UNDO_DEPTH: usize = 128;
 const SHAPES: [(RouteShape, &str); 3] = [
     (RouteShape::Loop, "LOOP"),
@@ -52,10 +54,13 @@ const SHAPES: [(RouteShape, &str); 3] = [
 pub struct TrailApp {
     root: PathBuf,
     name: String,
-    graph: Arc<TrailGraph>,
-    edge_index: EdgeIndex,
+    graph: Arc<WalkGraph>,
+    edge_index: Arc<EdgeIndex>,
+    finder_index: Arc<WalkRealmIndex>,
     atlas: Atlas,
     forge: SearchForge,
+    editor_forge: EditorForge,
+    editor_serial: u64,
     defaults: LoopConstraints,
     params: SearchParams,
     solver: SolverKind,
@@ -66,6 +71,7 @@ pub struct TrailApp {
     hovered_saved: Option<TrailId>,
     rename: Option<RenameDraft>,
     candidates: Option<CandidatePortfolio>,
+    results_open: bool,
     edicts: EdgeEdicts,
     edict_history: UndoLog<EdgeEdicts>,
     search_due: Option<Instant>,
@@ -86,8 +92,10 @@ pub struct TrailApp {
     regions: Vec<SurveyRegion>,
     region_names: BTreeMap<String, String>,
     area_rename: Option<AreaRenameDraft>,
-    corpus: Option<TrailData>,
+    corpus: Option<CorpusTask>,
     scribe: RegionScribe,
+    area_handles: RegionHandles,
+    shortcuts: ShortcutHelp,
     boundary_scribe: BoundaryScribe,
     offline: bool,
     shutters: BTreeMap<String, bool>,
@@ -101,21 +109,30 @@ pub struct TrailApp {
     trail_data_status: Option<String>,
     profile_cursor: ProfileCursor,
     map_rect: egui::Rect,
+    map_regime: MapRegime,
     workspace_signal: Option<Action>,
 }
 
 struct TrailEditor {
     name: String,
+    name_draft: Option<EditorNameDraft>,
     origin: EditorOrigin,
     return_to: EditorReturn,
     shape: RouteShape,
     support_points: Vec<SupportPoint>,
     realization: Option<TrailRealization>,
+    realizing: Option<u64>,
+    shape_guard: Option<(u64, RouteShape)>,
     profile: Option<ElevationProfile>,
     fault: Option<String>,
     notice: Option<String>,
     history: UndoLog<TrailSketch>,
     drag: Option<PinDrag>,
+}
+
+struct EditorNameDraft {
+    text: String,
+    seize_focus: bool,
 }
 
 enum WorkbenchView {
@@ -124,7 +141,22 @@ enum WorkbenchView {
     Edit(Box<TrailEditor>),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MapRegime {
+    Browse,
+    Focus,
+    Edit,
+}
+
 impl WorkbenchView {
+    const fn map_regime(&self) -> MapRegime {
+        match self {
+            Self::Browse => MapRegime::Browse,
+            Self::Focus(_) => MapRegime::Focus,
+            Self::Edit(_) => MapRegime::Edit,
+        }
+    }
+
     const fn editor(&self) -> Option<&TrailEditor> {
         match self {
             Self::Edit(editor) => Some(editor),
@@ -220,12 +252,6 @@ impl<T> UndoLog<T> {
     }
 }
 
-struct LoopClosure {
-    trailhead: SupportPoint,
-    realization: TrailRealization,
-    shift_m: f64,
-}
-
 struct RenameDraft {
     trail: TrailId,
     text: String,
@@ -253,6 +279,21 @@ struct SavedProjection {
     miniature: gallery::SavedPreview,
     profile: Option<ElevationProfile>,
     overlay: map::RouteOverlay,
+}
+
+#[derive(Clone, Copy, Default)]
+struct SearchEdit {
+    changed: bool,
+    submitted: bool,
+}
+
+impl SearchEdit {
+    const fn merge(self, other: Self) -> Self {
+        Self {
+            changed: self.changed || other.changed,
+            submitted: self.submitted || other.submitted,
+        }
+    }
 }
 
 impl SavedProjection {
@@ -326,7 +367,7 @@ struct MapGesture {
 
 impl TrailEditor {
     const fn ready(&self) -> bool {
-        self.fault.is_none() && self.realization.is_some()
+        self.realizing.is_none() && self.fault.is_none() && self.realization.is_some()
     }
 
     fn sketch(&self) -> TrailSketch {
@@ -339,6 +380,15 @@ impl TrailEditor {
     fn checkpoint(&mut self) {
         self.finish_drag();
         self.history.commit(self.sketch());
+    }
+
+    fn excise_support(&mut self, slot: usize) -> bool {
+        if slot >= self.support_points.len() {
+            return false;
+        }
+        self.checkpoint();
+        self.support_points.remove(slot);
+        true
     }
 
     fn finish_drag(&mut self) -> bool {
@@ -377,15 +427,11 @@ impl TrailEditor {
         self.support_points = target.support_points;
     }
 
-    fn absorb_realization(
-        &mut self,
-        graph: &TrailGraph,
-        result: trailgen_core::Result<TrailRealization>,
-    ) {
+    fn absorb_realization(&mut self, result: trailgen_core::Result<TrailRealization>) {
+        self.realizing = None;
         match result {
             Ok(realization) => {
-                self.profile =
-                    ElevationProfile::forge(realization.graph(graph), &realization.route);
+                self.profile = ElevationProfile::forge(realization.graph(), &realization.route);
                 self.realization = Some(realization);
                 self.fault = None;
                 self.notice = None;
@@ -427,6 +473,12 @@ enum FocusAction {
 
 enum RenameAction {
     Begin(TrailId, egui::Rect),
+    Commit,
+    Cancel,
+}
+
+enum EditorNameAction {
+    Begin(egui::Rect),
     Commit,
     Cancel,
 }
@@ -506,6 +558,191 @@ struct LoadedCorpus {
     status: Option<String>,
 }
 
+pub struct TrailArmament {
+    project: Project,
+    slate: Slate,
+    corpus: LoadedCorpus,
+    edge_index: Arc<EdgeIndex>,
+    finder_index: Arc<WalkRealmIndex>,
+    vector: Option<VectorField>,
+    relief: Relief,
+    forge: SearchForge,
+    editor_forge: EditorForge,
+    atlas: Atlas,
+    saved_projections: BTreeMap<TrailId, SavedProjection>,
+}
+
+enum CorpusTask {
+    Acquiring(TrailData),
+    Preparing(CorpusForge),
+}
+
+struct CorpusForge {
+    event: Receiver<Result<CorpusArmament>>,
+    _thread: thread::JoinHandle<()>,
+}
+
+struct EditorJob {
+    serial: u64,
+    name: String,
+    shape: RouteShape,
+    support_points: Vec<SupportPoint>,
+    routing: RoutingLaw,
+    constraints: LoopConstraints,
+}
+
+struct EditorEvent {
+    serial: u64,
+    result: trailgen_core::Result<TrailRealization>,
+}
+
+struct EditorForge {
+    command: Sender<EditorJob>,
+    pending: Receiver<EditorJob>,
+    events: Receiver<EditorEvent>,
+    _thread: thread::JoinHandle<()>,
+}
+
+impl EditorForge {
+    fn spawn(ctx: egui::Context, graph: Arc<WalkGraph>) -> Result<Self> {
+        let (command, jobs) = bounded::<EditorJob>(1);
+        let pending = jobs.clone();
+        let (events_tx, events) = unbounded();
+        let worker = thread::Builder::new()
+            .name("trail-realizer".to_owned())
+            .spawn(move || {
+                let index = EdgeIndex::forge(&graph);
+                let router = WalkRouter::forge(&graph);
+                while let Ok(job) = jobs.recv() {
+                    let result = Trail::forge(job.shape, job.support_points, job.routing).and_then(
+                        |trail| {
+                            trail.realize_indexed(
+                                job.name,
+                                &graph,
+                                &index,
+                                &router,
+                                &job.constraints,
+                                TRAILHEAD_SNAP_M,
+                            )
+                        },
+                    );
+                    if events_tx
+                        .send(EditorEvent {
+                            serial: job.serial,
+                            result,
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                    ctx.request_repaint();
+                }
+            })
+            .context("spawn trail realizer")?;
+        Ok(Self {
+            command,
+            pending,
+            events,
+            _thread: worker,
+        })
+    }
+
+    fn strike(&self, job: EditorJob) -> Result<()> {
+        match self.command.try_send(job) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(job)) => {
+                let _superseded = self.pending.try_recv();
+                self.command
+                    .try_send(job)
+                    .map_err(|_| anyhow::anyhow!("trail realizer stopped"))
+            }
+            Err(TrySendError::Disconnected(_)) => Err(anyhow::anyhow!("trail realizer stopped")),
+        }
+    }
+}
+
+struct CorpusArmament {
+    graph: Arc<WalkGraph>,
+    edge_index: Arc<EdgeIndex>,
+    finder_index: Arc<WalkRealmIndex>,
+    editor_forge: EditorForge,
+    atlas: Atlas,
+    forge: SearchForge,
+    source: BasemapSource,
+    regions: Vec<SurveyRegion>,
+    region_names: BTreeMap<String, String>,
+}
+
+impl CorpusForge {
+    fn spawn(ctx: &egui::Context, root: PathBuf) -> Result<Self> {
+        let (event_tx, event) = bounded(1);
+        let worker_ctx = ctx.clone();
+        let thread = thread::Builder::new()
+            .name("trail-corpus-forge".to_owned())
+            .spawn(move || {
+                let _forge = tracing::info_span!(
+                    target: "eternalist::startup",
+                    "corpus.forge",
+                    root = %root.display()
+                )
+                .entered();
+                let result = (|| {
+                    let graph = product_phase!("corpus.load", Project::load_graph(&root)?);
+                    let edge_index = Arc::new(product_phase!(
+                        "corpus.edge_index",
+                        EdgeIndex::forge(&graph)
+                    ));
+                    let finder_index = Arc::new(product_phase!(
+                        "corpus.finder_index",
+                        WalkRealmIndex::finder(&graph)
+                    ));
+                    let atlas = product_phase!("corpus.atlas", Atlas::forge(&graph));
+                    let forge = product_phase!(
+                        "corpus.search_worker",
+                        SearchForge::spawn(
+                            worker_ctx.clone(),
+                            Arc::clone(&graph),
+                            Arc::clone(&finder_index),
+                        )?
+                    );
+                    let editor_forge = product_phase!(
+                        "corpus.editor_worker",
+                        EditorForge::spawn(worker_ctx.clone(), Arc::clone(&graph))?
+                    );
+                    let config =
+                        product_phase!("corpus.data_config", trailgen_data::project_config(&root)?);
+                    let bounds = config
+                        .regions
+                        .iter()
+                        .map(|region| region.bounds)
+                        .collect::<Vec<_>>();
+                    let source = product_phase!(
+                        "corpus.basemap_source",
+                        BasemapSource::project(&root, &graph, &bounds)?
+                    );
+                    Ok(CorpusArmament {
+                        graph,
+                        edge_index,
+                        finder_index,
+                        editor_forge,
+                        atlas,
+                        forge,
+                        source,
+                        regions: config.regions,
+                        region_names: config.region_names,
+                    })
+                })();
+                let _sent = event_tx.send(result);
+                worker_ctx.request_repaint();
+            })
+            .context("spawn trail-corpus projection forge")?;
+        Ok(Self {
+            event,
+            _thread: thread,
+        })
+    }
+}
+
 pub struct ReloadFrame {
     focus: Option<TrailId>,
     viewport: Viewport,
@@ -566,63 +803,191 @@ impl LoadedCorpus {
     }
 }
 
-impl TrailApp {
-    pub fn open(
+fn finder_counsel(library: &Library) -> String {
+    if library.search().trailhead.is_some() {
+        "Choose Find trails to search from this trailhead."
+    } else {
+        "Place a trailhead on the map, then find trails."
+    }
+    .to_owned()
+}
+
+impl TrailArmament {
+    fn forge(
         ctx: &egui::Context,
         root: &Path,
         offline: bool,
-        slate_path: PathBuf,
+        slate_path: &Path,
         trail_data: trailgen_data::TrailDataConfig,
         indexed: Option<&trailgen_data::Summary>,
     ) -> Result<Self> {
-        let Project {
-            root,
-            graph,
-            config,
-            library,
-        } = Project::open(root)?;
-        let slate = Slate::load(&slate_path, &root);
-        let corpus = LoadedCorpus::raise(ctx, &root, offline, trail_data, indexed)?;
-        let vector = spawn_vector_field(ctx, &root, Arc::clone(&graph), &corpus.regions, offline)?;
-        let relief = Relief::raise(ctx, &root)?;
-        let restored_viewport = slate.viewport;
-        let viewport = restored_viewport.unwrap_or(Viewport {
-            center: [0.5, 0.5],
-            zoom: 2.0,
-        });
-        let forge = SearchForge::spawn(ctx.clone(), Arc::clone(&graph))?;
-        let edge_index = EdgeIndex::forge(&graph);
-        let atlas = Atlas::forge(&graph);
-        let cartography = map::CartographicClock::new(viewport);
-        let status = if library.search().trailhead.is_some() {
-            "Choose Find trails to search from this trailhead."
+        let project = product_phase!("project.open", Project::open(root)?);
+        let slate = product_phase!("project.slate", Slate::load(slate_path, &project.root));
+        let corpus = product_phase!(
+            "project.corpus_state",
+            LoadedCorpus::raise(ctx, &project.root, offline, trail_data, indexed)?
+        );
+        let edge_index = Arc::new(product_phase!(
+            "project.edge_index",
+            EdgeIndex::forge(&project.graph)
+        ));
+        let finder_index = Arc::new(product_phase!(
+            "project.finder_index",
+            WalkRealmIndex::finder(&project.graph)
+        ));
+        let vector = if corpus.regions.is_empty() {
+            Some(product_phase!(
+                "project.vector_field",
+                spawn_vector_field(
+                    ctx,
+                    &project.root,
+                    Arc::clone(&project.graph),
+                    Arc::clone(&edge_index),
+                    &corpus.regions,
+                    offline,
+                )?
+            ))
         } else {
-            "Place a trailhead on the map, then find trails."
-        }
-        .to_owned();
-        let saved_projections = library
-            .trails()
-            .iter()
-            .map(|trail| (trail.id.clone(), SavedProjection::forge(trail)))
-            .collect();
-        let committed_library = library.clone();
+            None
+        };
+        let relief = product_phase!("project.relief", Relief::raise(ctx, &project.root)?);
+        let forge = product_phase!(
+            "project.search_worker",
+            SearchForge::spawn(
+                ctx.clone(),
+                Arc::clone(&project.graph),
+                Arc::clone(&finder_index),
+            )?
+        );
+        let editor_forge = product_phase!(
+            "project.editor_worker",
+            EditorForge::spawn(ctx.clone(), Arc::clone(&project.graph))?
+        );
+        let atlas = product_phase!("project.atlas", Atlas::forge(&project.graph));
+        let saved_projections = product_phase!("project.saved_projections", {
+            project
+                .library
+                .trails()
+                .iter()
+                .map(|trail| (trail.id.clone(), SavedProjection::forge(trail)))
+                .collect()
+        });
+        Ok(Self {
+            project,
+            slate,
+            corpus,
+            edge_index,
+            finder_index,
+            vector,
+            relief,
+            forge,
+            editor_forge,
+            atlas,
+            saved_projections,
+        })
+    }
+}
+
+impl TrailApp {
+    pub(crate) fn prepare(
+        ctx: &egui::Context,
+        root: &Path,
+        offline: bool,
+        slate_path: &Path,
+        trail_data: trailgen_data::TrailDataConfig,
+        indexed: Option<&trailgen_data::Summary>,
+    ) -> Result<TrailArmament> {
+        let _open = tracing::info_span!(
+            target: "eternalist::startup",
+            "trailgen.prepare",
+            root = %root.display()
+        )
+        .entered();
+        TrailArmament::forge(ctx, root, offline, slate_path, trail_data, indexed)
+    }
+
+    pub(crate) fn arm(
+        ctx: &egui::Context,
+        mut armament: TrailArmament,
+        loading_vector: &mut Option<VectorField>,
+        offline: bool,
+        slate_path: PathBuf,
+    ) -> Result<Self> {
+        let _publish =
+            tracing::info_span!(target: "eternalist::product", "trailgen.publish").entered();
+        let vector = if let Some(vector) = loading_vector.as_mut() {
+            ensure!(
+                armament.vector.is_none(),
+                "trail preparation forged two basemap substrates"
+            );
+            let _retired = vector.bind_trails(
+                ctx,
+                Arc::clone(&armament.project.graph),
+                Arc::clone(&armament.edge_index),
+            )?;
+            loading_vector
+                .take()
+                .expect("validated loading basemap must remain owned until publication")
+        } else {
+            armament
+                .vector
+                .take()
+                .context("trail preparation omitted its basemap substrate")?
+        };
+        Ok(Self::assemble(armament, vector, offline, slate_path))
+    }
+
+    fn assemble(
+        armament: TrailArmament,
+        vector: VectorField,
+        offline: bool,
+        slate_path: PathBuf,
+    ) -> Self {
+        let TrailArmament {
+            project:
+                Project {
+                    root,
+                    graph,
+                    config,
+                    library,
+                },
+            slate,
+            corpus,
+            edge_index,
+            finder_index,
+            vector: prepared_vector,
+            relief,
+            forge,
+            editor_forge,
+            atlas,
+            saved_projections,
+        } = armament;
+        debug_assert!(prepared_vector.is_none());
+        let restored_viewport = slate.viewport;
+        let viewport = restored_viewport.unwrap_or(Viewport::WORLD);
+        let cartography = map::CartographicClock::new(viewport);
+        let status = finder_counsel(&library);
         let mut app = Self {
             root,
             name: config.name,
             graph,
             edge_index,
+            finder_index,
             atlas,
             forge,
+            editor_forge,
+            editor_serial: 0,
             defaults: config.constraints,
             params: config.search,
             solver: config.solver,
+            committed_library: library.clone(),
             library,
-            committed_library,
             library_dirty: None,
             saved_projections,
             hovered_saved: None,
             rename: None,
             candidates: None,
+            results_open: false,
             edicts: EdgeEdicts::default(),
             edict_history: UndoLog::default(),
             search_due: None,
@@ -647,8 +1012,10 @@ impl TrailApp {
             regions: corpus.regions,
             region_names: corpus.region_names,
             area_rename: None,
-            corpus: corpus.task,
+            corpus: corpus.task.map(CorpusTask::Acquiring),
             scribe: RegionScribe::default(),
+            area_handles: RegionHandles::default(),
+            shortcuts: ShortcutHelp::default(),
             boundary_scribe: BoundaryScribe::default(),
             offline,
             shutters: slate.shutters.clone(),
@@ -662,40 +1029,61 @@ impl TrailApp {
             trail_data_status: corpus.status,
             profile_cursor: ProfileCursor::default(),
             map_rect: egui::Rect::ZERO,
+            map_regime: MapRegime::Browse,
             workspace_signal: None,
         };
         app.observed_slate = app.snapshot();
-        Ok(app)
+        app
     }
 
     pub fn pulse(&mut self, ui: &mut egui::Ui) -> Option<Action> {
-        self.absorb_events(ui.ctx());
-        self.absorb_corpus();
-        self.take_keys(ui.ctx());
+        product_phase!("pulse.search_events", self.absorb_events(ui.ctx()));
+        product_phase!("pulse.editor_events", self.absorb_editor_events());
+        product_phase!("pulse.corpus_events", self.absorb_corpus(ui.ctx()));
+        product_phase!("pulse.input", {
+            if !self.shortcuts.capture(ui.ctx()) {
+                self.take_keys(ui.ctx());
+            }
+        });
         let profile_owner = self.profile_owner();
         self.profile_cursor.bind(profile_owner);
         self.hovered_saved = None;
         self.profile_cursor.marker = None;
-        let _left = egui::Panel::left("trail-inspector")
-            .resizable(false)
-            .exact_size(chrome::INSPECTOR_WIDTH)
-            .show_inside(ui, |ui| {
-                let scroll = egui::ScrollArea::vertical()
-                    .id_salt("trail-inspector-scroll")
-                    .vertical_scroll_offset(self.inspector_scroll)
-                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.add_space(ui.spacing().item_spacing.x);
-                        self.inspector(ui);
-                    });
-                self.inspector_scroll = scroll.state.offset.y.max(0.0);
-                self.water.heave(ui.ctx(), scroll.state.offset.y);
-            });
-        let _center = egui::CentralPanel::default().show_inside(ui, |ui| self.arena(ui));
-        self.tend_search(ui.ctx());
-        self.tend_library(ui.ctx());
-        self.tend_slate(ui.ctx());
+        let _left = product_phase!(
+            "pulse.inspector",
+            egui::Panel::left("trail-inspector")
+                .resizable(false)
+                .exact_size(chrome::INSPECTOR_WIDTH)
+                .show_inside(ui, |ui| {
+                    let scroll = egui::ScrollArea::vertical()
+                        .id_salt("trail-inspector-scroll")
+                        .vertical_scroll_offset(self.inspector_scroll)
+                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.add_space(ui.spacing().item_spacing.x);
+                            self.inspector(ui);
+                        });
+                    self.inspector_scroll = scroll.state.offset.y.max(0.0);
+                    self.water.heave(ui.ctx(), scroll.state.offset.y);
+                })
+        );
+        let _center = product_phase!(
+            "pulse.arena",
+            egui::CentralPanel::default().show_inside(ui, |ui| self.arena(ui))
+        );
+        let shortcut_mode = match self.view {
+            WorkbenchView::Browse => ShortcutMode::Browse,
+            WorkbenchView::Focus(_) => ShortcutMode::Focus,
+            WorkbenchView::Edit(_) => ShortcutMode::Editor,
+        };
+        product_phase!(
+            "pulse.shortcuts",
+            self.shortcuts.show(ui.ctx(), shortcut_mode)
+        );
+        product_phase!("pulse.search_commit", self.tend_search(ui.ctx()));
+        product_phase!("pulse.library_commit", self.tend_library(ui.ctx()));
+        product_phase!("pulse.slate_commit", self.tend_slate(ui.ctx()));
         self.workspace_signal.take()
     }
 
@@ -763,7 +1151,13 @@ impl TrailApp {
             contract: trailgen_contract::UI_FINGERPRINT,
             workspace: trailgen_contract::Workspace::Trail,
             view,
-            rename_active: self.rename.is_some(),
+            rename_active: self.rename.is_some()
+                || self.area_rename.is_some()
+                || self
+                    .view
+                    .editor()
+                    .is_some_and(|editor| editor.name_draft.is_some()),
+            shortcut_help: self.shortcuts.open(),
             text_edit_focused,
             saved_trails: self.library.trails().len(),
             candidates: self
@@ -776,7 +1170,16 @@ impl TrailApp {
                     self.viewport.center,
                     map::world_pixels(self.viewport),
                     self.trail_coloring,
+                    self.vector.presented_tile_count(),
                 )
+            }),
+            areas: Some(crate::witness::AreaState {
+                regions: self.regions.len(),
+                drawing: self.scribe.active(),
+                resizing: self
+                    .area_handles
+                    .resizing()
+                    .map(|(slot, corner)| crate::witness::AreaResizeState { slot, corner }),
             }),
             editor: self.witness_editor(),
             search: Some(self.witness_search()),
@@ -806,16 +1209,10 @@ impl TrailApp {
                         [coord.lon, coord.lat]
                     })
                     .collect(),
-                route_signature: editor.realization.as_ref().map(|realization| {
-                    realization.route.edges.iter().fold(
-                        (realization.route.start.0 as u64)
-                            ^ (realization.route.edges.len() as u64).rotate_left(29),
-                        |signature, edge| {
-                            signature.rotate_left(11)
-                                ^ (edge.0 as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
-                        },
-                    )
-                }),
+                route_signature: editor
+                    .realization
+                    .as_ref()
+                    .map(TrailRealization::walk_fingerprint),
                 redo_depth: editor.history.redo_depth(),
             })
     }
@@ -833,6 +1230,11 @@ impl TrailApp {
                 trailgen_contract::CorpusPhase::Updating
             } else {
                 trailgen_contract::CorpusPhase::Idle
+            },
+            results: if self.results_open {
+                trailgen_contract::ResultsPhase::Open
+            } else {
+                trailgen_contract::ResultsPhase::Dormant
             },
             trailhead: recipe.trailhead.is_some(),
             boundary: recipe.boundary.is_some(),
@@ -868,27 +1270,27 @@ impl TrailApp {
         let _name = ui.label(chrome::title(self.name.to_ascii_uppercase()));
         ui.add_space(3.0);
         let projects = ui
-            .add_enabled_ui(!self.view.is_editing(), |ui| {
-                ui.add_sized(
-                    [ui.available_width(), 27.0],
-                    chrome::command_button("PROJECTS · CTRL+O", false),
-                )
+            .horizontal(|ui| {
+                let width = (ui.available_width() - 31.0).max(24.0);
+                let projects = ui
+                    .add_enabled(
+                        !self.view.is_editing(),
+                        chrome::command_button("PROJECTS", false).min_size(vec2(width, 27.0)),
+                    )
+                    .on_hover_text("Open the project deck · Ctrl+O")
+                    .on_disabled_hover_text("Finish or cancel the trail edit first.");
+                self.shortcuts.button(ui);
+                projects
             })
-            .inner
-            .on_disabled_hover_text("Finish or cancel the trail edit first.");
+            .inner;
         chrome::tension(ui, &projects);
         if projects.clicked() {
             self.workspace_signal = Some(Action::Projects);
             self.water.click(projects.rect);
         }
         ui.add_space(3.0);
-        let search_title = if self.view.is_editing() {
-            "trail editor"
-        } else {
-            "find trails"
-        };
         self.section(ui, "library", "saved trails", true, Self::library_panel);
-        self.section(ui, "search", search_title, true, Self::search_panel);
+        self.section(ui, "search", "trail creator", true, Self::search_panel);
         self.section(ui, "areas", "map areas", true, Self::area_panel);
     }
 
@@ -911,33 +1313,24 @@ impl TrailApp {
     }
 
     fn search_panel(&mut self, ui: &mut egui::Ui) {
+        if self.creator_tabs(ui) {
+            return;
+        }
+        ui.add_space(6.0);
         if self.view.is_editing() {
             self.editor_panel(ui);
             return;
         }
         let striking = self.forge_phase.active();
-        let manual = ui.add_enabled(
-            !striking,
-            chrome::command_button("DRAW A TRAIL", false)
-                .min_size(vec2(ui.available_width(), 30.0)),
-        );
-        crate::witness::anchor(ui, Target::Manual, manual.rect);
-        chrome::tension(ui, &manual);
-        if manual.clicked() {
-            self.begin_editor(EditorOrigin::New, None);
-            self.water.click(manual.rect);
-            return;
-        }
-        ui.add_space(6.0);
         let mut recipe = self.library.search().clone();
         let original = recipe.clone();
 
         self.trailhead_editor(ui, &mut recipe);
         self.search_boundary_editor(ui, &mut recipe);
-        let recipe_changed = self.search_recipe_editor(ui, &mut recipe);
+        let recipe_edit = self.search_recipe_editor(ui, &mut recipe);
         let trailhead_missing = recipe.trailhead.is_none();
 
-        if recipe_changed || recipe != original {
+        if recipe_edit.changed || recipe != original {
             *self.library.search_mut() = recipe;
             self.mark_library_dirty();
             self.schedule_revision();
@@ -980,7 +1373,7 @@ impl TrailApp {
                     if stopping {
                         "STOPPING…"
                     } else {
-                        "STOP SEARCH · ESC"
+                        "STOP SEARCH"
                     }
                 } else {
                     "FIND TRAILS"
@@ -991,7 +1384,8 @@ impl TrailApp {
         );
         let find = match (striking, validation.as_deref()) {
             (false, Some(fault)) => find.on_disabled_hover_text(fault),
-            (true, _) | (false, None) => find,
+            (true, _) => find.on_hover_text("Stop this search and keep its candidates · Esc"),
+            (false, None) => find.on_hover_text("Find trails with this recipe · Enter"),
         };
         crate::witness::anchor(
             ui,
@@ -1002,13 +1396,55 @@ impl TrailApp {
         if !striking && trailhead_missing {
             let _reason = chrome::note(ui, "PLACE A TRAILHEAD TO ENABLE SEARCH");
         }
-        if find.clicked() {
-            if striking {
-                self.stop_search();
-            } else {
-                self.strike();
-            }
+        if find.clicked() && striking {
+            self.stop_search();
             self.water.thwack(find.rect, 0.7);
+        } else if !striking && (find.clicked() || recipe_edit.submitted) {
+            self.activate_search(validation.as_deref(), find.rect);
+        }
+    }
+
+    fn creator_tabs(&mut self, ui: &mut egui::Ui) -> bool {
+        let editing = self.view.is_editing();
+        let (finder, manual) = ui
+            .horizontal(|ui| {
+                let finder = chrome::command(ui, "FINDER", !editing).on_hover_text(if editing {
+                    "Discard this edit and return to the trail finder"
+                } else {
+                    "Find trails from a trailhead"
+                });
+                let manual = chrome::command_enabled(
+                    ui,
+                    editing || (!self.forge_phase.active() && self.corpus.is_none()),
+                    "MANUAL",
+                    editing,
+                )
+                .on_disabled_hover_text("Wait for the current operation to finish")
+                .on_hover_text("Draw a trail with support points");
+                (finder, manual)
+            })
+            .inner;
+        crate::witness::anchor(ui, Target::Finder, finder.rect);
+        crate::witness::anchor(ui, Target::Manual, manual.rect);
+        if finder.clicked() && editing {
+            self.cancel_editor();
+            self.water.select(finder.rect);
+            return true;
+        }
+        if manual.clicked() && !editing {
+            self.begin_editor(EditorOrigin::New, None);
+            self.water.select(manual.rect);
+            return true;
+        }
+        false
+    }
+
+    fn activate_search(&mut self, fault: Option<&str>, button: egui::Rect) {
+        if let Some(fault) = fault {
+            self.status = format!("Could not find trails: {fault}");
+        } else {
+            self.strike();
+            self.water.thwack(button, 0.7);
         }
     }
 
@@ -1036,6 +1472,11 @@ impl TrailApp {
                     27.0,
                 )),
             );
+            let place = if placing {
+                place.on_hover_text("Cancel trailhead placement · Esc")
+            } else {
+                place.on_hover_text("Place or move the trailhead on the map · Alt+Click")
+            };
             crate::witness::anchor(ui, "search.trailhead", place.rect);
             chrome::tension(ui, &place);
             if place.clicked() {
@@ -1094,6 +1535,11 @@ impl TrailApp {
                     27.0,
                 )),
             );
+            let draw = if drawing {
+                draw.on_hover_text("Cancel drawing this search boundary · Esc")
+            } else {
+                draw
+            };
             crate::witness::anchor(ui, Target::Boundary, draw.rect);
             chrome::tension(ui, &draw);
             if draw.clicked() {
@@ -1128,26 +1574,44 @@ impl TrailApp {
         );
     }
 
-    fn search_recipe_editor(&mut self, ui: &mut egui::Ui, recipe: &mut SearchRecipe) -> bool {
+    fn search_recipe_editor(&mut self, ui: &mut egui::Ui, recipe: &mut SearchRecipe) -> SearchEdit {
         ui.add_space(5.0);
-        let distance_changed =
-            distance_range(ui, &mut recipe.distance_m.min, &mut recipe.distance_m.max);
-        let climb_changed = measure_range(
+        let distance = distance_range(ui, &mut recipe.distance_m.min, &mut recipe.distance_m.max);
+        let moving_time = moving_time_range(
+            ui,
+            &mut recipe.moving_time_s.min,
+            &mut recipe.moving_time_s.max,
+        );
+        let climb = measure_range(
             ui,
             "climb",
             "CLIMB · M",
             &mut recipe.climb_m.min,
             &mut recipe.climb_m.max,
             10.0,
+            [None, None],
         );
-        let _difficulty = ui.label(chrome::eyebrow("DIFFICULTY"));
-        let difficulty = ui.add(
-            egui::Slider::new(&mut recipe.difficulty, 0.0..=100.0)
-                .show_value(true)
-                .integer(),
-        );
-        crate::witness::anchor(ui, "search.difficulty", difficulty.rect);
-        let difficulty_changed = difficulty.changed();
+        let _load = ui
+            .label(chrome::eyebrow("LOWER-LIMB LOAD · FGJW KM"))
+            .on_hover_text(
+                "Mass-normalized joint work, expressed as the equivalent distance on flat gravel.",
+            );
+        let load = ui
+            .add(
+                egui::DragValue::new(&mut recipe.lower_limb_load_km)
+                    .prefix("TARGET ")
+                    .range(0.0..=1_000.0)
+                    .speed(0.5)
+                    .max_decimals(1),
+            )
+            .on_hover_text(
+                "Target flat-gravel joint-work-equivalent kilometers. This ranks routes; it is not a safety or capacity rating.",
+            );
+        crate::witness::anchor(ui, Target::LowerLimbLoad, load.rect);
+        let load_edit = SearchEdit {
+            changed: load.changed(),
+            submitted: response_submitted(ui, &load),
+        };
         let _shape = ui.label(chrome::eyebrow("SHAPE"));
         let mut shape_changed = false;
         let _shapes = ui.horizontal_wrapped(|ui| {
@@ -1165,7 +1629,14 @@ impl TrailApp {
                 }
             }
         });
-        distance_changed || climb_changed || difficulty_changed || shape_changed
+        distance
+            .merge(moving_time)
+            .merge(climb)
+            .merge(load_edit)
+            .merge(SearchEdit {
+                changed: shape_changed,
+                submitted: false,
+            })
     }
 
     fn editor_panel(&mut self, ui: &mut egui::Ui) {
@@ -1174,6 +1645,7 @@ impl TrailApp {
         };
         let count = editor.support_points.len();
         let ready = editor.ready();
+        let realizing = editor.realizing.is_some();
         let fault = editor.fault.clone();
         let notice = editor.notice.clone();
         let _mode = chrome::note(ui, format!("{count} SUPPORT POINT(S)"));
@@ -1183,9 +1655,12 @@ impl TrailApp {
             if count == 0 {
                 "CLICK A TRAIL TO PLACE THE TRAILHEAD"
             } else {
-                "CLICK TO ADD · DRAG A PIN TO MOVE"
+                "CLICK TO ADD · DRAG TO MOVE · SHIFT+CLICK TO DELETE"
             },
         );
+        if realizing {
+            let _progress = ui.label(chrome::eyebrow("UPDATING ROUTE…"));
+        }
         if let Some(fault) = fault {
             let _fault = ui.colored_label(chrome::HOT, chrome::muted(fault));
         } else if let Some(notice) = notice {
@@ -1203,19 +1678,23 @@ impl TrailApp {
                 .view
                 .editor()
                 .is_some_and(|editor| editor.history.can_redo());
-            let undo = ui.add_enabled(
-                can_undo,
-                chrome::command_button("UNDO · CTRL+Z", false).min_size(vec2(112.0, 27.0)),
-            );
+            let undo = ui
+                .add_enabled(
+                    can_undo,
+                    chrome::command_button("UNDO", false).min_size(vec2(112.0, 27.0)),
+                )
+                .on_hover_text("Undo the last trail edit · Ctrl+Z");
             crate::witness::anchor(ui, "editor.undo", undo.rect);
             if undo.clicked() {
                 self.undo_editor();
                 self.water.click(undo.rect);
             }
-            let redo = ui.add_enabled(
-                can_redo,
-                chrome::command_button("REDO · CTRL+Y", false).min_size(vec2(112.0, 27.0)),
-            );
+            let redo = ui
+                .add_enabled(
+                    can_redo,
+                    chrome::command_button("REDO", false).min_size(vec2(112.0, 27.0)),
+                )
+                .on_hover_text("Redo the last trail edit · Ctrl+Y or Ctrl+Shift+Z");
             crate::witness::anchor(ui, "editor.redo", redo.rect);
             if redo.clicked() {
                 self.redo_editor();
@@ -1232,15 +1711,17 @@ impl TrailApp {
             if let Some(editor) = self.view.editor_mut() {
                 editor.support_points.clear();
             }
-            self.reforge_editor();
+            let _serial = self.reforge_editor();
             self.water.click(clear.rect);
         }
         ui.add_space(5.0);
-        let save = ui.add_enabled(
-            ready,
-            chrome::command_button("SAVE TRAIL · CTRL+S", ready)
-                .min_size(vec2(ui.available_width(), 34.0)),
-        );
+        let save = ui
+            .add_enabled(
+                ready,
+                chrome::command_button("SAVE TRAIL", ready)
+                    .min_size(vec2(ui.available_width(), 34.0)),
+            )
+            .on_hover_text("Save this trail to the project · Ctrl+S");
         crate::witness::anchor(ui, Target::EditorSave, save.rect);
         chrome::tension(ui, &save);
         if save.clicked() {
@@ -1248,9 +1729,9 @@ impl TrailApp {
             ui.ctx().request_repaint();
             self.water.thwack(save.rect, 0.7);
         }
-        let cancel = ui.add(
-            chrome::command_button("CANCEL", false).min_size(vec2(ui.available_width(), 27.0)),
-        );
+        let cancel = ui
+            .add(chrome::command_button("CANCEL", false).min_size(vec2(ui.available_width(), 27.0)))
+            .on_hover_text("Discard this edit and restore the prior view · Esc");
         crate::witness::anchor(ui, "editor.cancel", cancel.rect);
         if cancel.clicked() {
             self.cancel_editor();
@@ -1277,7 +1758,7 @@ impl TrailApp {
                         .editor_mut()
                         .expect("editor shape controls require an editor")
                         .shape = RouteShape::Open;
-                    self.reforge_editor();
+                    let _serial = self.reforge_editor();
                     "Loop opened.".clone_into(&mut self.status);
                 }
                 looped = self
@@ -1353,33 +1834,6 @@ impl TrailApp {
             self.enter_focus(Focus::Saved(id));
             self.water.click(rect);
         }
-        self.rename_panel(ui);
-    }
-
-    fn rename_panel(&mut self, ui: &mut egui::Ui) {
-        let Some(Focus::Saved(id)) = self.view.focus().cloned() else {
-            self.rename = None;
-            return;
-        };
-        if self.library.trail(&id).is_none() {
-            self.rename = None;
-            return;
-        }
-        if self.rename.as_ref().is_some_and(|draft| draft.trail != id) {
-            self.rename = None;
-        }
-        let active = self.rename.is_some();
-        let rename = ui.add(
-            chrome::command_button("RENAME · F2", active)
-                .min_size(vec2(ui.available_width(), 24.0)),
-        );
-        crate::witness::anchor(ui, "library.rename", rename.rect);
-        chrome::tension(ui, &rename);
-        if rename.clicked() {
-            self.begin_rename(id);
-            self.water.click(rename.rect);
-            ui.ctx().request_repaint();
-        }
     }
 
     fn begin_rename(&mut self, id: TrailId) {
@@ -1446,6 +1900,11 @@ impl TrailApp {
             )
             .min_size(vec2(ui.available_width(), 27.0)),
         );
+        let select = if selecting {
+            select.on_hover_text("Cancel drawing this map area · Esc")
+        } else {
+            select
+        };
         crate::witness::anchor(ui, Target::AddMapArea, select.rect);
         chrome::tension(ui, &select);
         if select.clicked() {
@@ -1485,12 +1944,15 @@ impl TrailApp {
                             .char_limit(80)
                             .desired_width(116.0),
                     );
+                    crate::witness::anchor(ui, Target::AreaRenameField(slot), edit.rect);
                     if draft.seize_focus {
                         edit.request_focus();
                         draft.seize_focus = false;
                     }
-                    let save = chrome::command(ui, "SAVE", true);
-                    let cancel = chrome::command(ui, "CANCEL", false);
+                    let save = chrome::command(ui, "SAVE", true)
+                        .on_hover_text("Commit this map-area name · Enter");
+                    let cancel = chrome::command(ui, "CANCEL", false)
+                        .on_hover_text("Cancel this rename · Esc");
                     let (enter, escape) = rename_shortcuts(ui, &edit);
                     if enter || save.clicked() {
                         rename_action = Some(AreaRenameAction::Commit);
@@ -1580,10 +2042,12 @@ impl TrailApp {
                     .exact_size(PROFILE_HEIGHT)
                     .show_inside(ui, |ui| self.profile(ui));
             }
-        } else {
+        } else if self.results_open {
             let _results = egui::Panel::bottom("trail-results")
                 .exact_size(RESULTS_HEIGHT)
                 .show_inside(ui, |ui| self.results_gallery(ui));
+        } else {
+            self.water.hide_loading();
         }
         let _map = egui::CentralPanel::default().show_inside(ui, |ui| self.map(ui));
     }
@@ -1665,6 +2129,7 @@ impl TrailApp {
                 self.stop_search();
             }
             self.candidates = None;
+            self.results_open = false;
             self.edicts.clear();
             self.edict_history.clear();
             self.search_due = None;
@@ -1682,18 +2147,19 @@ impl TrailApp {
         let mut action = None;
         let mut rename_action = None;
         let _row = ui.horizontal(|ui| {
-            let back = chrome::command(ui, "← BACK", false);
+            let back = chrome::command(ui, "← BACK", false)
+                .on_hover_text("Return to the prior map viewport · Esc");
             crate::witness::anchor(ui, Target::FocusBack, back.rect);
             if back.clicked() {
                 action = Some(FocusAction::Close(back.rect));
             }
             let previous = chrome::command_enabled(ui, self.focus_count() > 1, "◀", false)
-                .on_hover_text("Previous trail");
+                .on_hover_text("Previous trail · Left Arrow");
             if previous.clicked() {
                 action = Some(FocusAction::Step(-1, previous.rect));
             }
             let next = chrome::command_enabled(ui, self.focus_count() > 1, "▶", false)
-                .on_hover_text("Next trail");
+                .on_hover_text("Next trail · Right Arrow");
             if next.clicked() {
                 action = Some(FocusAction::Step(1, next.rect));
             }
@@ -1718,12 +2184,14 @@ impl TrailApp {
             }
             match self.view.focus() {
                 Some(Focus::Candidate { .. }) => {
-                    let edit = chrome::command(ui, "EDIT TRAIL", false);
+                    let edit =
+                        chrome::command_enabled(ui, self.corpus.is_none(), "EDIT TRAIL", false);
                     crate::witness::anchor(ui, Target::FocusEdit, edit.rect);
                     if edit.clicked() {
                         action = Some(FocusAction::Edit(edit.rect));
                     }
-                    let save = chrome::command(ui, "SAVE TRAIL", true);
+                    let save =
+                        chrome::command_enabled(ui, self.corpus.is_none(), "SAVE TRAIL", true);
                     crate::witness::anchor(ui, Target::FocusSave, save.rect);
                     if save.clicked() {
                         action = Some(FocusAction::Save(save.rect));
@@ -1732,7 +2200,7 @@ impl TrailApp {
                 Some(Focus::Saved(_)) => {
                     let edit = chrome::command_enabled(
                         ui,
-                        self.focus_design().is_some(),
+                        self.corpus.is_none() && self.focus_design().is_some(),
                         "EDIT TRAIL",
                         false,
                     )
@@ -1767,14 +2235,16 @@ impl TrailApp {
         let renaming =
             saved_id.is_some_and(|id| self.rename.as_ref().is_some_and(|draft| &draft.trail == id));
         if !renaming {
+            let action = saved_id.and_then(|id| {
+                let rename =
+                    chrome::command(ui, "✎", false).on_hover_text("Rename this saved trail · F2");
+                crate::witness::anchor(ui, Target::FocusRename, rename.rect);
+                rename
+                    .clicked()
+                    .then(|| RenameAction::Begin(id.clone(), rename.rect))
+            });
             let _name = toolbar_title(ui, name.to_ascii_uppercase());
-            let id = saved_id?;
-            let rename =
-                chrome::command(ui, "✎", false).on_hover_text("Rename this saved trail · F2");
-            crate::witness::anchor(ui, Target::FocusRename, rename.rect);
-            return rename
-                .clicked()
-                .then(|| RenameAction::Begin(id.clone(), rename.rect));
+            return action;
         }
 
         let draft = self.rename.as_mut().expect("rename draft checked");
@@ -1793,9 +2263,10 @@ impl TrailApp {
         }
         let valid = trail_name_is_valid(&draft.text);
         let (enter, escape) = rename_shortcuts(ui, &edit);
-        let save = chrome::command_enabled(ui, valid, "SAVE", true);
+        let save = chrome::command_enabled(ui, valid, "SAVE", true)
+            .on_hover_text("Commit this trail name · Enter");
         crate::witness::anchor(ui, "focus.rename.save", save.rect);
-        let cancel = chrome::command(ui, "CANCEL", false);
+        let cancel = chrome::command(ui, "CANCEL", false).on_hover_text("Cancel this rename · Esc");
         if valid && (enter || save.clicked()) {
             Some(RenameAction::Commit)
         } else if escape || cancel.clicked() {
@@ -1817,7 +2288,7 @@ impl TrailApp {
         }
     }
 
-    fn editor_toolbar(&self, ui: &mut egui::Ui) {
+    fn editor_toolbar(&mut self, ui: &mut egui::Ui) {
         let Some(editor) = self.view.editor() else {
             return;
         };
@@ -1827,13 +2298,99 @@ impl TrailApp {
             .then_some(editor)
             .and_then(|editor| editor.realization.as_ref())
             .map(|realization| metrics_summary(&realization.route.metrics));
+        let mut action = None;
         let _row = ui.horizontal(|ui| {
-            let _name = toolbar_title(ui, name);
+            let renaming = self
+                .view
+                .editor()
+                .is_some_and(|editor| editor.name_draft.is_some());
+            if renaming {
+                let draft = self
+                    .view
+                    .editor_mut()
+                    .and_then(|editor| editor.name_draft.as_mut())
+                    .expect("editor rename transaction checked");
+                let edit = ui.add_sized(
+                    [190.0, 24.0],
+                    egui::TextEdit::singleline(&mut draft.text)
+                        .font(egui::TextStyle::Monospace)
+                        .text_color(chrome::TEXT)
+                        .char_limit(80),
+                );
+                crate::witness::anchor(ui, Target::EditorRenameField, edit.rect);
+                if draft.seize_focus {
+                    edit.request_focus();
+                    draft.seize_focus = false;
+                }
+                let valid = trail_name_is_valid(&draft.text);
+                let (enter, escape) = rename_shortcuts(ui, &edit);
+                let save = chrome::command_enabled(ui, valid, "SAVE", true)
+                    .on_hover_text("Commit this trail name · Enter");
+                let cancel =
+                    chrome::command(ui, "CANCEL", false).on_hover_text("Cancel this rename · Esc");
+                if valid && (enter || save.clicked()) {
+                    action = Some(EditorNameAction::Commit);
+                } else if escape || cancel.clicked() {
+                    action = Some(EditorNameAction::Cancel);
+                }
+            } else {
+                let rename =
+                    chrome::command(ui, "✎", false).on_hover_text("Rename this trail · F2");
+                crate::witness::anchor(ui, Target::EditorRename, rename.rect);
+                if rename.clicked() {
+                    action = Some(EditorNameAction::Begin(rename.rect));
+                }
+                let _name = toolbar_title(ui, name);
+            }
             if let Some(summary) = summary {
                 ui.separator();
                 let _summary = toolbar_text(ui, summary, chrome::MUTED);
             }
         });
+        self.enact_editor_name(action.as_ref());
+    }
+
+    fn begin_editor_rename(&mut self) {
+        let Some(editor) = self.view.editor_mut() else {
+            return;
+        };
+        if let Some(draft) = &mut editor.name_draft {
+            draft.seize_focus = true;
+        } else {
+            editor.name_draft = Some(EditorNameDraft {
+                text: editor.name.clone(),
+                seize_focus: true,
+            });
+        }
+    }
+
+    fn enact_editor_name(&mut self, action: Option<&EditorNameAction>) {
+        match action {
+            Some(EditorNameAction::Begin(rect)) => {
+                self.begin_editor_rename();
+                self.water.click(*rect);
+            }
+            Some(EditorNameAction::Commit) => {
+                let Some(editor) = self.view.editor_mut() else {
+                    return;
+                };
+                let Some(draft) = editor.name_draft.take() else {
+                    return;
+                };
+                let name = draft.text.trim();
+                name.clone_into(&mut editor.name);
+                if let Some(realization) = &mut editor.realization {
+                    name.clone_into(&mut realization.route.name);
+                }
+                "Trail renamed.".clone_into(&mut self.status);
+            }
+            Some(EditorNameAction::Cancel) => {
+                if let Some(editor) = self.view.editor_mut() {
+                    editor.name_draft = None;
+                }
+            }
+            None => {}
+        }
     }
 
     fn enact_focus_action(&mut self, action: Option<&FocusAction>) {
@@ -1865,17 +2422,20 @@ impl TrailApp {
 
     fn results_gallery(&mut self, ui: &mut egui::Ui) {
         let Some(run) = self.candidates.as_ref() else {
+            let striking = matches!(self.forge_phase, ForgePhase::Striking { .. });
             gallery_empty(
                 ui,
-                if matches!(self.forge_phase, ForgePhase::Striking { .. }) {
+                if striking {
                     "FINDING TRAILS…"
                 } else {
                     "NO RESULTS YET"
                 },
             );
-            if matches!(self.forge_phase, ForgePhase::Striking { .. }) {
+            if striking {
                 self.water
                     .show_loading(ui.ctx(), ui.available_rect_before_wrap());
+            } else {
+                self.water.hide_loading();
             }
             return;
         };
@@ -1990,7 +2550,12 @@ impl TrailApp {
         let (rect, response) =
             ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
         crate::witness::anchor(ui, Target::Map, response.rect);
+        let regime = self.view.map_regime();
+        if regime == self.map_regime {
+            self.viewport = self.viewport.preserve_visible_extent(self.map_rect, rect);
+        }
         self.map_rect = rect;
+        self.map_regime = regime;
         self.water.begin(Domain::shelf(rect));
         self.apply_fit(rect);
         let legend_claims_pointer = self.interact_trail_legend(ui, rect);
@@ -1999,12 +2564,22 @@ impl TrailApp {
             .flatten();
         let support_under_pointer =
             pointer.and_then(|pointer| self.editor_support_at(pointer, rect));
+        let excising_supports = self.view.is_editing() && ui.input(|input| input.modifiers.shift);
+        let support_excision_hot = excising_supports && support_under_pointer.is_some();
+        let area_handles_enabled = self.area_handles_enabled();
+        let resize_event = if legend_claims_pointer {
+            ResizeEvent::None
+        } else {
+            self.area_handles
+                .interact(self.viewport, ui, rect, &self.regions, area_handles_enabled)
+        };
         if !legend_claims_pointer
+            && !excising_supports
             && ui.input(|input| input.pointer.button_pressed(egui::PointerButton::Primary))
         {
             self.seize_editor_support(pointer, support_under_pointer, rect);
         }
-        let trailhead_gesture = if legend_claims_pointer {
+        let trailhead_gesture = if legend_claims_pointer || self.area_handles.captured() {
             TrailheadGesture::default()
         } else {
             self.interact_trailhead(ui, rect)
@@ -2021,18 +2596,25 @@ impl TrailApp {
         if editor_dragging {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
         } else if support_under_pointer.is_some() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+            ui.ctx().set_cursor_icon(if excising_supports {
+                egui::CursorIcon::PointingHand
+            } else {
+                egui::CursorIcon::Grab
+            });
         }
         let before = self.viewport;
+        let map_gesture_captured = self.scribe.active()
+            || self.boundary_scribe.active()
+            || self.area_handles.captured()
+            || editor_dragging
+            || support_excision_hot
+            || trailhead_gesture.captured;
         let moved = map::navigate_with(
             &mut self.viewport,
             ui,
             &response,
             rect,
-            !self.scribe.active()
-                && !self.boundary_scribe.active()
-                && !editor_dragging
-                && !trailhead_gesture.captured,
+            !map_gesture_captured,
             !legend_claims_pointer,
         );
         if moved {
@@ -2062,23 +2644,33 @@ impl TrailApp {
             ui.ctx().request_repaint();
         }
         self.handle_scribe(ui.ctx(), &scribe_event);
+        self.handle_area_resize(ui.ctx(), resize_event);
         self.handle_boundary(boundary_event);
     }
 
     fn paint_map_scene(&mut self, ui: &egui::Ui, rect: egui::Rect) {
         let canvas = ui.painter_at(rect);
         let frame = map::MapFramePlan::forge(self.viewport, rect);
-        let cartography = self.cartography.observe(self.viewport, ui.ctx());
+        let cartography = product_phase!(
+            "map.cartographic_clock",
+            self.cartography.observe(self.viewport, ui.ctx())
+        );
         let _ground = canvas.rect_filled(rect, 0.0, map::MAP_GROUND);
-        let annotations = self.forge_cartography(&canvas, frame, cartography);
-        self.atlas
-            .paint_network(&canvas, frame, self.trail_coloring);
-        self.paint_live_area(&canvas, rect);
-        self.paint_trails(&canvas, rect);
+        let annotations = product_phase!(
+            "map.cartography",
+            self.forge_cartography(&canvas, frame, cartography)
+        );
+        product_phase!(
+            "map.trail_context",
+            self.atlas
+                .paint_network(&canvas, frame, self.trail_coloring)
+        );
+        product_phase!("map.live_areas", self.paint_live_area(&canvas, rect));
+        product_phase!("map.privileged_trails", self.paint_trails(&canvas, rect));
         if self.shows_search_context() {
             self.paint_edicts(&canvas, rect);
         }
-        annotations.paint(&canvas);
+        product_phase!("map.annotations", annotations.paint(&canvas));
         if self.shows_search_context() {
             self.paint_search_boundary(&canvas, rect);
         }
@@ -2132,12 +2724,28 @@ impl TrailApp {
         if !self.regions.is_empty() || self.scribe.active() {
             live_area::paint(
                 painter,
-                self.viewport,
-                rect,
-                &self.regions,
-                self.scribe.preview(self.viewport, rect),
+                live_area::Scene {
+                    viewport: self.viewport,
+                    canvas: rect,
+                    regions: &self.regions,
+                    names: &self.region_names,
+                    preview: self.scribe.preview(self.viewport, rect),
+                    adjustment: self.area_handles.preview(),
+                    handles: self.area_handles_enabled(),
+                },
             );
         }
+    }
+
+    const fn area_handles_enabled(&self) -> bool {
+        matches!(self.view, WorkbenchView::Browse)
+            && self.corpus.is_none()
+            && !self.forge_phase.active()
+            && !self.scribe.active()
+            && !self.boundary_scribe.active()
+            && self.area_rename.is_none()
+            && !self.placing_trailhead
+            && self.trailhead_drag.is_none()
     }
 
     fn interact_scribes(
@@ -2182,16 +2790,26 @@ impl TrailApp {
         frame: map::MapFramePlan,
         cartography: map::CartographicPlan,
     ) -> Arc<annotation::Composition> {
-        self.vector.paint_fills(painter, frame, cartography);
+        product_phase!(
+            "cartography.vector_fills",
+            self.vector.paint_fills(painter, frame, cartography)
+        );
         let relief = &self.relief;
-        let annotations =
+        let annotations = product_phase!("cartography.compose_annotations", {
             self.vector
                 .compose_annotations(painter, frame, cartography, relief.revision(), || {
                     relief.annotations(frame, cartography)
-                });
+                })
+        });
         let gaps = annotations.contour_gaps();
-        self.relief.paint(painter, frame, Arc::clone(&gaps));
-        self.vector.paint_strokes(painter, frame, gaps);
+        product_phase!(
+            "cartography.relief",
+            self.relief.paint(painter, frame, Arc::clone(&gaps))
+        );
+        product_phase!(
+            "cartography.vector_strokes",
+            self.vector.paint_strokes(painter, frame, gaps)
+        );
         annotations
     }
 
@@ -2201,7 +2819,7 @@ impl TrailApp {
                 if let Some(realization) = &editor.realization {
                     map::paint_route(
                         painter,
-                        realization.graph(&self.graph),
+                        realization.graph(),
                         &realization.route,
                         self.viewport,
                         rect,
@@ -2319,8 +2937,14 @@ impl TrailApp {
         let alt_click = click_modifiers.is_some_and(|modifiers| modifiers.alt)
             && self.trailhead_input_available()
             && !trailhead.captured;
+        let excision_click =
+            self.view.is_editing() && click_modifiers.is_some_and(|modifiers| modifiers.shift);
         if alt_click && let Some(pointer) = pointer {
             self.place_trailhead(map::coord_at(self.viewport, rect, pointer), pointer);
+        } else if excision_click {
+            if let Some(slot) = support_under_pointer {
+                self.excise_editor_support(slot);
+            }
         } else if response.clicked()
             && self.view.is_editing()
             && support_under_pointer.is_none()
@@ -2519,8 +3143,56 @@ impl TrailApp {
                     {
                         self.status = format!("Could not add that map area: {err:#}");
                         self.scribe.arm();
+                    } else {
+                        self.regions.push(region);
+                        "Map area selected. Downloading its trails…".clone_into(&mut self.status);
                     }
                 }
+            }
+        }
+    }
+
+    fn handle_area_resize(&mut self, ctx: &egui::Context, event: ResizeEvent) {
+        match event {
+            ResizeEvent::None => {}
+            ResizeEvent::Fault(fault) => fault.clone_into(&mut self.status),
+            ResizeEvent::Committed { id, before, bounds } => {
+                let Some(slot) = self.regions.iter().position(|region| region.id == id) else {
+                    "That map area no longer exists.".clone_into(&mut self.status);
+                    return;
+                };
+                debug_assert_eq!(self.regions[slot].bounds, before);
+                let replacement = match SurveyRegion::new(bounds) {
+                    Ok(replacement) => replacement,
+                    Err(err) => {
+                        self.status = format!("That map area cannot be resized: {err:#}");
+                        return;
+                    }
+                };
+                if self
+                    .regions
+                    .iter()
+                    .enumerate()
+                    .any(|(known, region)| known != slot && region.id == replacement.id)
+                {
+                    "That resize would duplicate another map area.".clone_into(&mut self.status);
+                    return;
+                }
+                if let Err(err) = self.strike_corpus(
+                    ctx,
+                    TrailDataMutation::Replace {
+                        id: id.clone(),
+                        bounds,
+                    },
+                ) {
+                    self.status = format!("Could not resize that map area: {err:#}");
+                    return;
+                }
+                self.regions[slot] = replacement.clone();
+                if let Some(name) = self.region_names.remove(&id) {
+                    let _prior = self.region_names.insert(replacement.id, name);
+                }
+                "Map area resized. Updating its trails…".clone_into(&mut self.status);
             }
         }
     }
@@ -2543,14 +3215,21 @@ impl TrailApp {
     }
 
     fn place_trailhead(&mut self, requested: Coord, pointer: egui::Pos2) {
-        let Some((vertex, distance_m)) = self.graph.nearest_vertex_with_distance(requested) else {
+        let Some(projection) = self.finder_index.edges().project(&self.graph, requested) else {
             "No downloaded trail is near that point.".clone_into(&mut self.status);
             return;
         };
+        let distance_m = projection.distance_m;
         if distance_m > TRAILHEAD_SNAP_M {
             "Move closer to a downloaded trail.".clone_into(&mut self.status);
             return;
         }
+        let edge = &self.graph.edges[projection.edge.0];
+        let vertex = if projection.progress_m <= edge.attr.length_m * 0.5 {
+            edge.a
+        } else {
+            edge.b
+        };
         let coord = self.graph.vertices[vertex.0].coord;
         let Some(trailhead) = Trailhead::forge(coord) else {
             "That trailhead cannot be used.".clone_into(&mut self.status);
@@ -2589,13 +3268,18 @@ impl TrailApp {
         let Some(editor) = self.view.editor() else {
             return;
         };
+        let (excising, hover_pointer) = painter
+            .ctx()
+            .input(|input| (input.modifiers.shift, input.pointer.hover_pos()));
         for (slot, support) in editor.support_points.iter().enumerate() {
             let anchor =
                 map::screen_at(self.viewport, rect, map::world_from_coord(support.coord()));
+            let hot = hover_pointer
+                .is_some_and(|pointer| crate::forge::pin_grip(anchor).contains(pointer));
             crate::forge::pin(
                 painter,
                 anchor,
-                editor.drag.as_ref().is_some_and(|drag| drag.slot == slot),
+                editor.drag.as_ref().is_some_and(|drag| drag.slot == slot) || (excising && hot),
             );
             #[cfg(feature = "egui-test")]
             crate::witness::rect(
@@ -2606,8 +3290,12 @@ impl TrailApp {
             painter.text(
                 crate::forge::pin_bulb(anchor),
                 egui::Align2::CENTER_CENTER,
-                slot.to_string(),
-                egui::FontId::monospace(12.0),
+                if excising {
+                    "×".to_owned()
+                } else {
+                    slot.to_string()
+                },
+                egui::FontId::monospace(if excising { 17.0 } else { 12.0 }),
                 chrome::TEXT,
             );
         }
@@ -2629,7 +3317,7 @@ impl TrailApp {
             self.view
                 .editor()
                 .and_then(|editor| editor.realization.as_ref())
-                .and_then(|realization| realization.support_insertion(&self.graph, requested))
+                .and_then(|realization| realization.support_insertion(requested))
                 .filter(|insertion| {
                     insertion.distance_m <= map::meters_per_point(self.viewport) * 11.0
                 })
@@ -2654,7 +3342,7 @@ impl TrailApp {
             let slot = insertion.flatten().unwrap_or(editor.support_points.len());
             editor.support_points.insert(slot, support);
         }
-        self.reforge_editor();
+        let _serial = self.reforge_editor();
     }
 
     fn preview_editor_support(&mut self, requested: Coord, slot: usize) {
@@ -2669,10 +3357,16 @@ impl TrailApp {
         let Some(editor) = self.view.editor_mut() else {
             return;
         };
-        if editor.support_points.get(slot) != Some(&support)
+        let changed = if editor.support_points.get(slot) != Some(&support)
             && let Some(current) = editor.support_points.get_mut(slot)
         {
             *current = support;
+            true
+        } else {
+            false
+        };
+        if changed {
+            let _serial = self.reforge_editor();
         }
     }
 
@@ -2682,43 +3376,50 @@ impl TrailApp {
         }
     }
 
+    fn excise_editor_support(&mut self, slot: usize) {
+        if !self
+            .view
+            .editor_mut()
+            .is_some_and(|editor| editor.excise_support(slot))
+        {
+            return;
+        }
+        let _serial = self.reforge_editor();
+        self.status = format!("Pin {slot} deleted.");
+    }
+
     fn finish_editor_drag(&mut self) {
         if self.view.editor_mut().is_some_and(TrailEditor::finish_drag) {
-            self.reforge_editor();
+            let _serial = self.reforge_editor();
         }
     }
 
     fn undo_editor(&mut self) {
         if self.view.editor_mut().is_some_and(TrailEditor::undo) {
-            self.reforge_editor();
+            let _serial = self.reforge_editor();
         }
     }
 
     fn redo_editor(&mut self) {
         if self.view.editor_mut().is_some_and(TrailEditor::redo) {
-            self.reforge_editor();
+            let _serial = self.reforge_editor();
         }
     }
 
     fn reverse_editor(&mut self) {
-        let constraints = self.manual_constraints(RouteShape::Loop);
         let reversed = self
             .view
             .editor()
             .and_then(|editor| editor.realization.as_ref())
             .context("reverse direction requires a realized loop")
-            .and_then(|realization| {
-                realization
-                    .reverse_loop(realization.graph(&self.graph), &constraints)
-                    .map_err(Into::into)
-            });
+            .and_then(|realization| realization.reverse_loop(&self.graph).map_err(Into::into));
         match reversed {
             Ok(reversal) => {
                 self.remember_editor();
                 let editor = self.view.editor_mut().expect("editor existence checked");
                 editor.shape = reversal.trail.shape;
                 editor.support_points = reversal.trail.support_points;
-                self.reforge_editor();
+                let _serial = self.reforge_editor();
                 let notice = match reversal.added_supports {
                     0 => "Loop direction reversed.".to_owned(),
                     1 => "Loop direction reversed; added 1 pin to preserve the exact route."
@@ -2756,40 +3457,18 @@ impl TrailApp {
                 .notice = Some("Add another pin before closing the loop.".to_owned());
             return;
         }
-        let name = editor.name.clone();
-        let supports = editor.support_points.clone();
-        let result = close_loop_design(
-            &name,
-            &self.graph,
-            &self.manual_constraints(RouteShape::Loop),
-            &supports,
-            self.params.routing,
-        );
-        match result {
-            Ok(closure) => {
-                self.remember_editor();
-                let status = if closure.shift_m >= 0.5 {
-                    format!(
-                        "Loop closed; pin 0 snapped {:.0} m to the nearest viable junction.",
-                        closure.shift_m
-                    )
-                } else {
-                    "Loop closed.".to_owned()
-                };
-                let editor = self.view.editor_mut().expect("editor existence checked");
-                editor.shape = RouteShape::Loop;
-                editor.support_points[0] = closure.trailhead;
-                editor.absorb_realization(&self.graph, Ok(closure.realization));
-                self.status = status;
-            }
-            Err(err) => {
-                let notice = self
-                    .view
-                    .editor_mut()
-                    .expect("editor existence checked")
-                    .reject_loop_closure(&err);
-                self.status = notice;
-            }
+        let previous = editor.shape;
+        self.remember_editor();
+        self.view
+            .editor_mut()
+            .expect("editor existence checked")
+            .shape = RouteShape::Loop;
+        if let Some(serial) = self.reforge_editor() {
+            self.view
+                .editor_mut()
+                .expect("editor existence checked")
+                .shape_guard = Some((serial, previous));
+            "Closing loop…".clone_into(&mut self.status);
         }
     }
 
@@ -2823,7 +3502,7 @@ impl TrailApp {
     }
 
     fn edict_segment(&mut self, requested: Coord, forbidden: bool) {
-        let Some(projection) = self.edge_index.project(&self.graph, requested) else {
+        let Some(projection) = self.finder_index.edges().project(&self.graph, requested) else {
             return;
         };
         if projection.distance_m > map::meters_per_point(self.viewport) * 11.0 {
@@ -2869,6 +3548,7 @@ impl TrailApp {
     fn strike(&mut self) {
         self.search_due = None;
         self.serial = self.serial.saturating_add(1);
+        self.editor_serial = self.editor_serial.saturating_add(1);
         let launch = self.search_request(self.serial).and_then(|request| {
             let progress = if request.boundary.is_some() {
                 SearchProgress {
@@ -2889,6 +3569,7 @@ impl TrailApp {
         });
         match launch {
             Ok((handle, progress)) => {
+                self.results_open = true;
                 self.forge_phase = ForgePhase::Striking {
                     serial: self.serial,
                     handle,
@@ -2917,9 +3598,17 @@ impl TrailApp {
         let recipe = self.library.search();
         let trailhead = recipe.trailhead.context("place a trailhead on the map")?;
         let start = self
-            .graph
-            .nearest_vertex_with_distance(trailhead.coord())
-            .map(|(vertex, _)| vertex)
+            .finder_index
+            .edges()
+            .project(&self.graph, trailhead.coord())
+            .map(|projection| {
+                let edge = &self.graph.edges[projection.edge.0];
+                if projection.progress_m <= edge.attr.length_m * 0.5 {
+                    edge.a
+                } else {
+                    edge.b
+                }
+            })
             .context("no downloaded trail is near this trailhead")?;
         let mut params = self.params;
         params.keep = params.keep.max(CANDIDATE_COUNT);
@@ -2970,6 +3659,7 @@ impl TrailApp {
                     elapsed,
                 } if self.forge_phase.serial() == Some(serial) => {
                     let count = portfolio.routes.len();
+                    self.results_open = true;
                     self.candidates = Some(*portfolio);
                     self.reconcile_candidate_focus();
                     self.status = format!(
@@ -2985,6 +3675,7 @@ impl TrailApp {
                 } if self.forge_phase.serial() == Some(serial) => {
                     self.forge_phase = ForgePhase::Idle;
                     let count = portfolio.routes.len();
+                    self.results_open = true;
                     self.candidates = Some(*portfolio);
                     self.reconcile_candidate_focus();
                     self.status = if count == 0 {
@@ -3035,8 +3726,42 @@ impl TrailApp {
                 | SearchEvent::Stopped { .. } => {}
             }
         }
-        self.vector.absorb();
+        self.vector.absorb(ctx);
         self.relief.absorb();
+    }
+
+    fn absorb_editor_events(&mut self) {
+        while let Ok(event) = self.editor_forge.events.try_recv() {
+            let mut status = None;
+            if let Some(editor) = self.view.editor_mut()
+                && editor.realizing == Some(event.serial)
+            {
+                if let Some((serial, previous)) = editor.shape_guard
+                    && serial == event.serial
+                {
+                    match event.result {
+                        Ok(realization) => {
+                            editor.shape_guard = None;
+                            editor.absorb_realization(Ok(realization));
+                            status = Some("Loop closed.".to_owned());
+                        }
+                        Err(error) => {
+                            editor.shape = previous;
+                            editor.shape_guard = None;
+                            editor.realizing = None;
+                            let notice = editor.reject_loop_closure(&error);
+                            editor.fault = None;
+                            status = Some(notice);
+                        }
+                    }
+                } else {
+                    editor.absorb_realization(event.result);
+                }
+            }
+            if let Some(status) = status {
+                self.status = status;
+            }
+        }
     }
 
     fn reconcile_candidate_focus(&mut self) {
@@ -3073,36 +3798,63 @@ impl TrailApp {
 
     fn strike_corpus(&mut self, ctx: &egui::Context, mutation: TrailDataMutation) -> Result<()> {
         anyhow::ensure!(self.corpus.is_none(), "trail update already running");
-        self.corpus = Some(TrailData::spawn(ctx.clone(), self.root.clone(), mutation)?);
+        self.corpus = Some(CorpusTask::Acquiring(TrailData::spawn(
+            ctx.clone(),
+            self.root.clone(),
+            mutation,
+        )?));
         self.trail_data_status = Some("Updating trails…".to_owned());
         Ok(())
     }
 
-    fn absorb_corpus(&mut self) {
-        let Some(corpus) = &self.corpus else {
+    fn absorb_corpus(&mut self, ctx: &egui::Context) {
+        let Some(task) = &self.corpus else {
             return;
         };
-        let mut finished = false;
-        while let Ok(event) = corpus.events.try_recv() {
+        if let CorpusTask::Preparing(forge) = task {
+            let Ok(result) = forge.event.try_recv() else {
+                return;
+            };
+            self.corpus = None;
+            match result.and_then(|armament| self.install_corpus(ctx, armament)) {
+                Ok(()) => {}
+                Err(err) => {
+                    self.status = format!("Could not install updated trail data: {err:#}");
+                    self.trail_data_status = Some("Trail update failed.".to_owned());
+                }
+            }
+            return;
+        }
+        let CorpusTask::Acquiring(corpus) = task else {
+            unreachable!("corpus task was exhaustively matched");
+        };
+        let events = corpus.events.try_iter().collect::<Vec<_>>();
+        for event in events {
             match event {
                 TrailDataEvent::Progress(event) => {
                     self.trail_data_status = Some(progress_status(&event));
                 }
                 TrailDataEvent::Ready(Some(summary)) => {
                     self.regions = summary.regions;
-                    self.trail_data_status = Some(format!(
-                        "Trail data ready in {} map area(s).",
-                        self.regions.len()
-                    ));
-                    self.workspace_signal = Some(Action::Reload);
-                    finished = true;
+                    self.trail_data_status = Some("Preparing the updated trail map…".to_owned());
+                    match CorpusForge::spawn(ctx, self.root.clone()) {
+                        Ok(forge) => self.corpus = Some(CorpusTask::Preparing(forge)),
+                        Err(err) => {
+                            self.corpus = None;
+                            self.status = format!("Could not prepare updated trail data: {err:#}");
+                            self.trail_data_status = Some("Trail update failed.".to_owned());
+                        }
+                    }
+                    return;
                 }
                 TrailDataEvent::Ready(None) => {
                     self.regions.clear();
                     self.region_names.clear();
                     self.trail_data_status = Some("No map areas downloaded.".to_owned());
                     self.workspace_signal = Some(Action::Reload);
-                    finished = true;
+                    self.corpus = None;
+                    self.flush_library();
+                    return;
                 }
                 TrailDataEvent::Fault(fault) => {
                     self.status = format!("Trail update failed: {fault}");
@@ -3111,14 +3863,58 @@ impl TrailApp {
                         self.regions = config.regions;
                         self.region_names = config.region_names;
                     }
-                    finished = true;
+                    self.corpus = None;
+                    return;
                 }
             }
         }
-        if finished {
-            self.corpus = None;
-            self.flush_library();
+    }
+
+    fn install_corpus(&mut self, ctx: &egui::Context, armament: CorpusArmament) -> Result<()> {
+        anyhow::ensure!(
+            !self.view.is_editing(),
+            "finish the active trail edit before installing new trail data"
+        );
+        self.relief.retarget(ctx, &self.root)?;
+        let vector_retired = self.vector.retarget(
+            ctx,
+            armament.source,
+            self.offline,
+            Arc::clone(&armament.graph),
+            Arc::clone(&armament.edge_index),
+        )?;
+        if matches!(self.view.focus(), Some(Focus::Candidate { .. })) {
+            self.dissolve_focus();
         }
+        self.serial = self.serial.saturating_add(1);
+        self.search_due = None;
+        self.results_open = false;
+        self.edicts.clear();
+        self.edict_history.clear();
+        let retired = (
+            std::mem::replace(&mut self.graph, armament.graph),
+            std::mem::replace(&mut self.edge_index, armament.edge_index),
+            std::mem::replace(&mut self.finder_index, armament.finder_index),
+            std::mem::replace(&mut self.atlas, armament.atlas),
+            std::mem::replace(&mut self.forge, armament.forge),
+            std::mem::replace(&mut self.editor_forge, armament.editor_forge),
+            std::mem::take(&mut self.candidates),
+            std::mem::take(&mut self.forge_phase),
+            vector_retired,
+        );
+        let _reaper = thread::Builder::new()
+            .name("trail-corpus-reaper".to_owned())
+            .spawn(move || drop(retired));
+        self.regions = armament.regions;
+        self.region_names = armament.region_names;
+        self.profile_cursor.bind(self.profile_owner());
+        self.trail_data_status = Some(format!(
+            "Trail data ready in {} map area(s).",
+            self.regions.len()
+        ));
+        "Updated trails are ready.".clone_into(&mut self.status);
+        self.flush_library();
+        Ok(())
     }
 
     const fn active_trailhead(&self) -> Option<Trailhead> {
@@ -3146,16 +3942,7 @@ impl TrailApp {
             .and_then(|run| run.designs.get(slot))
             .map(|design| design.as_ref().clone());
         let result = if let Some(design) = design {
-            let constraints = self.manual_constraints(design.shape);
-            design
-                .realize(
-                    route.name.clone(),
-                    &self.graph,
-                    &constraints,
-                    TRAILHEAD_SNAP_M,
-                )
-                .map_err(anyhow::Error::from)
-                .and_then(|realization| self.library.promote_realization(&self.graph, &realization))
+            self.library.promote_design(&self.graph, &route, &design)
         } else {
             self.library.promote(&self.graph, &route)
         };
@@ -3218,6 +4005,7 @@ impl TrailApp {
         self.fit = Fit::None;
         self.view = WorkbenchView::Edit(Box::new(TrailEditor {
             name,
+            name_draft: None,
             origin,
             return_to: EditorReturn {
                 focus: return_focus,
@@ -3226,13 +4014,15 @@ impl TrailApp {
             shape,
             support_points,
             realization: None,
+            realizing: None,
+            shape_guard: None,
             profile: None,
             fault: None,
             notice: None,
             history: UndoLog::default(),
             drag: None,
         }));
-        self.reforge_editor();
+        let _serial = self.reforge_editor();
         "Trail editor ready. Place support points on the map.".clone_into(&mut self.status);
     }
 
@@ -3240,36 +4030,63 @@ impl TrailApp {
         portfolio::manual_constraints(&self.defaults, shape)
     }
 
-    fn reforge_editor(&mut self) {
-        let Some(editor) = self.view.editor() else {
-            return;
-        };
+    fn reforge_editor(&mut self) -> Option<u64> {
+        let editor = self.view.editor()?;
+        self.editor_serial = self.editor_serial.saturating_add(1);
+        let serial = self.editor_serial;
         let name = editor.name.clone();
         let shape = editor.shape;
         let support_points = editor.support_points.clone();
         if support_points.len() < 2 {
             if let Some(editor) = self.view.editor_mut() {
                 editor.realization = None;
+                editor.realizing = None;
+                editor.shape_guard = None;
                 editor.profile = None;
                 editor.fault = None;
                 editor.notice = None;
             }
-            return;
+            return None;
         }
-        let result = Trail::forge(shape, support_points, self.params.routing).and_then(|trail| {
-            trail.realize(
-                name,
-                &self.graph,
-                &self.manual_constraints(shape),
-                TRAILHEAD_SNAP_M,
-            )
-        });
+        let job = EditorJob {
+            serial,
+            name,
+            shape,
+            support_points,
+            routing: self.params.routing,
+            constraints: self.manual_constraints(shape),
+        };
+        let launched = self.editor_forge.strike(job);
+        let accepted = launched.is_ok();
         if let Some(editor) = self.view.editor_mut() {
-            editor.absorb_realization(&self.graph, result);
+            editor.shape_guard = None;
+            match launched {
+                Ok(()) => {
+                    editor.realizing = Some(serial);
+                    editor.fault = None;
+                    editor.notice = None;
+                }
+                Err(error) => {
+                    editor.realizing = None;
+                    editor.fault = Some(format!("Could not update this trail: {error:#}"));
+                }
+            }
         }
+        accepted.then_some(serial)
     }
 
     fn save_editor(&mut self) {
+        if let Some(draft) = self
+            .view
+            .editor()
+            .and_then(|editor| editor.name_draft.as_ref())
+        {
+            if !trail_name_is_valid(&draft.text) {
+                "Give this trail a name before saving.".clone_into(&mut self.status);
+                return;
+            }
+            self.enact_editor_name(Some(&EditorNameAction::Commit));
+        }
         let Some(editor) = self.view.editor().filter(|editor| editor.ready()) else {
             return;
         };
@@ -3281,12 +4098,9 @@ impl TrailApp {
         let return_viewport = editor.return_to.viewport;
         let result = match &origin {
             EditorOrigin::New | EditorOrigin::Candidate => {
-                self.library.promote_realization(&self.graph, &realization)
+                self.library.promote_realization(&realization)
             }
-            EditorOrigin::Saved(id) => {
-                self.library
-                    .replace_realization(id, &self.graph, &realization)
-            }
+            EditorOrigin::Saved(id) => self.library.replace_realization(id, &realization),
         };
         match result {
             Ok(id) => {
@@ -3496,11 +4310,15 @@ impl TrailApp {
             }
             return;
         }
-        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::F2))
-            && let Some(Focus::Saved(id)) = self.view.focus().cloned()
-        {
-            self.begin_rename(id);
-            return;
+        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::F2)) {
+            if self.view.is_editing() {
+                self.begin_editor_rename();
+                return;
+            }
+            if let Some(Focus::Saved(id)) = self.view.focus().cloned() {
+                self.begin_rename(id);
+                return;
+            }
         }
         if ctx.text_edit_focused() {
             return;
@@ -3550,32 +4368,8 @@ impl TrailApp {
         }
         let escape =
             ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
-        if escape && self.forge_phase.active() {
-            self.stop_search();
+        if escape && self.take_escape() {
             return;
-        }
-        if escape && self.view.is_editing() {
-            self.cancel_editor();
-            return;
-        }
-        if escape && self.scribe.active() {
-            self.scribe.disarm();
-            return;
-        }
-        if escape && self.boundary_scribe.active() {
-            self.boundary_scribe.disarm();
-            return;
-        }
-        if escape && self.trailhead_drag.is_some() {
-            self.trailhead_drag = None;
-            return;
-        }
-        if escape && self.placing_trailhead {
-            self.placing_trailhead = false;
-            return;
-        }
-        if escape && self.view.focus().is_some() {
-            self.leave_focus();
         }
         if self.view.focus().is_none() {
             return;
@@ -3586,6 +4380,29 @@ impl TrailApp {
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight)) {
             self.step_focus(1);
         }
+    }
+
+    fn take_escape(&mut self) -> bool {
+        if self.forge_phase.active() {
+            self.stop_search();
+        } else if self.view.is_editing() {
+            self.cancel_editor();
+        } else if self.scribe.active() {
+            self.scribe.disarm();
+        } else if self.area_handles.captured() {
+            self.area_handles.cancel();
+        } else if self.boundary_scribe.active() {
+            self.boundary_scribe.disarm();
+        } else if self.trailhead_drag.is_some() {
+            self.trailhead_drag = None;
+        } else if self.placing_trailhead {
+            self.placing_trailhead = false;
+        } else if self.view.focus().is_some() {
+            self.leave_focus();
+        } else {
+            return false;
+        }
+        true
     }
 
     fn mark_library_dirty(&mut self) {
@@ -3808,9 +4625,10 @@ const fn contract_route_shape(shape: RouteShape) -> trailgen_contract::RouteShap
 
 fn metrics_summary(metrics: &RouteMetrics) -> String {
     let head = format!(
-        "{:.2} KM · DIFFICULTY {:.0} · QUALITY {:.0}",
+        "{:.2} KM · LOAD {:.1} FGJW KM · MOVING {} · QUALITY {:.0}",
         metrics.distance_m / 1_000.0,
-        metrics.difficulty,
+        metrics.lower_limb_load_km,
+        moving_time(metrics.moving_time_s),
         metrics.quality
     );
     if metrics.elevation_fraction >= 0.8 {
@@ -3823,15 +4641,42 @@ fn metrics_summary(metrics: &RouteMetrics) -> String {
     }
 }
 
-fn distance_range(ui: &mut egui::Ui, floor_m: &mut f64, ceiling_m: &mut f64) -> bool {
+fn distance_range(ui: &mut egui::Ui, floor_m: &mut f64, ceiling_m: &mut f64) -> SearchEdit {
     let mut low = *floor_m / 1_000.0;
     let mut high = *ceiling_m / 1_000.0;
-    let changed = measure_range(ui, "distance", "DISTANCE · KM", &mut low, &mut high, 0.1);
-    if changed {
+    let edit = measure_range(
+        ui,
+        "distance",
+        "DISTANCE · KM",
+        &mut low,
+        &mut high,
+        0.1,
+        [None, Some(Target::DistanceMax)],
+    );
+    if edit.changed {
         *floor_m = low * 1_000.0;
         *ceiling_m = high * 1_000.0;
     }
-    changed
+    edit
+}
+
+fn moving_time_range(ui: &mut egui::Ui, floor_s: &mut f64, ceiling_s: &mut f64) -> SearchEdit {
+    let mut low = *floor_s / 3_600.0;
+    let mut high = *ceiling_s / 3_600.0;
+    let edit = measure_range(
+        ui,
+        "moving-time",
+        "MOVING TIME · H",
+        &mut low,
+        &mut high,
+        0.25,
+        [Some(Target::MovingTimeMin), Some(Target::MovingTimeMax)],
+    );
+    if edit.changed {
+        *floor_s = low * 3_600.0;
+        *ceiling_s = high * 3_600.0;
+    }
+    edit
 }
 
 fn measure_range(
@@ -3841,7 +4686,8 @@ fn measure_range(
     minimum: &mut f64,
     maximum: &mut f64,
     speed: f64,
-) -> bool {
+    targets: [Option<Target>; 2],
+) -> SearchEdit {
     ui.vertical(|ui| {
         let _label = ui.label(chrome::eyebrow(label));
         ui.horizontal(|ui| {
@@ -3852,7 +4698,11 @@ fn measure_range(
                     .speed(speed)
                     .max_decimals(1),
             );
-            crate::witness::anchor(ui, format!("search.{id}.min"), low.rect);
+            if let Some(target) = targets[0] {
+                crate::witness::anchor(ui, target, low.rect);
+            } else {
+                crate::witness::anchor(ui, format!("search.{id}.min"), low.rect);
+            }
             let high = ui.add(
                 egui::DragValue::new(maximum)
                     .prefix("MAX ")
@@ -3860,13 +4710,27 @@ fn measure_range(
                     .speed(speed)
                     .max_decimals(1),
             );
-            crate::witness::anchor(ui, format!("search.{id}.max"), high.rect);
-            reconcile_range(minimum, maximum, low.changed(), high.changed());
-            low.changed() || high.changed()
+            if let Some(target) = targets[1] {
+                crate::witness::anchor(ui, target, high.rect);
+            } else {
+                crate::witness::anchor(ui, format!("search.{id}.max"), high.rect);
+            }
+            let low_changed = low.changed();
+            let high_changed = high.changed();
+            reconcile_range(minimum, maximum, low_changed, high_changed);
+            SearchEdit {
+                changed: low_changed || high_changed,
+                submitted: response_submitted(ui, &low) || response_submitted(ui, &high),
+            }
         })
         .inner
     })
     .inner
+}
+
+fn response_submitted(ui: &egui::Ui, response: &egui::Response) -> bool {
+    let owns_submission = response.has_focus() || response.lost_focus();
+    owns_submission && ui.input(|input| input.key_pressed(egui::Key::Enter))
 }
 
 fn reconcile_range(minimum: &mut f64, maximum: &mut f64, low_changed: bool, high_changed: bool) {
@@ -3925,6 +4789,13 @@ fn library_button(
                 egui::FontId::monospace(10.5),
                 chrome::MUTED,
             );
+            ui.painter().text(
+                rect.right_bottom() + vec2(-8.0, -6.0),
+                egui::Align2::RIGHT_BOTTOM,
+                library_load(&trail.metrics),
+                egui::FontId::monospace(10.5),
+                chrome::MUTED,
+            );
         }
         response
     })
@@ -3940,6 +4811,13 @@ fn area_row(
     let mut action = None;
     let name = name.map_or_else(|| format!("AREA {slot:02}"), str::to_ascii_uppercase);
     let _row = ui.horizontal(|ui| {
+        let rename = ui
+            .add_enabled(
+                mutable,
+                chrome::command_button("✎", false).min_size(vec2(24.0, 22.0)),
+            )
+            .on_hover_text("Rename this map area");
+        crate::witness::anchor(ui, Target::AreaRename(slot), rename.rect);
         let _label = ui.add(egui::Label::new(chrome::muted(name)).truncate());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let remove = ui
@@ -3948,16 +4826,13 @@ fn area_row(
                     chrome::command_button("REMOVE", false).min_size(vec2(58.0, 22.0)),
                 )
                 .on_hover_text("Remove this downloaded area and update trails.");
-            let rename = ui.add_enabled(
-                mutable,
-                chrome::command_button("NAME", false).min_size(vec2(48.0, 22.0)),
-            );
             if remove.clicked() {
                 action = Some(AreaRowAction::Remove(remove.rect));
-            } else if rename.clicked() {
-                action = Some(AreaRowAction::Rename);
             }
         });
+        if action.is_none() && rename.clicked() {
+            action = Some(AreaRowAction::Rename);
+        }
     });
     action
 }
@@ -3965,13 +4840,22 @@ fn area_row(
 fn library_measurements(metrics: &RouteMetrics) -> String {
     if metrics.elevation_fraction >= 0.8 {
         format!(
-            "{:.1} KM · +{:.0} M",
+            "{:.1} KM · {} · +{:.0} M",
             metrics.distance_m / 1_000.0,
+            moving_time(metrics.moving_time_s),
             metrics.ascent_m
         )
     } else {
-        format!("{:.1} KM", metrics.distance_m / 1_000.0)
+        format!(
+            "{:.1} KM · {}",
+            metrics.distance_m / 1_000.0,
+            moving_time(metrics.moving_time_s)
+        )
     }
+}
+
+fn library_load(metrics: &RouteMetrics) -> String {
+    format!("{:.0} FGJW KM", metrics.lower_limb_load_km)
 }
 
 fn gallery_empty(ui: &egui::Ui, message: &str) {
@@ -3984,89 +4868,8 @@ fn gallery_empty(ui: &egui::Ui, message: &str) {
     );
 }
 
-fn close_loop_design(
-    name: &str,
-    graph: &TrailGraph,
-    constraints: &LoopConstraints,
-    supports: &[SupportPoint],
-    routing: RoutingLaw,
-) -> trailgen_core::Result<LoopClosure> {
-    let realize = |trailhead: Option<SupportPoint>| {
-        let mut supports = supports.to_vec();
-        if let Some(trailhead) = trailhead
-            && let Some(first) = supports.first_mut()
-        {
-            *first = trailhead;
-        }
-        Trail::forge(RouteShape::Loop, supports, routing)
-            .and_then(|trail| trail.realize(name.to_owned(), graph, constraints, TRAILHEAD_SNAP_M))
-    };
-    let requested = supports.first().copied();
-    let fault = match realize(None) {
-        Ok(realization) => {
-            return Ok(LoopClosure {
-                trailhead: requested.expect("a realized trail has a trailhead"),
-                realization,
-                shift_m: 0.0,
-            });
-        }
-        Err(fault) => fault,
-    };
-    if !matches!(
-        &fault,
-        TrailgenError::ShapeMismatch {
-            expected: RouteShape::Loop,
-            ..
-        }
-    ) {
-        return Err(fault);
-    }
-    let Some(requested) = requested else {
-        return Err(fault);
-    };
-    let Some(projection) = graph.project_onto_edge(requested.coord()) else {
-        return Err(fault);
-    };
-    let edge = &graph.edges[projection.edge.0];
-    let mut endpoints = [edge.a, edge.b]
-        .into_iter()
-        .map(|vertex| {
-            let trailhead = SupportPoint::forge(graph.vertices[vertex.0].coord)
-                .expect("validated graph vertices are support points");
-            let shift_m = requested.coord().haversine_m(trailhead.coord());
-            (trailhead, shift_m)
-        })
-        .filter(|(trailhead, shift_m)| {
-            *trailhead != requested && *shift_m <= LOOP_TRAILHEAD_ROUNDING_M
-        })
-        .collect::<Vec<_>>();
-    endpoints.sort_by(|left, right| left.1.total_cmp(&right.1));
-    for (trailhead, shift_m) in endpoints {
-        if let Ok(realization) = realize(Some(trailhead)) {
-            return Ok(LoopClosure {
-                trailhead,
-                realization,
-                shift_m,
-            });
-        }
-    }
-    Err(fault)
-}
-
 fn editor_fault(error: &TrailgenError) -> String {
     match error {
-        TrailgenError::ShapeMismatch {
-            actual: RouteShape::OutAndBack,
-            expected: RouteShape::Loop,
-        } => {
-            "Closing here would double back over a trail. Move pin 0 to its junction or adjust another pin."
-                .to_owned()
-        }
-        TrailgenError::ShapeMismatch {
-            actual: RouteShape::FigureEight,
-            expected: RouteShape::Loop,
-        } => "This design revisits a junction. Move a support point until it forms one loop."
-            .to_owned(),
         TrailgenError::ShapeMismatch { actual, expected } => {
             format!("This design forms {actual:?}, not {expected:?}. Move a support point.")
         }
@@ -4090,10 +4893,16 @@ fn duration(duration: Duration) -> String {
     }
 }
 
+fn moving_time(seconds: f64) -> String {
+    let minutes = (seconds.max(0.0) / 60.0).round();
+    format!("{:.0}:{:02.0}", (minutes / 60.0).floor(), minutes % 60.0)
+}
+
 fn spawn_vector_field(
     ctx: &egui::Context,
     root: &Path,
-    graph: Arc<TrailGraph>,
+    graph: Arc<WalkGraph>,
+    edge_index: Arc<EdgeIndex>,
     regions: &[SurveyRegion],
     offline: bool,
 ) -> Result<VectorField> {
@@ -4102,7 +4911,7 @@ fn spawn_vector_field(
         .map(|region| region.bounds)
         .collect::<Vec<_>>();
     let source = BasemapSource::project(root, &graph, &bounds)?;
-    VectorField::raise(ctx, source, offline, Some(graph))
+    VectorField::raise(ctx, source, offline, Some((graph, edge_index)))
 }
 
 impl Drop for TrailApp {
@@ -4173,7 +4982,7 @@ mod tests {
         });
     }
 
-    fn loop_with_spur(spur_m: f64) -> anyhow::Result<(TrailGraph, Vec<SupportPoint>, Coord)> {
+    fn loop_with_spur(spur_m: f64) -> anyhow::Result<(WalkGraph, Vec<SupportPoint>, Coord)> {
         let junction = Coord::new(0.0, 0.0);
         let east = Coord::new(0.001, 0.0);
         let northeast = Coord::new(0.001, 0.001);
@@ -4210,6 +5019,7 @@ mod tests {
         vertices.push(trailgen_core::Vertex {
             id: dead_end_vertex,
             coord: dead_end,
+            junction: None,
         });
         let mut edges = graph.edges;
         let geometry =
@@ -4223,7 +5033,7 @@ mod tests {
             attr,
             geometry,
         });
-        let graph = TrailGraph::new(vertices, edges);
+        let graph = WalkGraph::new(vertices, edges);
         let supports = [dead_end, east, northeast, north]
             .into_iter()
             .map(|coord| SupportPoint::forge(coord).expect("fixture coordinates are valid"))
@@ -4287,6 +5097,7 @@ mod tests {
         let second = SupportPoint::forge(Coord::new(-73.99, 41.01)).expect("valid support");
         let mut editor = TrailEditor {
             name: "test".to_owned(),
+            name_draft: None,
             origin: EditorOrigin::New,
             return_to: EditorReturn {
                 focus: None,
@@ -4298,6 +5109,8 @@ mod tests {
             shape: RouteShape::OutAndBack,
             support_points: vec![first],
             realization: None,
+            realizing: None,
+            shape_guard: None,
             profile: None,
             fault: None,
             notice: None,
@@ -4335,6 +5148,43 @@ mod tests {
     }
 
     #[test]
+    fn editor_support_excision_is_one_undoable_renumbering_gesture() {
+        let first = SupportPoint::forge(Coord::new(-74.0, 41.0)).expect("valid support");
+        let second = SupportPoint::forge(Coord::new(-73.99, 41.01)).expect("valid support");
+        let third = SupportPoint::forge(Coord::new(-73.98, 41.02)).expect("valid support");
+        let mut editor = TrailEditor {
+            name: "test".to_owned(),
+            name_draft: None,
+            origin: EditorOrigin::New,
+            return_to: EditorReturn {
+                focus: None,
+                viewport: Viewport {
+                    center: [0.5, 0.5],
+                    zoom: 2.0,
+                },
+            },
+            shape: RouteShape::Open,
+            support_points: vec![first, second, third],
+            realization: None,
+            realizing: None,
+            shape_guard: None,
+            profile: None,
+            fault: None,
+            notice: None,
+            history: UndoLog::default(),
+            drag: None,
+        };
+
+        assert!(editor.excise_support(1));
+        assert_eq!(editor.support_points, vec![first, third]);
+        assert!(editor.undo());
+        assert_eq!(editor.support_points, vec![first, second, third]);
+        assert!(editor.redo());
+        assert_eq!(editor.support_points, vec![first, third]);
+        assert!(!editor.excise_support(2));
+    }
+
+    #[test]
     fn undo_log_is_bounded_and_new_work_annihilates_the_abandoned_future() {
         let mut history = UndoLog::default();
         for state in 0..=UNDO_DEPTH {
@@ -4368,11 +5218,14 @@ mod tests {
         let metrics = RouteMetrics {
             distance_m: 12_340.0,
             ascent_m: 567.0,
+            lower_limb_load_km: 67.6,
+            moving_time_s: 3.5 * 3_600.0,
             elevation_fraction: 1.0,
             ..RouteMetrics::default()
         };
-        assert_eq!(library_measurements(&metrics), "12.3 KM · +567 M");
+        assert_eq!(library_measurements(&metrics), "12.3 KM · 3:30 · +567 M");
         assert!(!library_measurements(&metrics).contains("ASCENT"));
+        assert_eq!(library_load(&metrics), "68 FGJW KM");
     }
 
     #[test]
@@ -4388,54 +5241,28 @@ mod tests {
     }
 
     #[test]
-    fn close_loop_rounds_a_tiny_terminal_spur_into_its_junction() -> anyhow::Result<()> {
-        let (graph, supports, junction) = loop_with_spur(5.0)?;
-        let constraints =
-            portfolio::manual_constraints(&LoopConstraints::default(), RouteShape::Loop);
-        let closure = close_loop_design(
-            "tiny spur",
-            &graph,
-            &constraints,
-            &supports,
-            RoutingLaw::default(),
-        )?;
+    fn close_loop_preserves_spur_trailheads_and_accepts_the_lawful_retrace() -> anyhow::Result<()> {
+        for spur_m in [5.0, 25.0] {
+            let (graph, supports, _) = loop_with_spur(spur_m)?;
+            let constraints =
+                portfolio::manual_constraints(&LoopConstraints::default(), RouteShape::Loop);
+            let realization = Trail::forge(
+                RouteShape::Loop,
+                supports.clone(),
+                RoutingLaw::default(),
+            )?
+            .realize("lollipop loop", &graph, &constraints, TRAILHEAD_SNAP_M)?;
 
-        assert!(
-            (4.9..=5.1).contains(&closure.shift_m),
-            "observed shift {} m",
-            closure.shift_m
-        );
-        assert!(closure.trailhead.coord().haversine_m(junction) < 0.01);
-        assert_eq!(closure.realization.route.metrics.shape, RouteShape::Loop);
-        Ok(())
-    }
-
-    #[test]
-    fn close_loop_refuses_to_round_a_distant_terminal_spur() -> anyhow::Result<()> {
-        let (graph, supports, _) = loop_with_spur(25.0)?;
-        let constraints =
-            portfolio::manual_constraints(&LoopConstraints::default(), RouteShape::Loop);
-        let Err(fault) = close_loop_design(
-            "long spur",
-            &graph,
-            &constraints,
-            &supports,
-            RoutingLaw::default(),
-        ) else {
-            panic!("rounding must remain locally bounded");
-        };
-
-        assert!(matches!(
-            fault,
-            TrailgenError::ShapeMismatch {
-                actual: RouteShape::OutAndBack,
-                expected: RouteShape::Loop
-            }
-        ));
-        assert_eq!(
-            editor_fault(&fault),
-            "Closing here would double back over a trail. Move pin 0 to its junction or adjust another pin."
-        );
+            assert_eq!(realization.trail.shape, RouteShape::Loop);
+            assert_eq!(realization.trail.support_points[0], supports[0]);
+            assert_eq!(
+                realization
+                    .graph()
+                    .walk_edges(realization.route.start, &realization.route.edges),
+                Some(realization.route.start)
+            );
+            assert_eq!(realization.route.metrics.shape, RouteShape::OutAndBack);
+        }
         Ok(())
     }
 
@@ -4477,13 +5304,13 @@ mod tests {
         let trail = Trail::infer(&graph, &route, trailgen_core::RoutingLaw::default())
             .expect("fixture loop is inferable");
         let realization = trail.realize("candidate", &graph, &constraints, 1.0)?;
-        let reversal = realization.reverse_loop(&graph, &constraints)?;
+        let reversal = realization.reverse_loop(&graph)?;
         assert_eq!(reversal.added_supports, 0);
         let reversed = reversal.trail;
         assert_eq!(reversed.support_points[0], trail.support_points[0]);
         let reversed = reversed.realize("candidate", &graph, &constraints, 1.0)?;
         assert_eq!(
-            reversed.route.geometry(reversed.graph(&graph)),
+            reversed.route.geometry(reversed.graph()),
             realization.route.geometry(&graph).reversed()
         );
         Ok(())
@@ -4519,6 +5346,7 @@ mod tests {
         let expected_edges = realization.route.edges.clone();
         let mut editor = TrailEditor {
             name: "candidate".to_owned(),
+            name_draft: None,
             origin: EditorOrigin::Candidate,
             return_to: EditorReturn {
                 focus: Some(Focus::Candidate { identity: 0 }),
@@ -4530,6 +5358,8 @@ mod tests {
             shape: RouteShape::Loop,
             support_points: trail.support_points,
             realization: Some(realization),
+            realizing: None,
+            shape_guard: None,
             profile: Some(profile),
             fault: None,
             notice: None,
@@ -4549,16 +5379,13 @@ mod tests {
         assert!(editor.sketch() == accepted);
         assert_eq!(
             notice,
-            "Closing here would double back over a trail. Move pin 0 to its junction or adjust another pin."
+            "This design forms OutAndBack, not Loop. Move a support point."
         );
         editor.notice = None;
 
-        editor.absorb_realization(
-            &graph,
-            Err(trailgen_core::TrailgenError::InvalidData(
-                "transient unroutable draft".to_owned(),
-            )),
-        );
+        editor.absorb_realization(Err(trailgen_core::TrailgenError::InvalidData(
+            "transient unroutable draft".to_owned(),
+        )));
 
         assert!(!editor.ready(), "an invalid draft cannot be saved");
         assert!(editor.profile.is_some(), "the last valid profile remains");

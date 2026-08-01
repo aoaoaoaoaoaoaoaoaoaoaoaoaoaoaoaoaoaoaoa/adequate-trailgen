@@ -106,7 +106,7 @@ impl<'a> Harness<'a> {
         }
         let command = AppCommand::new(self.binary)
             .args(args)
-            .env("TRAILGEN_BASEMAP_ARCHIVE", "/test/fixtures/empty.pmtiles")
+            .env("TRAILGEN_BASEMAP_ARCHIVE", "/test/fixtures/basemap.pmtiles")
             .graphics(match run {
                 RunClass::Functional => Graphics::Software,
                 RunClass::Performance => Graphics::Host,
@@ -133,7 +133,7 @@ impl<'a> Harness<'a> {
         self.testbed.launch(
             AppCommand::new(self.binary)
                 .args(["gui", "--offline"])
-                .env("TRAILGEN_BASEMAP_ARCHIVE", "/test/fixtures/empty.pmtiles")
+                .env("TRAILGEN_BASEMAP_ARCHIVE", "/test/fixtures/basemap.pmtiles")
                 .graphics(Graphics::Software)
                 .network(Network::Deny)
                 .runtime(Duration::from_secs(45)),

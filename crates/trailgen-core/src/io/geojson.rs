@@ -3,8 +3,8 @@ use crate::crs::{CoordProjector, CrsVerdict, VectorCrsKind, projector, validate_
 use crate::geo::{Coord, LineString};
 use crate::io::route_file::{RouteFile, RouteFileMetadata};
 use crate::model::{
-    Access, CrossingKind, Edge, EdgeTravel, Provenance, Terrain, TrailClass, TrailGraph,
-    TrailMarking, TrailStanding,
+    Access, CrossingControl, CrossingKind, Edge, EdgeTravel, GeometryClaim, Provenance, Terrain,
+    TrailMarking, TrailStanding, WalkGraph, WayKind, WayRealm,
 };
 use crate::overlay::{
     AccessOverlay, AccessWindow, ContextOverlay, DailyTimeWindow, MonthDay, OverlayGeometry,
@@ -46,9 +46,15 @@ pub fn network_from_str(s: &str) -> Result<Vec<SegmentDraft>> {
             terrain_tag.is_some(),
             surface_terrain != Terrain::Unknown,
         );
-        let trail_class = prop_str(&properties, "trail_class")
+        let way_kind = prop_str(&properties, "way_kind")
             .or_else(|| prop_str(&properties, "highway"))
-            .map_or(TrailClass::Unknown, TrailClass::from_tag);
+            .map_or(WayKind::Unknown, WayKind::from_tag);
+        let realm =
+            prop_str(&properties, "realm").map_or(WayRealm::Recreational, WayRealm::from_tag);
+        let geometry_claim = prop_str(&properties, "geometry_claim")
+            .map_or(GeometryClaim::Surveyed, GeometryClaim::from_tag);
+        let crossing_control = prop_str(&properties, "crossing_control")
+            .map_or(CrossingControl::None, CrossingControl::from_tag);
         let standing = prop_str(&properties, "trail_standing")
             .or_else(|| prop_str(&properties, "standing"))
             .map_or(TrailStanding::Unknown, TrailStanding::from_tag);
@@ -62,7 +68,7 @@ pub fn network_from_str(s: &str) -> Result<Vec<SegmentDraft>> {
         let confidence = prop_f64(&properties, "confidence").unwrap_or(0.75);
         let road_exposure = prop_f64(&properties, "road_exposure")
             .or_else(|| prop_bool(&properties, "road").map(f64::from))
-            .unwrap_or_else(|| f64::from(matches!(terrain, Terrain::Road | Terrain::Pavement)));
+            .unwrap_or_else(|| f64::from(terrain == Terrain::Road));
         let source = prop_str(&properties, "source")
             .unwrap_or("geojson")
             .to_owned();
@@ -83,9 +89,13 @@ pub fn network_from_str(s: &str) -> Result<Vec<SegmentDraft>> {
             drafts.push(SegmentDraft {
                 junctions: JunctionPolicy::default(),
                 turn_ref: None,
+                junction_keys: None,
                 turn_restrictions: Vec::new(),
                 geometry: line,
-                trail_class,
+                way_kind,
+                realm,
+                geometry_claim,
+                crossing_control,
                 standing,
                 marking,
                 terrain,
@@ -217,7 +227,7 @@ pub fn context_overlays_from_str(s: &str) -> Result<Vec<ContextOverlay>> {
 }
 
 #[must_use]
-pub fn routes_to_geojson(graph: &TrailGraph, routes: &[Route]) -> Value {
+pub fn routes_to_geojson(graph: &WalkGraph, routes: &[Route]) -> Value {
     json!({
         "type": "FeatureCollection",
         "features": routes.iter().map(|route| route_feature(graph, route)).collect::<Vec<_>>()
@@ -225,7 +235,7 @@ pub fn routes_to_geojson(graph: &TrailGraph, routes: &[Route]) -> Value {
 }
 
 #[must_use]
-pub fn graph_to_geojson(graph: &TrailGraph) -> Value {
+pub fn graph_to_geojson(graph: &WalkGraph) -> Value {
     json!({
         "type": "FeatureCollection",
         "features": graph.edges.iter().map(|edge| {
@@ -240,11 +250,14 @@ pub fn graph_to_geojson(graph: &TrailGraph) -> Value {
                 ("grade_abs_max".to_owned(), json!(edge.attr.grade_abs_max)),
                 ("sustained_steep_m".to_owned(), json!(edge.attr.sustained_steep_m)),
                 ("grade_distribution".to_owned(), json!(edge.attr.grade_distribution)),
-                ("trail_class".to_owned(), json!(edge.attr.trail_class)),
+                ("hill_slope_deg".to_owned(), json!(edge.attr.hill_slope_deg)),
+                ("way_kind".to_owned(), json!(edge.attr.way_kind)),
+                ("realm".to_owned(), json!(edge.attr.realm)),
+                ("geometry_claim".to_owned(), json!(edge.attr.geometry_claim)),
+                ("crossing_control".to_owned(), json!(edge.attr.crossing_control)),
                 ("trail_standing".to_owned(), json!(edge.attr.standing)),
                 ("trail_marking".to_owned(), json!(edge.attr.marking)),
-                ("difficulty".to_owned(), json!(edge.attr.difficulty)),
-                ("difficulty_breakdown".to_owned(), json!(edge.attr.difficulty_breakdown)),
+                ("traversal".to_owned(), json!(edge.attr.traversal)),
                 ("terrain".to_owned(), json!(edge.attr.terrain)),
                 ("travel".to_owned(), json!(edge.attr.travel)),
                 ("terrain_confidence".to_owned(), json!(edge.attr.terrain_confidence)),
@@ -273,7 +286,7 @@ pub fn graph_to_geojson(graph: &TrailGraph) -> Value {
     })
 }
 
-fn route_feature(graph: &TrailGraph, route: &Route) -> Value {
+fn route_feature(graph: &WalkGraph, route: &Route) -> Value {
     json!({
         "type": "Feature",
         "properties": {
@@ -285,8 +298,8 @@ fn route_feature(graph: &TrailGraph, route: &Route) -> Value {
             "ascent_m": route.metrics.ascent_m,
             "descent_m": route.metrics.descent_m,
             "shape": route.metrics.shape,
-            "difficulty": route.metrics.difficulty,
-            "difficulty_breakdown": route.metrics.difficulty_breakdown,
+            "lower_limb_load_km": route.metrics.lower_limb_load_km,
+            "moving_time_s": route.metrics.moving_time_s,
             "sustained_steep_m": route.metrics.sustained_steep_m,
             "grade_distribution": route.metrics.grade_distribution,
             "road_fraction": route.metrics.road_fraction,
@@ -303,7 +316,7 @@ fn route_feature(graph: &TrailGraph, route: &Route) -> Value {
             "constraint_audit": route.verdict.audit,
             "edge_count": route.edges.len(),
             "edges": route.edges.iter().map(|id| id.0).collect::<Vec<_>>(),
-            "difficulty_hotspots": route_difficulty_hotspots(graph, route),
+            "lower_limb_load_hotspots": route_lower_limb_load_hotspots(graph, route),
             "access_warning_edges": route_access_warning_edges(graph, route),
             "directed_travel_edges": route_directed_travel_edges(graph, route),
             "low_confidence_edges": route_low_confidence_edges(graph, route),
@@ -314,31 +327,29 @@ fn route_feature(graph: &TrailGraph, route: &Route) -> Value {
     })
 }
 
-fn route_difficulty_hotspots(graph: &TrailGraph, route: &Route) -> Vec<Value> {
+fn route_lower_limb_load_hotspots(graph: &WalkGraph, route: &Route) -> Vec<Value> {
+    let mut at = route.start;
     let mut hotspots = route
         .edges
         .iter()
-        .flat_map(|id| {
+        .map(|id| {
             let edge = &graph.edges[id.0];
-            edge.attr
-                .difficulty_breakdown
-                .factors()
-                .into_iter()
-                .filter(|(_, value)| *value > f64::EPSILON)
-                .map(move |(factor, value)| (edge, factor, value))
+            let estimate = edge.traversal_from(at);
+            at = edge.traverse(at).expect("a route is a legal directed walk");
+            (edge, estimate)
         })
         .collect::<Vec<_>>();
-    hotspots.sort_by(|a, b| b.2.total_cmp(&a.2));
-    let denominator = route.metrics.difficulty.max(1.0);
+    hotspots.sort_by(|a, b| b.1.lower_limb_load_km.total_cmp(&a.1.lower_limb_load_km));
+    let denominator = route.metrics.lower_limb_load_km.max(1.0);
     hotspots
         .into_iter()
         .take(5)
-        .map(|(edge, factor, value)| {
+        .map(|(edge, estimate)| {
             json!({
                 "edge_id": edge.id.0,
-                "factor": factor,
-                "value": value,
-                "route_fraction": value / denominator,
+                "lower_limb_load_km": estimate.lower_limb_load_km,
+                "moving_time_s": estimate.moving_time_s,
+                "route_fraction": estimate.lower_limb_load_km / denominator,
                 "terrain": edge.attr.terrain,
                 "access": edge.attr.access,
                 "length_m": edge.attr.length_m,
@@ -348,7 +359,7 @@ fn route_difficulty_hotspots(graph: &TrailGraph, route: &Route) -> Vec<Value> {
         .collect()
 }
 
-fn route_low_confidence_edges(graph: &TrailGraph, route: &Route) -> Vec<Value> {
+fn route_low_confidence_edges(graph: &WalkGraph, route: &Route) -> Vec<Value> {
     let mut edges = route
         .edges
         .iter()
@@ -364,7 +375,7 @@ fn route_low_confidence_edges(graph: &TrailGraph, route: &Route) -> Vec<Value> {
     edges.into_iter().map(route_edge_diagnostic).collect()
 }
 
-fn route_access_warning_edges(graph: &TrailGraph, route: &Route) -> Vec<Value> {
+fn route_access_warning_edges(graph: &WalkGraph, route: &Route) -> Vec<Value> {
     let mut edges = route
         .edges
         .iter()
@@ -380,7 +391,7 @@ fn route_access_warning_edges(graph: &TrailGraph, route: &Route) -> Vec<Value> {
     edges.into_iter().map(route_edge_diagnostic).collect()
 }
 
-fn route_directed_travel_edges(graph: &TrailGraph, route: &Route) -> Vec<Value> {
+fn route_directed_travel_edges(graph: &WalkGraph, route: &Route) -> Vec<Value> {
     route
         .edges
         .iter()
@@ -390,7 +401,7 @@ fn route_directed_travel_edges(graph: &TrailGraph, route: &Route) -> Vec<Value> 
         .collect()
 }
 
-fn route_dubious_edges(graph: &TrailGraph, route: &Route) -> Vec<Value> {
+fn route_dubious_edges(graph: &WalkGraph, route: &Route) -> Vec<Value> {
     let mut dubious = route
         .edges
         .iter()
@@ -422,8 +433,8 @@ fn route_edge_diagnostic(edge: &Edge) -> Value {
         "terrain_evidence": edge.attr.terrain_evidence,
         "access_confidence": edge.attr.access_confidence,
         "access_provenance": edge.attr.access_provenance,
-        "difficulty": edge.attr.difficulty,
-        "difficulty_breakdown": edge.attr.difficulty_breakdown,
+        "traversal": edge.attr.traversal,
+        "hill_slope_deg": edge.attr.hill_slope_deg,
         "grade_abs_max": edge.attr.grade_abs_max,
         "grade_distribution": edge.attr.grade_distribution,
         "crossings": &edge.attr.crossings,
@@ -436,7 +447,7 @@ fn route_edge_diagnostic(edge: &Edge) -> Value {
     })
 }
 
-fn route_source_provenance(graph: &TrailGraph, route: &Route) -> Vec<Value> {
+fn route_source_provenance(graph: &WalkGraph, route: &Route) -> Vec<Value> {
     let mut seen = BTreeSet::new();
     let mut provenance = Vec::new();
     for p in route

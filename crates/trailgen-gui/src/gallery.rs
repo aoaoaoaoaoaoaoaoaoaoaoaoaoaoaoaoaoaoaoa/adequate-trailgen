@@ -10,7 +10,7 @@ use crate::{
 use egui::{Color32, Pos2, Rect, Response, Sense, Stroke, Ui, pos2, vec2};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use trailgen_core::{LineString, Route, TrailGraph, TrailStanding};
+use trailgen_core::{LineString, Route, TrailStanding, WalkGraph};
 
 pub const TILE_SIZE: egui::Vec2 = egui::Vec2::new(224.0, 146.0);
 const PLATE_PAD: f32 = 4.0;
@@ -104,7 +104,7 @@ struct PreviewRun {
 }
 
 impl CandidatePreview {
-    pub fn forge(graph: &TrailGraph, route: &Route) -> Self {
+    pub fn forge(graph: &WalkGraph, route: &Route) -> Self {
         let geometry = route.geometry(graph);
         let projection = MiniatureProjection::fit(&geometry);
         let mut drafts = Vec::<PreviewDraft>::new();
@@ -115,7 +115,7 @@ impl CandidatePreview {
             let points = projection.project(&edge.oriented_geometry(at));
             let advance = cadence::polyline_length(&points);
             let mark = trail_mark(
-                edge.attr.trail_class,
+                edge.attr.way_kind,
                 edge.attr.standing,
                 edge.attr.marking,
                 edge.attr.terrain,
@@ -190,7 +190,7 @@ impl SavedPreview {
             let points = projection.project(&leg.geometry);
             let advance = cadence::polyline_length(&points);
             let mark = trail_mark(
-                leg.trail_class,
+                leg.way_kind,
                 leg.standing,
                 leg.marking,
                 leg.terrain,
@@ -396,14 +396,14 @@ fn tile_shell(
         ui.painter()
             .galley(badge.min + vec2(3.5, 2.0), galley, chrome::TEXT);
     }
-    let difficulty = ui.painter().layout_no_wrap(
-        difficulty_badge(metrics),
+    let load = ui.painter().layout_no_wrap(
+        lower_limb_load_badge(metrics),
         egui::FontId::monospace(9.0),
         chrome::TEXT,
     );
     let badge = Rect::from_min_size(
-        preview.left_bottom() + vec2(5.0, -difficulty.size().y - 9.0),
-        difficulty.size() + vec2(7.0, 4.0),
+        preview.left_bottom() + vec2(5.0, -load.size().y - 9.0),
+        load.size() + vec2(7.0, 4.0),
     );
     let _fill = ui
         .painter()
@@ -415,7 +415,7 @@ fn tile_shell(
         egui::StrokeKind::Inside,
     );
     ui.painter()
-        .galley(badge.min + vec2(3.5, 2.0), difficulty, chrome::TEXT);
+        .galley(badge.min + vec2(3.5, 2.0), load, chrome::TEXT);
 
     let title = Rect::from_min_max(
         pos2(well.left() + 7.0, preview.bottom() + 6.0),
@@ -430,12 +430,17 @@ fn tile_shell(
     );
     let measurements = if metrics.elevation_fraction >= 0.8 {
         format!(
-            "{:.1} KM   ASCENT {:.0} M",
+            "{:.1} KM   {}   ASCENT {:.0} M",
             metrics.distance_m / 1_000.0,
+            moving_time(metrics.moving_time_s),
             metrics.ascent_m,
         )
     } else {
-        format!("{:.1} KM   NO ELEVATION", metrics.distance_m / 1_000.0)
+        format!(
+            "{:.1} KM   {}   NO ELEVATION",
+            metrics.distance_m / 1_000.0,
+            moving_time(metrics.moving_time_s)
+        )
     };
     ui.painter().text(
         pos2(title.left(), title.bottom()),
@@ -447,8 +452,13 @@ fn tile_shell(
     response
 }
 
-fn difficulty_badge(metrics: &trailgen_core::RouteMetrics) -> String {
-    format!("DIFFICULTY {:.0}", metrics.difficulty)
+fn lower_limb_load_badge(metrics: &trailgen_core::RouteMetrics) -> String {
+    format!("LOAD {:.0} FGJW KM", metrics.lower_limb_load_km)
+}
+
+fn moving_time(seconds: f64) -> String {
+    let minutes = (seconds.max(0.0) / 60.0).round();
+    format!("{:.0}:{:02.0}", (minutes / 60.0).floor(), minutes % 60.0)
 }
 
 #[derive(Clone, Copy)]
@@ -562,13 +572,13 @@ mod tests {
     }
 
     #[test]
-    fn candidate_badge_discloses_route_difficulty() {
+    fn candidate_badge_discloses_lower_limb_load() {
         let route = route("ridge", 12_000.0, 620.0);
         let metrics = trailgen_core::RouteMetrics {
-            difficulty: 67.6,
+            lower_limb_load_km: 67.6,
             ..route.metrics
         };
 
-        assert_eq!(difficulty_badge(&metrics), "DIFFICULTY 68");
+        assert_eq!(lower_limb_load_badge(&metrics), "LOAD 68 FGJW KM");
     }
 }

@@ -1,9 +1,9 @@
-use crate::difficulty::DifficultyWeights;
 use crate::enrich::{EmbeddedElevation, EnrichmentConfig, enrich_graph};
 use crate::geo::{Coord, LineString};
 use crate::model::{
-    Access, Edge, EdgeAttr, EdgeId, EdgeTravel, GradeDistribution, Provenance, Terrain, TrailClass,
-    TrailGraph, TrailMarking, TrailStanding, TurnBan, Vertex, VertexId,
+    Access, CrossingControl, Edge, EdgeAttr, EdgeId, EdgeTravel, GeometryClaim, GradeDistribution,
+    Provenance, Terrain, TrailMarking, TrailStanding, TurnBan, Vertex, VertexId, WalkGraph,
+    WayKind, WayRealm,
 };
 use crate::{Result, TrailgenError};
 use rstar::{AABB, RTree, RTreeObject};
@@ -12,6 +12,10 @@ use std::collections::{BTreeMap, btree_map::Entry};
 
 pub const DEFAULT_SNAP_TOLERANCE_M: f64 = 15.0;
 
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct JunctionKey(pub String);
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SegmentDraft {
     pub geometry: LineString,
@@ -19,10 +23,20 @@ pub struct SegmentDraft {
     pub junctions: JunctionPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_ref: Option<String>,
+    /// Provider-owned endpoint identity. When present, coordinates are shape;
+    /// only equal keys join topology.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub junction_keys: Option<[JunctionKey; 2]>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub turn_restrictions: Vec<TurnRestrictionDraft>,
     #[serde(default)]
-    pub trail_class: TrailClass,
+    pub way_kind: WayKind,
+    #[serde(default)]
+    pub realm: WayRealm,
+    #[serde(default)]
+    pub geometry_claim: GeometryClaim,
+    #[serde(default)]
+    pub crossing_control: CrossingControl,
     #[serde(default)]
     pub standing: TrailStanding,
     #[serde(default)]
@@ -39,6 +53,57 @@ pub struct SegmentDraft {
     pub provenance: Vec<Provenance>,
 }
 
+impl SegmentDraft {
+    /// Cut source geometry without counterfeiting provider-owned junctions.
+    /// Artificial endpoints are namespaced to this source span, so coincident
+    /// clips of distinct facilities remain distinct topology.
+    #[must_use]
+    pub fn fragment(&self, geometry: LineString) -> Self {
+        let whole = same_location(geometry.start(), self.geometry.start())
+            && same_location(geometry.end(), self.geometry.end());
+        let mut fragment = self.clone();
+        fragment.turn_restrictions.retain(|restriction| {
+            geometry
+                .points
+                .iter()
+                .any(|point| same_location(*point, restriction.via))
+        });
+        fragment.junction_keys = self.junction_keys.as_ref().map(|[a, b]| {
+            let namespace = format!("{}→{}", a.0, b.0);
+            [
+                fragment_junction(a, self.geometry.start(), geometry.start(), &namespace),
+                fragment_junction(b, self.geometry.end(), geometry.end(), &namespace),
+            ]
+        });
+        fragment.geometry = geometry;
+        if !whole && fragment.junctions == JunctionPolicy::ExplicitNodes {
+            fragment.junctions = JunctionPolicy::ExplicitEndpoints;
+        }
+        fragment
+    }
+}
+
+fn fragment_junction(
+    source: &JunctionKey,
+    source_coord: Coord,
+    fragment_coord: Coord,
+    namespace: &str,
+) -> JunctionKey {
+    if same_location(source_coord, fragment_coord) {
+        source.clone()
+    } else {
+        JunctionKey(format!(
+            "clip:{namespace}:{:016x}:{:016x}",
+            fragment_coord.lon.to_bits(),
+            fragment_coord.lat.to_bits()
+        ))
+    }
+}
+
+const fn same_location(left: Coord, right: Coord) -> bool {
+    left.lon.to_bits() == right.lon.to_bits() && left.lat.to_bits() == right.lat.to_bits()
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum JunctionPolicy {
@@ -53,6 +118,8 @@ pub enum JunctionPolicy {
 pub struct TurnRestrictionDraft {
     pub from: String,
     pub via: Coord,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via_key: Option<JunctionKey>,
     pub to: String,
     pub rule: TurnRestrictionRule,
     pub provenance: Provenance,
@@ -69,7 +136,6 @@ pub enum TurnRestrictionRule {
 pub struct GraphBuilder {
     pub snap_tolerance_m: f64,
     pub enrichment: EnrichmentConfig,
-    pub weights: DifficultyWeights,
 }
 
 impl Default for GraphBuilder {
@@ -77,7 +143,6 @@ impl Default for GraphBuilder {
         Self {
             snap_tolerance_m: DEFAULT_SNAP_TOLERANCE_M,
             enrichment: EnrichmentConfig::default(),
-            weights: DifficultyWeights::default(),
         }
     }
 }
@@ -150,7 +215,7 @@ struct SnapCandidate {
 }
 
 impl GraphBuilder {
-    pub fn build(self, drafts: &[SegmentDraft]) -> Result<TrailGraph> {
+    pub fn build(self, drafts: &[SegmentDraft]) -> Result<WalkGraph> {
         if drafts.is_empty() {
             return Err(TrailgenError::InvalidData(
                 "cannot build graph from zero segments".to_owned(),
@@ -197,26 +262,15 @@ impl GraphBuilder {
             cuts[snap.target_primitive].push(Cut::snapped(snap.target_t, snap.coord));
         }
 
-        let assembly = assemble_edges(
-            drafts,
-            &primitives,
-            cuts,
-            self.weights,
-            self.snap_tolerance_m,
-        );
-        let mut graph = TrailGraph::new(assembly.vertices, assembly.edges);
+        let assembly = assemble_edges(drafts, &primitives, cuts, self.snap_tolerance_m);
+        let mut graph = WalkGraph::new(assembly.vertices, assembly.edges);
         graph.turn_bans = turn_bans(
             drafts,
             &assembly.edges_by_draft,
             &graph,
             self.snap_tolerance_m,
         );
-        enrich_graph(
-            &mut graph,
-            &EmbeddedElevation,
-            self.enrichment,
-            self.weights,
-        )?;
+        enrich_graph(&mut graph, &EmbeddedElevation, self.enrichment)?;
         Ok(graph)
     }
 }
@@ -227,17 +281,23 @@ struct EdgeAssembly {
     edges_by_draft: Vec<Vec<EdgeId>>,
 }
 
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum VertexKey {
+    Coordinate(u64, u64),
+    Source(JunctionKey),
+}
+
 fn assemble_edges(
     drafts: &[SegmentDraft],
     primitives: &[Primitive],
     cuts: Vec<Vec<Cut>>,
-    weights: DifficultyWeights,
     snap_tolerance_m: f64,
 ) -> EdgeAssembly {
     let mut vertices = Vec::<Vertex>::new();
-    let mut vertex_by_coord = BTreeMap::<(u64, u64), VertexId>::new();
+    let mut vertex_by_key = BTreeMap::<VertexKey, VertexId>::new();
     let mut edges = Vec::<Edge>::new();
-    let mut edge_by_support = BTreeMap::<Vec<(u64, u64)>, EdgeId>::new();
+    let mut edge_by_support =
+        BTreeMap::<(VertexId, VertexId, Vec<(u64, u64)>, WayKind, GeometryClaim), EdgeId>::new();
     let mut edges_by_draft = vec![Vec::<EdgeId>::new(); drafts.len()];
     let snap_provenance = Provenance {
         source: "graph-builder".to_owned(),
@@ -254,12 +314,22 @@ fn assemble_edges(
             if a.planar_distance2(b) < 1.0e-18 {
                 continue;
             }
-            let va = vertex_id(a, &mut vertices, &mut vertex_by_coord);
-            let vb = vertex_id(b, &mut vertices, &mut vertex_by_coord);
+            let draft = &drafts[primitive.src];
+            let va = vertex_id(
+                a,
+                endpoint_key(draft, pair[0].t),
+                &mut vertices,
+                &mut vertex_by_key,
+            );
+            let vb = vertex_id(
+                b,
+                endpoint_key(draft, pair[1].t),
+                &mut vertices,
+                &mut vertex_by_key,
+            );
             if va == vb {
                 continue;
             }
-            let draft = &drafts[primitive.src];
             let geometry = edge_geometry(
                 draft,
                 vertices[va.0].coord,
@@ -277,11 +347,11 @@ fn assemble_edges(
                 geometry,
                 attr,
             };
-            weights.apply_edge(&mut edge);
-            let support = support_key(&edge.geometry);
+            crate::hiking::HikingModel.apply(&mut edge);
+            let support = support_key(&edge);
             let id = if let Some(id) = edge_by_support.get(&support).copied() {
                 corroborate_edge(&mut edges[id.0], &edge);
-                weights.apply_edge(&mut edges[id.0]);
+                crate::hiking::HikingModel.apply(&mut edges[id.0]);
                 id
             } else {
                 edge_by_support.insert(support, id);
@@ -299,19 +369,48 @@ fn assemble_edges(
     }
 }
 
-fn support_key(geometry: &LineString) -> Vec<(u64, u64)> {
-    let forward = geometry
+fn support_key(edge: &Edge) -> (VertexId, VertexId, Vec<(u64, u64)>, WayKind, GeometryClaim) {
+    let forward = edge
+        .geometry
         .points
         .iter()
         .map(|point| (point.lon.to_bits(), point.lat.to_bits()));
-    let reverse = geometry
+    let reverse = edge
+        .geometry
         .points
         .iter()
         .rev()
         .map(|point| (point.lon.to_bits(), point.lat.to_bits()));
     let forward = forward.collect::<Vec<_>>();
     let reverse = reverse.collect::<Vec<_>>();
-    forward.min(reverse)
+    if (edge.a, edge.b, &forward) <= (edge.b, edge.a, &reverse) {
+        (
+            edge.a,
+            edge.b,
+            forward,
+            edge.attr.way_kind,
+            edge.attr.geometry_claim,
+        )
+    } else {
+        (
+            edge.b,
+            edge.a,
+            reverse,
+            edge.attr.way_kind,
+            edge.attr.geometry_claim,
+        )
+    }
+}
+
+fn endpoint_key(draft: &SegmentDraft, progress: f64) -> Option<JunctionKey> {
+    let keys = draft.junction_keys.as_ref()?;
+    if progress <= 1.0e-12 {
+        Some(keys[0].clone())
+    } else if progress >= 1.0 - 1.0e-12 {
+        Some(keys[1].clone())
+    } else {
+        None
+    }
 }
 
 fn corroborate_edge(preferred: &mut Edge, suppressed: &Edge) {
@@ -321,8 +420,8 @@ fn corroborate_edge(preferred: &mut Edge, suppressed: &Edge) {
         }
     }
     preferred.attr.confidence = preferred.attr.confidence.max(suppressed.attr.confidence);
-    if preferred.attr.trail_class == TrailClass::Unknown {
-        preferred.attr.trail_class = suppressed.attr.trail_class;
+    if preferred.attr.way_kind == WayKind::Unknown {
+        preferred.attr.way_kind = suppressed.attr.way_kind;
     }
     if preferred.attr.standing == TrailStanding::Unknown {
         preferred.attr.standing = suppressed.attr.standing;
@@ -455,6 +554,9 @@ fn junctions_may_be_inferred(drafts: &[SegmentDraft], a: Primitive, b: Primitive
 }
 
 fn snaps_may_be_inferred(drafts: &[SegmentDraft], a: Primitive, b: Primitive) -> bool {
+    if drafts[a.src].junction_keys.is_some() || drafts[b.src].junction_keys.is_some() {
+        return false;
+    }
     let inferable = |policy| {
         matches!(
             policy,
@@ -510,7 +612,7 @@ fn primitive_envelope(p: Primitive) -> AABB<[f64; 2]> {
 fn turn_bans(
     drafts: &[SegmentDraft],
     edges_by_draft: &[Vec<EdgeId>],
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     snap_tolerance_m: f64,
 ) -> Vec<TurnBan> {
     let mut edges_by_ref = BTreeMap::<&str, Vec<EdgeId>>::new();
@@ -526,12 +628,26 @@ fn turn_bans(
     let mut seen = std::collections::BTreeSet::<(VertexId, EdgeId, EdgeId)>::new();
     let mut bans = Vec::new();
     for restriction in restrictions {
-        let Some((via, distance_m)) = graph.nearest_vertex_with_distance(restriction.via) else {
-            continue;
+        let via = if let Some(key) = &restriction.via_key {
+            let Some(vertex) = graph
+                .vertices
+                .iter()
+                .find(|vertex| vertex.junction.as_ref() == Some(key))
+                .map(|vertex| vertex.id)
+            else {
+                continue;
+            };
+            vertex
+        } else {
+            let Some((vertex, distance_m)) = graph.nearest_vertex_with_distance(restriction.via)
+            else {
+                continue;
+            };
+            if distance_m > snap_tolerance_m.max(1.0) {
+                continue;
+            }
+            vertex
         };
-        if distance_m > snap_tolerance_m.max(1.0) {
-            continue;
-        }
         let Some(from_edges) = edges_by_ref.get(restriction.from.as_str()) else {
             continue;
         };
@@ -572,13 +688,13 @@ fn turn_bans(
     bans
 }
 
-fn arrives_at(graph: &TrailGraph, edge: EdgeId, via: VertexId) -> bool {
+fn arrives_at(graph: &WalkGraph, edge: EdgeId, via: VertexId) -> bool {
     let edge = &graph.edges[edge.0];
     edge.other(via)
         .is_some_and(|other| edge.traverse(other) == Some(via))
 }
 
-fn departs_from(graph: &TrailGraph, edge: EdgeId, via: VertexId) -> bool {
+fn departs_from(graph: &WalkGraph, edge: EdgeId, via: VertexId) -> bool {
     graph.edges[edge.0].traverse(via).is_some()
 }
 
@@ -608,7 +724,11 @@ fn edge_attr(
         grade_abs_max: grade_abs_mean,
         sustained_steep_m: 0.0,
         grade_distribution: GradeDistribution::default().add_segment(length_m, grade_abs_mean),
-        trail_class: draft.trail_class,
+        hill_slope_deg: None,
+        way_kind: draft.way_kind,
+        realm: draft.realm,
+        geometry_claim: draft.geometry_claim,
+        crossing_control: draft.crossing_control,
         standing: draft.standing,
         marking: draft.marking,
         terrain: draft.terrain,
@@ -629,8 +749,7 @@ fn edge_attr(
         crossings: Vec::new(),
         road_exposure: draft.road_exposure.clamp(0.0, 1.0),
         confidence,
-        difficulty_breakdown: crate::difficulty::DifficultyBreakdown::default(),
-        difficulty: 0.0,
+        traversal: crate::hiking::EdgeTraversal::default(),
         seed_count: 0,
         popularity: 0.0,
         seed_provenance: Vec::new(),
@@ -907,15 +1026,28 @@ fn projected_snap(
 
 fn vertex_id(
     coord: Coord,
+    source: Option<JunctionKey>,
     vertices: &mut Vec<Vertex>,
-    vertex_by_coord: &mut BTreeMap<(u64, u64), VertexId>,
+    vertex_by_key: &mut BTreeMap<VertexKey, VertexId>,
 ) -> VertexId {
-    match vertex_by_coord.entry((coord.lon.to_bits(), coord.lat.to_bits())) {
+    let key = source.map_or_else(
+        || VertexKey::Coordinate(coord.lon.to_bits(), coord.lat.to_bits()),
+        VertexKey::Source,
+    );
+    match vertex_by_key.entry(key) {
         Entry::Occupied(entry) => *entry.get(),
         Entry::Vacant(entry) => {
             let id = VertexId(vertices.len());
+            let junction = match entry.key() {
+                VertexKey::Source(key) => Some(key.clone()),
+                VertexKey::Coordinate(_, _) => None,
+            };
             entry.insert(id);
-            vertices.push(Vertex { id, coord });
+            vertices.push(Vertex {
+                id,
+                coord,
+                junction,
+            });
             id
         }
     }

@@ -1,5 +1,5 @@
 use crate::constraints::LoopConstraints;
-use crate::model::{Edge, EdgeId, Terrain, TrailGraph, VertexId};
+use crate::model::{Edge, EdgeId, Terrain, VertexId, WalkGraph};
 use crate::route::{LOW_CONFIDENCE_THRESHOLD, is_restricted_access};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -101,7 +101,7 @@ struct ArcVar {
 
 impl LoopMilpFormulation {
     #[must_use]
-    pub fn formulate(graph: &TrailGraph, start: VertexId, constraints: &LoopConstraints) -> Self {
+    pub fn formulate(graph: &WalkGraph, start: VertexId, constraints: &LoopConstraints) -> Self {
         let arcs = graph
             .edges
             .iter()
@@ -115,7 +115,7 @@ impl LoopMilpFormulation {
             .map(|arc| {
                 let edge = &graph.edges[arc.edge.0];
                 LinearTerm {
-                    coeff: arc_objective(edge),
+                    coeff: arc_objective(edge, arc.from),
                     var: arc.z(),
                 }
             })
@@ -243,7 +243,7 @@ pub fn selected_arcs_from_solution(raw: &str) -> Result<Vec<MilpSelectedArc>, Mi
 }
 
 pub fn route_edges_from_solution(
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     start: VertexId,
     raw: &str,
 ) -> Result<Vec<EdgeId>, MilpIncumbentError> {
@@ -251,7 +251,7 @@ pub fn route_edges_from_solution(
 }
 
 pub fn route_edges_from_selected_arcs(
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     start: VertexId,
     arcs: Vec<MilpSelectedArc>,
 ) -> Result<Vec<EdgeId>, MilpIncumbentError> {
@@ -301,7 +301,7 @@ pub fn route_edges_from_selected_arcs(
     Ok(edges)
 }
 
-fn turn_ban_rows(graph: &TrailGraph, arcs: &[ArcVar]) -> Vec<LinearRow> {
+fn turn_ban_rows(graph: &WalkGraph, arcs: &[ArcVar]) -> Vec<LinearRow> {
     graph
         .turn_bans
         .iter()
@@ -352,7 +352,7 @@ fn allowed_arcs(edge: &Edge) -> Vec<ArcVar> {
 }
 
 fn validate_selected_arc(
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     arc: MilpSelectedArc,
 ) -> Result<(), MilpIncumbentError> {
     let edge = graph
@@ -411,19 +411,19 @@ fn parse_id(token: Option<&str>, var: &str) -> Result<usize, MilpIncumbentError>
         .ok_or_else(|| MilpIncumbentError::InvalidArcVariable(var.to_owned()))
 }
 
-fn arc_objective(edge: &Edge) -> f64 {
+fn arc_objective(edge: &Edge, from: VertexId) -> f64 {
     let low_conf_m = if edge.attr.confidence < LOW_CONFIDENCE_THRESHOLD {
         edge.attr.length_m
     } else {
         0.0
     };
-    let road_m = edge.attr.length_m * road_pavement_exposure(edge);
+    let road_m = edge.attr.length_m * road_exposure_fraction(edge);
     let restricted_m = if is_restricted_access(edge.attr.access) {
         edge.attr.length_m
     } else {
         0.0
     };
-    edge.attr.difficulty.mul_add(
+    edge.traversal_from(from).lower_limb_load_km.mul_add(
         0.05,
         low_conf_m.mul_add(0.002, road_m.mul_add(0.001, restricted_m * 0.01)),
     )
@@ -442,7 +442,7 @@ fn degree_terms(arcs: &[ArcVar], v: VertexId, direction: Direction, y: &str) -> 
     terms
 }
 
-fn start_flow_row(arcs: &[ArcVar], graph: &TrailGraph, start: VertexId) -> LinearRow {
+fn start_flow_row(arcs: &[ArcVar], graph: &WalkGraph, start: VertexId) -> LinearRow {
     let mut terms = Vec::new();
     for arc in arcs {
         if arc.from == start {
@@ -484,11 +484,7 @@ fn vertex_flow_row(arcs: &[ArcVar], v: VertexId) -> LinearRow {
     }
 }
 
-fn bound_rows(
-    graph: &TrailGraph,
-    arcs: &[ArcVar],
-    constraints: &LoopConstraints,
-) -> Vec<LinearRow> {
+fn bound_rows(graph: &WalkGraph, arcs: &[ArcVar], constraints: &LoopConstraints) -> Vec<LinearRow> {
     let specs = [
         (
             "distance_min",
@@ -503,16 +499,28 @@ fn bound_rows(
             constraints.max_distance_m,
         ),
         (
-            "difficulty_min",
-            EdgeScalar::Difficulty,
+            "lower_limb_load_min",
+            EdgeScalar::LowerLimbLoad,
             LinearSense::Ge,
-            constraints.min_difficulty,
+            constraints.min_lower_limb_load_km,
         ),
         (
-            "difficulty_max",
-            EdgeScalar::Difficulty,
+            "lower_limb_load_max",
+            EdgeScalar::LowerLimbLoad,
             LinearSense::Le,
-            constraints.max_difficulty,
+            constraints.max_lower_limb_load_km,
+        ),
+        (
+            "moving_time_min",
+            EdgeScalar::MovingTime,
+            LinearSense::Ge,
+            constraints.min_moving_time_s,
+        ),
+        (
+            "moving_time_max",
+            EdgeScalar::MovingTime,
+            LinearSense::Le,
+            constraints.max_moving_time_s,
         ),
         (
             "ascent_min",
@@ -557,7 +565,7 @@ fn bound_rows(
             arcs,
             "road_fraction_max",
             constraints.max_road_fraction,
-            road_pavement_m,
+            road_exposure_m,
         ),
         fraction_row(
             graph,
@@ -578,7 +586,7 @@ fn bound_rows(
 }
 
 fn terrain_rows(
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     arcs: &[ArcVar],
     constraints: &LoopConstraints,
 ) -> Vec<LinearRow> {
@@ -613,16 +621,18 @@ fn terrain_rows(
 #[derive(Clone, Copy)]
 enum EdgeScalar {
     Length,
-    Difficulty,
+    LowerLimbLoad,
+    MovingTime,
     Ascent,
     Descent,
 }
 
-fn arc_scalar(graph: &TrailGraph, arc: ArcVar, scalar: EdgeScalar) -> f64 {
+fn arc_scalar(graph: &WalkGraph, arc: ArcVar, scalar: EdgeScalar) -> f64 {
     let edge = &graph.edges[arc.edge.0];
     match scalar {
         EdgeScalar::Length => edge.attr.length_m,
-        EdgeScalar::Difficulty => edge.attr.difficulty,
+        EdgeScalar::LowerLimbLoad => edge.traversal_from(arc.from).lower_limb_load_km,
+        EdgeScalar::MovingTime => edge.traversal_from(arc.from).moving_time_s,
         EdgeScalar::Ascent if arc.from == edge.a => edge.attr.ascent_m,
         EdgeScalar::Ascent => edge.attr.descent_m,
         EdgeScalar::Descent if arc.from == edge.a => edge.attr.descent_m,
@@ -631,7 +641,7 @@ fn arc_scalar(graph: &TrailGraph, arc: ArcVar, scalar: EdgeScalar) -> f64 {
 }
 
 fn fraction_row(
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     arcs: &[ArcVar],
     name: &str,
     maximum: f64,
@@ -655,7 +665,7 @@ fn fraction_row(
 }
 
 fn terrain_terms(
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     arcs: &[ArcVar],
     terrain: Terrain,
     fraction: f64,
@@ -673,8 +683,8 @@ fn terrain_terms(
         .collect()
 }
 
-fn road_pavement_m(edge: &Edge) -> f64 {
-    edge.attr.length_m * road_pavement_exposure(edge)
+fn road_exposure_m(edge: &Edge) -> f64 {
+    edge.attr.length_m * road_exposure_fraction(edge)
 }
 
 fn low_confidence_m(edge: &Edge) -> f64 {
@@ -693,14 +703,15 @@ const fn restricted_access_m(edge: &Edge) -> f64 {
     }
 }
 
-const fn road_pavement_exposure(edge: &Edge) -> f64 {
-    edge.attr.road_exposure.clamp(0.0, 1.0).max(
-        if matches!(edge.attr.terrain, Terrain::Pavement | Terrain::Road) {
+const fn road_exposure_fraction(edge: &Edge) -> f64 {
+    edge.attr
+        .road_exposure
+        .clamp(0.0, 1.0)
+        .max(if matches!(edge.attr.terrain, Terrain::Road) {
             1.0
         } else {
             0.0
-        },
-    )
+        })
 }
 
 fn term(coeff: f64, var: impl Into<String>) -> LinearTerm {

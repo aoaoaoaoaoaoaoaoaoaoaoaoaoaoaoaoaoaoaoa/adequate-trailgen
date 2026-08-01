@@ -539,7 +539,7 @@ fn normalize_usgs_properties(feature: &mut Value) -> Result<()> {
     let surface = string_property(properties, "trailsurface");
     properties.insert("source".to_owned(), json!("usgs-national-trails"));
     properties.insert("license".to_owned(), json!("USGS public domain"));
-    properties.insert("trail_class".to_owned(), json!("path"));
+    properties.insert("way_kind".to_owned(), json!("path"));
     properties.insert("trail_standing".to_owned(), json!("established"));
     properties.insert("terrain".to_owned(), json!("trail"));
     properties.insert("access".to_owned(), json!("unknown"));
@@ -622,7 +622,7 @@ fn normalize_new_york(feature: &mut Value) -> Result<bool> {
 
     properties.insert("source".to_owned(), json!("ny-state-parks"));
     properties.insert("license".to_owned(), json!(NY_LICENSE));
-    properties.insert("trail_class".to_owned(), json!(class));
+    properties.insert("way_kind".to_owned(), json!(class));
     properties.insert("trail_standing".to_owned(), json!("established"));
     properties.insert("trail_marking".to_owned(), json!(marking));
     properties.insert("terrain".to_owned(), json!(terrain));
@@ -657,7 +657,7 @@ fn normalize_texas(feature: &mut Value) -> Result<bool> {
 
     properties.insert("source".to_owned(), json!("texas-state-parks"));
     properties.insert("license".to_owned(), json!(TEXAS_LICENSE));
-    properties.insert("trail_class".to_owned(), json!("path"));
+    properties.insert("way_kind".to_owned(), json!("path"));
     properties.insert("trail_standing".to_owned(), json!("established"));
     properties.insert("trail_marking".to_owned(), json!("unknown"));
     properties.insert("terrain".to_owned(), json!("trail"));
@@ -711,7 +711,7 @@ fn string_property(properties: &Map<String, Value>, key: &str) -> Option<String>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use trailgen_core::{Access, Terrain, TrailClass, TrailMarking, TrailStanding};
+    use trailgen_core::{Access, Terrain, TrailMarking, TrailStanding, WayKind};
 
     #[test]
     fn provider_ids_are_safe_path_atoms() {
@@ -756,7 +756,7 @@ mod tests {
 
         assert_eq!(normalized.drafts.len(), 2);
         let unmarked = &normalized.drafts[0];
-        assert_eq!(unmarked.trail_class, TrailClass::Path);
+        assert_eq!(unmarked.way_kind, WayKind::Path);
         assert_eq!(unmarked.standing, TrailStanding::Established);
         assert_eq!(unmarked.marking, TrailMarking::Unmarked);
         assert_eq!(unmarked.terrain, Terrain::Trail);
@@ -793,7 +793,7 @@ mod tests {
 
         assert_eq!(normalized.drafts.len(), 1);
         let trail = &normalized.drafts[0];
-        assert_eq!(trail.trail_class, TrailClass::Path);
+        assert_eq!(trail.way_kind, WayKind::Path);
         assert_eq!(trail.standing, TrailStanding::Established);
         assert_eq!(trail.marking, TrailMarking::Unknown);
         assert_eq!(trail.access, Access::Unknown);

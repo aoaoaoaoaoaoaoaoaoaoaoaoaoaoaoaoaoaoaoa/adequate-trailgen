@@ -41,10 +41,12 @@ mod active {
         pub workspace: Workspace,
         pub view: View,
         pub rename_active: bool,
+        pub shortcut_help: bool,
         pub text_edit_focused: bool,
         pub saved_trails: usize,
         pub candidates: usize,
         pub map: Option<MapState>,
+        pub areas: Option<AreaState>,
         pub editor: Option<EditorState>,
         pub search: Option<SearchState>,
         pub survey: Option<SurveyState>,
@@ -58,10 +60,12 @@ mod active {
                 workspace,
                 view,
                 rename_active: false,
+                shortcut_help: false,
                 text_edit_focused,
                 saved_trails: 0,
                 candidates: 0,
                 map: None,
+                areas: None,
                 editor: None,
                 search: None,
                 survey: None,
@@ -76,6 +80,7 @@ mod active {
         pub center: [f64; 2],
         pub world_points: f64,
         pub coloring: TrailColoring,
+        pub basemap_tiles: usize,
     }
 
     impl MapState {
@@ -84,12 +89,14 @@ mod active {
             center: [f64; 2],
             world_points: f64,
             coloring: TrailColoring,
+            basemap_tiles: usize,
         ) -> Self {
             Self {
                 rect: [rect.min.x, rect.min.y, rect.max.x, rect.max.y],
                 center,
                 world_points,
                 coloring,
+                basemap_tiles,
             }
         }
     }
@@ -109,6 +116,7 @@ mod active {
     pub struct SearchState {
         pub phase: SearchPhase,
         pub corpus: CorpusPhase,
+        pub results: trailgen_contract::ResultsPhase,
         pub trailhead: bool,
         pub boundary: bool,
         pub required: usize,
@@ -118,9 +126,20 @@ mod active {
 
     #[derive(Serialize)]
     pub struct SurveyState {
-        pub regions: usize,
         pub acquiring: bool,
+    }
+
+    #[derive(Serialize)]
+    pub struct AreaState {
+        pub regions: usize,
         pub drawing: bool,
+        pub resizing: Option<AreaResizeState>,
+    }
+
+    #[derive(Serialize)]
+    pub struct AreaResizeState {
+        pub slot: usize,
+        pub corner: trailgen_contract::AreaCorner,
     }
 
     #[derive(Serialize)]

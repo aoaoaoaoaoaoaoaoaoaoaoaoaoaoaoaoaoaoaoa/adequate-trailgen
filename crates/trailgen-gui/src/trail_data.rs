@@ -24,6 +24,7 @@ pub fn progress_status(event: &EngineEvent) -> String {
 pub enum Mutation {
     Add(GeoBounds),
     Remove(String),
+    Replace { id: String, bounds: GeoBounds },
     Refresh,
 }
 
@@ -57,6 +58,9 @@ impl TrailData {
                         .add_region(&project, bounds, &mut progress)
                         .map(Some),
                     Mutation::Remove(id) => surveyor.remove_region(&project, &id, &mut progress),
+                    Mutation::Replace { id, bounds } => surveyor
+                        .replace_region(&project, &id, bounds, &mut progress)
+                        .map(Some),
                     Mutation::Refresh => surveyor.refresh(&project, &mut progress),
                 };
                 let event = match result {

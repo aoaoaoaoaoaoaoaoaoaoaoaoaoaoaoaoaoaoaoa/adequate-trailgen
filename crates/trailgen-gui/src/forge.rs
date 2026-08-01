@@ -52,6 +52,17 @@ pub fn pin(painter: &Painter, anchor: Pos2, seized: bool) {
     let _rim = painter.circle_stroke(bulb, BULB_RADIUS, Stroke::new(1.1_f32, bronze(0.16)));
 }
 
+/// A support mandate at an exact map coordinate. Unlike `pin`, this carries
+/// no trailhead or draggable-control semantics.
+pub fn reticle(painter: &Painter, anchor: Pos2) {
+    let _shadow = painter.circle_stroke(
+        anchor,
+        9.0,
+        Stroke::new(5.0_f32, Color32::from_black_alpha(190)),
+    );
+    let _ring = painter.circle_stroke(anchor, 9.0, Stroke::new(2.8_f32, bronze(0.92)));
+}
+
 /// The universally legible parking sigil, reserved here for trail-access lots.
 pub fn parking(painter: &Painter, anchor: Pos2, maturity: f32) {
     let body = Rect::from_center_size(anchor, Vec2::splat(16.0));

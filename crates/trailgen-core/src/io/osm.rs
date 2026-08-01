@@ -1,7 +1,10 @@
-use crate::builder::{JunctionPolicy, SegmentDraft, TurnRestrictionDraft, TurnRestrictionRule};
+use crate::builder::{
+    JunctionKey, JunctionPolicy, SegmentDraft, TurnRestrictionDraft, TurnRestrictionRule,
+};
 use crate::geo::{Coord, LineString};
 use crate::model::{
-    Access, CrossingKind, EdgeTravel, Provenance, Terrain, TrailClass, TrailMarking, TrailStanding,
+    Access, CrossingControl, CrossingKind, EdgeTravel, GeometryClaim, Provenance, Terrain,
+    TrailMarking, TrailStanding, WayKind, WayRealm,
 };
 use crate::overlay::ContextOverlay;
 use crate::{Result, TrailgenError};
@@ -11,6 +14,17 @@ use osmpbfreader::{
 };
 use std::collections::BTreeMap;
 use std::io::{Read, Seek};
+
+struct OsmDraft {
+    segment: SegmentDraft,
+    junctions: Vec<JunctionKey>,
+}
+
+#[derive(Clone, Copy)]
+struct XmlNode {
+    coord: Coord,
+    crossing_control: CrossingControl,
+}
 
 pub fn network_from_str(s: &str) -> Result<Vec<SegmentDraft>> {
     let doc = roxmltree::Document::parse(s)
@@ -89,7 +103,7 @@ pub fn context_overlays_from_pbf_reader<R: Read + Seek>(reader: R) -> Result<Vec
         .collect()
 }
 
-fn parse_node(node: roxmltree::Node<'_, '_>) -> Result<(String, Coord)> {
+fn parse_node(node: roxmltree::Node<'_, '_>) -> Result<(String, XmlNode)> {
     let id = required_attr(node, "id")?.to_owned();
     let lon = required_attr(node, "lon")?
         .parse::<f64>()
@@ -102,61 +116,81 @@ fn parse_node(node: roxmltree::Node<'_, '_>) -> Result<(String, Coord)> {
             "OSM node coordinates must be finite".to_owned(),
         ));
     }
-    let ele = xml_tags(node)
+    let tags = xml_tags(node);
+    let ele = tags
         .get("ele")
         .and_then(|value| value.parse::<f64>().ok())
         .filter(|value| value.is_finite());
-    Ok((id, Coord { lon, lat, ele }))
+    Ok((
+        id,
+        XmlNode {
+            coord: Coord { lon, lat, ele },
+            crossing_control: crossing_control_from_tags(&tags, WayKind::Crossing),
+        },
+    ))
 }
 
 fn draft_from_xml_way(
     way: roxmltree::Node<'_, '_>,
-    nodes: &BTreeMap<String, Coord>,
+    nodes: &BTreeMap<String, XmlNode>,
     relations: &OsmRelationEvidence,
-) -> Result<Option<SegmentDraft>> {
+) -> Result<Option<OsmDraft>> {
     let tags = xml_tags(way);
     let id = way_id(way);
     let Some(walkway) = Walkway::from_tags(&tags, relations.route_by_way.contains_key(&id)) else {
         return Ok(None);
     };
     let mut points = Vec::new();
+    let mut junctions = Vec::new();
+    let mut crossing_control = walkway.crossing_control;
     for nd in way.children().filter(|node| node.has_tag_name("nd")) {
         let reference = required_attr(nd, "ref")?;
-        let Some(coord) = nodes.get(reference) else {
+        let Some(node) = nodes.get(reference) else {
             return Err(TrailgenError::InvalidData(format!(
                 "OSM way {id} references missing node {reference}"
             )));
         };
-        points.push(*coord);
+        points.push(node.coord);
+        junctions.push(osm_junction(reference));
+        if walkway.kind == WayKind::Crossing {
+            crossing_control = crossing_control.max(node.crossing_control);
+        }
     }
     if points.len() < 2 {
         return Ok(None);
     }
-    Ok(Some(SegmentDraft {
-        junctions: source_junction_policy(&tags),
-        turn_ref: Some(id.clone()),
-        turn_restrictions: Vec::new(),
-        geometry: LineString::new(points)?,
-        trail_class: walkway.class,
-        standing: walkway.standing,
-        marking: walkway.marking,
-        terrain: walkway.terrain,
-        terrain_confidence: Some(walkway.terrain_confidence),
-        surface: tags.get("surface").cloned(),
-        access: walkway.access,
-        travel: walkway.travel,
-        road_exposure: walkway.road_exposure,
-        confidence: relation_boosted_confidence(
-            walkway.confidence,
-            relations.route_by_way.get(&id).map_or(0, Vec::len),
-        ),
-        provenance: vec![osm_way_provenance("osm-xml", &id, relations)],
+    Ok(Some(OsmDraft {
+        junctions,
+        segment: SegmentDraft {
+            junctions: source_junction_policy(&tags),
+            turn_ref: Some(id.clone()),
+            junction_keys: None,
+            turn_restrictions: Vec::new(),
+            geometry: LineString::new(points)?,
+            way_kind: walkway.kind,
+            realm: walkway.realm,
+            geometry_claim: walkway.geometry_claim,
+            crossing_control,
+            standing: walkway.standing,
+            marking: walkway.marking,
+            terrain: walkway.terrain,
+            terrain_confidence: Some(walkway.terrain_confidence),
+            surface: tags.get("surface").cloned(),
+            access: walkway.access,
+            travel: walkway.travel,
+            road_exposure: walkway.road_exposure,
+            confidence: relation_boosted_confidence(
+                walkway.confidence,
+                relations.route_by_way.get(&id).map_or(0, Vec::len),
+            ),
+            provenance: vec![osm_way_provenance("osm-xml", &id, relations)],
+        },
     }))
 }
 
 fn context_from_xml_way(
     way: roxmltree::Node<'_, '_>,
-    nodes: &BTreeMap<String, Coord>,
+    nodes: &BTreeMap<String, XmlNode>,
 ) -> Result<Option<ContextOverlay>> {
     let tags = xml_tags(way);
     let Some(kind) = context_kind_from_tags(&tags) else {
@@ -166,12 +200,12 @@ fn context_from_xml_way(
     let mut points = Vec::new();
     for nd in way.children().filter(|node| node.has_tag_name("nd")) {
         let reference = required_attr(nd, "ref")?;
-        let Some(coord) = nodes.get(reference) else {
+        let Some(node) = nodes.get(reference) else {
             return Err(TrailgenError::InvalidData(format!(
                 "OSM way {id} references missing node {reference}"
             )));
         };
-        points.push(*coord);
+        points.push(node.coord);
     }
     context_overlay(kind, &tags, id, points)
 }
@@ -210,13 +244,15 @@ fn draft_from_pbf_way(
     way: &PbfWay,
     objects: &BTreeMap<OsmId, OsmObj>,
     relations: &OsmRelationEvidence,
-) -> Result<Option<SegmentDraft>> {
+) -> Result<Option<OsmDraft>> {
     let tags = pbf_tags(&way.tags);
     let id = way.id.0.to_string();
     let Some(walkway) = Walkway::from_tags(&tags, relations.route_by_way.contains_key(&id)) else {
         return Ok(None);
     };
     let mut points = Vec::new();
+    let mut junctions = Vec::new();
+    let mut crossing_control = walkway.crossing_control;
     for id in &way.nodes {
         let Some(OsmObj::Node(node)) = objects.get(&OsmId::Node(*id)) else {
             return Err(TrailgenError::InvalidData(format!(
@@ -225,36 +261,50 @@ fn draft_from_pbf_way(
             )));
         };
         points.push(pbf_coord(node));
+        junctions.push(osm_junction(&id.0.to_string()));
+        if walkway.kind == WayKind::Crossing {
+            crossing_control = crossing_control.max(crossing_control_from_tags(
+                &pbf_tags(&node.tags),
+                WayKind::Crossing,
+            ));
+        }
     }
     if points.len() < 2 {
         return Ok(None);
     }
-    Ok(Some(SegmentDraft {
-        junctions: source_junction_policy(&tags),
-        turn_ref: Some(id),
-        turn_restrictions: Vec::new(),
-        geometry: LineString::new(points)?,
-        trail_class: walkway.class,
-        standing: walkway.standing,
-        marking: walkway.marking,
-        terrain: walkway.terrain,
-        terrain_confidence: Some(walkway.terrain_confidence),
-        surface: tags.get("surface").cloned(),
-        access: walkway.access,
-        travel: walkway.travel,
-        road_exposure: walkway.road_exposure,
-        confidence: relation_boosted_confidence(
-            walkway.confidence,
-            relations
-                .route_by_way
-                .get(&way.id.0.to_string())
-                .map_or(0, Vec::len),
-        ),
-        provenance: vec![osm_way_provenance(
-            "osm-pbf",
-            &way.id.0.to_string(),
-            relations,
-        )],
+    Ok(Some(OsmDraft {
+        junctions,
+        segment: SegmentDraft {
+            junctions: source_junction_policy(&tags),
+            turn_ref: Some(id),
+            junction_keys: None,
+            turn_restrictions: Vec::new(),
+            geometry: LineString::new(points)?,
+            way_kind: walkway.kind,
+            realm: walkway.realm,
+            geometry_claim: walkway.geometry_claim,
+            crossing_control,
+            standing: walkway.standing,
+            marking: walkway.marking,
+            terrain: walkway.terrain,
+            terrain_confidence: Some(walkway.terrain_confidence),
+            surface: tags.get("surface").cloned(),
+            access: walkway.access,
+            travel: walkway.travel,
+            road_exposure: walkway.road_exposure,
+            confidence: relation_boosted_confidence(
+                walkway.confidence,
+                relations
+                    .route_by_way
+                    .get(&way.id.0.to_string())
+                    .map_or(0, Vec::len),
+            ),
+            provenance: vec![osm_way_provenance(
+                "osm-pbf",
+                &way.id.0.to_string(),
+                relations,
+            )],
+        },
     }))
 }
 
@@ -317,57 +367,66 @@ fn seat_turn_restrictions(drafts: &mut [SegmentDraft], restrictions: Vec<TurnRes
     }
 }
 
-fn contract_osm_drafts(drafts: Vec<SegmentDraft>) -> Vec<SegmentDraft> {
-    let mut occurrences = BTreeMap::<(u64, u64), usize>::new();
-    for point in drafts.iter().flat_map(|draft| &draft.geometry.points) {
-        *occurrences
-            .entry((point.lon.to_bits(), point.lat.to_bits()))
-            .or_default() += 1;
+fn contract_osm_drafts(drafts: Vec<OsmDraft>) -> Vec<SegmentDraft> {
+    let mut occurrences = BTreeMap::<JunctionKey, usize>::new();
+    for junction in drafts.iter().flat_map(|draft| &draft.junctions) {
+        *occurrences.entry(junction.clone()).or_default() += 1;
     }
     drafts
         .into_iter()
         .flat_map(|draft| {
-            let last = draft.geometry.points.len() - 1;
+            let segment = draft.segment;
+            let last = segment.geometry.points.len() - 1;
             let mut cuts = vec![0];
             cuts.extend((1..last).filter(|index| {
-                let point = draft.geometry.points[*index];
                 occurrences
-                    .get(&(point.lon.to_bits(), point.lat.to_bits()))
+                    .get(&draft.junctions[*index])
                     .is_some_and(|count| *count > 1)
             }));
             cuts.push(last);
             cuts.windows(2)
                 .map(|cut| SegmentDraft {
-                    junctions: if draft.junctions == JunctionPolicy::GradeSeparatedEndpoints {
+                    junctions: if segment.junctions == JunctionPolicy::GradeSeparatedEndpoints {
                         JunctionPolicy::GradeSeparatedEndpoints
                     } else {
                         JunctionPolicy::ExplicitEndpoints
                     },
-                    turn_ref: draft.turn_ref.clone(),
+                    turn_ref: segment.turn_ref.clone(),
+                    junction_keys: Some([
+                        draft.junctions[cut[0]].clone(),
+                        draft.junctions[cut[1]].clone(),
+                    ]),
                     turn_restrictions: Vec::new(),
                     geometry: LineString::unchecked(
-                        draft.geometry.points[cut[0]..=cut[1]].to_vec(),
+                        segment.geometry.points[cut[0]..=cut[1]].to_vec(),
                     ),
-                    trail_class: draft.trail_class,
-                    standing: draft.standing,
-                    marking: draft.marking,
-                    terrain: draft.terrain,
-                    terrain_confidence: draft.terrain_confidence,
-                    surface: draft.surface.clone(),
-                    access: draft.access,
-                    travel: draft.travel,
-                    road_exposure: draft.road_exposure,
-                    confidence: draft.confidence,
-                    provenance: draft.provenance.clone(),
+                    way_kind: segment.way_kind,
+                    realm: segment.realm,
+                    geometry_claim: segment.geometry_claim,
+                    crossing_control: segment.crossing_control,
+                    standing: segment.standing,
+                    marking: segment.marking,
+                    terrain: segment.terrain,
+                    terrain_confidence: segment.terrain_confidence,
+                    surface: segment.surface.clone(),
+                    access: segment.access,
+                    travel: segment.travel,
+                    road_exposure: segment.road_exposure,
+                    confidence: segment.confidence,
+                    provenance: segment.provenance.clone(),
                 })
                 .collect::<Vec<_>>()
         })
         .collect()
 }
 
+fn osm_junction(id: &str) -> JunctionKey {
+    JunctionKey(format!("osm:{id}"))
+}
+
 fn xml_relation_evidence(
     root: roxmltree::Node<'_, '_>,
-    nodes: &BTreeMap<String, Coord>,
+    nodes: &BTreeMap<String, XmlNode>,
 ) -> Result<OsmRelationEvidence> {
     let mut evidence = OsmRelationEvidence::default();
     for relation in root.children().filter(|node| node.has_tag_name("relation")) {
@@ -381,6 +440,7 @@ fn xml_relation_evidence(
         let mut from_way = None::<String>;
         let mut to_way = None::<String>;
         let mut via = None::<Coord>;
+        let mut via_key = None::<JunctionKey>;
         for member in relation
             .children()
             .filter(|node| node.has_tag_name("member"))
@@ -388,8 +448,10 @@ fn xml_relation_evidence(
             let member_type = required_attr(member, "type")?;
             let role = required_attr(member, "role")?;
             if member_type == "node" && role == "via" {
-                if let Some(coord) = nodes.get(required_attr(member, "ref")?) {
-                    via = Some(*coord);
+                let reference = required_attr(member, "ref")?;
+                if let Some(node) = nodes.get(reference) {
+                    via = Some(node.coord);
+                    via_key = Some(osm_junction(reference));
                 }
                 continue;
             }
@@ -432,6 +494,7 @@ fn xml_relation_evidence(
                 &restriction,
                 from,
                 via,
+                via_key,
                 to,
             ));
         }
@@ -447,12 +510,14 @@ fn pbf_relation_evidence(objects: &BTreeMap<OsmId, OsmObj>) -> OsmRelationEviden
         let mut from_way = None::<String>;
         let mut to_way = None::<String>;
         let mut via = None::<Coord>;
+        let mut via_key = None::<JunctionKey>;
         for reference in &relation.refs {
             if let OsmId::Node(node_id) = reference.member
                 && reference.role.as_str() == "via"
                 && let Some(OsmObj::Node(node)) = objects.get(&OsmId::Node(node_id))
             {
                 via = Some(pbf_coord(node));
+                via_key = Some(osm_junction(&node_id.0.to_string()));
             }
             if let OsmId::Way(WayId(id)) = reference.member {
                 match reference.role.as_str() {
@@ -491,6 +556,7 @@ fn pbf_relation_evidence(objects: &BTreeMap<OsmId, OsmObj>) -> OsmRelationEviden
                 &restriction.restriction,
                 from,
                 via,
+                via_key,
                 to,
             ));
         }
@@ -536,6 +602,7 @@ fn turn_restriction_draft(
     restriction: &str,
     from: String,
     via: Coord,
+    via_key: Option<JunctionKey>,
     to: String,
 ) -> TurnRestrictionDraft {
     let rule = if restriction.starts_with("only_") {
@@ -546,6 +613,7 @@ fn turn_restriction_draft(
     TurnRestrictionDraft {
         from,
         via,
+        via_key,
         to,
         rule,
         provenance: Provenance {
@@ -561,8 +629,7 @@ fn turn_restriction_from_tags(tags: &BTreeMap<String, String>) -> Option<String>
     if tags.get("type").is_none_or(|value| value != "restriction") {
         return None;
     }
-    tags.get("restriction")
-        .or_else(|| tags.get("restriction:foot"))
+    tags.get("restriction:foot")
         .filter(|restriction| !restriction.is_empty())
         .cloned()
 }
@@ -727,7 +794,10 @@ fn source_junction_policy(tags: &BTreeMap<String, String>) -> JunctionPolicy {
 
 #[derive(Clone, Copy)]
 struct Walkway {
-    class: TrailClass,
+    kind: WayKind,
+    realm: WayRealm,
+    geometry_claim: GeometryClaim,
+    crossing_control: CrossingControl,
     standing: TrailStanding,
     marking: TrailMarking,
     terrain: Terrain,
@@ -746,22 +816,55 @@ impl Walkway {
         let hiking = hiking_relation
             || route.is_some_and(|route| matches!(route, "hiking" | "foot" | "walking"));
         let walkable_highway = highway
-            .map(TrailClass::from_tag)
-            .filter(|class| *class != TrailClass::Unknown);
+            .map(WayKind::from_tag)
+            .filter(|kind| *kind != WayKind::Unknown);
         if walkable_highway.is_none() && !hiking {
             return None;
         }
-        let class = walkable_highway.unwrap_or(TrailClass::Path);
+        let mut kind = walkable_highway.unwrap_or(WayKind::Path);
+        if kind == WayKind::Footway {
+            kind = match tags.get("footway").map(String::as_str) {
+                Some("sidewalk") => WayKind::Sidewalk,
+                Some("crossing" | "traffic_island") => WayKind::Crossing,
+                _ => WayKind::Footway,
+            };
+        }
+        let geometry_claim = if matches!(kind, WayKind::ServiceRoad | WayKind::Roadway)
+            && asserts_sidewalk(tags)
+            && !asserts_separate_sidepath(tags)
+        {
+            kind = WayKind::Sidewalk;
+            GeometryClaim::CenterlineProxy
+        } else {
+            GeometryClaim::Surveyed
+        };
+        if matches!(kind, WayKind::Roadway | WayKind::ServiceRoad) && foot == Some("use_sidepath") {
+            return None;
+        }
+        if matches!(kind, WayKind::Roadway | WayKind::ServiceRoad)
+            && highway.is_some_and(|highway| matches!(highway, "motorway" | "trunk"))
+            && foot.is_none_or(|foot| !matches!(foot, "yes" | "designated" | "permissive"))
+        {
+            return None;
+        }
         let surface = tags.get("surface");
         let surface_terrain =
             surface.map_or(Terrain::Unknown, |surface| Terrain::from_tag(surface));
         let (terrain, terrain_confidence) =
-            terrain_from_tags(tags, class, surface_terrain, surface.is_some());
+            terrain_from_tags(tags, kind, surface_terrain, surface.is_some());
         let access = access_from_tags(tags, foot);
-        let road_exposure =
-            f64::from(class.road_like() || matches!(terrain, Terrain::Road | Terrain::Pavement));
+        let realm = realm_from_way(kind, hiking);
+        let road_exposure = match kind {
+            WayKind::Roadway | WayKind::ServiceRoad | WayKind::Track => 1.0,
+            WayKind::Crossing => 0.65,
+            WayKind::Sidewalk if geometry_claim == GeometryClaim::CenterlineProxy => 0.25,
+            _ => 0.0,
+        };
         Some(Self {
-            class,
+            kind,
+            realm,
+            geometry_claim,
+            crossing_control: crossing_control_from_tags(tags, kind),
             standing,
             marking: marking_from_tags(tags, hiking),
             terrain,
@@ -817,7 +920,7 @@ fn standing_from_tags(tags: &BTreeMap<String, String>) -> (Option<&str>, TrailSt
 
 fn terrain_from_tags(
     tags: &BTreeMap<String, String>,
-    class: TrailClass,
+    kind: WayKind,
     surface_terrain: Terrain,
     has_surface: bool,
 ) -> (Terrain, f64) {
@@ -832,8 +935,12 @@ fn terrain_from_tags(
     }) {
         (Terrain::Scramble, 0.80)
     } else {
-        match class {
-            TrailClass::Track | TrailClass::Service | TrailClass::Road => (Terrain::Road, 0.62),
+        match kind {
+            WayKind::Sidewalk
+            | WayKind::Crossing
+            | WayKind::PedestrianStreet
+            | WayKind::Cycleway => (Terrain::Pavement, 0.76),
+            WayKind::Track | WayKind::ServiceRoad | WayKind::Roadway => (Terrain::Road, 0.62),
             _ if has_surface => (Terrain::Trail, 0.68),
             _ => (Terrain::Trail, 0.50),
         }
@@ -849,8 +956,74 @@ fn access_from_tags(tags: &BTreeMap<String, String>, foot: Option<&str>) -> Acce
 
 fn travel_from_tags(tags: &BTreeMap<String, String>) -> EdgeTravel {
     tags.get("oneway:foot")
-        .or_else(|| tags.get("oneway"))
         .map_or(EdgeTravel::Both, |tag| EdgeTravel::from_tag(tag))
+}
+
+const fn realm_from_way(kind: WayKind, hiking: bool) -> WayRealm {
+    match kind {
+        WayKind::Path | WayKind::Track | WayKind::Bridleway | WayKind::Bushwhack => {
+            WayRealm::Recreational
+        }
+        WayKind::Footway | WayKind::Steps | WayKind::Cycleway if hiking => WayRealm::Recreational,
+        WayKind::Sidewalk
+        | WayKind::Crossing
+        | WayKind::PedestrianStreet
+        | WayKind::ServiceRoad
+        | WayKind::Roadway
+            if hiking =>
+        {
+            WayRealm::Connector
+        }
+        _ => WayRealm::Urban,
+    }
+}
+
+fn asserts_sidewalk(tags: &BTreeMap<String, String>) -> bool {
+    [
+        "sidewalk",
+        "sidewalk:left",
+        "sidewalk:right",
+        "sidewalk:both",
+    ]
+    .into_iter()
+    .filter_map(|key| tags.get(key))
+    .any(|value| matches!(value.as_str(), "yes" | "both" | "left" | "right"))
+}
+
+fn asserts_separate_sidepath(tags: &BTreeMap<String, String>) -> bool {
+    tags.get("foot")
+        .is_some_and(|value| value == "use_sidepath")
+        || [
+            "sidewalk",
+            "sidewalk:left",
+            "sidewalk:right",
+            "sidewalk:both",
+        ]
+        .into_iter()
+        .filter_map(|key| tags.get(key))
+        .any(|value| value == "separate")
+}
+
+fn crossing_control_from_tags(tags: &BTreeMap<String, String>, kind: WayKind) -> CrossingControl {
+    if tags
+        .get("bridge")
+        .or_else(|| tags.get("tunnel"))
+        .is_some_and(|value| !matches!(value.as_str(), "no" | "false" | "0"))
+    {
+        return CrossingControl::GradeSeparated;
+    }
+    if kind != WayKind::Crossing {
+        return CrossingControl::None;
+    }
+    match tags
+        .get("crossing")
+        .or_else(|| tags.get("crossing:signals"))
+        .map(String::as_str)
+    {
+        Some("traffic_signals" | "signals" | "yes") => CrossingControl::Signals,
+        Some("marked" | "zebra") => CrossingControl::Marked,
+        _ => CrossingControl::Uncontrolled,
+    }
 }
 
 fn xml_tags(node: roxmltree::Node<'_, '_>) -> BTreeMap<String, String> {

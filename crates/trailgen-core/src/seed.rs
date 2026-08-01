@@ -1,7 +1,7 @@
 use crate::constraints::LoopConstraints;
 use crate::geo::LineString;
 use crate::io::route_file::RouteFileMetadata;
-use crate::model::{EdgeId, Provenance, RouteSnapStats, TrailGraph, VertexId};
+use crate::model::{EdgeId, Provenance, RouteSnapStats, VertexId, WalkGraph};
 use crate::route::{Route, RouteMetrics};
 use serde::{Deserialize, Serialize};
 
@@ -28,7 +28,7 @@ pub struct SeedRoute {
 impl SeedRoute {
     #[must_use]
     pub fn snap(
-        graph: &TrailGraph,
+        graph: &WalkGraph,
         name: impl Into<String>,
         source_path: impl Into<String>,
         source_format: impl Into<String>,
@@ -39,7 +39,7 @@ impl SeedRoute {
 
     #[must_use]
     pub fn snap_with_limit(
-        graph: &TrailGraph,
+        graph: &WalkGraph,
         name: impl Into<String>,
         source_path: impl Into<String>,
         source_format: impl Into<String>,
@@ -82,7 +82,7 @@ impl SeedRoute {
     }
 
     #[must_use]
-    pub fn as_route(&self, graph: &TrailGraph, constraints: &LoopConstraints) -> Option<Route> {
+    pub fn as_route(&self, graph: &WalkGraph, constraints: &LoopConstraints) -> Option<Route> {
         let start = self.start?;
         if !self.closed_loop {
             return None;

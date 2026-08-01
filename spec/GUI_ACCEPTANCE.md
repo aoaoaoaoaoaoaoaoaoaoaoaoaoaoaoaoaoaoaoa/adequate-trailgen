@@ -10,10 +10,14 @@ durable or rendered oracle before passing. Tests never call product internals.
 1. **Discover and keep.** Create a project, draw a map area, acquire local OSM,
    USGS, and terrain fixtures; switch class → formal/informal → terrain colors
    while rendered line cadence remains fixed; place a trailhead with Alt-click,
-   lasso a search boundary, start with Enter, observe eager candidate promotion,
-   save, arm Add Map Area without camera travel, refresh the corpus without
-   unloading the saved trail, and recover the result and color projection after
-   restart.
+   lasso a search boundary, set moving-time bounds and a lower-limb-load target,
+   start with Enter, observe eager candidate promotion, and save. Open the
+   shortcut guide with `?` and prove its rendered presentation. In a host-GPU
+   continuation, draw a second map area with immediate feedback, retain the
+   prior basemap through acquisition and installation, resize the area by its
+   typed corner handle, refresh without unloading the saved trail or focused
+   view, then recover both areas, the trail, and the color projection after
+   restart. No intervening witness may report zero presented basemap tiles.
 2. **Refine deliberately.** Open and rename a saved trail, drag a support onto
    another branch, prove recomputation occurs after release, verify the native
    window title, undo, redo, cancel without disk mutation, repeat, save, and
@@ -25,7 +29,8 @@ durable or rendered oracle before passing. Tests never call product internals.
    segments with undo and redo, stop without discarding promoted results, then
    save a candidate.
 4. **Draw from nothing.** Enter the manual editor without search, place a
-   partial-edge support, undo and redo, close and reverse a loop, exercise the
+   partial-edge support, undo and redo, Shift-delete a middle support and prove
+   successor renumbering, restore it, close and reverse a loop, exercise the
    elevation reticle, reject torn editor/focus presentation during save, and
    recover the loop after restart.
 
@@ -63,12 +68,13 @@ Functional stories run under pinned software graphics with
 `ReactionBudget::functional`. This is a bounded progress contract, not a
 latency verdict.
 
-The comparison story runs against host graphics. Its
-`ReactionBudget::performance` assertions measure from the result-triggering
-input through completed product work or the surface-present call.
-`FrameProbe` and `CadenceBudget` govern sustained pan and zoom. Neither endpoint
-claims compositor scanout, and no timeout or instrumentation multiplier may
-dilate a production threshold.
+The discovery area-lifecycle continuation and comparison story run against host
+graphics. Their `ReactionBudget::performance` assertions measure from the
+result-triggering input through completed product work or the surface-present
+call. The area story separately fences capturable X11 pixels before adjudicating
+retained ink; surface submission does not claim compositor scanout.
+`FrameProbe` and `CadenceBudget` govern sustained pan and zoom. No timeout or
+instrumentation multiplier may dilate a production threshold.
 
 ## Execution
 

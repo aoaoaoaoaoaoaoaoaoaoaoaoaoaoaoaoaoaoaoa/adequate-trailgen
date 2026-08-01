@@ -4,14 +4,16 @@ use crate::{
     map::{self, CartographicPlan, MapFramePlan},
     vector_map::{GeometryPass, VectorCorpus, VectorLayer, VectorPaint, VectorPatch},
 };
-use anyhow::Result;
+use anyhow::{Context as _, Result};
+use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use egui::{Color32, Painter};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
+    thread,
     time::{Duration, Instant},
 };
-use trailgen_core::TrailGraph;
+use trailgen_core::{EdgeIndex, WalkGraph};
 
 const VECTOR_CEILING: usize = 512 * 1_048_576;
 const RETRY_FLOOR: Duration = Duration::from_millis(250);
@@ -19,6 +21,10 @@ const RETRY_CEILING: Duration = Duration::from_secs(30);
 const READY_LATENCY_SEED: Duration = Duration::from_millis(250);
 const TRAILHEAD_PARKING_REACH_M: f64 = 160.0;
 const PRESENTATION_TRANSITION: Duration = Duration::from_millis(160);
+const ABSORB_BUDGET: Duration = Duration::from_millis(2);
+const ABSORB_LIMIT: usize = 8;
+const PARKING_CHANNEL_CAPACITY: usize = 32;
+const PARKING_DRAIN_LIMIT: usize = 16;
 
 /// The reusable, streaming vector-map plane beneath every trail workbench.
 pub struct VectorField {
@@ -27,6 +33,7 @@ pub struct VectorField {
     armory: Option<Basemap>,
     tiles: VectorBank,
     presented: Arc<[VectorPatch]>,
+    prewarm: Arc<[VectorPatch]>,
     transition: Option<PresentationTransition>,
     inflight: HashMap<TileKey, Instant>,
     missing: HashSet<TileKey>,
@@ -39,9 +46,15 @@ pub struct VectorField {
     presentation: Option<PresentationStamp>,
     presentation_revision: u64,
     archive_zoom: Option<u8>,
-    trails: Option<Arc<TrailGraph>>,
+    trails: Option<Arc<WalkGraph>>,
+    trail_index: Option<Arc<EdgeIndex>>,
+    parking_forge: Option<ParkingForge>,
     trailhead_parking: HashMap<TileKey, Arc<[basemap::Parking]>>,
+    parking_queue: VecDeque<Arc<VectorTile>>,
+    parking_queued: HashSet<TileKey>,
 }
+
+pub type RetiredTrailArmament = (Option<Arc<WalkGraph>>, Option<Arc<EdgeIndex>>);
 
 struct Retry {
     failures: u8,
@@ -60,6 +73,52 @@ struct PresentationStamp {
 struct PresentationTransition {
     prior: Arc<[VectorPatch]>,
     begun: Instant,
+}
+
+struct ParkingForge {
+    command: Sender<Arc<VectorTile>>,
+    events: Receiver<ParkingArmament>,
+    _thread: thread::JoinHandle<()>,
+}
+
+struct ParkingArmament {
+    key: TileKey,
+    parking: Arc<[basemap::Parking]>,
+}
+
+impl ParkingForge {
+    fn spawn(ctx: egui::Context, graph: Arc<WalkGraph>, index: Arc<EdgeIndex>) -> Result<Self> {
+        let (command, jobs) = bounded::<Arc<VectorTile>>(PARKING_CHANNEL_CAPACITY);
+        let (armament, events) = bounded(PARKING_CHANNEL_CAPACITY);
+        let thread = thread::Builder::new()
+            .name("trailhead-parking-forge".to_owned())
+            .spawn(move || {
+                while let Ok(tile) = jobs.recv() {
+                    let parking = tile
+                        .parking
+                        .iter()
+                        .filter(|parking| abuts_trail(&graph, &index, parking))
+                        .cloned()
+                        .collect::<Arc<[_]>>();
+                    if armament
+                        .send(ParkingArmament {
+                            key: tile.key,
+                            parking,
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                    ctx.request_repaint();
+                }
+            })
+            .context("spawn trailhead-parking forge")?;
+        Ok(Self {
+            command,
+            events,
+            _thread: thread,
+        })
+    }
 }
 
 impl Retry {
@@ -99,14 +158,23 @@ impl VectorField {
         ctx: &egui::Context,
         source: Source,
         offline: bool,
-        trails: Option<Arc<TrailGraph>>,
+        trails: Option<(Arc<WalkGraph>, Arc<EdgeIndex>)>,
     ) -> Result<Self> {
+        let (trails, trail_index) = trails.unzip();
+        let parking_forge = trails
+            .as_ref()
+            .zip(trail_index.as_ref())
+            .map(|(graph, index)| {
+                ParkingForge::spawn(ctx.clone(), Arc::clone(graph), Arc::clone(index))
+            })
+            .transpose()?;
         Ok(Self {
             annotations: annotation::Engine::default(),
             corpus: VectorCorpus::mint(),
             armory: Some(Basemap::spawn(ctx.clone(), source, !offline)?),
             tiles: VectorBank::new(VECTOR_CEILING),
             presented: Arc::from([]),
+            prewarm: Arc::from([]),
             transition: None,
             inflight: HashMap::new(),
             missing: HashSet::new(),
@@ -120,8 +188,67 @@ impl VectorField {
             presentation_revision: 0,
             archive_zoom: None,
             trails,
+            trail_index,
+            parking_forge,
             trailhead_parking: HashMap::new(),
+            parking_queue: VecDeque::new(),
+            parking_queued: HashSet::new(),
         })
+    }
+
+    /// Rebind a live field to an expanded project archive without surrendering
+    /// its already-presented tiles. Coordinate-addressed Protomaps tiles are
+    /// reusable across region-union archives; only acquisition and trail-aware
+    /// parking law change.
+    pub fn retarget(
+        &mut self,
+        ctx: &egui::Context,
+        source: Source,
+        offline: bool,
+        graph: Arc<WalkGraph>,
+        index: Arc<EdgeIndex>,
+    ) -> Result<RetiredTrailArmament> {
+        let armory = Basemap::spawn(ctx.clone(), source, !offline)?;
+        self.armory = Some(armory);
+        self.inflight.clear();
+        self.missing.clear();
+        self.retries.clear();
+        self.demand.clear();
+        self.demand_dirty = true;
+        self.archive_zoom = None;
+        self.readiness = ReadinessOracle::default();
+        self.presentation = None;
+        self.prewarm = Arc::from([]);
+        self.bind_trails(ctx, graph, index)
+    }
+
+    /// Add trail-aware wayfinding to an already presented basemap without
+    /// replacing its source, resident tiles, or GPU corpus.
+    pub fn bind_trails(
+        &mut self,
+        ctx: &egui::Context,
+        graph: Arc<WalkGraph>,
+        index: Arc<EdgeIndex>,
+    ) -> Result<RetiredTrailArmament> {
+        let parking_forge =
+            ParkingForge::spawn(ctx.clone(), Arc::clone(&graph), Arc::clone(&index))?;
+        self.parking_forge = Some(parking_forge);
+        self.parking_queue.clear();
+        self.parking_queued.clear();
+        for tile in self
+            .tiles
+            .tiles
+            .values()
+            .map(|entry| Arc::clone(&entry.tile))
+        {
+            if !tile.parking.is_empty() && self.parking_queued.insert(tile.key) {
+                self.parking_queue.push_back(tile);
+            }
+        }
+        let prior_graph = self.trails.replace(graph);
+        let prior_index = self.trail_index.replace(index);
+        ctx.request_repaint();
+        Ok((prior_graph, prior_index))
     }
 
     #[must_use]
@@ -129,15 +256,31 @@ impl VectorField {
         !self.presented.is_empty()
     }
 
-    pub fn absorb(&mut self) {
+    #[cfg(feature = "egui-test")]
+    #[must_use]
+    pub fn presented_tile_count(&self) -> usize {
+        self.presented.len()
+    }
+
+    pub fn absorb(&mut self, ctx: &egui::Context) {
+        let _phase = tracing::info_span!(
+            target: "eternalist::product",
+            "basemap.absorb"
+        )
+        .entered();
         if self.armory.is_none() {
             return;
         }
-        while let Some(event) = self
-            .armory
-            .as_ref()
-            .and_then(|armory| armory.events.try_recv().ok())
+        let begun = Instant::now();
+        let mut absorbed = 0;
+        while absorbed < ABSORB_LIMIT
+            && begun.elapsed() < ABSORB_BUDGET
+            && let Some(event) = self
+                .armory
+                .as_ref()
+                .and_then(|armory| armory.events.try_recv().ok())
         {
+            absorbed += 1;
             match event {
                 basemap::Event::Ready { source_zoom } => {
                     self.archive_zoom = Some(source_zoom);
@@ -153,7 +296,7 @@ impl VectorField {
                         self.readiness.observe(begun.elapsed());
                     }
                     self.retries.remove(&key);
-                    self.index_parking(&tile);
+                    self.enqueue_parking(&tile);
                     self.tiles.insert(tile);
                 }
                 basemap::Event::Missing(key) => {
@@ -172,6 +315,14 @@ impl VectorField {
             }
             self.demand_dirty = true;
         }
+        if self
+            .armory
+            .as_ref()
+            .is_some_and(|armory| !armory.events.is_empty())
+        {
+            ctx.request_repaint();
+        }
+        self.absorb_parking(ctx);
         let parking_tiles = self.trailhead_parking.len();
         self.trailhead_parking
             .retain(|key, _| self.tiles.contains(*key));
@@ -210,13 +361,12 @@ impl VectorField {
     }
 
     fn resolve(&mut self, frame: MapFramePlan, cartography: CartographicPlan, ctx: &egui::Context) {
-        if self
-            .transition
-            .as_ref()
-            .is_some_and(|transition| transition.begun.elapsed() >= PRESENTATION_TRANSITION)
-        {
-            self.transition = None;
-        }
+        let _phase = tracing::info_span!(
+            target: "eternalist::product",
+            "basemap.resolve"
+        )
+        .entered();
+        self.retire_mature_transition();
         if self.armory.is_none() {
             return;
         }
@@ -271,6 +421,25 @@ impl VectorField {
                     .map(|tile| VectorPatch::clipped(tile, cell))
             })
             .collect::<Vec<_>>();
+        let chosen = patches
+            .iter()
+            .map(|patch| patch.tile.key)
+            .collect::<HashSet<_>>();
+        let mut prewarm = cover
+            .cells
+            .iter()
+            .copied()
+            .filter(|cell| !chosen.contains(&cell.key))
+            .filter_map(|cell| {
+                self.tiles
+                    .get(cell.key)
+                    .cloned()
+                    .map(|tile| VectorPatch::clipped(tile, cell))
+            })
+            .collect::<Vec<_>>();
+        prewarm.sort_unstable_by_key(|patch| patch.tile.key);
+        prewarm.dedup_by_key(|patch| patch.tile.key);
+        self.prewarm = prewarm.into();
         if !same_patches(&patches, &self.presented) {
             if !cartography.moving
                 && !self.presented.is_empty()
@@ -292,6 +461,16 @@ impl VectorField {
         });
     }
 
+    fn retire_mature_transition(&mut self) {
+        if self
+            .transition
+            .as_ref()
+            .is_some_and(|transition| transition.begun.elapsed() >= PRESENTATION_TRANSITION)
+        {
+            self.transition = None;
+        }
+    }
+
     fn submit(
         &self,
         painter: &Painter,
@@ -309,6 +488,8 @@ impl VectorField {
                     geometry,
                     gaps,
                     patches,
+                    prewarm: Arc::clone(&self.prewarm),
+                    repaint: painter.ctx().clone(),
                     center_world: frame.viewport.center,
                     world_points: frame.world_points as f32,
                     viewport_points: [frame.rect.width(), frame.rect.height()],
@@ -369,6 +550,11 @@ impl VectorField {
     where
         F: FnOnce() -> Vec<annotation::LineLabel<'a>>,
     {
+        let _phase = tracing::info_span!(
+            target: "eternalist::product",
+            "basemap.annotations"
+        )
+        .entered();
         let stamp = annotation::Stamp {
             epoch: cartography.epoch,
             presentation: self.presentation_revision,
@@ -448,21 +634,53 @@ impl VectorField {
         )
     }
 
-    fn index_parking(&mut self, tile: &VectorTile) {
-        let Some(trails) = &self.trails else { return };
-        let parking = tile
-            .parking
-            .iter()
-            .filter(|parking| abuts_trail(trails, parking))
-            .cloned()
-            .collect::<Arc<[_]>>();
-        if parking.is_empty() {
+    fn enqueue_parking(&mut self, tile: &Arc<VectorTile>) {
+        if self.parking_forge.is_none() {
+            return;
+        }
+        if tile.parking.is_empty() {
             if self.trailhead_parking.remove(&tile.key).is_some() {
                 self.presentation_revision = self.presentation_revision.saturating_add(1);
             }
-        } else {
-            self.trailhead_parking.insert(tile.key, parking);
+            return;
+        }
+        if self.parking_queued.insert(tile.key) {
+            self.parking_queue.push_back(Arc::clone(tile));
+        }
+    }
+
+    fn absorb_parking(&mut self, ctx: &egui::Context) {
+        let Some(forge) = &self.parking_forge else {
+            return;
+        };
+        for _ in 0..PARKING_DRAIN_LIMIT {
+            let Ok(armament) = forge.events.try_recv() else {
+                break;
+            };
+            self.parking_queued.remove(&armament.key);
+            if armament.parking.is_empty() {
+                self.trailhead_parking.remove(&armament.key);
+            } else {
+                self.trailhead_parking
+                    .insert(armament.key, armament.parking);
+            }
             self.presentation_revision = self.presentation_revision.saturating_add(1);
+        }
+        while let Some(tile) = self.parking_queue.front() {
+            match forge.command.try_send(Arc::clone(tile)) {
+                Ok(()) => {
+                    self.parking_queue.pop_front();
+                }
+                Err(TrySendError::Full(_)) => break,
+                Err(TrySendError::Disconnected(_)) => {
+                    self.parking_queue.clear();
+                    self.parking_queued.clear();
+                    break;
+                }
+            }
+        }
+        if !self.parking_queue.is_empty() || !forge.events.is_empty() {
+            ctx.request_repaint();
         }
     }
 
@@ -563,10 +781,10 @@ fn smooth_transition(phase: f32) -> f32 {
     phase * phase * 2.0_f32.mul_add(-phase, 3.0)
 }
 
-fn abuts_trail(trails: &TrailGraph, parking: &basemap::Parking) -> bool {
-    trails
-        .nearest_edge_with_distance(map::world_to_coord(parking.world))
-        .is_some_and(|(_, distance_m)| distance_m <= TRAILHEAD_PARKING_REACH_M)
+fn abuts_trail(trails: &WalkGraph, index: &EdgeIndex, parking: &basemap::Parking) -> bool {
+    index
+        .project(trails, map::world_to_coord(parking.world))
+        .is_some_and(|projection| projection.distance_m <= TRAILHEAD_PARKING_REACH_M)
 }
 
 struct VectorBank {
@@ -792,8 +1010,48 @@ mod tests {
             world: map::world_from_coord(trailgen_core::Coord::new(-120.0, 30.0)),
             ..beside.clone()
         };
-        assert!(abuts_trail(&graph, &beside));
-        assert!(!abuts_trail(&graph, &remote));
+        let index = EdgeIndex::forge(&graph);
+        assert!(abuts_trail(&graph, &index, &beside));
+        assert!(!abuts_trail(&graph, &index, &remote));
+        Ok(())
+    }
+
+    #[test]
+    fn trailhead_parking_projection_is_forged_off_the_event_loop() -> Result<()> {
+        let graph = Arc::new(GraphBuilder::default().build(&geojson::network_from_str(
+            include_str!("../../trailgen-core/tests/fixtures/mini_network.geojson"),
+        )?)?);
+        let beside = basemap::Parking {
+            world: map::world_from_coord(graph.edges[0].geometry.points[0]),
+            name: None,
+            onset_zoom: 15.0,
+        };
+        let remote = basemap::Parking {
+            world: map::world_from_coord(trailgen_core::Coord::new(-120.0, 30.0)),
+            ..beside.clone()
+        };
+        let forge = ParkingForge::spawn(
+            egui::Context::default(),
+            Arc::clone(&graph),
+            Arc::new(EdgeIndex::forge(&graph)),
+        )?;
+        let key = TileKey {
+            zoom: 12,
+            x: 1_205,
+            y: 1_539,
+        };
+        forge.command.send(Arc::new(VectorTile {
+            key,
+            fills: basemap::Mesh::default(),
+            strokes: basemap::Mesh::default(),
+            labels: Arc::from([]),
+            line_labels: Arc::from([]),
+            parking: Arc::from([beside, remote]),
+        }))?;
+
+        let armament = forge.events.recv_timeout(Duration::from_secs(2))?;
+        assert_eq!(armament.key, key);
+        assert_eq!(armament.parking.len(), 1);
         Ok(())
     }
 }

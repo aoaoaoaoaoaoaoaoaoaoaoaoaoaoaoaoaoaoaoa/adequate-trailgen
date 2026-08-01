@@ -1,5 +1,5 @@
-use crate::difficulty::DifficultyBreakdown;
 use crate::geo::{Coord, LineString};
+use crate::hiking::{EdgeTraversal, HikingModel, TraversalEstimate};
 use crate::{Result, TrailgenError};
 use rstar::{AABB, RTree, RTreeObject};
 use serde::{Deserialize, Serialize};
@@ -21,20 +21,102 @@ pub struct EdgeId(pub usize);
     Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize,
 )]
 #[serde(rename_all = "kebab-case")]
-pub enum TrailClass {
+pub enum WayKind {
     #[default]
     Unknown,
     Path,
     Footway,
+    Sidewalk,
+    Crossing,
     Track,
-    Service,
-    Pedestrian,
+    #[serde(alias = "service")]
+    ServiceRoad,
+    PedestrianStreet,
     Steps,
     Bridleway,
     /// A deliberate route across ground where no path is asserted to exist.
     /// Physical ground cover remains represented by [`Terrain`].
     Bushwhack,
-    Road,
+    #[serde(alias = "road")]
+    Roadway,
+    /// Bicycle-priority infrastructure whose pedestrian authority is carried
+    /// independently by [`Access`].
+    Cycleway,
+}
+
+/// The routing projection in which a way participates. Manual routing admits
+/// every value; Finder admits only recreation and its bounded connectors.
+#[derive(
+    Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum WayRealm {
+    #[default]
+    Recreational,
+    Connector,
+    Urban,
+}
+
+impl WayRealm {
+    #[must_use]
+    pub fn from_tag(tag: &str) -> Self {
+        match tag.trim().to_ascii_lowercase().as_str() {
+            "connector" | "recreational-connector" => Self::Connector,
+            "urban" | "pedestrian" | "circulation" => Self::Urban,
+            _ => Self::Recreational,
+        }
+    }
+
+    #[must_use]
+    pub const fn admitted_by_finder(self) -> bool {
+        matches!(self, Self::Recreational | Self::Connector)
+    }
+}
+
+#[derive(
+    Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum GeometryClaim {
+    #[default]
+    Surveyed,
+    CenterlineProxy,
+}
+
+impl GeometryClaim {
+    #[must_use]
+    pub fn from_tag(tag: &str) -> Self {
+        match tag.trim().to_ascii_lowercase().as_str() {
+            "centerline-proxy" | "road-centerline-proxy" | "proxy" => Self::CenterlineProxy,
+            _ => Self::Surveyed,
+        }
+    }
+}
+
+#[derive(
+    Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum CrossingControl {
+    #[default]
+    None,
+    Uncontrolled,
+    Marked,
+    Signals,
+    GradeSeparated,
+}
+
+impl CrossingControl {
+    #[must_use]
+    pub fn from_tag(tag: &str) -> Self {
+        match tag.trim().to_ascii_lowercase().as_str() {
+            "uncontrolled" | "unmarked" | "no" => Self::Uncontrolled,
+            "marked" | "zebra" | "uncontrolled-marked" => Self::Marked,
+            "signals" | "signal" | "traffic-signals" => Self::Signals,
+            "grade-separated" | "bridge" | "tunnel" => Self::GradeSeparated,
+            _ => Self::None,
+        }
+    }
 }
 
 /// How much institutional and physical reality a trail line presently claims.
@@ -92,29 +174,32 @@ impl TrailStanding {
     }
 }
 
-impl TrailClass {
+impl WayKind {
     #[must_use]
     pub fn from_tag(tag: &str) -> Self {
         match tag.trim().to_ascii_lowercase().as_str() {
             "path" | "trail" | "singletrack" => Self::Path,
-            "footway" | "sidewalk" => Self::Footway,
+            "footway" => Self::Footway,
+            "sidewalk" => Self::Sidewalk,
+            "crossing" => Self::Crossing,
             "track" => Self::Track,
-            "service" | "service-road" => Self::Service,
-            "pedestrian" | "pedestrian-way" => Self::Pedestrian,
+            "service" | "service-road" => Self::ServiceRoad,
+            "pedestrian" | "pedestrian-way" => Self::PedestrianStreet,
             "steps" | "stairs" => Self::Steps,
             "bridleway" => Self::Bridleway,
             "bushwhack" | "bushwhacking" | "off-trail" | "offtrail" | "cross-country" => {
                 Self::Bushwhack
             }
             "road" | "living_street" | "residential" | "unclassified" | "tertiary"
-            | "secondary" | "primary" => Self::Road,
+            | "secondary" | "primary" => Self::Roadway,
+            "cycleway" | "cycle-way" => Self::Cycleway,
             _ => Self::Unknown,
         }
     }
 
     #[must_use]
     pub const fn road_like(self) -> bool {
-        matches!(self, Self::Track | Self::Service | Self::Road)
+        matches!(self, Self::Track | Self::ServiceRoad | Self::Roadway)
     }
 
     #[must_use]
@@ -294,6 +379,8 @@ impl Provenance {
 pub struct Vertex {
     pub id: VertexId,
     pub coord: crate::geo::Coord,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub junction: Option<crate::JunctionKey>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -388,8 +475,18 @@ pub struct EdgeAttr {
     pub sustained_steep_m: f64,
     #[serde(default)]
     pub grade_distribution: GradeDistribution,
+    /// Mean magnitude of the surrounding terrain slope in degrees. This is
+    /// distinct from grade along the trail and may be absent without a DEM.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hill_slope_deg: Option<f64>,
     #[serde(default)]
-    pub trail_class: TrailClass,
+    pub way_kind: WayKind,
+    #[serde(default)]
+    pub realm: WayRealm,
+    #[serde(default)]
+    pub geometry_claim: GeometryClaim,
+    #[serde(default)]
+    pub crossing_control: CrossingControl,
     #[serde(default)]
     pub standing: TrailStanding,
     #[serde(default)]
@@ -413,8 +510,7 @@ pub struct EdgeAttr {
     pub road_exposure: f64,
     pub confidence: f64,
     #[serde(default)]
-    pub difficulty_breakdown: DifficultyBreakdown,
-    pub difficulty: f64,
+    pub traversal: EdgeTraversal,
     #[serde(default)]
     pub seed_count: u32,
     #[serde(default)]
@@ -471,10 +567,15 @@ impl Edge {
             self.geometry.reversed()
         }
     }
+
+    #[must_use]
+    pub const fn traversal_from(&self, from: VertexId) -> TraversalEstimate {
+        self.attr.traversal.departing(self, from)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct TrailGraph {
+pub struct WalkGraph {
     pub vertices: Vec<Vertex>,
     pub edges: Vec<Edge>,
     #[serde(default)]
@@ -483,7 +584,7 @@ pub struct TrailGraph {
     pub adjacency: Vec<Vec<EdgeId>>,
 }
 
-impl<'de> Deserialize<'de> for TrailGraph {
+impl<'de> Deserialize<'de> for WalkGraph {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -503,6 +604,9 @@ impl<'de> Deserialize<'de> for TrailGraph {
             turn_bans: stored.turn_bans,
             adjacency: Vec::new(),
         };
+        for edge in &mut graph.edges {
+            HikingModel.apply(edge);
+        }
         graph.validate().map_err(serde::de::Error::custom)?;
         graph.rebuild_adjacency();
         Ok(graph)
@@ -584,20 +688,35 @@ struct EdgeEnvelope {
     bounds: AABB<[f64; 2]>,
 }
 
+#[derive(Clone)]
 pub struct EdgeIndex {
     tree: RTree<EdgeEnvelope>,
 }
 
 impl EdgeIndex {
     #[must_use]
-    pub fn forge(graph: &TrailGraph) -> Self {
+    pub fn forge(graph: &WalkGraph) -> Self {
         Self {
-            tree: edge_spatial_index(&graph.edges),
+            tree: edge_spatial_index(graph.edges.iter()),
         }
     }
 
     #[must_use]
-    pub fn project(&self, graph: &TrailGraph, coord: Coord) -> Option<EdgeProjection> {
+    pub fn forge_allowed(graph: &WalkGraph, allowed: &[bool]) -> Self {
+        assert_eq!(allowed.len(), graph.edges.len());
+        Self {
+            tree: edge_spatial_index(
+                graph
+                    .edges
+                    .iter()
+                    .zip(allowed)
+                    .filter_map(|(edge, allowed)| allowed.then_some(edge)),
+            ),
+        }
+    }
+
+    #[must_use]
+    pub fn project(&self, graph: &WalkGraph, coord: Coord) -> Option<EdgeProjection> {
         let (edge, distance_m) = indexed_nearest_edge(&graph.edges, &self.tree, coord)?;
         let (_, progress_m, coord) = line_projection(&graph.edges[edge.0].geometry, coord)?;
         Some(EdgeProjection {
@@ -606,6 +725,55 @@ impl EdgeIndex {
             progress_m,
             distance_m,
         })
+    }
+
+    /// Returns the nearest legal-looking geometric anchors in deterministic
+    /// order. Selection policy belongs to the caller; the spatial index only
+    /// supplies a bounded candidate set.
+    #[must_use]
+    pub fn candidates(
+        &self,
+        graph: &WalkGraph,
+        coord: Coord,
+        max_distance_m: f64,
+        limit: usize,
+    ) -> Vec<EdgeProjection> {
+        if !max_distance_m.is_finite() || max_distance_m < 0.0 || limit == 0 {
+            return Vec::new();
+        }
+        let latitude_radius = max_distance_m / 110_540.0;
+        let longitude_radius =
+            max_distance_m / (111_320.0 * coord.lat.to_radians().cos().abs().max(0.01));
+        let neighborhood = AABB::from_corners(
+            [coord.lon - longitude_radius, coord.lat - latitude_radius],
+            [coord.lon + longitude_radius, coord.lat + latitude_radius],
+        );
+        let mut candidates = self
+            .tree
+            .locate_in_envelope_intersecting(&neighborhood)
+            .filter_map(|candidate| {
+                let (distance_m, progress_m, anchor) =
+                    line_projection(&graph.edges[candidate.edge.0].geometry, coord)?;
+                (distance_m <= max_distance_m).then_some(EdgeProjection {
+                    edge: candidate.edge,
+                    coord: anchor,
+                    progress_m,
+                    distance_m,
+                })
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| {
+            left.distance_m
+                .total_cmp(&right.distance_m)
+                .then_with(|| {
+                    edge_anchor_rank(&graph.edges[left.edge.0])
+                        .cmp(&edge_anchor_rank(&graph.edges[right.edge.0]))
+                })
+                .then_with(|| left.edge.cmp(&right.edge))
+                .then_with(|| left.progress_m.total_cmp(&right.progress_m))
+        });
+        candidates.truncate(limit);
+        candidates
     }
 }
 
@@ -634,7 +802,7 @@ impl PartialOrd for WalkFrontier {
     }
 }
 
-impl TrailGraph {
+impl WalkGraph {
     #[must_use]
     pub fn new(vertices: Vec<Vertex>, edges: Vec<Edge>) -> Self {
         let mut graph = Self {
@@ -699,6 +867,7 @@ impl TrailGraph {
                     .any(|coord| !valid_coord(coord))
                 || !edge.attr.length_m.is_finite()
                 || edge.attr.length_m <= 0.0
+                || !edge.attr.traversal.valid()
             {
                 return Err(TrailgenError::InvalidData(format!(
                     "edge {index} has invalid geometry or length"
@@ -750,7 +919,7 @@ impl TrailGraph {
 
     #[must_use]
     pub fn trace_coverage(&self, line: &crate::geo::LineString, max_snap_m: f64) -> RouteCoverage {
-        let edge_index = edge_spatial_index(&self.edges);
+        let edge_index = edge_spatial_index(self.edges.iter());
         let mut anchors = Vec::new();
         let mut gaps = Vec::new();
         let mut segment_count = 0usize;
@@ -1217,10 +1386,10 @@ fn edge_distance_m(edge: &Edge, coord: Coord) -> f64 {
     line_projection(&edge.geometry, coord).map_or(f64::INFINITY, |projection| projection.0)
 }
 
-fn edge_spatial_index(edges: &[Edge]) -> RTree<EdgeEnvelope> {
+fn edge_spatial_index<'a>(edges: impl IntoIterator<Item = &'a Edge>) -> RTree<EdgeEnvelope> {
     RTree::bulk_load(
         edges
-            .iter()
+            .into_iter()
             .map(|edge| {
                 let (west, south, east, north) = edge.geometry.points.iter().fold(
                     (
@@ -1289,7 +1458,14 @@ fn indexed_nearest_edge(
                 let distance_m = edge_distance_m(&edges[candidate.edge.0], coord);
                 (candidate.edge, distance_m)
             })
-            .min_by(|left, right| left.1.total_cmp(&right.1));
+            .min_by(|left, right| {
+                left.1
+                    .total_cmp(&right.1)
+                    .then_with(|| {
+                        edge_anchor_rank(&edges[left.0.0]).cmp(&edge_anchor_rank(&edges[right.0.0]))
+                    })
+                    .then_with(|| left.0.cmp(&right.0))
+            });
         if nearest.is_some_and(|(_, distance_m)| distance_m <= radius_m) {
             return nearest;
         }
@@ -1297,7 +1473,41 @@ fn indexed_nearest_edge(
     edges
         .iter()
         .map(|edge| (edge.id, edge_distance_m(edge, coord)))
-        .min_by(|left, right| left.1.total_cmp(&right.1))
+        .min_by(|left, right| {
+            left.1
+                .total_cmp(&right.1)
+                .then_with(|| {
+                    edge_anchor_rank(&edges[left.0.0]).cmp(&edge_anchor_rank(&edges[right.0.0]))
+                })
+                .then_with(|| left.0.cmp(&right.0))
+        })
+}
+
+const fn edge_anchor_rank(edge: &Edge) -> (u8, u8, u8) {
+    let access = match edge.attr.access {
+        Access::Open => 0,
+        Access::Unknown | Access::Restricted => 1,
+        Access::Closed | Access::Private => 2,
+    };
+    let geometry = match edge.attr.geometry_claim {
+        GeometryClaim::Surveyed => 0,
+        GeometryClaim::CenterlineProxy => 1,
+    };
+    let function = match edge.attr.way_kind {
+        WayKind::Path
+        | WayKind::Footway
+        | WayKind::Sidewalk
+        | WayKind::Crossing
+        | WayKind::PedestrianStreet
+        | WayKind::Steps
+        | WayKind::Bridleway
+        | WayKind::Bushwhack
+        | WayKind::Cycleway => 0,
+        WayKind::Track => 1,
+        WayKind::ServiceRoad => 2,
+        WayKind::Roadway | WayKind::Unknown => 3,
+    };
+    (access, geometry, function)
 }
 
 fn route_span_fits_edge(

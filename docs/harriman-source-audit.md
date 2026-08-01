@@ -14,7 +14,8 @@ can accept the recovered state classification without turning it into a current 
 
 The present Harriman integration tests are deterministic solver replays over graphs derived from
 the owned traces. They are not discovery tests over the public Harriman graph. A heuristic search
-over a fresh public South graph, constrained only by length, ascent, descent, shape, and difficulty,
+over a fresh public South graph, constrained only by length, ascent, descent, shape, and the former
+prototype difficulty score,
 found a different loop with only 41 of 922 owned trace segments within 20 m. Public-corpus
 dogfooding therefore needs support points, not narrower scalar constraints.
 

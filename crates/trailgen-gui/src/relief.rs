@@ -63,7 +63,7 @@ pub struct Relief {
     visibility: Option<ReliefVisibility>,
     transition: Option<ReliefTransition>,
     events: Receiver<Result<Field>>,
-    _worker: thread::JoinHandle<()>,
+    worker: thread::JoinHandle<()>,
 }
 
 #[derive(Clone)]
@@ -168,16 +168,7 @@ impl ReliefLaw {
 
 impl Relief {
     pub fn raise(ctx: &egui::Context, root: &Path) -> Result<Self> {
-        let (events_tx, events) = bounded(1);
-        let root = root.to_owned();
-        let worker_ctx = ctx.clone();
-        let worker = thread::Builder::new()
-            .name("isohypse-forge".to_owned())
-            .spawn(move || {
-                let _sent = events_tx.send(load_or_forge(&root));
-                worker_ctx.request_repaint();
-            })
-            .context("spawn isohypse forge")?;
+        let (events, worker) = spawn_forge(ctx, root)?;
         Ok(Self {
             corpus: VectorCorpus::mint(),
             field: Arc::new(Field::default()),
@@ -185,14 +176,23 @@ impl Relief {
             visibility: None,
             transition: None,
             events,
-            _worker: worker,
+            worker,
         })
+    }
+
+    /// Keep the last field visible while the replacement corpus is forged.
+    pub fn retarget(&mut self, ctx: &egui::Context, root: &Path) -> Result<()> {
+        let (events, worker) = spawn_forge(ctx, root)?;
+        self.events = events;
+        self.worker = worker;
+        Ok(())
     }
 
     pub fn absorb(&mut self) {
         if let Ok(event) = self.events.try_recv() {
             match event {
                 Ok(field) => {
+                    self.corpus = VectorCorpus::mint();
                     self.field = Arc::new(field);
                     self.revision = self.revision.saturating_add(1);
                     self.visibility = None;
@@ -296,6 +296,8 @@ impl Relief {
                 geometry: GeometryPass::Strokes,
                 gaps,
                 patches: patches.into(),
+                prewarm: Arc::from([]),
+                repaint: painter.ctx().clone(),
                 center_world: frame.viewport.center,
                 world_points: frame.world_points as f32,
                 viewport_points: [frame.rect.width(), frame.rect.height()],
@@ -334,6 +336,23 @@ impl Relief {
             })
             .collect()
     }
+}
+
+fn spawn_forge(
+    ctx: &egui::Context,
+    root: &Path,
+) -> Result<(Receiver<Result<Field>>, thread::JoinHandle<()>)> {
+    let (events_tx, events) = bounded(1);
+    let root = root.to_owned();
+    let worker_ctx = ctx.clone();
+    let worker = thread::Builder::new()
+        .name("isohypse-forge".to_owned())
+        .spawn(move || {
+            let _sent = events_tx.send(load_or_forge(&root));
+            worker_ctx.request_repaint();
+        })
+        .context("spawn isohypse forge")?;
+    Ok((events, worker))
 }
 
 fn relief_patches(field: &Field, detail: u8, frame: MapFramePlan) -> Arc<[VectorPatch]> {

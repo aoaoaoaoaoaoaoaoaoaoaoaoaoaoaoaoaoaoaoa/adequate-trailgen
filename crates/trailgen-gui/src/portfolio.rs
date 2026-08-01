@@ -1,7 +1,7 @@
 use crate::{gallery::CandidatePreview, map::RouteOverlay, profile::ElevationProfile};
 use std::{collections::BTreeMap, sync::Arc, time::Instant};
 use trailgen_core::{
-    EdgeId, LoopConstraints, Route, RouteShape, RoutingLaw, Trail, TrailGraph, VertexId,
+    EdgeId, LoopConstraints, Route, RouteShape, RoutingLaw, Trail, VertexId, WalkGraph,
 };
 
 pub struct CandidatePortfolio {
@@ -40,7 +40,7 @@ impl CandidatePortfolio {
     }
 
     pub fn forge(
-        graph: &TrailGraph,
+        graph: &WalkGraph,
         routes: Vec<Route>,
         routing: RoutingLaw,
         defaults: &LoopConstraints,
@@ -168,21 +168,29 @@ pub fn manual_constraints(defaults: &LoopConstraints, shape: RouteShape) -> Loop
     let mut constraints = defaults.clone();
     constraints.min_distance_m = 0.0;
     constraints.max_distance_m = 1.0e9;
-    constraints.min_difficulty = 0.0;
-    constraints.max_difficulty = 1.0e9;
-    constraints.target_difficulty = None;
+    constraints.min_lower_limb_load_km = 0.0;
+    constraints.max_lower_limb_load_km = 1.0e9;
+    constraints.target_lower_limb_load_km = None;
+    constraints.min_moving_time_s = 0.0;
+    constraints.max_moving_time_s = 1.0e12;
     constraints.min_ascent_m = 0.0;
     constraints.max_ascent_m = 1.0e9;
     constraints.min_descent_m = 0.0;
     constraints.max_descent_m = 1.0e9;
     constraints.max_road_fraction = 1.0;
     constraints.max_low_confidence_fraction = 1.0;
-    constraints.max_repeated_edge_fraction = if shape == RouteShape::OutAndBack {
-        1.0
-    } else {
-        0.0
+    constraints.max_repeated_edge_fraction = 1.0;
+    constraints.allowed_shapes = match shape {
+        // `Trail::shape` is the authored design, whereas `RouteMetrics::shape`
+        // records the walk that design realizes. Every closed morphology is a
+        // lawful manual loop; generated searches retain their strict defaults.
+        RouteShape::Loop => vec![
+            RouteShape::Loop,
+            RouteShape::FigureEight,
+            RouteShape::OutAndBack,
+        ],
+        _ => vec![shape],
     };
-    constraints.allowed_shapes = vec![shape];
     constraints
 }
 
@@ -202,7 +210,7 @@ fn gather<T>(
 }
 
 fn infer_design(
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     route: &Route,
     routing: RoutingLaw,
     defaults: &LoopConstraints,
@@ -221,7 +229,7 @@ fn infer_design(
     (lhs.shape == rhs.shape
         && same_path(
             &route.geometry(graph),
-            &realized.route.geometry(realized.graph(graph)),
+            &realized.route.geometry(realized.graph()),
         )
         && (lhs.distance_m - rhs.distance_m).abs() < 0.05
         && (lhs.ascent_m - rhs.ascent_m).abs() < 0.05
@@ -268,9 +276,9 @@ fn same_path(left: &trailgen_core::LineString, right: &trailgen_core::LineString
 mod tests {
     use super::*;
     use anyhow::Result;
-    use trailgen_core::{ExactLoopSolver, GraphBuilder, VertexId, io::geojson};
+    use trailgen_core::{ExactLoopSolver, GraphBuilder, RouteMetrics, VertexId, io::geojson};
 
-    fn fixture() -> Result<TrailGraph> {
+    fn fixture() -> Result<WalkGraph> {
         Ok(
             GraphBuilder::default().build(&geojson::network_from_str(include_str!(
                 "../../trailgen-core/tests/fixtures/mini_network.geojson"
@@ -284,7 +292,7 @@ mod tests {
         let constraints = LoopConstraints {
             min_distance_m: 0.0,
             max_distance_m: f64::MAX,
-            max_difficulty: f64::MAX,
+            max_lower_limb_load_km: f64::MAX,
             max_repeated_edge_fraction: 0.0,
             allowed_shapes: vec![RouteShape::Loop],
             ..LoopConstraints::default()
@@ -324,5 +332,37 @@ mod tests {
             assert!(Arc::ptr_eq(&second.previews[slot], &first.previews[prior]));
         }
         Ok(())
+    }
+
+    #[test]
+    fn manual_loops_admit_closed_morphologies_without_weakening_search_defaults() {
+        let defaults = LoopConstraints {
+            min_distance_m: 0.0,
+            max_distance_m: f64::MAX,
+            max_repeated_edge_fraction: 0.0,
+            allowed_shapes: vec![RouteShape::Loop],
+            ..LoopConstraints::default()
+        };
+        let manual = manual_constraints(&defaults, RouteShape::Loop);
+        let repeated = RouteMetrics {
+            shape: RouteShape::OutAndBack,
+            distance_m: 1_000.0,
+            repeated_edge_fraction: 0.5,
+            ..RouteMetrics::default()
+        };
+
+        assert!(defaults.max_repeated_edge_fraction.abs() < f64::EPSILON);
+        assert_eq!(defaults.allowed_shapes, [RouteShape::Loop]);
+        assert!(!defaults.judge(&repeated).satisfied);
+        assert!((manual.max_repeated_edge_fraction - 1.0).abs() < f64::EPSILON);
+        assert_eq!(
+            manual.allowed_shapes,
+            [
+                RouteShape::Loop,
+                RouteShape::FigureEight,
+                RouteShape::OutAndBack,
+            ]
+        );
+        assert!(manual.judge(&repeated).satisfied);
     }
 }

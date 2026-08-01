@@ -8,12 +8,12 @@ use std::{
     path::{Path, PathBuf},
 };
 use trailgen_core::{
-    Access, Coord, Edge, LineString, LoopConstraints, Route, RouteMetrics, RouteShape, RoutingLaw,
-    SupportPoint, Terrain, Trail, TrailClass, TrailGraph, TrailMarking, TrailRealization,
-    TrailStanding,
+    Access, Coord, Edge, HikingModel, LineString, LoopConstraints, Route, RouteMetrics, RouteShape,
+    RoutingLaw, SupportPoint, Terrain, Trail, TrailMarking, TrailRealization, TrailStanding,
+    WalkGraph, WayKind,
 };
 
-const SCHEMA: u32 = 4;
+const SCHEMA: u32 = 6;
 const INDEX: &str = "library/index.json";
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -106,7 +106,7 @@ impl SearchBoundary {
 
     pub(crate) fn edge_mask(
         &self,
-        graph: &TrailGraph,
+        graph: &WalkGraph,
         mut pulse: impl FnMut(usize, usize) -> bool,
     ) -> Option<Vec<bool>> {
         const PULSE_STRIDE: usize = 128;
@@ -237,13 +237,22 @@ pub struct SearchRecipe {
     pub boundary: Option<SearchBoundary>,
     pub distance_m: MeasureRange,
     pub climb_m: MeasureRange,
-    #[serde(default = "default_difficulty_target")]
-    pub difficulty: f64,
+    #[serde(default = "default_moving_time_range")]
+    pub moving_time_s: MeasureRange,
+    #[serde(default = "default_lower_limb_load_target", alias = "difficulty")]
+    pub lower_limb_load_km: f64,
     pub shape: RouteShape,
 }
 
-const fn default_difficulty_target() -> f64 {
+const fn default_lower_limb_load_target() -> f64 {
     30.0
+}
+
+const fn default_moving_time_range() -> MeasureRange {
+    MeasureRange {
+        min: 0.0,
+        max: 48.0 * 3_600.0,
+    }
 }
 
 impl SearchRecipe {
@@ -259,10 +268,18 @@ impl SearchRecipe {
                 min: defaults.min_ascent_m,
                 max: defaults.max_ascent_m,
             },
-            difficulty: defaults.target_difficulty.unwrap_or_else(|| {
-                default_difficulty_target()
-                    .max(defaults.min_difficulty)
-                    .min(defaults.max_difficulty)
+            moving_time_s: MeasureRange {
+                min: defaults.min_moving_time_s,
+                max: if defaults.max_moving_time_s > 1.0e300 {
+                    default_moving_time_range().max
+                } else {
+                    defaults.max_moving_time_s
+                },
+            },
+            lower_limb_load_km: defaults.target_lower_limb_load_km.unwrap_or_else(|| {
+                default_lower_limb_load_target()
+                    .max(defaults.min_lower_limb_load_km)
+                    .min(defaults.max_lower_limb_load_km)
             }),
             shape: defaults
                 .allowed_shapes
@@ -275,9 +292,10 @@ impl SearchRecipe {
     pub fn validate(&self) -> Result<()> {
         self.distance_m.validate("distance")?;
         self.climb_m.validate("climb")?;
+        self.moving_time_s.validate("moving time")?;
         ensure!(
-            self.difficulty.is_finite() && self.difficulty >= 0.0,
-            "difficulty target must be finite and nonnegative"
+            self.lower_limb_load_km.is_finite() && self.lower_limb_load_km >= 0.0,
+            "lower-limb load target must be finite and nonnegative"
         );
         ensure!(
             self.trailhead.is_none_or(|trailhead| {
@@ -302,8 +320,10 @@ impl SearchRecipe {
         constraints.max_distance_m = self.distance_m.max;
         constraints.min_ascent_m = self.climb_m.min;
         constraints.max_ascent_m = self.climb_m.max;
+        constraints.min_moving_time_s = self.moving_time_s.min;
+        constraints.max_moving_time_s = self.moving_time_s.max;
         constraints.allowed_shapes = vec![self.shape];
-        constraints.target_difficulty = Some(self.difficulty);
+        constraints.target_lower_limb_load_km = Some(self.lower_limb_load_km);
         // Roads are undesirable rather than intrinsically unlawful. Their
         // finite routing/quality penalty may yield when they are the only way
         // to hit an easier target; closed and private edges remain excluded.
@@ -327,7 +347,8 @@ impl SearchRecipe {
 #[serde(deny_unknown_fields)]
 pub struct TrailLeg {
     pub geometry: LineString,
-    pub trail_class: TrailClass,
+    #[serde(alias = "trail_class")]
+    pub way_kind: WayKind,
     #[serde(default)]
     pub standing: TrailStanding,
     #[serde(default)]
@@ -346,16 +367,20 @@ pub struct SavedTrail {
     pub metrics: RouteMetrics,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub support_points: Vec<SupportPoint>,
+    /// Authored topology is distinct from measured walk morphology: a manual
+    /// loop may lawfully retrace a bridge and therefore measure `OutAndBack`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub design_shape: Option<RouteShape>,
     #[serde(default)]
     pub routing: RoutingLaw,
 }
 
 impl SavedTrail {
-    pub fn capture(graph: &TrailGraph, route: &Route) -> Result<Self> {
+    pub fn capture(graph: &WalkGraph, route: &Route) -> Result<Self> {
         Self::capture_design(graph, route, None)
     }
 
-    fn capture_design(graph: &TrailGraph, route: &Route, trail: Option<&Trail>) -> Result<Self> {
+    fn capture_design(graph: &WalkGraph, route: &Route, trail: Option<&Trail>) -> Result<Self> {
         ensure!(
             graph.walk_edges(route.start, &route.edges).is_some(),
             "candidate `{}` is not a legal graph walk",
@@ -369,7 +394,7 @@ impl SavedTrail {
                 let edge = &graph.edges[edge_id.0];
                 let leg = TrailLeg {
                     geometry: edge.oriented_geometry(at),
-                    trail_class: edge.attr.trail_class,
+                    way_kind: edge.attr.way_kind,
                     standing: edge.attr.standing,
                     marking: edge.attr.marking,
                     terrain: edge.attr.terrain,
@@ -389,13 +414,14 @@ impl SavedTrail {
             legs,
             metrics: route.metrics.clone(),
             support_points: trail.map_or_else(Vec::new, |trail| trail.support_points.clone()),
+            design_shape: trail.map(|trail| trail.shape),
             routing: trail.map_or_else(RoutingLaw::default, |trail| trail.routing),
         })
     }
 
     pub fn design(&self) -> Option<Trail> {
         Trail::forge(
-            self.metrics.shape,
+            self.design_shape.unwrap_or(self.metrics.shape),
             self.support_points.clone(),
             self.routing,
         )
@@ -457,7 +483,7 @@ impl Library {
         }
     }
 
-    pub fn open(project: &Path, graph: &TrailGraph, defaults: &LoopConstraints) -> Result<Self> {
+    pub fn open(project: &Path, graph: &WalkGraph, defaults: &LoopConstraints) -> Result<Self> {
         let path = index_path(project);
         match fs::read(&path) {
             Ok(bytes) => {
@@ -470,7 +496,7 @@ impl Library {
                             .with_context(|| format!("parse {}", path.display()))?,
                         false,
                     )
-                } else if schema == 3 {
+                } else if matches!(schema, 3..=5) {
                     let mut library = serde_json::from_slice::<Self>(&bytes)
                         .with_context(|| format!("parse {}", path.display()))?;
                     library.schema = SCHEMA;
@@ -493,7 +519,7 @@ impl Library {
                 } else {
                     anyhow::bail!("unsupported trail library schema {schema}");
                 };
-                let repaired = library.recover_metrics(schema == 1) || migrated;
+                let repaired = library.recover_metrics(schema) || migrated;
                 library.validate()?;
                 if repaired {
                     library.save(project)?;
@@ -575,41 +601,46 @@ impl Library {
         Ok(true)
     }
 
-    pub fn promote(&mut self, graph: &TrailGraph, route: &Route) -> Result<TrailId> {
+    pub fn promote(&mut self, graph: &WalkGraph, route: &Route) -> Result<TrailId> {
         let trail = SavedTrail::capture(graph, route)?;
+        Ok(self.admit(trail))
+    }
+
+    pub fn promote_design(
+        &mut self,
+        graph: &WalkGraph,
+        route: &Route,
+        design: &Trail,
+    ) -> Result<TrailId> {
+        let trail = SavedTrail::capture_design(graph, route, Some(design))?;
+        Ok(self.admit(trail))
+    }
+
+    fn admit(&mut self, trail: SavedTrail) -> TrailId {
         let id = trail.id.clone();
         if self.trail(&id).is_none() {
             self.trails.push(trail);
         }
-        Ok(id)
+        id
     }
 
-    pub fn promote_realization(
-        &mut self,
-        graph: &TrailGraph,
-        realization: &TrailRealization,
-    ) -> Result<TrailId> {
+    pub fn promote_realization(&mut self, realization: &TrailRealization) -> Result<TrailId> {
         let trail = SavedTrail::capture_design(
-            realization.graph(graph),
+            realization.graph(),
             &realization.route,
             Some(&realization.trail),
         )?;
-        let id = trail.id.clone();
-        if self.trail(&id).is_none() {
-            self.trails.push(trail);
-        }
-        Ok(id)
+        Ok(self.admit(trail))
     }
 
     pub fn replace_realization(
         &mut self,
         old: &TrailId,
-        graph: &TrailGraph,
         realization: &TrailRealization,
     ) -> Result<TrailId> {
         ensure!(self.trail(old).is_some(), "trail no longer exists");
         let replacement = SavedTrail::capture_design(
-            realization.graph(graph),
+            realization.graph(),
             &realization.route,
             Some(&realization.trail),
         )?;
@@ -639,7 +670,8 @@ impl Library {
                     trail.metrics.distance_m,
                     trail.metrics.ascent_m,
                     trail.metrics.descent_m,
-                    trail.metrics.difficulty,
+                    trail.metrics.lower_limb_load_km,
+                    trail.metrics.moving_time_s,
                 ]
                 .into_iter()
                 .all(|value| value.is_finite() && value >= 0.0),
@@ -659,7 +691,7 @@ impl Library {
             trail.routing.validate().map_err(anyhow::Error::from)?;
             if !trail.support_points.is_empty() {
                 Trail::forge(
-                    trail.metrics.shape,
+                    trail.design_shape.unwrap_or(trail.metrics.shape),
                     trail.support_points.clone(),
                     trail.routing,
                 )
@@ -670,10 +702,10 @@ impl Library {
         Ok(())
     }
 
-    fn recover_metrics(&mut self, legacy: bool) -> bool {
+    fn recover_metrics(&mut self, schema: u32) -> bool {
         let mut changed = false;
         for trail in &mut self.trails {
-            if legacy {
+            if schema == 1 {
                 let disutility = 0.70_f64.mul_add(
                     trail.metrics.road_fraction,
                     0.25_f64.mul_add(
@@ -682,6 +714,33 @@ impl Library {
                     ),
                 );
                 trail.metrics.quality = 100.0 * (1.0 - disutility.clamp(0.0, 1.0));
+                changed = true;
+            }
+            if schema < 5 {
+                let traversal = trail
+                    .legs
+                    .iter()
+                    .map(|leg| {
+                        HikingModel
+                            .estimate_leg(
+                                &leg.geometry,
+                                leg.way_kind,
+                                leg.terrain,
+                                leg.surface.as_deref(),
+                                None,
+                            )
+                            .forward
+                    })
+                    .fold(
+                        trailgen_core::TraversalEstimate::default(),
+                        |mut total, estimate| {
+                            total.lower_limb_load_km += estimate.lower_limb_load_km;
+                            total.moving_time_s += estimate.moving_time_s;
+                            total
+                        },
+                    );
+                trail.metrics.lower_limb_load_km = traversal.lower_limb_load_km;
+                trail.metrics.moving_time_s = traversal.moving_time_s;
                 changed = true;
             }
             if trail.metrics.elevation_fraction <= f64::EPSILON {
@@ -716,11 +775,11 @@ impl Library {
 
     fn migrate_legacy(
         project: &Path,
-        graph: &TrailGraph,
+        graph: &WalkGraph,
         defaults: &LoopConstraints,
     ) -> Result<Self> {
         let generated_graph =
-            read_optional::<TrailGraph>(&project.join("routes/generated.graph.json"))?;
+            read_optional::<WalkGraph>(&project.join("routes/generated.graph.json"))?;
         if generated_graph.as_ref() != Some(graph) {
             return Ok(Self::forge(defaults));
         }
@@ -772,7 +831,7 @@ mod tests {
         GraphBuilder, RoutingLaw, SearchParams, SolverKind, SupportPoint, Trail, io::geojson,
     };
 
-    fn fixture() -> Result<(TrailGraph, Route)> {
+    fn fixture() -> Result<(WalkGraph, Route)> {
         let graph = GraphBuilder::default().build(&geojson::network_from_str(include_str!(
             "../../trailgen-core/tests/fixtures/mini_network.geojson"
         ))?)?;
@@ -796,20 +855,41 @@ mod tests {
     }
 
     #[test]
-    fn default_recipe_targets_difficulty_without_capping_it() -> Result<()> {
+    fn default_recipe_targets_lower_limb_load_without_capping_it() -> Result<()> {
+        const FOUR_HOURS_S: f64 = 14_400.0;
+        const NINE_HOURS_S: f64 = 32_400.0;
+        const FORTY_EIGHT_HOURS_S: f64 = 172_800.0;
         let defaults = LoopConstraints::default();
         let recipe = SearchRecipe::from_defaults(&defaults);
 
-        assert!((recipe.difficulty - default_difficulty_target()).abs() <= f64::EPSILON);
-        assert!(recipe.constraints(&defaults)?.max_difficulty > 1.0e300);
+        assert!(
+            (recipe.lower_limb_load_km - default_lower_limb_load_target()).abs() <= f64::EPSILON
+        );
+        let projected = recipe.constraints(&defaults)?;
+        assert!(projected.max_lower_limb_load_km > 1.0e300);
+        assert_eq!(
+            recipe.moving_time_s,
+            MeasureRange {
+                min: 0.0,
+                max: 48.0 * 3_600.0,
+            }
+        );
+        assert!((projected.max_moving_time_s - FORTY_EIGHT_HOURS_S).abs() <= f64::EPSILON);
         let bounded = LoopConstraints {
-            min_difficulty: 50.0,
-            max_difficulty: 90.0,
+            min_lower_limb_load_km: 50.0,
+            max_lower_limb_load_km: 90.0,
+            min_moving_time_s: FOUR_HOURS_S,
+            max_moving_time_s: NINE_HOURS_S,
             ..defaults
         };
         let recipe = SearchRecipe::from_defaults(&bounded);
-        assert!((recipe.difficulty - 50.0).abs() <= f64::EPSILON);
-        assert!((recipe.constraints(&bounded)?.max_difficulty - 90.0).abs() <= f64::EPSILON);
+        assert!((recipe.lower_limb_load_km - 50.0).abs() <= f64::EPSILON);
+        let projected = recipe.constraints(&bounded)?;
+        assert!((projected.max_lower_limb_load_km - 90.0).abs() <= f64::EPSILON);
+        assert!((recipe.moving_time_s.min - FOUR_HOURS_S).abs() <= f64::EPSILON);
+        assert!((recipe.moving_time_s.max - NINE_HOURS_S).abs() <= f64::EPSILON);
+        assert!((projected.min_moving_time_s - FOUR_HOURS_S).abs() <= f64::EPSILON);
+        assert!((projected.max_moving_time_s - NINE_HOURS_S).abs() <= f64::EPSILON);
         Ok(())
     }
 
@@ -846,7 +926,7 @@ mod tests {
         let saved = SavedTrail::capture(&graph, &route)?;
         let id = saved.id.clone();
         let mut first = SearchRecipe::from_defaults(&LoopConstraints::default());
-        first.difficulty = 73.0;
+        first.lower_limb_load_km = 73.0;
         let second = SearchRecipe::from_defaults(&LoopConstraints::default());
         let path = index_path(temp.path());
         fs::create_dir_all(path.parent().context("index parent")?)?;
@@ -865,7 +945,7 @@ mod tests {
 
         let library = Library::open(temp.path(), &graph, &LoopConstraints::default())?;
         assert_eq!(library.trails().len(), 1);
-        assert!((library.search().difficulty - 73.0).abs() < f64::EPSILON);
+        assert!((library.search().lower_limb_load_km - 73.0).abs() < f64::EPSILON);
         let stored: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
         assert_eq!(stored["schema"], SCHEMA);
         assert!(stored.get("families").is_none());
@@ -970,6 +1050,77 @@ mod tests {
     }
 
     #[test]
+    fn schema_four_difficulty_migrates_to_load_and_time() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let (graph, route) = fixture()?;
+        let path = index_path(temp.path());
+        fs::create_dir_all(path.parent().context("index parent")?)?;
+        let mut library = Library::default();
+        library.search.lower_limb_load_km = 73.0;
+        library.promote(&graph, &route)?;
+        let mut value = serde_json::to_value(library)?;
+        value["schema"] = serde_json::json!(4);
+        let search = value["search"]
+            .as_object_mut()
+            .context("search recipe object")?;
+        search.insert("difficulty".to_owned(), serde_json::json!(73.0));
+        search.remove("lower_limb_load_km");
+        search.remove("moving_time_s");
+        for trail in value["trails"].as_array_mut().context("saved trails")? {
+            let metrics = trail["metrics"].as_object_mut().context("route metrics")?;
+            metrics.insert("difficulty".to_owned(), serde_json::json!(12_345.0));
+            metrics.remove("lower_limb_load_km");
+            metrics.remove("moving_time_s");
+        }
+        fs::write(&path, serde_json::to_vec_pretty(&value)?)?;
+
+        let library = Library::open(temp.path(), &graph, &LoopConstraints::default())?;
+
+        assert!((library.search().lower_limb_load_km - 73.0).abs() <= f64::EPSILON);
+        assert_eq!(library.search().moving_time_s, default_moving_time_range());
+        assert!(library.trails()[0].metrics.lower_limb_load_km > 0.0);
+        assert!(library.trails()[0].metrics.moving_time_s > 0.0);
+        let stored: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
+        assert_eq!(stored["schema"], SCHEMA);
+        assert!(stored["search"].get("difficulty").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn schema_five_trail_class_is_rectified_to_way_kind() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let (graph, route) = fixture()?;
+        let path = index_path(temp.path());
+        fs::create_dir_all(path.parent().context("index parent")?)?;
+        let mut library = Library::default();
+        library.promote(&graph, &route)?;
+        let mut value = serde_json::to_value(library)?;
+        value["schema"] = serde_json::json!(5);
+        for trail in value["trails"].as_array_mut().context("saved trails")? {
+            for leg in trail["legs"].as_array_mut().context("saved trail legs")? {
+                let leg = leg.as_object_mut().context("saved trail leg")?;
+                let kind = leg.remove("way_kind").context("way kind")?;
+                leg.insert("trail_class".to_owned(), kind);
+            }
+        }
+        value["trails"][0]["legs"][0]["trail_class"] = serde_json::json!("road");
+        value["trails"][0]["legs"][1]["trail_class"] = serde_json::json!("service");
+        fs::write(&path, serde_json::to_vec_pretty(&value)?)?;
+
+        let library = Library::open(temp.path(), &graph, &LoopConstraints::default())?;
+
+        assert!(!library.trails().is_empty());
+        assert_eq!(library.trails()[0].legs[0].way_kind, WayKind::Roadway);
+        assert_eq!(library.trails()[0].legs[1].way_kind, WayKind::ServiceRoad);
+        let stored: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
+        assert_eq!(stored["schema"], SCHEMA);
+        let leg = &stored["trails"][0]["legs"][0];
+        assert!(leg.get("way_kind").is_some());
+        assert!(leg.get("trail_class").is_none());
+        Ok(())
+    }
+
+    #[test]
     fn support_design_survives_library_round_trip_and_replacement() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let (graph, _) = fixture()?;
@@ -985,7 +1136,7 @@ mod tests {
             let constraints = LoopConstraints {
                 min_distance_m: 0.0,
                 max_distance_m: f64::MAX,
-                max_difficulty: f64::MAX,
+                max_lower_limb_load_km: f64::MAX,
                 max_repeated_edge_fraction: 1.0,
                 allowed_shapes: vec![RouteShape::OutAndBack],
                 ..LoopConstraints::default()
@@ -994,7 +1145,7 @@ mod tests {
         };
 
         let mut library = Library::default();
-        let original = library.promote_realization(&graph, &realize(2)?)?;
+        let original = library.promote_realization(&realize(2)?)?;
         library.save(temp.path())?;
 
         let mut reopened = Library::open(temp.path(), &graph, &LoopConstraints::default())?;
@@ -1004,7 +1155,7 @@ mod tests {
                 .and_then(SavedTrail::design)
                 .is_some()
         );
-        let replacement = reopened.replace_realization(&original, &graph, &realize(1)?)?;
+        let replacement = reopened.replace_realization(&original, &realize(1)?)?;
         assert!(
             reopened
                 .trail(&replacement)

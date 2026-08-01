@@ -13,13 +13,17 @@ pub struct LoopConstraints {
     #[serde(default = "default_max_distance_m")]
     pub max_distance_m: f64,
     #[serde(default)]
-    pub min_difficulty: f64,
-    #[serde(default = "default_max_difficulty")]
-    pub max_difficulty: f64,
-    /// Preferred scalar difficulty inside the lawful difficulty window. This
-    /// guides ranking; it is not another constraint.
+    pub min_lower_limb_load_km: f64,
+    #[serde(default = "default_unbounded")]
+    pub max_lower_limb_load_km: f64,
+    /// Preferred flat-gravel joint-work-equivalent load inside the lawful
+    /// load window. This guides ranking; it is not another constraint.
     #[serde(default)]
-    pub target_difficulty: Option<f64>,
+    pub target_lower_limb_load_km: Option<f64>,
+    #[serde(default)]
+    pub min_moving_time_s: f64,
+    #[serde(default = "default_unbounded")]
+    pub max_moving_time_s: f64,
     #[serde(default)]
     pub min_ascent_m: f64,
     #[serde(default = "default_max_elevation_m")]
@@ -51,9 +55,11 @@ impl Default for LoopConstraints {
         Self {
             min_distance_m: DEFAULT_MIN_DISTANCE_M,
             max_distance_m: DEFAULT_MAX_DISTANCE_M,
-            min_difficulty: 0.0,
-            max_difficulty: f64::MAX,
-            target_difficulty: None,
+            min_lower_limb_load_km: 0.0,
+            max_lower_limb_load_km: f64::MAX,
+            target_lower_limb_load_km: None,
+            min_moving_time_s: 0.0,
+            max_moving_time_s: f64::MAX,
             min_ascent_m: 0.0,
             max_ascent_m: 3_000.0,
             min_descent_m: 0.0,
@@ -106,7 +112,7 @@ impl LoopConstraints {
             .collect()
     }
 
-    fn core_checks(&self, m: &RouteMetrics) -> [BoundCheck<'_>; 12] {
+    fn core_checks(&self, m: &RouteMetrics) -> [BoundCheck<'_>; 14] {
         [
             BoundCheck::min(
                 "distance",
@@ -122,15 +128,41 @@ impl LoopConstraints {
                 "km",
                 2,
             ),
-            BoundCheck::min("difficulty", m.difficulty, self.min_difficulty, "", 2),
-            BoundCheck::max("difficulty", m.difficulty, self.max_difficulty, "", 2),
+            BoundCheck::min(
+                "lower-limb load",
+                m.lower_limb_load_km,
+                self.min_lower_limb_load_km,
+                "FGJW km",
+                2,
+            ),
+            BoundCheck::max(
+                "lower-limb load",
+                m.lower_limb_load_km,
+                self.max_lower_limb_load_km,
+                "FGJW km",
+                2,
+            ),
+            BoundCheck::min(
+                "moving time",
+                m.moving_time_s / 3_600.0,
+                self.min_moving_time_s / 3_600.0,
+                "h",
+                2,
+            ),
+            BoundCheck::max(
+                "moving time",
+                m.moving_time_s / 3_600.0,
+                self.max_moving_time_s / 3_600.0,
+                "h",
+                2,
+            ),
             BoundCheck::min("ascent", m.ascent_m, self.min_ascent_m, "m", 0),
             BoundCheck::max("ascent", m.ascent_m, self.max_ascent_m, "m", 0),
             BoundCheck::min("descent", m.descent_m, self.min_descent_m, "m", 0),
             BoundCheck::max("descent", m.descent_m, self.max_descent_m, "m", 0),
             BoundCheck::max_named(
-                "road/pavement exposure",
-                "road/pavement fraction",
+                "road exposure",
+                "road fraction",
                 m.road_fraction * 100.0,
                 self.max_road_fraction * 100.0,
                 "%",
@@ -419,7 +451,7 @@ impl<'a> BoundCheck<'a> {
             BoundKind::Maximum => self.value - self.bound,
         };
         let floor = match self.unit {
-            "km" => 0.001,
+            "km" | "FGJW km" | "h" => 0.001,
             _ => 1.0,
         };
         (breach / self.bound.max(floor)).max(0.0)
@@ -538,7 +570,7 @@ const fn default_max_distance_m() -> f64 {
     DEFAULT_MAX_DISTANCE_M
 }
 
-const fn default_max_difficulty() -> f64 {
+const fn default_unbounded() -> f64 {
     f64::MAX
 }
 

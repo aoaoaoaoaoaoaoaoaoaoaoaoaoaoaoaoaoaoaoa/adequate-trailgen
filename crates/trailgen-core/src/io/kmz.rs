@@ -1,7 +1,7 @@
 use crate::geo::LineString;
 use crate::io::kml;
 use crate::io::route_file::RouteFile;
-use crate::model::TrailGraph;
+use crate::model::WalkGraph;
 use crate::route::Route;
 use crate::{Result, TrailgenError};
 use std::io::{Cursor, Read, Write};
@@ -46,7 +46,7 @@ pub fn route_file_from_bytes(bytes: &[u8]) -> Result<RouteFile> {
     ))
 }
 
-pub fn route_to_kmz(graph: &TrailGraph, route: &Route) -> Result<Vec<u8>> {
+pub fn route_to_kmz(graph: &WalkGraph, route: &Route) -> Result<Vec<u8>> {
     let cursor = Cursor::new(Vec::new());
     let mut writer = zip::ZipWriter::new(cursor);
     writer

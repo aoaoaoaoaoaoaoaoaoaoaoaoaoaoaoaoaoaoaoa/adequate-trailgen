@@ -1,6 +1,6 @@
 # Source Adapters
 
-Source adapters live at the perimeter. Their job is to turn provider-native bytes into provider-neutral graph drafts, overlays, elevation samplers, or seed routes while preserving provenance and confidence. Provider quirks must not leak into `TrailGraph`, `Route`, `LoopConstraints`, or the optimizer.
+Source adapters live at the perimeter. Their job is to turn provider-native bytes into provider-neutral graph drafts, overlays, elevation samplers, or seed routes while preserving provenance and confidence. Provider quirks must not leak into `WalkGraph`, `Route`, `LoopConstraints`, or the optimizer.
 
 The current registry is `adapter_registry()` in `crates/trailgen-core/src/source.rs`. Add a new adapter there with:
 
@@ -17,7 +17,7 @@ Shapefile adapters must treat `.shp`, `.dbf`, `.shx`, `.prj`, and `.cpg` as one 
 Normalization targets:
 
 - trail networks become `SegmentDraft` values and are built by `GraphBuilder`
-- explicit `trail_class=bushwhack` lines (aliases: `bushwhacking`, `off-trail`, `offtrail`, and `cross-country`) become pathless but routable drafts. Keep surrounding ground in `terrain` and the literal ground description in `surface`; do not encode a bushwhack as an informal path or forest terrain
+- explicit `way_kind=bushwhack` lines (aliases: `bushwhacking`, `off-trail`, `offtrail`, and `cross-country`) become pathless but routable drafts. Keep surrounding ground in `terrain` and the literal ground description in `surface`; do not encode a bushwhack as an informal path or forest terrain
 - OSM XML/PBF network adapters should stay way-focused unless relation semantics are explicitly modeled: normalize walkable ways, preserve way IDs, access, foot direction, surface, confidence, ODbL provenance, hiking-route relation evidence, and simple via-node turn restrictions as graph-level directed turn bans
 - route files may also become low-confidence `SegmentDraft` scaffolds for `trailgen build` when no network layer is available
 - route JSON adapters should stay structural and provider-neutral: accept coordinate arrays or point objects, not opaque private API documents

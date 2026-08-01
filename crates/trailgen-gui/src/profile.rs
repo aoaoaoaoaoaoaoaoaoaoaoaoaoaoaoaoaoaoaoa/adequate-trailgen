@@ -4,7 +4,7 @@ use crate::{
     map::{TrailSalience, terrain_color, terrain_label},
 };
 use egui::{Color32, Rect, Response, Sense, Shape, Stroke, Ui, pos2, vec2};
-use trailgen_core::{LineString, Route, Terrain, TrailGraph};
+use trailgen_core::{LineString, Route, Terrain, WalkGraph};
 
 const TERRAIN_RIBBON_HEIGHT: f32 = 5.0;
 const TERRAIN_RIBBON_GUTTER: f32 = 4.0;
@@ -63,7 +63,7 @@ pub struct ProfileResponse {
 }
 
 impl ElevationProfile {
-    pub fn forge(graph: &TrailGraph, route: &Route) -> Option<Self> {
+    pub fn forge(graph: &WalkGraph, route: &Route) -> Option<Self> {
         let mut at = route.start;
         let legs = route
             .edges

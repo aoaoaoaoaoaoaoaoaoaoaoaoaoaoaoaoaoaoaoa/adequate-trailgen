@@ -1,6 +1,6 @@
 use crate::geo::{Coord, LineString};
 use crate::io::route_file::{RouteFile, RouteFileMetadata, clean_text, export_summary};
-use crate::model::TrailGraph;
+use crate::model::WalkGraph;
 use crate::route::Route;
 use crate::{Result, TrailgenError};
 use std::fmt::Write as _;
@@ -41,7 +41,7 @@ pub fn route_file_from_str(s: &str) -> Result<RouteFile> {
 }
 
 #[must_use]
-pub fn route_to_kml(graph: &TrailGraph, route: &Route) -> String {
+pub fn route_to_kml(graph: &WalkGraph, route: &Route) -> String {
     let line = route.geometry(graph);
     let mut s = String::from(
         r#"<?xml version="1.0" encoding="UTF-8"?>

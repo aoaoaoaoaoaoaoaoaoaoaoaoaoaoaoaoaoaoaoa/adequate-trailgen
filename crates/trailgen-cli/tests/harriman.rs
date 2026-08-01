@@ -10,7 +10,7 @@ struct HarrimanCase {
     start: &'static str,
     distance_km: (f64, f64),
     ascent_m: (f64, f64),
-    max_difficulty: f64,
+    max_lower_limb_load_km: f64,
 }
 
 const SOUTH_LOWS: HarrimanCase = HarrimanCase {
@@ -20,7 +20,7 @@ const SOUTH_LOWS: HarrimanCase = HarrimanCase {
     start: "-74.12966,41.19856",
     distance_km: (21.5, 22.1),
     ascent_m: (500.0, 620.0),
-    max_difficulty: 700.0,
+    max_lower_limb_load_km: 700.0,
 };
 
 const WEST: HarrimanCase = HarrimanCase {
@@ -30,7 +30,7 @@ const WEST: HarrimanCase = HarrimanCase {
     start: "-74.15431,41.26478",
     distance_km: (22.6, 23.2),
     ascent_m: (950.0, 1_100.0),
-    max_difficulty: 1_200.0,
+    max_lower_limb_load_km: 1_200.0,
 };
 
 #[test]
@@ -79,8 +79,8 @@ fn replay_owned_trace(case: &HarrimanCase) {
         &case.ascent_m.0.to_string(),
         "--max-descent-m",
         &case.ascent_m.1.to_string(),
-        "--max-difficulty",
-        &case.max_difficulty.to_string(),
+        "--max-lower-limb-load-km",
+        &case.max_lower_limb_load_km.to_string(),
         "--max-low-confidence-fraction",
         "1",
         "--shape",

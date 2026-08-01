@@ -14,6 +14,7 @@ categories = ["science::geo", "algorithms"]
 num-traits.workspace = true
 osmpbfreader.workspace = true
 roxmltree.workspace = true
+rmp-serde.workspace = true
 rstar.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -21,6 +22,7 @@ shapefile.workspace = true
 thiserror.workspace = true
 tiff.workspace = true
 zip.workspace = true
+zstd.workspace = true
 
 [dev-dependencies]
 protobuf.workspace = true

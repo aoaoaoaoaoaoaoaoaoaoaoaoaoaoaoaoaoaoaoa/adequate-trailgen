@@ -18,7 +18,7 @@ Projects are ordinary portable directories rooted by `trailgen.toml`. Per-projec
 1. Create a project and pan to its broad territory.
 2. Draw one or more bronze-framed map areas. Trailgen downloads and indexes the union automatically; ground outside that union remains dimmed.
 3. Press **Draw a Trail** to build one directly from draggable support points, with no search required.
-4. For discovery, place the project trailhead, choose distance, climb, target difficulty, and shape, then press **Find Trails**.
+4. For discovery, place the project trailhead, choose distance, moving-time bounds, climb, target lower-limb load, and shape, then press **Find Trails**.
 5. Open any result for a smooth full-map view and elevation profile. Save it, or edit any candidate whose exact walk admits a support-point design.
 
 Saved trails belong directly to the project library. Deleting a trail removes it deliberately from the project; search results remain transient until saved.
@@ -28,7 +28,8 @@ Trail types use high-contrast dual strokes and a map legend. Focused routes add 
 The default US corpus combines OpenStreetMap/Overpass, USGS National Digital Trails, spatially
 applicable state-park authorities, and cached Mapzen terrain tiles. New York and Texas are the first
 admitted state providers. Every rectangle-provider response is independently sequestered beneath
-`sources/`, fingerprinted, and rebuilt through one graph path before `cache/graph.json` becomes ready.
+`sources/`, fingerprinted, and rebuilt through one graph path before the compact
+`cache/graph.bin` becomes ready.
 Informal, unmaintained, historical, and unmarked paths remain searchable and visually distinct;
 standing, wayfinding, and legal access never masquerade as one another. See
 [data sources](docs/data-sources.md).
@@ -63,7 +64,7 @@ cadence budgets, and manual loop drawing with profile interaction. The harness
 drives the optimized binary through native input and adjudicates durable files
 outside its one-way UI witness.
 
-See [installation](docs/installation.md), [model](docs/model.md), [configuration](docs/config.md), [source adapters](docs/source-adapters.md), and [known limitations](docs/limitations.md).
+See [installation](docs/installation.md), [model](docs/model.md), [physical load and moving time](docs/physical-load.md), [configuration](docs/config.md), [source adapters](docs/source-adapters.md), and [known limitations](docs/limitations.md).
 
 ## License
 

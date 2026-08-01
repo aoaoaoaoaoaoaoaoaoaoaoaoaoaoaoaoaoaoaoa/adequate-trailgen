@@ -1,9 +1,8 @@
-use crate::Coord;
-use crate::RouteShape;
 use crate::constraints::LoopConstraints;
-use crate::model::{EdgeId, EdgeTravel, TrailGraph, VertexId};
+use crate::model::{EdgeId, EdgeTravel, VertexId, WalkGraph};
 use crate::route::{Route, rank_routes};
 use crate::trail::RoutingLaw;
+use crate::{Coord, RouteShape};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
@@ -39,25 +38,27 @@ impl SearchMonitor for () {
 
 #[derive(Clone, Copy)]
 pub struct SearchScope<'a> {
-    graph: &'a TrailGraph,
+    graph: &'a WalkGraph,
     allowed: Option<&'a [bool]>,
+    adjacency: Option<&'a [Vec<EdgeId>]>,
     edicts: Option<&'a EdgeEdicts>,
     edge_count: usize,
 }
 
 impl<'a> SearchScope<'a> {
     #[must_use]
-    pub const fn all(graph: &'a TrailGraph) -> Self {
+    pub const fn all(graph: &'a WalkGraph) -> Self {
         Self {
             graph,
             allowed: None,
+            adjacency: None,
             edicts: None,
             edge_count: graph.edges.len(),
         }
     }
 
     #[must_use]
-    pub fn restricted(graph: &'a TrailGraph, allowed: &'a [bool]) -> Self {
+    pub fn restricted(graph: &'a WalkGraph, allowed: &'a [bool]) -> Self {
         assert_eq!(
             allowed.len(),
             graph.edges.len(),
@@ -66,6 +67,24 @@ impl<'a> SearchScope<'a> {
         Self {
             graph,
             allowed: Some(allowed),
+            adjacency: None,
+            edicts: None,
+            edge_count: allowed.iter().filter(|allowed| **allowed).count(),
+        }
+    }
+
+    #[must_use]
+    pub fn projected(
+        graph: &'a WalkGraph,
+        allowed: &'a [bool],
+        adjacency: &'a [Vec<EdgeId>],
+    ) -> Self {
+        assert_eq!(allowed.len(), graph.edges.len());
+        assert_eq!(adjacency.len(), graph.vertices.len());
+        Self {
+            graph,
+            allowed: Some(allowed),
+            adjacency: Some(adjacency),
             edicts: None,
             edge_count: allowed.iter().filter(|allowed| **allowed).count(),
         }
@@ -84,7 +103,7 @@ impl<'a> SearchScope<'a> {
     }
 
     fn fanout(self, vertex: VertexId) -> Vec<EdgeId> {
-        self.graph.adjacency[vertex.0]
+        self.adjacency.unwrap_or(&self.graph.adjacency)[vertex.0]
             .iter()
             .copied()
             .filter(|edge| self.allows(*edge))
@@ -175,7 +194,7 @@ impl EdgeEdicts {
                 .all(|edge| !self.forbidden.contains(edge))
     }
 
-    pub fn validate(&self, graph: &TrailGraph) -> crate::Result<()> {
+    pub fn validate(&self, graph: &WalkGraph) -> crate::Result<()> {
         if let Some(edge) = self
             .required
             .iter()
@@ -234,7 +253,7 @@ impl SolverKind {
     const AUTO_EXACT_EDGE_LIMIT: usize = 32;
 
     #[must_use]
-    pub const fn resolve(self, graph: &TrailGraph) -> Self {
+    pub const fn resolve(self, graph: &WalkGraph) -> Self {
         self.resolve_edge_count(graph.edges.len())
     }
 
@@ -259,7 +278,7 @@ impl SolverKind {
     pub fn solve(
         self,
         params: SearchParams,
-        graph: &TrailGraph,
+        graph: &WalkGraph,
         start: VertexId,
         constraints: &LoopConstraints,
         count: usize,
@@ -271,7 +290,7 @@ impl SolverKind {
     pub fn solve_monitored(
         self,
         params: SearchParams,
-        graph: &TrailGraph,
+        graph: &WalkGraph,
         start: VertexId,
         constraints: &LoopConstraints,
         count: usize,
@@ -462,7 +481,7 @@ impl<'a> SearchMeter<'a> {
 pub trait RouteSolver {
     fn solve(
         &self,
-        graph: &TrailGraph,
+        graph: &WalkGraph,
         start: VertexId,
         constraints: &LoopConstraints,
         count: usize,
@@ -473,7 +492,7 @@ impl LoopHunter {
     #[must_use]
     pub fn hunt(
         self,
-        graph: &TrailGraph,
+        graph: &WalkGraph,
         start: VertexId,
         constraints: &LoopConstraints,
         count: usize,
@@ -589,7 +608,7 @@ impl LoopHunter {
 impl RouteSolver for LoopHunter {
     fn solve(
         &self,
-        graph: &TrailGraph,
+        graph: &WalkGraph,
         start: VertexId,
         constraints: &LoopConstraints,
         count: usize,
@@ -602,7 +621,7 @@ impl ExactLoopSolver {
     #[must_use]
     pub fn enumerate(
         self,
-        graph: &TrailGraph,
+        graph: &WalkGraph,
         start: VertexId,
         constraints: &LoopConstraints,
         count: usize,
@@ -700,7 +719,7 @@ impl ExactLoopSolver {
 impl RouteSolver for ExactLoopSolver {
     fn solve(
         &self,
-        graph: &TrailGraph,
+        graph: &WalkGraph,
         start: VertexId,
         constraints: &LoopConstraints,
         count: usize,
@@ -938,7 +957,7 @@ fn support_loop_portfolio_obeying(
 }
 
 fn support_designs(
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     radial: &[f64],
     landmarks: &[VertexId],
     constraints: &LoopConstraints,
@@ -1053,7 +1072,7 @@ fn support_rank(
 }
 
 fn support_landmarks(
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     start: VertexId,
     radial: &[f64],
     constraints: &LoopConstraints,
@@ -1157,7 +1176,7 @@ impl RoutingArc {
 }
 
 struct RoutingSkeleton<'graph> {
-    graph: &'graph TrailGraph,
+    graph: &'graph WalkGraph,
     arcs: Vec<RoutingArc>,
     adjacency: Vec<Vec<ArcId>>,
 }
@@ -1216,7 +1235,7 @@ fn routing_incidence(scope: SearchScope<'_>, law: RoutingLaw) -> Vec<Vec<EdgeId>
     incidence
 }
 
-fn preserved_vertices(graph: &TrailGraph, incidence: &[Vec<EdgeId>], start: VertexId) -> Vec<bool> {
+fn preserved_vertices(graph: &WalkGraph, incidence: &[Vec<EdgeId>], start: VertexId) -> Vec<bool> {
     let mut barred_turn = vec![false; graph.vertices.len()];
     for ban in &graph.turn_bans {
         barred_turn[ban.via.0] = true;
@@ -1250,7 +1269,7 @@ fn preserved_vertices(graph: &TrailGraph, incidence: &[Vec<EdgeId>], start: Vert
 }
 
 fn skeleton_arcs(
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     incidence: &[Vec<EdgeId>],
     preserved: &[bool],
     law: RoutingLaw,
@@ -1326,7 +1345,7 @@ fn arc_adjacency(vertex_count: usize, arcs: &[RoutingArc]) -> Vec<Vec<ArcId>> {
 }
 
 fn chain_traversable(
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     mut at: VertexId,
     edges: impl IntoIterator<Item = EdgeId>,
 ) -> bool {
@@ -1806,7 +1825,7 @@ fn closes_allowed(constraints: &LoopConstraints) -> bool {
 
 fn push_allowed_route(
     routes: &mut Vec<Route>,
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     start: VertexId,
     edges: Vec<EdgeId>,
     constraints: &LoopConstraints,
@@ -1828,7 +1847,7 @@ fn push_allowed_route(
 
 fn finish_routes(
     mut routes: Vec<Route>,
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     constraints: &LoopConstraints,
     count: usize,
     keep: usize,
@@ -1865,7 +1884,7 @@ const fn graphless_limit(count: usize, keep: usize) -> usize {
 
 fn diverse_portfolio(
     routes: Vec<Route>,
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     limit: usize,
     monitor: &dyn SearchMonitor,
 ) -> Vec<Route> {
@@ -1886,7 +1905,7 @@ fn diverse_portfolio(
 
 fn admit_diverse_tier(
     routes: Vec<Route>,
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     limit: usize,
     chosen: &mut Vec<Route>,
     monitor: &dyn SearchMonitor,
@@ -1909,7 +1928,7 @@ fn admit_diverse_tier(
     }
 }
 
-fn route_distance_between(graph: &TrailGraph, left: &Route, right: &Route) -> f64 {
+fn route_distance_between(graph: &WalkGraph, left: &Route, right: &Route) -> f64 {
     let counts = |route: &Route| {
         let mut counts = BTreeMap::<EdgeId, u32>::new();
         for edge in &route.edges {
@@ -1954,7 +1973,7 @@ fn route_signature(route: &Route) -> RouteSignature {
     }
 }
 
-fn route_distance(graph: &TrailGraph, edges: &[EdgeId]) -> f64 {
+fn route_distance(graph: &WalkGraph, edges: &[EdgeId]) -> f64 {
     edges
         .iter()
         .map(|edge_id| graph.edges[edge_id.0].attr.length_m)
@@ -1963,7 +1982,7 @@ fn route_distance(graph: &TrailGraph, edges: &[EdgeId]) -> f64 {
 
 #[derive(Clone, Copy)]
 struct ReturnHunt<'a> {
-    graph: &'a TrailGraph,
+    graph: &'a WalkGraph,
     from: VertexId,
     target: VertexId,
     previous: Option<EdgeId>,
@@ -1976,7 +1995,7 @@ struct ReturnHunt<'a> {
 }
 
 struct LoopCloser<'graph, 'monitor> {
-    graph: &'graph TrailGraph,
+    graph: &'graph WalkGraph,
     target: VertexId,
     keep: usize,
     law: RoutingLaw,
@@ -2248,7 +2267,7 @@ fn return_expansion_cap(keep: usize, edge_count: usize) -> usize {
 }
 
 fn sort_heuristic_fanout(
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     fanout: &mut [EdgeId],
     seed: u64,
     depth: usize,
@@ -2263,7 +2282,7 @@ fn sort_heuristic_fanout(
 }
 
 fn branch_score(
-    graph: &TrailGraph,
+    graph: &WalkGraph,
     edge_id: EdgeId,
     seed: u64,
     depth: usize,
@@ -2274,7 +2293,7 @@ fn branch_score(
     let road_detour_km = law
         .edge_cost(graph, edge_id)
         .map_or(f64::MAX, |cost| (cost - edge.attr.length_m) / 1_000.0);
-    (edge.attr.difficulty + road_detour_km)
+    (edge.traversal_from(at).lower_limb_load_km + road_detour_km)
         .mul_add(1_024.0, seeded_unit(seed, depth, at, edge_id) * 128.0)
 }
 
@@ -2370,7 +2389,7 @@ struct ClosureOracle {
 
 impl ClosureOracle {
     fn forge(
-        graph: &TrailGraph,
+        graph: &WalkGraph,
         target: VertexId,
         allowed: Option<&[bool]>,
         law: RoutingLaw,
@@ -2447,12 +2466,12 @@ impl ClosureOracle {
         Some(Self { cost_m })
     }
 
-    fn cost(&self, graph: &TrailGraph, walk: SupportWalk) -> f64 {
+    fn cost(&self, graph: &WalkGraph, walk: SupportWalk) -> f64 {
         self.cost_m[closure_slot(graph, walk)]
     }
 }
 
-fn closure_slot(graph: &TrailGraph, walk: SupportWalk) -> usize {
+fn closure_slot(graph: &WalkGraph, walk: SupportWalk) -> usize {
     let Some(edge_id) = walk.previous else {
         return graph.edges.len() * 2;
     };
@@ -2562,8 +2581,8 @@ fn mirrored_route(edges: &[EdgeId]) -> Vec<EdgeId> {
 mod tests {
     use super::*;
     use crate::{
-        Access, Coord, EdgeTravel, GraphBuilder, JunctionPolicy, LineString, Provenance,
-        SegmentDraft, Terrain, TrailClass, TrailStanding,
+        Access, Coord, CrossingControl, EdgeTravel, GeometryClaim, GraphBuilder, JunctionPolicy,
+        LineString, Provenance, SegmentDraft, Terrain, TrailStanding, WayKind, WayRealm,
     };
     use std::cell::{Cell, RefCell};
 
@@ -2606,8 +2625,12 @@ mod tests {
             geometry: LineString::new(points).expect("valid branch"),
             junctions: JunctionPolicy::Planar,
             turn_ref: None,
+            junction_keys: None,
             turn_restrictions: Vec::new(),
-            trail_class: TrailClass::Path,
+            way_kind: WayKind::Path,
+            realm: WayRealm::default(),
+            geometry_claim: GeometryClaim::default(),
+            crossing_control: CrossingControl::default(),
             standing: TrailStanding::Established,
             marking: crate::TrailMarking::default(),
             terrain: Terrain::Trail,
@@ -2621,7 +2644,7 @@ mod tests {
         }
     }
 
-    fn named_edge(graph: &TrailGraph, name: &str) -> EdgeId {
+    fn named_edge(graph: &WalkGraph, name: &str) -> EdgeId {
         graph
             .edges
             .iter()
@@ -2730,7 +2753,7 @@ mod tests {
         let constraints = LoopConstraints {
             min_distance_m: 0.0,
             max_distance_m: 10_000.0,
-            max_difficulty: f64::MAX,
+            max_lower_limb_load_km: f64::MAX,
             max_repeated_edge_fraction: 0.0,
             allowed_shapes: vec![RouteShape::Loop],
             ..LoopConstraints::default()
@@ -2788,7 +2811,7 @@ mod tests {
         let merge = Coord::new(0.005, 0.0);
         let target = Coord::new(0.008, 0.0);
         let mut road = branch(vec![from, junction], "short-road");
-        road.trail_class = TrailClass::Road;
+        road.way_kind = WayKind::Roadway;
         road.terrain = Terrain::Road;
         road.road_exposure = 1.0;
         let graph = GraphBuilder::default()
@@ -2872,7 +2895,7 @@ mod tests {
         let constraints = LoopConstraints {
             min_distance_m: 200.0,
             max_distance_m: 800.0,
-            max_difficulty: f64::MAX,
+            max_lower_limb_load_km: f64::MAX,
             max_repeated_edge_fraction: 1.0,
             allowed_shapes: vec![RouteShape::OutAndBack],
             ..LoopConstraints::default()
@@ -2930,7 +2953,7 @@ mod tests {
         let constraints = LoopConstraints {
             min_distance_m: 100.0,
             max_distance_m: 1_000.0,
-            max_difficulty: f64::MAX,
+            max_lower_limb_load_km: f64::MAX,
             max_repeated_edge_fraction: 1.0,
             allowed_shapes: vec![RouteShape::OutAndBack],
             ..LoopConstraints::default()
@@ -2974,7 +2997,7 @@ mod tests {
         let constraints = LoopConstraints {
             min_distance_m: 200.0,
             max_distance_m: 800.0,
-            max_difficulty: f64::MAX,
+            max_lower_limb_load_km: f64::MAX,
             max_repeated_edge_fraction: 1.0,
             allowed_shapes: vec![RouteShape::OutAndBack],
             ..LoopConstraints::default()
@@ -3012,7 +3035,7 @@ mod tests {
         let constraints = LoopConstraints {
             min_distance_m: 0.0,
             max_distance_m: 1_000.0,
-            max_difficulty: f64::MAX,
+            max_lower_limb_load_km: f64::MAX,
             max_repeated_edge_fraction: 1.0,
             allowed_shapes: vec![RouteShape::OutAndBack],
             ..LoopConstraints::default()
@@ -3073,7 +3096,7 @@ mod tests {
         let constraints = LoopConstraints {
             min_distance_m: 0.0,
             max_distance_m: 1_000.0,
-            max_difficulty: f64::MAX,
+            max_lower_limb_load_km: f64::MAX,
             max_repeated_edge_fraction: 1.0,
             allowed_shapes: vec![RouteShape::OutAndBack],
             ..LoopConstraints::default()

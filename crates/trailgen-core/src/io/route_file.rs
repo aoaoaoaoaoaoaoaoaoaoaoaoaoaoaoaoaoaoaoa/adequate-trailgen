@@ -59,7 +59,7 @@ pub fn export_summary(route: &Route) -> String {
         "violated"
     };
     let mut s = format!(
-        "score {:.2}; pareto rank {}; shape {:?}; distance {:.2} km; ascent/descent {:.0}/{:.0} m; sustained-steep {:.2} km; grade {}; difficulty {:.2}; road {:.1}%; low-confidence {:.1}%; restricted-access {:.1}%; repeated-edge {:.1}%; constraints {verdict}",
+        "score {:.2}; pareto rank {}; shape {:?}; distance {:.2} km; ascent/descent {:.0}/{:.0} m; sustained-steep {:.2} km; grade {}; lower-limb load {:.2} FGJW km; moving time {:.2} h; road {:.1}%; low-confidence {:.1}%; restricted-access {:.1}%; repeated-edge {:.1}%; constraints {verdict}",
         route.computed_score(),
         route.pareto_rank,
         route.metrics.shape,
@@ -68,7 +68,8 @@ pub fn export_summary(route: &Route) -> String {
         route.metrics.descent_m,
         route.metrics.sustained_steep_m / 1_000.0,
         grade_summary(route.metrics.grade_distribution),
-        route.metrics.difficulty,
+        route.metrics.lower_limb_load_km,
+        route.metrics.moving_time_s / 3_600.0,
         route.metrics.road_fraction * 100.0,
         route.metrics.low_confidence_fraction * 100.0,
         route.metrics.restricted_access_fraction * 100.0,
