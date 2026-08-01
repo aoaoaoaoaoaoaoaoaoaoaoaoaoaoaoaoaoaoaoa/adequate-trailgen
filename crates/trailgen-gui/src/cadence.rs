@@ -67,6 +67,47 @@ pub fn polyline_length(points: &[Pos2]) -> f32 {
 
 #[expect(
     clippy::while_float,
+    reason = "the arc-length cursor advances by a strictly positive hatch spacing"
+)]
+pub fn crossbars(
+    points: &[Pos2],
+    stroke: Stroke,
+    span: f32,
+    spacing: f32,
+    phase: f32,
+    shapes: &mut Vec<Shape>,
+) {
+    debug_assert!(span.is_finite() && span > 0.0);
+    debug_assert!(spacing.is_finite() && spacing > 0.0);
+    let phase = phase.rem_euclid(spacing);
+    let mut next = if phase <= f32::EPSILON {
+        0.0
+    } else {
+        spacing - phase
+    };
+    let mut traversed = 0.0;
+    for segment in points.windows(2) {
+        let [start, end] = [segment[0], segment[1]];
+        let vector = end - start;
+        let length = vector.length();
+        if length <= f32::EPSILON {
+            continue;
+        }
+        let normal = egui::vec2(-vector.y, vector.x) * (span * 0.5 / length);
+        while next <= traversed + length {
+            let center = start + vector * ((next - traversed) / length);
+            shapes.push(Shape::line_segment(
+                [center - normal, center + normal],
+                stroke,
+            ));
+            next += spacing;
+        }
+        traversed += length;
+    }
+}
+
+#[expect(
+    clippy::while_float,
     reason = "the arc-length cursor advances by a strictly positive cadence span"
 )]
 fn stroke_pattern<I>(
@@ -248,6 +289,42 @@ mod tests {
             &mut shapes,
         );
         assert!(shapes.is_empty());
+    }
+
+    #[test]
+    fn crossbars_keep_phase_across_polyline_elbows() {
+        let mut split = Vec::new();
+        crossbars(
+            &[pos2(0.0, 0.0), pos2(7.0, 0.0)],
+            Stroke::new(1.0_f32, Color32::BLACK),
+            4.0,
+            5.0,
+            0.0,
+            &mut split,
+        );
+        crossbars(
+            &[pos2(7.0, 0.0), pos2(7.0, 8.0)],
+            Stroke::new(1.0_f32, Color32::BLACK),
+            4.0,
+            5.0,
+            7.0,
+            &mut split,
+        );
+        let mut whole = Vec::new();
+        crossbars(
+            &[pos2(0.0, 0.0), pos2(7.0, 0.0), pos2(7.0, 8.0)],
+            Stroke::new(1.0_f32, Color32::BLACK),
+            4.0,
+            5.0,
+            0.0,
+            &mut whole,
+        );
+        assert_eq!(split.len(), whole.len());
+        assert!(
+            split.iter().zip(&whole).all(|(left, right)| {
+                left.visual_bounding_rect() == right.visual_bounding_rect()
+            })
+        );
     }
 
     fn ink_bounds(shapes: &[Shape]) -> Vec<(i32, i32)> {

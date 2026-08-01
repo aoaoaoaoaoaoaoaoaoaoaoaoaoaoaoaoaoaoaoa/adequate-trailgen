@@ -590,6 +590,13 @@ impl TrailMeshBuilder {
         let informal = edge.standing == TrailStanding::Informal;
         let terrain = terrain_code(edge.terrain);
         let blocked = matches!(edge.access, Access::Closed | Access::Private);
+        let style = CadenceStyle {
+            pattern,
+            informal,
+            terrain,
+            blocked,
+            stepped: edge.stepped,
+        };
         let base = u32::try_from(self.vertices.len()).expect("trail tile vertex count fits u32");
         for (slot, point) in local.iter().copied().enumerate() {
             let [negative, positive] = ribbon_extrusions(&local, slot, salience);
@@ -599,7 +606,7 @@ impl TrailMeshBuilder {
                     extrusion: negative,
                     srgb: color,
                     arc_world: samples[slot].arc_world as f32,
-                    cadence: cadence_word(law_id, pattern, false, informal, terrain, blocked),
+                    cadence: style.word(law_id, RibbonBank::Negative),
                     edge_factor: -1.0,
                 },
                 TrailPoint {
@@ -607,7 +614,7 @@ impl TrailMeshBuilder {
                     extrusion: positive,
                     srgb: color,
                     arc_world: samples[slot].arc_world as f32,
-                    cadence: cadence_word(law_id, pattern, true, informal, terrain, blocked),
+                    cadence: style.word(law_id, RibbonBank::Positive),
                     edge_factor: 1.0,
                 },
             ]);
@@ -626,14 +633,14 @@ impl TrailMeshBuilder {
                 ribbon_direction(local[0], local[1], -1.0),
                 color,
                 samples[0].arc_world as f32,
-                cadence_word(law_id, pattern, false, informal, terrain, blocked),
+                style.word(law_id, RibbonBank::Negative),
             );
             self.push_round_cap(
                 local[local.len() - 1],
                 ribbon_direction(local[local.len() - 2], local[local.len() - 1], 1.0),
                 color,
                 samples[samples.len() - 1].arc_world as f32,
-                cadence_word(law_id, pattern, false, informal, terrain, blocked),
+                style.word(law_id, RibbonBank::Negative),
             );
         }
     }
@@ -717,30 +724,47 @@ const fn pattern_code(mark: TrailMark) -> u32 {
     }
 }
 
-const CADENCE_LAW_SHIFT: u32 = 9;
+const CADENCE_LAW_SHIFT: u32 = 10;
 #[cfg(test)]
 const CADENCE_STYLE_MASK: u32 = (1 << CADENCE_LAW_SHIFT) - 1;
 
-const fn cadence_word(
-    law: u32,
+#[derive(Clone, Copy)]
+struct CadenceStyle {
     pattern: u32,
-    positive_side: bool,
     informal: bool,
     terrain: u32,
     blocked: bool,
-) -> u32 {
-    assert!(
-        law <= u32::MAX >> CADENCE_LAW_SHIFT,
-        "cadence law exceeds packed vertex range"
-    );
-    assert!(pattern < 4, "trail pattern exceeds packed vertex range");
-    assert!(terrain < 16, "trail terrain exceeds packed vertex range");
-    (law << CADENCE_LAW_SHIFT)
-        | ((blocked as u32) << 8)
-        | (terrain << 4)
-        | ((informal as u32) << 3)
-        | (pattern << 1)
-        | positive_side as u32
+    stepped: bool,
+}
+
+#[derive(Clone, Copy)]
+enum RibbonBank {
+    Negative,
+    Positive,
+}
+
+impl CadenceStyle {
+    const fn word(self, law: u32, bank: RibbonBank) -> u32 {
+        assert!(
+            law <= u32::MAX >> CADENCE_LAW_SHIFT,
+            "cadence law exceeds packed vertex range"
+        );
+        assert!(
+            self.pattern < 4,
+            "trail pattern exceeds packed vertex range"
+        );
+        assert!(
+            self.terrain < 16,
+            "trail terrain exceeds packed vertex range"
+        );
+        (law << CADENCE_LAW_SHIFT)
+            | ((self.stepped as u32) << 9)
+            | ((self.blocked as u32) << 8)
+            | (self.terrain << 4)
+            | ((self.informal as u32) << 3)
+            | (self.pattern << 1)
+            | matches!(bank, RibbonBank::Positive) as u32
+    }
 }
 
 const fn terrain_code(terrain: Terrain) -> u32 {
@@ -1832,6 +1856,7 @@ struct VertexOut {
     @location(4) arc_world: f32,
     @location(5) @interpolate(flat) law: u32,
     @location(6) @interpolate(flat) pattern: u32,
+    @location(7) @interpolate(flat) stepped: u32,
 };
 
 fn apparition(onset_zoom: f32) -> f32 {
@@ -1877,7 +1902,8 @@ fn trail_vertex(
     let informal = (cadence >> 3u) & 1u;
     let terrain = (cadence >> 4u) & 15u;
     let blocked = (cadence >> 8u) & 1u;
-    let law = cadence >> 9u;
+    let stepped = (cadence >> 9u) & 1u;
+    let law = cadence >> 10u;
     let core = layer == 1u;
     let core_onset = select(u.disclosure.y, u.disclosure.z, pattern != 0u);
     let onset_zoom = select(u.disclosure.x, core_onset, core);
@@ -1907,8 +1933,9 @@ fn trail_vertex(
     out.solid_radius = visible_radius;
     out.tile_local = local + extrusion * expanded_radius / (u.world_points * tile_span);
     out.arc_world = arc_world;
-    out.law = select(0u, law, core);
+    out.law = select(0u, law, core || stepped != 0u);
     out.pattern = select(0u, pattern, core);
+    out.stepped = stepped;
     return out;
 }
 
@@ -1969,6 +1996,18 @@ fn cadence_ink(in: VertexOut) -> f32 {
     return 1.0 - smoothstep(radius - feather, radius + feather, distance_to_center);
 }
 
+fn step_hatch(in: VertexOut) -> f32 {
+    if in.stepped == 0u {
+        return 0.0;
+    }
+    let coordinate = cadence_coordinate(in);
+    let cell_points = u.world_points / u.cadence_cells_per_world;
+    let phase = coordinate - floor(coordinate);
+    let distance = min(phase, 1.0 - phase) * cell_points;
+    let feather = max(fwidth(distance), 0.45);
+    return 1.0 - smoothstep(0.52 - feather, 0.52 + feather, distance);
+}
+
 fn painted(in: VertexOut) -> vec4f {
     if any(in.tile_local < vec2f(0.0)) || any(in.tile_local >= vec2f(1.0)) {
         discard;
@@ -1984,7 +2023,9 @@ fn painted(in: VertexOut) -> vec4f {
     if alpha <= 0.001 {
         discard;
     }
-    return vec4f(in.color.rgb, alpha);
+    let hatch = step_hatch(in) * apparition(u.disclosure.z);
+    let ink = mix(in.color.rgb, vec3f(20.0 / 255.0, 19.0 / 255.0, 17.0 / 255.0), hatch * 0.88);
+    return vec4f(ink, alpha);
 }
 
 @fragment
@@ -2012,8 +2053,8 @@ fn fragment_linear(in: VertexOut) -> @location(0) vec4f {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::{EARTH_CIRCUMFERENCE_M, way_kind_color};
-    use trailgen_core::WayKind;
+    use crate::map::{EARTH_CIRCUMFERENCE_M, TrailClass};
+    use trailgen_core::{WayKind, WayRealm};
 
     #[test]
     fn detail_admission_is_monotone_and_exact_at_fourteen() {
@@ -2297,8 +2338,8 @@ mod tests {
             points: samples.iter().map(|sample| sample.world).collect(),
             length_world: samples[2].arc_world,
             lineage: None,
-            color: way_kind_color(WayKind::Path),
-            way_kind: trailgen_core::WayKind::Path,
+            color: TrailClass::Trail.color(),
+            stepped: false,
             standing: TrailStanding::Established,
             terrain: Terrain::Trail,
             mark: TrailMark::Solid,
@@ -2315,8 +2356,22 @@ mod tests {
     #[test]
     fn semantic_hue_bits_cannot_alias_cadence_bits() {
         for pattern in 0..4 {
-            let plain = cadence_word(37, pattern, false, false, 0, false);
-            let adorned = cadence_word(37, pattern, true, true, terrain_code(Terrain::Water), true);
+            let plain = CadenceStyle {
+                pattern,
+                informal: false,
+                terrain: 0,
+                blocked: false,
+                stepped: false,
+            }
+            .word(37, RibbonBank::Negative);
+            let adorned = CadenceStyle {
+                pattern,
+                informal: true,
+                terrain: terrain_code(Terrain::Water),
+                blocked: true,
+                stepped: true,
+            }
+            .word(37, RibbonBank::Positive);
             for word in [plain, adorned] {
                 let mut point = TrailPoint {
                     local: [0.0; 2],
@@ -2345,7 +2400,14 @@ mod tests {
             [1.0, 0.0],
             [255; 4],
             0.25,
-            cadence_word(0, 0, false, false, terrain_code(Terrain::Trail), false),
+            CadenceStyle {
+                pattern: 0,
+                informal: false,
+                terrain: terrain_code(Terrain::Trail),
+                blocked: false,
+                stepped: false,
+            }
+            .word(0, RibbonBank::Negative),
         );
         assert_eq!(builder.vertices.len(), ROUND_CAP_STEPS + 2);
         assert_eq!(builder.indices.len(), ROUND_CAP_STEPS * 3);
@@ -2371,18 +2433,19 @@ mod tests {
     #[test]
     fn every_way_kind_survives_into_the_coarsest_band() {
         let scale = f64::from(1_u32 << BASE_TILE_ZOOM);
-        let edge = |row: f64, class| {
+        let edge = |row: f64, kind| {
             let points = vec![
                 [1_200.2 / scale, (1_532.2 + row) / scale],
                 [1_200.8 / scale, (1_532.2 + row) / scale],
             ];
+            let class = crate::map::trail_class(kind, WayRealm::Recreational);
             WorldEdge {
                 endpoints: [0, 1],
                 length_world: 0.6 / scale,
                 points,
                 lineage: None,
-                color: way_kind_color(class),
-                way_kind: class,
+                color: class.map_or(TrailClass::Trail.color(), TrailClass::color),
+                stepped: kind == WayKind::Steps,
                 standing: TrailStanding::Established,
                 terrain: Terrain::Trail,
                 mark: TrailMark::Solid,

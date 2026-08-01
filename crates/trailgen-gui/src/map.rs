@@ -231,6 +231,64 @@ pub enum TrailSalience {
     Selected,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum TrailClass {
+    Trail,
+    Walkway,
+    Track,
+    Road,
+    Bushwhack,
+}
+
+impl TrailClass {
+    pub const fn color(self) -> Color32 {
+        match self {
+            Self::Trail => Color32::from_rgb(198, 137, 91),
+            Self::Walkway => Color32::from_rgb(176, 151, 198),
+            Self::Track => Color32::from_rgb(181, 122, 104),
+            Self::Road => ROAD_COLOR,
+            Self::Bushwhack => Color32::from_rgb(205, 145, 173),
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Trail => "TRAIL",
+            Self::Walkway => "WALKWAY",
+            Self::Track => "TRACK",
+            Self::Road => "ROAD",
+            Self::Bushwhack => "BUSHWHACK",
+        }
+    }
+}
+
+pub fn trail_class(kind: WayKind, realm: WayRealm) -> Option<TrailClass> {
+    match kind {
+        WayKind::Sidewalk | WayKind::Crossing => None,
+        WayKind::Bushwhack => Some(TrailClass::Bushwhack),
+        WayKind::Track => Some(TrailClass::Track),
+        WayKind::ServiceRoad | WayKind::Roadway => Some(TrailClass::Road),
+        WayKind::PedestrianStreet | WayKind::Cycleway => Some(TrailClass::Walkway),
+        WayKind::Footway | WayKind::Steps if realm != WayRealm::Recreational => {
+            Some(TrailClass::Walkway)
+        }
+        WayKind::Unknown if realm == WayRealm::Urban => Some(TrailClass::Walkway),
+        WayKind::Unknown
+        | WayKind::Path
+        | WayKind::Footway
+        | WayKind::Steps
+        | WayKind::Bridleway => Some(TrailClass::Trail),
+    }
+}
+
+fn trail_color(kind: WayKind, realm: WayRealm) -> Color32 {
+    match kind {
+        WayKind::Sidewalk => Color32::from_rgb(166, 170, 171),
+        WayKind::Crossing => Color32::from_rgb(218, 111, 151),
+        _ => trail_class(kind, realm).map_or_else(|| unreachable!(), TrailClass::color),
+    }
+}
+
 impl TrailSalience {
     pub const fn width(self) -> f32 {
         match self {
@@ -532,7 +590,7 @@ pub fn navigate_with(
 }
 
 pub struct Atlas {
-    classes: Vec<WayKind>,
+    classes: Vec<TrailClass>,
     terrains: Vec<Terrain>,
     field: TrailField,
     urban: TrailField,
@@ -550,7 +608,7 @@ pub struct WorldEdge {
     pub length_world: f64,
     pub lineage: Option<CadenceLineage>,
     pub color: Color32,
-    pub way_kind: WayKind,
+    pub stepped: bool,
     pub standing: TrailStanding,
     pub terrain: Terrain,
     pub mark: TrailMark,
@@ -596,6 +654,7 @@ impl Atlas {
         let mut urban = Vec::new();
         let mut sidewalks = Vec::new();
         let mut crossing_diagnostics = Vec::new();
+        let mut classes = BTreeSet::new();
         for edge in &graph.edges {
             let stratum = context_stratum(edge.attr.way_kind, edge.attr.realm);
             let points = edge
@@ -605,13 +664,17 @@ impl Atlas {
                 .copied()
                 .map(world_from_coord)
                 .collect::<Vec<_>>();
+            let class = trail_class(edge.attr.way_kind, edge.attr.realm);
+            if matches!(stratum, ContextStratum::Trail | ContextStratum::Urban) {
+                classes.extend(class);
+            }
             let world = WorldEdge {
                 endpoints: [edge.a.0, edge.b.0],
                 length_world: world_polyline_length(&points),
                 points,
                 lineage: None,
-                color: way_kind_color(edge.attr.way_kind),
-                way_kind: edge.attr.way_kind,
+                color: trail_color(edge.attr.way_kind, edge.attr.realm),
+                stepped: edge.attr.way_kind == WayKind::Steps,
                 standing: edge.attr.standing,
                 terrain: edge.attr.terrain,
                 mark: trail_mark(
@@ -633,12 +696,7 @@ impl Atlas {
         weave_cadence(graph.vertices.len(), &mut edges);
         weave_cadence(graph.vertices.len(), &mut urban);
         weave_cadence(graph.vertices.len(), &mut crossing_diagnostics);
-        let classes = edges
-            .iter()
-            .map(|edge| edge.way_kind)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
+        let classes = classes.into_iter().collect();
         let terrains = edges
             .iter()
             .map(|edge| edge.terrain)
@@ -704,12 +762,7 @@ impl Atlas {
                         match current {
                             TrailColoring::Class => {
                                 for class in self.classes.iter().copied() {
-                                    legend_row(
-                                        ui,
-                                        way_kind_label(class),
-                                        way_kind_color(class),
-                                        None,
-                                    );
+                                    legend_row(ui, class.label(), class.color(), None, false);
                                 }
                             }
                             TrailColoring::Formality => {
@@ -718,12 +771,14 @@ impl Atlas {
                                     "FORMAL",
                                     formality_color(false, TrailSalience::Context),
                                     None,
+                                    false,
                                 );
                                 legend_row(
                                     ui,
                                     "INFORMAL",
                                     formality_color(true, TrailSalience::Context),
                                     None,
+                                    false,
                                 );
                             }
                             TrailColoring::Terrain => {
@@ -733,6 +788,7 @@ impl Atlas {
                                         terrain_label(terrain),
                                         terrain_color(terrain, TrailSalience::Context),
                                         None,
+                                        false,
                                     );
                                 }
                             }
@@ -741,8 +797,21 @@ impl Atlas {
                         let _heading =
                             ui.label(chrome::eyebrow("LINE STYLE · SURFACE / WAYFINDING"));
                         for mark in TrailMark::ALL {
-                            legend_row(ui, mark.label(), way_kind_color(WayKind::Path), Some(mark));
+                            legend_row(
+                                ui,
+                                mark.label(),
+                                TrailClass::Trail.color(),
+                                Some(mark),
+                                false,
+                            );
                         }
+                        legend_row(
+                            ui,
+                            "STEPS",
+                            TrailClass::Walkway.color(),
+                            Some(TrailMark::Solid),
+                            true,
+                        );
                     });
             });
         answer.rect = Some(shown.response.rect);
@@ -787,18 +856,25 @@ pub struct LegendResponse {
     pub clicked: Option<(TrailColoring, Rect)>,
 }
 
-fn legend_row(ui: &mut egui::Ui, label: &str, color: Color32, mark: Option<TrailMark>) {
+fn legend_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    color: Color32,
+    mark: Option<TrailMark>,
+    stepped: bool,
+) {
     let (rect, _response) =
         ui.allocate_exact_size(vec2(ui.available_width(), 21.0), egui::Sense::hover());
     let from = pos2(rect.left() + 2.0, rect.center().y);
     let to = pos2(rect.left() + 24.0, rect.center().y);
     if let Some(mark) = mark {
-        paint_trail_tube(
+        paint_trail_tube_style(
             ui.painter(),
             &[from, to],
             TrailSalience::Context.width(),
             color,
             mark,
+            stepped,
         );
     } else {
         let _swatch = ui.painter().line_segment(
@@ -847,7 +923,7 @@ struct Crown {
 #[derive(Clone, Copy)]
 struct OverlayStyle {
     color: Color32,
-    way_kind: WayKind,
+    stepped: bool,
     standing: TrailStanding,
     terrain: Terrain,
     mark: TrailMark,
@@ -857,6 +933,7 @@ struct OverlayStyle {
 impl OverlayStyle {
     fn same_visual_law(self, other: Self) -> bool {
         self.mark == other.mark
+            && self.stepped == other.stepped
             && (self.standing == TrailStanding::Informal)
                 == (other.standing == TrailStanding::Informal)
             && self.terrain == other.terrain
@@ -906,7 +983,7 @@ fn candidate_chains(graph: &WalkGraph, routes: &[Route], identities: &[usize]) -
             if owner.slot == slot && owner.occurrence == occurrence {
                 let style = OverlayStyle {
                     color,
-                    way_kind: edge.attr.way_kind,
+                    stepped: edge.attr.way_kind == WayKind::Steps,
                     standing: edge.attr.standing,
                     terrain: edge.attr.terrain,
                     mark: trail_mark(
@@ -963,7 +1040,7 @@ fn saved_chains(trail: &SavedTrail) -> Vec<WorldEdge> {
         };
         let style = OverlayStyle {
             color: SELECTED_TRAIL_COLOR,
-            way_kind: leg.way_kind,
+            stepped: leg.way_kind == WayKind::Steps,
             standing: leg.standing,
             terrain: leg.terrain,
             mark: trail_mark(
@@ -1016,7 +1093,7 @@ fn seal_overlay(draft: &mut Option<OverlayDraft>, chains: &mut Vec<WorldEdge>) {
         points: draft.points,
         lineage: None,
         color: draft.style.color,
-        way_kind: draft.style.way_kind,
+        stepped: draft.style.stepped,
         standing: draft.style.standing,
         terrain: draft.style.terrain,
         mark: draft.style.mark,
@@ -1029,14 +1106,14 @@ fn weave_cadence(vertex_count: usize, edges: &mut [WorldEdge]) {
     for (edge_id, edge) in edges
         .iter()
         .enumerate()
-        .filter(|(_, edge)| edge.mark.patterned())
+        .filter(|(_, edge)| edge.mark.patterned() || edge.stepped)
     {
         for endpoint in edge.endpoints {
             adjacency[endpoint].push(edge_id);
         }
     }
 
-    for mark in [TrailMark::Dashed, TrailMark::DashDot, TrailMark::Unmarked] {
+    for mark in TrailMark::ALL {
         let mut datums = vec![None; vertex_count];
         for root in 0..vertex_count {
             if datums[root].is_some()
@@ -1126,6 +1203,7 @@ pub fn paint_route(
                     edge.attr.terrain,
                     edge.attr.surface.as_deref(),
                 ),
+                stepped: edge.attr.way_kind == WayKind::Steps,
             },
         );
         at = edge
@@ -1202,12 +1280,14 @@ struct SelectedStroke {
     length_world: f64,
     color: Color32,
     mark: TrailMark,
+    stepped: bool,
 }
 
 fn annex_selected_stroke(strokes: &mut Vec<SelectedStroke>, stroke: SelectedStroke) {
     if let Some(tail) = strokes.last_mut()
         && tail.color == stroke.color
         && tail.mark == stroke.mark
+        && tail.stepped == stroke.stepped
         && tail
             .points
             .last()
@@ -1236,8 +1316,11 @@ fn paint_selected_strokes(painter: &Painter, strokes: &[SelectedStroke], view: V
             painter,
             &stroke.points,
             width,
-            stroke.color,
-            stroke.mark,
+            TubeStyle {
+                color: stroke.color,
+                mark: stroke.mark,
+                step_spacing: stroke.stepped.then_some(cell_points),
+            },
             pattern,
             phase,
         );
@@ -1271,14 +1354,26 @@ fn trail_lattice_pattern(
     }
 }
 
-pub fn paint_trail_tube(
+fn paint_trail_tube_style(
     painter: &Painter,
     points: &[Pos2],
     width: f32,
     color: Color32,
     mark: TrailMark,
+    stepped: bool,
 ) {
-    paint_trail_tube_at(painter, points, width, color, mark, 0.0);
+    let _length = paint_trail_tube_pattern(
+        painter,
+        points,
+        width,
+        TubeStyle {
+            color,
+            mark,
+            step_spacing: stepped.then_some(width * 1.35),
+        },
+        trail_pattern(mark, width, trail_core_width(width)),
+        0.0,
+    );
 }
 
 pub fn paint_trail_tube_at(
@@ -1288,25 +1383,35 @@ pub fn paint_trail_tube_at(
     color: Color32,
     mark: TrailMark,
     datum: f32,
+    stepped: bool,
 ) -> f32 {
     let core_width = trail_core_width(width);
     paint_trail_tube_pattern(
         painter,
         points,
         width,
-        color,
-        mark,
+        TubeStyle {
+            color,
+            mark,
+            step_spacing: stepped.then_some(width * 1.35),
+        },
         trail_pattern(mark, width, core_width),
         datum,
     )
+}
+
+#[derive(Clone, Copy)]
+struct TubeStyle {
+    color: Color32,
+    mark: TrailMark,
+    step_spacing: Option<f32>,
 }
 
 fn paint_trail_tube_pattern(
     painter: &Painter,
     points: &[Pos2],
     width: f32,
-    color: Color32,
-    mark: TrailMark,
+    style: TubeStyle,
     pattern: Option<cadence::Pattern>,
     datum: f32,
 ) -> f32 {
@@ -1314,20 +1419,35 @@ fn paint_trail_tube_pattern(
         return 0.0;
     }
     let length = cadence::polyline_length(points);
-    let _tube = painter.add(Shape::line(points.to_vec(), Stroke::new(width, color)));
+    let _tube = painter.add(Shape::line(
+        points.to_vec(),
+        Stroke::new(width, style.color),
+    ));
     for endpoint in [points[0], points[points.len() - 1]] {
-        let _cap = painter.circle_filled(endpoint, width * 0.5, color);
+        let _cap = painter.circle_filled(endpoint, width * 0.5, style.color);
     }
     if let Some(pattern) = pattern {
         let mut shapes = Vec::new();
         pattern.tessellate(
             points.iter().copied(),
-            trail_core(mark, width).expect("patterned trails own a core"),
+            trail_core(style.mark, width).expect("patterned trails own a core"),
             datum,
             f32::INFINITY,
             &mut shapes,
         );
         painter.extend(shapes);
+    }
+    if let Some(step_spacing) = style.step_spacing {
+        let mut hatches = Vec::new();
+        cadence::crossbars(
+            points,
+            Stroke::new(1.15_f32, Color32::from_black_alpha(205)),
+            width * 0.92,
+            step_spacing,
+            datum,
+            &mut hatches,
+        );
+        painter.extend(hatches);
     }
     length
 }
@@ -1547,42 +1667,6 @@ pub const fn terrain_label(terrain: Terrain) -> &'static str {
         Terrain::Pavement => "PAVEMENT",
         Terrain::Road => "ROAD",
         Terrain::Water => "WATER",
-    }
-}
-
-pub const fn way_kind_color(class: WayKind) -> Color32 {
-    match class {
-        WayKind::Unknown => Color32::from_rgb(207, 199, 184),
-        WayKind::Path => Color32::from_rgb(213, 180, 104),
-        WayKind::Footway => Color32::from_rgb(171, 174, 174),
-        WayKind::Sidewalk => Color32::from_rgb(166, 170, 171),
-        WayKind::Crossing => Color32::from_rgb(218, 111, 151),
-        WayKind::Track => Color32::from_rgb(198, 137, 91),
-        WayKind::ServiceRoad => Color32::from_rgb(181, 122, 104),
-        WayKind::PedestrianStreet => Color32::from_rgb(176, 151, 198),
-        WayKind::Steps => Color32::from_rgb(204, 112, 108),
-        WayKind::Bridleway => Color32::from_rgb(205, 145, 173),
-        WayKind::Bushwhack => Color32::from_rgb(205, 133, 190),
-        WayKind::Roadway => ROAD_COLOR,
-        WayKind::Cycleway => Color32::from_rgb(154, 165, 170),
-    }
-}
-
-pub const fn way_kind_label(class: WayKind) -> &'static str {
-    match class {
-        WayKind::Unknown => "UNCLASSIFIED",
-        WayKind::Path => "PATH",
-        WayKind::Footway => "FOOTWAY",
-        WayKind::Sidewalk => "SIDEWALK",
-        WayKind::Crossing => "CROSSING",
-        WayKind::Track => "TRACK",
-        WayKind::ServiceRoad => "SERVICE",
-        WayKind::PedestrianStreet => "PEDESTRIAN",
-        WayKind::Steps => "STEPS",
-        WayKind::Bridleway => "BRIDLEWAY",
-        WayKind::Bushwhack => "BUSHWHACK",
-        WayKind::Roadway => "ROAD",
-        WayKind::Cycleway => "CYCLEWAY",
     }
 }
 
@@ -1898,38 +1982,74 @@ mod tests {
 
     #[test]
     fn privileged_cpu_strokes_fuse_only_across_one_visual_law() {
-        let stroke = |points, mark| SelectedStroke {
+        let stroke = |points, mark, stepped| SelectedStroke {
             points,
             length_world: 1.0,
             color: SELECTED_TRAIL_COLOR,
             mark,
+            stepped,
         };
         let mut strokes = Vec::new();
         annex_selected_stroke(
             &mut strokes,
-            stroke(vec![pos2(0.0, 0.0), pos2(1.0, 0.0)], TrailMark::Solid),
+            stroke(
+                vec![pos2(0.0, 0.0), pos2(1.0, 0.0)],
+                TrailMark::Solid,
+                false,
+            ),
         );
         annex_selected_stroke(
             &mut strokes,
-            stroke(vec![pos2(1.0, 0.0), pos2(2.0, 0.0)], TrailMark::Solid),
+            stroke(
+                vec![pos2(1.0, 0.0), pos2(2.0, 0.0)],
+                TrailMark::Solid,
+                false,
+            ),
         );
         annex_selected_stroke(
             &mut strokes,
-            stroke(vec![pos2(2.0, 0.0), pos2(3.0, 0.0)], TrailMark::Dashed),
+            stroke(
+                vec![pos2(2.0, 0.0), pos2(3.0, 0.0)],
+                TrailMark::Dashed,
+                false,
+            ),
+        );
+        annex_selected_stroke(
+            &mut strokes,
+            stroke(
+                vec![pos2(3.0, 0.0), pos2(4.0, 0.0)],
+                TrailMark::Dashed,
+                true,
+            ),
         );
 
-        assert_eq!(strokes.len(), 2);
+        assert_eq!(strokes.len(), 3);
         assert_eq!(strokes[0].points.len(), 3);
         assert!((strokes[0].length_world - 2.0).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn bushwhacks_have_an_unambiguous_legend_identity() {
-        assert_eq!(way_kind_label(WayKind::Bushwhack), "BUSHWHACK");
-        assert_ne!(
-            way_kind_color(WayKind::Bushwhack),
-            way_kind_color(WayKind::Path)
+    fn way_kinds_collapse_into_five_unambiguous_legend_classes() {
+        assert_eq!(TrailClass::Bushwhack.label(), "BUSHWHACK");
+        assert_ne!(TrailClass::Bushwhack.color(), TrailClass::Trail.color());
+        assert_eq!(
+            trail_class(WayKind::Bridleway, WayRealm::Recreational),
+            Some(TrailClass::Trail)
         );
+        assert_eq!(
+            trail_class(WayKind::Footway, WayRealm::Urban),
+            Some(TrailClass::Walkway)
+        );
+        assert_eq!(
+            trail_class(WayKind::Steps, WayRealm::Recreational),
+            Some(TrailClass::Trail)
+        );
+        assert_eq!(
+            trail_class(WayKind::Steps, WayRealm::Urban),
+            Some(TrailClass::Walkway)
+        );
+        assert_eq!(trail_class(WayKind::Sidewalk, WayRealm::Urban), None);
+        assert_eq!(trail_class(WayKind::Crossing, WayRealm::Urban), None);
     }
 
     #[test]
@@ -1954,14 +2074,15 @@ mod tests {
             context_stratum(WayKind::Path, WayRealm::Recreational),
             ContextStratum::Trail
         );
-        let footway = way_kind_color(WayKind::Footway);
-        assert!(footway.r().abs_diff(footway.g()) <= 4);
-        assert!(footway.g().abs_diff(footway.b()) <= 4);
+        assert_eq!(
+            trail_color(WayKind::Footway, WayRealm::Urban),
+            TrailClass::Walkway.color()
+        );
     }
 
     #[test]
     fn color_projections_preserve_class_identity_and_access_alarm() {
-        let class = way_kind_color(WayKind::Path);
+        let class = TrailClass::Trail.color();
         let open = |coloring| {
             trail_hue(
                 coloring,
@@ -2000,18 +2121,12 @@ mod tests {
 
     #[test]
     fn selected_trails_dominate_by_width_and_chroma() {
-        const CLASSES: [WayKind; 11] = [
-            WayKind::Unknown,
-            WayKind::Path,
-            WayKind::Footway,
-            WayKind::Track,
-            WayKind::ServiceRoad,
-            WayKind::PedestrianStreet,
-            WayKind::Steps,
-            WayKind::Bridleway,
-            WayKind::Bushwhack,
-            WayKind::Roadway,
-            WayKind::Cycleway,
+        const CLASSES: [TrailClass; 5] = [
+            TrailClass::Trail,
+            TrailClass::Walkway,
+            TrailClass::Track,
+            TrailClass::Road,
+            TrailClass::Bushwhack,
         ];
         let chroma = |color: Color32| {
             color.r().max(color.g()).max(color.b()) - color.r().min(color.g()).min(color.b())
@@ -2026,7 +2141,7 @@ mod tests {
         assert!(
             CLASSES
                 .into_iter()
-                .map(way_kind_color)
+                .map(TrailClass::color)
                 .all(|color| chroma(color) <= 110)
         );
         assert!(
@@ -2037,8 +2152,8 @@ mod tests {
 
     #[test]
     fn roadways_recede_beneath_sidewalks_by_lightness() {
-        let road = way_kind_color(WayKind::Roadway).to_array();
-        let sidewalk = way_kind_color(WayKind::Sidewalk).to_array();
+        let road = TrailClass::Road.color().to_array();
+        let sidewalk = trail_color(WayKind::Sidewalk, WayRealm::Urban).to_array();
         assert!(
             road[..3]
                 .iter()
@@ -2182,8 +2297,8 @@ mod tests {
             points: vec![[0.0, 0.0], [length_world, 0.0]],
             length_world,
             lineage: None,
-            color: way_kind_color(WayKind::Path),
-            way_kind: WayKind::Path,
+            color: TrailClass::Trail.color(),
+            stepped: false,
             standing: TrailStanding::Established,
             terrain: Terrain::Trail,
             mark: TrailMark::Dashed,

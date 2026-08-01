@@ -10,7 +10,7 @@ use crate::{
 use egui::{Color32, Pos2, Rect, Response, Sense, Stroke, Ui, pos2, vec2};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use trailgen_core::{LineString, Route, TrailStanding, WalkGraph};
+use trailgen_core::{LineString, Route, TrailStanding, WalkGraph, WayKind};
 
 pub const TILE_SIZE: egui::Vec2 = egui::Vec2::new(224.0, 146.0);
 const PLATE_PAD: f32 = 4.0;
@@ -100,6 +100,7 @@ pub struct CandidatePreview {
 struct PreviewRun {
     points: Arc<[Pos2]>,
     mark: crate::map::TrailMark,
+    stepped: bool,
     datum: f32,
 }
 
@@ -121,8 +122,10 @@ impl CandidatePreview {
                 edge.attr.terrain,
                 edge.attr.surface.as_deref(),
             );
+            let stepped = edge.attr.way_kind == WayKind::Steps;
             if let Some(run) = drafts.last_mut()
                 && run.mark == mark
+                && run.stepped == stepped
                 && run
                     .points
                     .last()
@@ -134,6 +137,7 @@ impl CandidatePreview {
                 drafts.push(PreviewDraft {
                     points,
                     mark,
+                    stepped,
                     datum,
                 });
             }
@@ -147,6 +151,7 @@ impl CandidatePreview {
             .map(|run| PreviewRun {
                 points: simplify_miniature(&run.points).into(),
                 mark: run.mark,
+                stepped: run.stepped,
                 datum: run.datum,
             })
             .collect();
@@ -168,8 +173,15 @@ impl CandidatePreview {
                 .iter()
                 .map(|point| rect.min + point.to_vec2())
                 .collect::<Vec<_>>();
-            let _advance =
-                paint_trail_tube_at(ui.painter(), &points, 5.4, color, run.mark, run.datum);
+            let _advance = paint_trail_tube_at(
+                ui.painter(),
+                &points,
+                5.4,
+                color,
+                run.mark,
+                run.datum,
+                run.stepped,
+            );
         }
     }
 }
@@ -196,8 +208,10 @@ impl SavedPreview {
                 leg.terrain,
                 leg.surface.as_deref(),
             );
+            let stepped = leg.way_kind == WayKind::Steps;
             if let Some(run) = drafts.last_mut()
                 && run.mark == mark
+                && run.stepped == stepped
                 && run
                     .points
                     .last()
@@ -209,6 +223,7 @@ impl SavedPreview {
                 drafts.push(PreviewDraft {
                     points,
                     mark,
+                    stepped,
                     datum,
                 });
             }
@@ -219,6 +234,7 @@ impl SavedPreview {
             .map(|run| PreviewRun {
                 points: simplify_miniature(&run.points).into(),
                 mark: run.mark,
+                stepped: run.stepped,
                 datum: run.datum,
             })
             .collect();
@@ -242,6 +258,7 @@ impl SavedPreview {
                 crate::map::SELECTED_TRAIL_COLOR,
                 run.mark,
                 run.datum,
+                run.stepped,
             );
         }
     }
@@ -250,6 +267,7 @@ impl SavedPreview {
 struct PreviewDraft {
     points: Vec<Pos2>,
     mark: crate::map::TrailMark,
+    stepped: bool,
     datum: f32,
 }
 
