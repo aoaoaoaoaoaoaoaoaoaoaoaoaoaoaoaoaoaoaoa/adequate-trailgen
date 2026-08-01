@@ -12,6 +12,21 @@ direction, surface, institutional standing, crossing control, geometry claim,
 and provider confidence are independent facts. No one projection may infer or
 overwrite another.
 
+Road walking has three orthogonal axes:
+
+- `PedestrianSupport` records the predicted physical support: sidewalk,
+  shoulder, or carriageway.
+- `SupportEvidence` records why that prediction is believed: mapped, tagged
+  proxy, or inferred.
+- `Access` records legal authority independently of physical provision.
+
+A mapped sidewalk, a road carrying sidewalk tags, and a sidewalk inferred by
+the US urban-street policy therefore share sidewalk support and routing cost.
+Evidence quality remains available for provenance, hover explanation, and
+diagnostics; it does not silently tax an otherwise equivalent route. Shoulder
+and carriageway carry successively stronger aversion. Private and closed access
+remain impassable regardless of support.
+
 ## Identity
 
 OSM topology follows OSM node identity. Two ways join when they share a source
@@ -40,6 +55,14 @@ scale as intrinsic, monolithic grey substrate: they have neither a trail core
 nor a surface cadence and ignore trail-hue projections. Crossings enter at the
 same scale through a separate routing-diagnostic stratum. Sidewalks and
 crossings remain routable facts, not legend categories.
+
+Road cartography projects support and access into one visible
+`WalkDisposition`: sidewalkable, shoulder, carriageway, or forbidden. Attached,
+tagged, and inferred sidewalks share one sidewalkable shade. Shoulder and
+carriageway receive distinct restrained shades. Private and closed roads
+override those shades with a dark, low-saturation burgundy. The projection
+tints the authoritative road stroke; it never lays a trail tube, core, or
+cadence over the road and never distinguishes evidence sources by color.
 
 Realm classification is total. Graph validation rejects an edge in neither
 realm, an edge in Finder but not Manual, or a search projection inconsistent
