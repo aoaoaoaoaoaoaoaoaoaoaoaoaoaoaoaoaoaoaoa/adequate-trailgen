@@ -99,7 +99,8 @@ impl Default for Field {
 }
 
 impl Field {
-    fn seal(isohypses: Vec<Isohypse>) -> Self {
+    fn seal(mut isohypses: Vec<Isohypse>) -> Self {
+        isohypses.retain(|isohypse| isohypse.elevation_m != 0);
         let tiles = RELIEF_LAWS
             .into_iter()
             .map(|law| raise_tiles(&isohypses, law))
@@ -1271,6 +1272,31 @@ mod tests {
         assert_eq!(decoded.isohypses[0].elevation_m, 250);
         assert_eq!(decoded.isohypses[0].label.as_deref(), Some("250 m"));
         Ok(())
+    }
+
+    #[test]
+    fn sea_level_is_never_presented_as_relief() {
+        let isohypse = |elevation_m| Isohypse {
+            key: TileKey {
+                zoom: 0,
+                x: 0,
+                y: 0,
+            },
+            elevation_m,
+            label: None,
+            points: Arc::from([[0.2, 0.3], [0.4, 0.5]]),
+            bounds: [0.2, 0.3, 0.4, 0.5],
+        };
+        let field = Field::seal(vec![isohypse(-10), isohypse(0), isohypse(10)]);
+
+        assert_eq!(
+            field
+                .isohypses
+                .iter()
+                .map(|isohypse| isohypse.elevation_m)
+                .collect::<Vec<_>>(),
+            [-10, 10]
+        );
     }
 
     #[test]
