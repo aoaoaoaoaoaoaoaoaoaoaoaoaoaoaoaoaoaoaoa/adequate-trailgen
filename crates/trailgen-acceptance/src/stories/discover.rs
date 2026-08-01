@@ -658,6 +658,7 @@ fn exercise_color_legend(
         i32::from(northwest.1.max(southeast.1)) + 12,
     );
     let class = story.capture()?;
+    assert_solid_tube_is_coreless(&class, frame)?;
     let _formal_state = story
         .click(Target::LegendFormality)?
         .until(shows::coloring(TrailColoring::Formality))?;
@@ -708,9 +709,25 @@ fn core_agreement(left: &Frame, right: &Frame, region: PixelRegion) -> Result<f6
         (left.width(), left.height()) == (right.width(), right.height()),
         "trail-color cadence oracle received differently sized frames",
     )?;
-    let dark = |pixel: &[u8]| pixel[0] <= 92 && pixel[1] <= 92 && pixel[2] <= 92;
-    let left_ink = left.rgba().chunks_exact(4).map(dark).collect::<Vec<_>>();
-    let right_ink = right.rgba().chunks_exact(4).map(dark).collect::<Vec<_>>();
+    let dark = |pixel: &[u8]| pixel[0] <= 150 && pixel[1] <= 150 && pixel[2] <= 150;
+    let changed = |left: &[u8], right: &[u8]| {
+        left[..3]
+            .iter()
+            .zip(&right[..3])
+            .map(|(left, right)| left.abs_diff(*right))
+            .max()
+            .is_some_and(|delta| delta >= 5)
+    };
+    let pairs = left
+        .rgba()
+        .chunks_exact(4)
+        .zip(right.rgba().chunks_exact(4));
+    let (left_ink, right_ink): (Vec<_>, Vec<_>) = pairs
+        .map(|(left, right)| {
+            let changed = changed(left, right);
+            (changed && dark(left), changed && dark(right))
+        })
+        .unzip();
     let left_count = left_ink.iter().filter(|ink| **ink).count();
     let right_count = right_ink.iter().filter(|ink| **ink).count();
     let total = left_count + right_count;
@@ -729,6 +746,40 @@ fn core_agreement(left: &Frame, right: &Frame, region: PixelRegion) -> Result<f6
     let total =
         u32::try_from(total).map_err(|_| crate::harness::verdict("total core ink exceeded u32"))?;
     Ok(f64::from(covered) / f64::from(total))
+}
+
+fn assert_solid_tube_is_coreless(
+    frame: &Frame,
+    witness: &crate::harness::TrailFrame,
+) -> Result<()> {
+    let left = map_pixel(witness, [-98.508, 39.486])?;
+    let right = map_pixel(witness, [-98.492, 39.486])?;
+    let y = i32::midpoint(i32::from(left.1), i32::from(right.1));
+    let region = PixelRegion::new(
+        i32::from(left.0.min(right.0)),
+        y - 4,
+        i32::from(left.0.max(right.0)) + 1,
+        y + 5,
+    );
+    let crop = frame.crop(region)?;
+    let pixels = crop.rgba().chunks_exact(4);
+    let colored = pixels
+        .clone()
+        .filter(|pixel| {
+            pixel[0].saturating_sub(pixel[2]) >= 40 && pixel[1].saturating_sub(pixel[2]) >= 20
+        })
+        .count();
+    let dark = pixels
+        .filter(|pixel| pixel[0] <= 150 && pixel[1] <= 150 && pixel[2] <= 150)
+        .count();
+    demand(
+        colored >= 48,
+        "solid-core oracle could not find the fixture's easy / gravel tube",
+    )?;
+    demand(
+        dark <= 8,
+        format!("easy / gravel tube retained {dark} dark core pixels"),
+    )
 }
 
 fn covered_ink(source: &[bool], target: &[bool], width: usize, height: usize) -> usize {

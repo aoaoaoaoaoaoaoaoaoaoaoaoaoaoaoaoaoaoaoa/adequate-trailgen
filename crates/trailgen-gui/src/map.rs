@@ -1221,7 +1221,7 @@ fn annex_selected_stroke(strokes: &mut Vec<SelectedStroke>, stroke: SelectedStro
 
 fn paint_selected_strokes(painter: &Painter, strokes: &[SelectedStroke], view: Viewport) {
     let width = TrailSalience::Selected.width();
-    let core_width = trail_core(width).width;
+    let core_width = trail_core_width(width);
     let scale = world_pixels(view);
     let lattice = cadence::WorldLevel::at_zoom(view.zoom);
     let cells_per_world = lattice.cells_per_world();
@@ -1230,8 +1230,15 @@ fn paint_selected_strokes(painter: &Painter, strokes: &[SelectedStroke], view: V
     for stroke in strokes {
         let pattern = trail_lattice_pattern(stroke.mark, core_width, cell_points);
         let phase = (datum_world * cells_per_world).rem_euclid(2.0) as f32 * cell_points;
-        let _length =
-            paint_trail_tube_pattern(painter, &stroke.points, width, stroke.color, pattern, phase);
+        let _length = paint_trail_tube_pattern(
+            painter,
+            &stroke.points,
+            width,
+            stroke.color,
+            stroke.mark,
+            pattern,
+            phase,
+        );
         datum_world += stroke.length_world;
     }
 }
@@ -1280,13 +1287,14 @@ pub fn paint_trail_tube_at(
     mark: TrailMark,
     datum: f32,
 ) -> f32 {
-    let core = trail_core(width);
+    let core_width = trail_core_width(width);
     paint_trail_tube_pattern(
         painter,
         points,
         width,
         color,
-        trail_pattern(mark, width, core.width),
+        mark,
+        trail_pattern(mark, width, core_width),
         datum,
     )
 }
@@ -1296,6 +1304,7 @@ fn paint_trail_tube_pattern(
     points: &[Pos2],
     width: f32,
     color: Color32,
+    mark: TrailMark,
     pattern: Option<cadence::Pattern>,
     datum: f32,
 ) -> f32 {
@@ -1307,28 +1316,31 @@ fn paint_trail_tube_pattern(
     for endpoint in [points[0], points[points.len() - 1]] {
         let _cap = painter.circle_filled(endpoint, width * 0.5, color);
     }
-    let core = trail_core(width);
     if let Some(pattern) = pattern {
         let mut shapes = Vec::new();
         pattern.tessellate(
             points.iter().copied(),
-            core,
+            trail_core(mark, width).expect("patterned trails own a core"),
             datum,
             f32::INFINITY,
             &mut shapes,
         );
         painter.extend(shapes);
-    } else {
-        let _core = painter.add(Shape::line(points.to_vec(), core));
-        for endpoint in [points[0], points[points.len() - 1]] {
-            let _cap = painter.circle_filled(endpoint, core.width * 0.5, core.color);
-        }
     }
     length
 }
 
-pub fn trail_core(width: f32) -> Stroke {
-    Stroke::new((width * 0.30).max(1.2), Color32::from_rgb(20, 19, 17))
+pub fn trail_core_width(width: f32) -> f32 {
+    (width * 0.30).max(1.2)
+}
+
+fn trail_core(mark: TrailMark, width: f32) -> Option<Stroke> {
+    mark.patterned().then(|| {
+        Stroke::new(
+            trail_core_width(width),
+            Color32::from_rgb(20, 19, 17).gamma_multiply(0.5),
+        )
+    })
 }
 
 pub fn trail_pattern(mark: TrailMark, width: f32, core_width: f32) -> Option<cadence::Pattern> {
@@ -2104,6 +2116,15 @@ mod tests {
             ),
             TrailMark::Unmarked
         );
+    }
+
+    #[test]
+    fn easy_gravel_rejects_core_ink_and_other_marks_halve_it() {
+        assert!(trail_core(TrailMark::Solid, 4.0).is_none());
+        for mark in [TrailMark::Dashed, TrailMark::DashDot, TrailMark::Unmarked] {
+            let core = trail_core(mark, 4.0).expect("patterned trail owns core ink");
+            assert_eq!(core.color.a(), 128);
+        }
     }
 
     #[test]

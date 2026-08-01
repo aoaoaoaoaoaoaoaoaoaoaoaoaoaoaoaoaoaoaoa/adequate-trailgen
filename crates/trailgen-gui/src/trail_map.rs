@@ -3,7 +3,7 @@ use crate::{
     cadence::WorldLevel,
     map::{
         CadenceLineage, MapFramePlan, TrailColoring, TrailMark, TrailSalience, WorldEdge,
-        coloring_shader_code, formality_color, terrain_color, trail_core,
+        coloring_shader_code, formality_color, terrain_color, trail_core_width,
     },
 };
 use bytemuck::{Pod, Zeroable};
@@ -1694,7 +1694,7 @@ impl Uniform {
             cadence_cells_per_world: paint.cadence_cells_per_world,
             radii: [
                 paint.dialect.salience.width() * 0.5,
-                trail_core(paint.dialect.salience.width()).width * 0.5,
+                trail_core_width(paint.dialect.salience.width()) * 0.5,
             ],
             disclosure: paint.dialect.disclosure,
             projection: [coloring_shader_code(paint.coloring), 0, 0, 0],
@@ -1896,7 +1896,12 @@ fn trail_vertex(
     if blocked == 0u && u.projection.x == 2u {
         tube = u.palette[2u + min(terrain, 8u)];
     }
-    let ink = select(tube, vec4f(20.0 / 255.0, 19.0 / 255.0, 17.0 / 255.0, 1.0), core);
+    let core_alpha = select(0.0, 0.5, pattern != 0u);
+    let ink = select(
+        tube,
+        vec4f(20.0 / 255.0, 19.0 / 255.0, 17.0 / 255.0, core_alpha),
+        core,
+    );
     out.color = vec4f(ink.rgb, ink.a * maturity * detail.opacity);
     out.edge_distance = edge_factor * expanded_radius;
     out.solid_radius = visible_radius;
