@@ -1730,27 +1730,25 @@ fn road_style(
         return None;
     }
     let (color, radius, fallback_onset) = match (kind, detail) {
-        (Some("highway"), Some("motorway")) => ([84, 73, 57, 235], 1.40, 4.0),
-        (Some("highway"), Some("motorway_link")) => ([91, 80, 63, 220], 1.05, 7.0),
-        (Some("major_road"), Some("trunk" | "trunk_link")) => ([87, 76, 60, 230], 1.25, 5.0),
-        (Some("major_road"), Some("primary" | "primary_link")) => ([90, 80, 64, 220], 1.15, 7.0),
-        (Some("major_road"), Some("secondary" | "secondary_link")) => {
-            ([92, 83, 68, 215], 1.05, 8.0)
-        }
-        (Some("major_road"), Some("tertiary" | "tertiary_link")) => ([94, 85, 70, 210], 0.96, 9.0),
+        (Some("highway"), Some("motorway")) => (road_ink(235), 1.40, 4.0),
+        (Some("highway"), Some("motorway_link")) => (road_ink(220), 1.05, 7.0),
+        (Some("major_road"), Some("trunk" | "trunk_link")) => (road_ink(230), 1.25, 5.0),
+        (Some("major_road"), Some("primary" | "primary_link")) => (road_ink(220), 1.15, 7.0),
+        (Some("major_road"), Some("secondary" | "secondary_link")) => (road_ink(215), 1.05, 8.0),
+        (Some("major_road"), Some("tertiary" | "tertiary_link")) => (road_ink(210), 0.96, 9.0),
         (Some("minor_road"), Some("residential" | "unclassified" | "road")) => {
-            ([108, 100, 85, 170], 0.72, 10.5)
+            (road_ink(170), 0.72, 10.5)
         }
         (Some("minor_road"), Some("service" | "alley" | "parking_aisle" | "driveway")) => {
-            ([119, 111, 95, 132], 0.50, 11.5)
+            (road_ink(132), 0.50, 11.5)
         }
         (Some("rail"), _) | (_, Some("rail" | "light_rail" | "tram" | "subway")) => {
             ([104, 101, 94, 62], 0.15, 9.0)
         }
         (Some("ferry" | "ferryway"), _) => ([74, 129, 150, 60], 0.14, 8.0),
-        (Some("highway"), _) => ([86, 75, 59, 230], 1.25, 5.0),
-        (Some("major_road"), _) => ([92, 82, 67, 215], 1.05, 8.0),
-        (Some("minor_road"), _) => ([109, 101, 86, 165], 0.70, 10.5),
+        (Some("highway"), _) => (road_ink(230), 1.25, 5.0),
+        (Some("major_road"), _) => (road_ink(215), 1.05, 8.0),
+        (Some("minor_road"), _) => (road_ink(165), 0.70, 10.5),
         _ => return None,
     };
     let onset_zoom = disclosure_onset(min_zoom, fallback_onset);
@@ -1759,6 +1757,15 @@ fn road_style(
         radius_points: radius,
         onset_zoom,
     })
+}
+
+const fn road_ink(alpha: u8) -> [u8; 4] {
+    [
+        map::ROAD_SRGB[0],
+        map::ROAD_SRGB[1],
+        map::ROAD_SRGB[2],
+        alpha,
+    ]
 }
 
 fn road_label_style(
@@ -2540,6 +2547,7 @@ mod tests {
             .context("residential road style")?;
         assert!(style.radius_points > map::INDEX_ISOHYPSE_RADIUS_POINTS);
         assert!(style.color[3] >= 160);
+        assert_eq!(style.color[..3], map::ROAD_SRGB);
         Ok(())
     }
 

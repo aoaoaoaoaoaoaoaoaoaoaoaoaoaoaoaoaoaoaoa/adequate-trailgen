@@ -22,6 +22,8 @@ const FIT_PADDING: f32 = 44.0;
 pub const MAP_GROUND_SRGB: [u8; 3] = [196, 194, 176];
 pub const MAP_GROUND: Color32 =
     Color32::from_rgb(MAP_GROUND_SRGB[0], MAP_GROUND_SRGB[1], MAP_GROUND_SRGB[2]);
+pub const ROAD_SRGB: [u8; 3] = [150, 152, 151];
+pub const ROAD_COLOR: Color32 = Color32::from_rgb(ROAD_SRGB[0], ROAD_SRGB[1], ROAD_SRGB[2]);
 pub const INDEX_ISOHYPSE_RADIUS_POINTS: f32 = 0.56;
 pub const SELECTED_TRAIL_COLOR: Color32 = Color32::from_rgb(244, 91, 55);
 
@@ -1561,7 +1563,7 @@ pub const fn way_kind_color(class: WayKind) -> Color32 {
         WayKind::Steps => Color32::from_rgb(204, 112, 108),
         WayKind::Bridleway => Color32::from_rgb(205, 145, 173),
         WayKind::Bushwhack => Color32::from_rgb(205, 133, 190),
-        WayKind::Roadway => Color32::from_rgb(187, 185, 176),
+        WayKind::Roadway => ROAD_COLOR,
         WayKind::Cycleway => Color32::from_rgb(154, 165, 170),
     }
 }
@@ -2030,6 +2032,18 @@ mod tests {
         assert!(
             chroma(TrailSalience::Selected.access_color(SELECTED_TRAIL_COLOR, Access::Closed))
                 > chroma(TrailSalience::Context.access_color(SELECTED_TRAIL_COLOR, Access::Closed))
+        );
+    }
+
+    #[test]
+    fn roadways_recede_beneath_sidewalks_by_lightness() {
+        let road = way_kind_color(WayKind::Roadway).to_array();
+        let sidewalk = way_kind_color(WayKind::Sidewalk).to_array();
+        assert!(
+            road[..3]
+                .iter()
+                .zip(&sidewalk[..3])
+                .all(|(road, sidewalk)| road < sidewalk)
         );
     }
 
