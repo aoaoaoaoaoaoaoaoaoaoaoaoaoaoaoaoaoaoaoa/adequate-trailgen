@@ -2660,6 +2660,7 @@ impl TrailApp {
             egui::StrokeKind::Inside,
         );
         self.paint_map_header(&canvas, rect);
+        self.paint_map_footer(&canvas, rect);
     }
 
     fn interact_trail_legend(&mut self, ui: &egui::Ui, rect: egui::Rect) -> bool {
@@ -3046,31 +3047,34 @@ impl TrailApp {
 
     fn paint_map_header(&self, painter: &egui::Painter, rect: egui::Rect) {
         let text = if self.sinew.is_none() {
-            self.status.to_ascii_uppercase()
+            Some(self.status.to_ascii_uppercase())
         } else if self.corpus.is_some() {
-            self.trail_data_status
-                .as_deref()
-                .unwrap_or("Updating trails…")
-                .to_ascii_uppercase()
+            Some(
+                self.trail_data_status
+                    .as_deref()
+                    .unwrap_or("Updating trails…")
+                    .to_ascii_uppercase(),
+            )
         } else if self.scribe.active() {
-            "DRAW A MAP AREA".to_owned()
+            Some("DRAW A MAP AREA".to_owned())
         } else if self.view.is_editing() {
-            "TRAIL EDITOR".to_owned()
+            Some("TRAIL EDITOR".to_owned())
         } else if self.placing_trailhead {
-            "CLICK A TRAIL TO PLACE THE TRAILHEAD".to_owned()
+            Some("CLICK A TRAIL TO PLACE THE TRAILHEAD".to_owned())
         } else if let Some((name, _)) = self.focus_summary() {
-            name.to_ascii_uppercase()
+            Some(name.to_ascii_uppercase())
         } else if let Some(trail) = self
             .hovered_saved
             .as_ref()
             .and_then(|id| self.library.trail(id))
         {
-            trail.name.to_ascii_uppercase()
+            Some(trail.name.to_ascii_uppercase())
         } else if self.candidates.is_some() {
-            "SEARCH RESULTS".to_owned()
+            Some("SEARCH RESULTS".to_owned())
         } else {
-            "TRAIL MAP".to_owned()
+            None
         };
+        let Some(text) = text else { return };
         let galley = painter.layout_no_wrap(text, egui::FontId::monospace(13.0), chrome::TEXT);
         let plate = egui::Rect::from_min_size(
             rect.left_top() + vec2(12.0, 12.0),
@@ -3084,27 +3088,33 @@ impl TrailApp {
             egui::StrokeKind::Inside,
         );
         painter.galley(plate.min + vec2(7.0, 4.0), galley, chrome::TEXT);
-        if self
+    }
+
+    fn paint_map_footer(&self, painter: &egui::Painter, rect: egui::Rect) {
+        let attribution = if self
             .vector
             .as_ref()
             .is_some_and(VectorField::has_presented_tiles)
         {
-            let attribution = painter.layout_no_wrap(
-                "PROTOMAPS · © OPENSTREETMAP".to_owned(),
-                egui::FontId::monospace(9.5),
-                Color32::from_black_alpha(190),
-            );
-            let plate = egui::Rect::from_min_size(
-                rect.right_bottom() - attribution.size() - vec2(16.0, 13.0),
-                attribution.size() + vec2(10.0, 6.0),
-            );
-            let _ground = painter.rect_filled(plate, 1.0, Color32::from_white_alpha(150));
-            painter.galley(
-                plate.min + vec2(5.0, 3.0),
-                attribution,
-                Color32::from_black_alpha(190),
-            );
-        }
+            "PROTOMAPS · © OPENSTREETMAP · "
+        } else {
+            ""
+        };
+        let footer = painter.layout_no_wrap(
+            format!("{attribution}Z {:.2}", self.viewport.zoom),
+            egui::FontId::monospace(9.5),
+            Color32::from_black_alpha(190),
+        );
+        let plate = egui::Rect::from_min_size(
+            rect.right_bottom() - footer.size() - vec2(16.0, 13.0),
+            footer.size() + vec2(10.0, 6.0),
+        );
+        let _ground = painter.rect_filled(plate, 1.0, Color32::from_white_alpha(150));
+        painter.galley(
+            plate.min + vec2(5.0, 3.0),
+            footer,
+            Color32::from_black_alpha(190),
+        );
     }
 
     fn handle_scribe(&mut self, ctx: &egui::Context, event: &ScribeEvent) {
