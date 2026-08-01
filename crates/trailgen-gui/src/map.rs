@@ -593,7 +593,6 @@ pub struct Atlas {
     classes: Vec<TrailClass>,
     terrains: Vec<Terrain>,
     field: TrailField,
-    urban: TrailField,
     sidewalks: TrailField,
     crossing_diagnostics: TrailField,
 }
@@ -651,12 +650,11 @@ impl TrailMark {
 impl Atlas {
     pub fn forge(graph: &WalkGraph) -> Self {
         let mut edges = Vec::new();
-        let mut urban = Vec::new();
         let mut sidewalks = Vec::new();
         let mut crossing_diagnostics = Vec::new();
         let mut classes = BTreeSet::new();
         for edge in &graph.edges {
-            let stratum = context_stratum(edge.attr.way_kind, edge.attr.realm);
+            let stratum = context_stratum(edge.attr.way_kind);
             let points = edge
                 .geometry
                 .points
@@ -665,7 +663,7 @@ impl Atlas {
                 .map(world_from_coord)
                 .collect::<Vec<_>>();
             let class = trail_class(edge.attr.way_kind, edge.attr.realm);
-            if matches!(stratum, ContextStratum::Trail | ContextStratum::Urban) {
+            if stratum == ContextStratum::Colored {
                 classes.extend(class);
             }
             let world = WorldEdge {
@@ -687,14 +685,12 @@ impl Atlas {
                 access: edge.attr.access,
             };
             match stratum {
-                ContextStratum::Trail => edges.push(world),
-                ContextStratum::Urban => urban.push(world),
+                ContextStratum::Colored => edges.push(world),
                 ContextStratum::Sidewalk => sidewalks.push(world),
                 ContextStratum::CrossingDiagnostic => crossing_diagnostics.push(world),
             }
         }
         weave_cadence(graph.vertices.len(), &mut edges);
-        weave_cadence(graph.vertices.len(), &mut urban);
         weave_cadence(graph.vertices.len(), &mut crossing_diagnostics);
         let classes = classes.into_iter().collect();
         let terrains = edges
@@ -704,14 +700,12 @@ impl Atlas {
             .into_iter()
             .collect();
         let field = TrailField::forge(&edges);
-        let urban = TrailField::urban(&urban);
         let sidewalks = TrailField::sidewalks(&sidewalks);
         let crossing_diagnostics = TrailField::crossing_diagnostics(&crossing_diagnostics);
         Self {
             classes,
             terrains,
             field,
-            urban,
             sidewalks,
             crossing_diagnostics,
         }
@@ -808,7 +802,7 @@ impl Atlas {
                         legend_row(
                             ui,
                             "STEPS",
-                            TrailClass::Walkway.color(),
+                            TrailClass::Trail.color(),
                             Some(TrailMark::Solid),
                             true,
                         );
@@ -824,7 +818,6 @@ impl Atlas {
         frame: MapFramePlan,
         coloring: TrailColoring,
     ) {
-        self.urban.paint_colored(painter, frame, coloring);
         self.sidewalks.paint_colored(painter, frame, coloring);
         self.crossing_diagnostics
             .paint_colored(painter, frame, coloring);
@@ -834,18 +827,16 @@ impl Atlas {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ContextStratum {
-    Trail,
-    Urban,
+    Colored,
     Sidewalk,
     CrossingDiagnostic,
 }
 
-const fn context_stratum(kind: WayKind, realm: WayRealm) -> ContextStratum {
-    match (kind, realm) {
-        (WayKind::Sidewalk, _) => ContextStratum::Sidewalk,
-        (WayKind::Crossing, _) => ContextStratum::CrossingDiagnostic,
-        (WayKind::Cycleway, _) | (_, WayRealm::Urban) => ContextStratum::Urban,
-        _ => ContextStratum::Trail,
+const fn context_stratum(kind: WayKind) -> ContextStratum {
+    match kind {
+        WayKind::Sidewalk => ContextStratum::Sidewalk,
+        WayKind::Crossing => ContextStratum::CrossingDiagnostic,
+        _ => ContextStratum::Colored,
     }
 }
 
@@ -1491,6 +1482,9 @@ pub fn trail_mark(
     terrain: Terrain,
     surface: Option<&str>,
 ) -> TrailMark {
+    if class == WayKind::Steps {
+        return TrailMark::Solid;
+    }
     if marking == TrailMarking::Unmarked {
         return TrailMark::Unmarked;
     }
@@ -2053,27 +2047,15 @@ mod tests {
     }
 
     #[test]
-    fn urban_micrograph_separates_sidewalk_substrate_from_crossing_diagnostics() {
+    fn colored_network_separates_only_pedestrian_diagnostics() {
+        assert_eq!(context_stratum(WayKind::Sidewalk), ContextStratum::Sidewalk);
         assert_eq!(
-            context_stratum(WayKind::Sidewalk, WayRealm::Connector),
-            ContextStratum::Sidewalk
-        );
-        assert_eq!(
-            context_stratum(WayKind::Crossing, WayRealm::Connector),
+            context_stratum(WayKind::Crossing),
             ContextStratum::CrossingDiagnostic
         );
-        assert_eq!(
-            context_stratum(WayKind::Footway, WayRealm::Urban),
-            ContextStratum::Urban
-        );
-        assert_eq!(
-            context_stratum(WayKind::Cycleway, WayRealm::Connector),
-            ContextStratum::Urban
-        );
-        assert_eq!(
-            context_stratum(WayKind::Path, WayRealm::Recreational),
-            ContextStratum::Trail
-        );
+        assert_eq!(context_stratum(WayKind::Footway), ContextStratum::Colored);
+        assert_eq!(context_stratum(WayKind::Cycleway), ContextStratum::Colored);
+        assert_eq!(context_stratum(WayKind::Path), ContextStratum::Colored);
         assert_eq!(
             trail_color(WayKind::Footway, WayRealm::Urban),
             TrailClass::Walkway.color()
@@ -2244,6 +2226,17 @@ mod tests {
                 Some("gravel")
             ),
             TrailMark::Unmarked
+        );
+        assert_eq!(
+            trail_mark(
+                WayKind::Steps,
+                TrailStanding::Unmaintained,
+                TrailMarking::Unmarked,
+                Terrain::Scramble,
+                Some("rock")
+            ),
+            TrailMark::Solid,
+            "transverse step hatching exclusively owns the line style"
         );
     }
 

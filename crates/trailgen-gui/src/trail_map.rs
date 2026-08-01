@@ -31,9 +31,6 @@ const CORE_ONSET_ZOOM: f32 = 11.05;
 const PATTERN_ONSET_ZOOM: f32 = 11.48;
 const DISCLOSURE_SPAN_ZOOM: f32 = 0.58;
 const OVERLAY_ONSET_ZOOM: f32 = -100.0;
-const URBAN_TUBE_ONSET_ZOOM: f32 = 14.35;
-const URBAN_CORE_ONSET_ZOOM: f32 = 14.85;
-const URBAN_PATTERN_ONSET_ZOOM: f32 = 15.35;
 const PEDESTRIAN_DIAGNOSTIC_TUBE_ONSET_ZOOM: f32 = 17.70;
 const PEDESTRIAN_DIAGNOSTIC_CORE_ONSET_ZOOM: f32 = 18.00;
 const PEDESTRIAN_DIAGNOSTIC_PATTERN_ONSET_ZOOM: f32 = 18.35;
@@ -141,21 +138,6 @@ impl TrailField {
                     OVERLAY_ONSET_ZOOM,
                     CORE_ONSET_ZOOM,
                     PATTERN_ONSET_ZOOM,
-                    DISCLOSURE_SPAN_ZOOM,
-                ],
-            ),
-        )
-    }
-
-    pub fn urban(edges: &[WorldEdge]) -> Self {
-        Self::forge_as(
-            edges,
-            TrailDialect::projected(
-                TrailSalience::Context,
-                [
-                    URBAN_TUBE_ONSET_ZOOM,
-                    URBAN_CORE_ONSET_ZOOM,
-                    URBAN_PATTERN_ONSET_ZOOM,
                     DISCLOSURE_SPAN_ZOOM,
                 ],
             ),
