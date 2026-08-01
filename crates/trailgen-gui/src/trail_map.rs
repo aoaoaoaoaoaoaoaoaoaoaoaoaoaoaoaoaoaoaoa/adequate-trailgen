@@ -22,14 +22,15 @@ use trailgen_core::{Access, Terrain, TrailStanding};
 use wgpu::util::DeviceExt as _;
 
 const BASE_TILE_ZOOM: u8 = 12;
-const FIRST_BAND: u8 = 10;
+const FIRST_BAND: u8 = 12;
 const LAST_BAND: u8 = 14;
 const BAND_COUNT: usize = (LAST_BAND - FIRST_BAND + 1) as usize;
 const SIMPLIFICATION_ERROR_POINTS: f64 = 0.42;
-const TUBE_ONSET_ZOOM: f32 = 10.80;
-const CORE_ONSET_ZOOM: f32 = 11.05;
-const PATTERN_ONSET_ZOOM: f32 = 11.48;
-const DISCLOSURE_SPAN_ZOOM: f32 = 0.58;
+const TUBE_ONSET_ZOOM: f32 = 12.50;
+const CORE_ONSET_ZOOM: f32 = TUBE_ONSET_ZOOM + 0.25;
+const PATTERN_ONSET_ZOOM: f32 = TUBE_ONSET_ZOOM + 0.68;
+const DISCLOSURE_SPAN_ZOOM: f32 = 0.50;
+const ROADWAY_ONSET_DELAY_ZOOM: f32 = 1.0;
 const OVERLAY_ONSET_ZOOM: f32 = -100.0;
 const PEDESTRIAN_DIAGNOSTIC_TUBE_ONSET_ZOOM: f32 = 17.70;
 const PEDESTRIAN_DIAGNOSTIC_CORE_ONSET_ZOOM: f32 = 18.00;
@@ -569,15 +570,17 @@ impl TrailMeshBuilder {
             .collect::<Vec<_>>();
         let color = salience.access_color(edge.color, edge.access).to_array();
         let pattern = pattern_code(edge.mark);
-        let informal = edge.standing == TrailStanding::Informal;
         let terrain = terrain_code(edge.terrain);
-        let blocked = matches!(edge.access, Access::Closed | Access::Private);
         let style = CadenceStyle {
             pattern,
-            informal,
             terrain,
-            blocked,
-            stepped: edge.stepped,
+            flags: flag_if(INFORMAL_FLAG, edge.standing == TrailStanding::Informal)
+                | flag_if(
+                    BLOCKED_FLAG,
+                    matches!(edge.access, Access::Closed | Access::Private),
+                )
+                | flag_if(STEPPED_FLAG, edge.stepped)
+                | flag_if(ROADWAY_FLAG, edge.roadway),
         };
         let base = u32::try_from(self.vertices.len()).expect("trail tile vertex count fits u32");
         for (slot, point) in local.iter().copied().enumerate() {
@@ -706,17 +709,23 @@ const fn pattern_code(mark: TrailMark) -> u32 {
     }
 }
 
-const CADENCE_LAW_SHIFT: u32 = 10;
+const CADENCE_LAW_SHIFT: u32 = 11;
+const INFORMAL_FLAG: u32 = 1 << 3;
+const BLOCKED_FLAG: u32 = 1 << 8;
+const STEPPED_FLAG: u32 = 1 << 9;
+const ROADWAY_FLAG: u32 = 1 << 10;
 #[cfg(test)]
 const CADENCE_STYLE_MASK: u32 = (1 << CADENCE_LAW_SHIFT) - 1;
+
+const fn flag_if(flag: u32, present: bool) -> u32 {
+    if present { flag } else { 0 }
+}
 
 #[derive(Clone, Copy)]
 struct CadenceStyle {
     pattern: u32,
-    informal: bool,
     terrain: u32,
-    blocked: bool,
-    stepped: bool,
+    flags: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -739,11 +748,13 @@ impl CadenceStyle {
             self.terrain < 16,
             "trail terrain exceeds packed vertex range"
         );
+        assert!(
+            self.flags < 1 << CADENCE_LAW_SHIFT,
+            "trail flags exceed packed vertex range"
+        );
         (law << CADENCE_LAW_SHIFT)
-            | ((self.stepped as u32) << 9)
-            | ((self.blocked as u32) << 8)
             | (self.terrain << 4)
-            | ((self.informal as u32) << 3)
+            | self.flags
             | (self.pattern << 1)
             | matches!(bank, RibbonBank::Positive) as u32
     }
@@ -783,6 +794,10 @@ impl TrailPoint {
 
     const fn pattern(&self) -> u32 {
         (self.cadence >> 1) & 3
+    }
+
+    const fn roadway(&self) -> bool {
+        (self.cadence >> 10) & 1 != 0
     }
 
     const fn set_law(&mut self, law: u32) {
@@ -1678,6 +1693,8 @@ struct Uniform {
     cadence_cells_per_world: f32,
     radii: [f32; 2],
     disclosure: [f32; 4],
+    roadway_onset_delay: f32,
+    _roadway_padding: [f32; 3],
     projection: [u32; 4],
     palette: [[f32; 4]; 11],
 }
@@ -1703,6 +1720,8 @@ impl Uniform {
                 trail_core_width(paint.dialect.salience.width()) * 0.5,
             ],
             disclosure: paint.dialect.disclosure,
+            roadway_onset_delay: ROADWAY_ONSET_DELAY_ZOOM,
+            _roadway_padding: [0.0; 3],
             projection: [coloring_shader_code(paint.coloring), 0, 0, 0],
             palette: trail_palette(paint.dialect.salience),
         }
@@ -1813,6 +1832,7 @@ struct Uniform {
     cadence_cells_per_world: f32,
     radii: vec2f,
     disclosure: vec4f,
+    roadway_onset_delay: f32,
     projection: vec4u,
     palette: array<vec4f, 11>,
 };
@@ -1885,10 +1905,12 @@ fn trail_vertex(
     let terrain = (cadence >> 4u) & 15u;
     let blocked = (cadence >> 8u) & 1u;
     let stepped = (cadence >> 9u) & 1u;
-    let law = cadence >> 10u;
+    let roadway = (cadence >> 10u) & 1u;
+    let law = cadence >> 11u;
     let core = layer == 1u;
     let core_onset = select(u.disclosure.y, u.disclosure.z, pattern != 0u);
-    let onset_zoom = select(u.disclosure.x, core_onset, core);
+    let onset_delay = f32(roadway) * u.roadway_onset_delay;
+    let onset_zoom = select(u.disclosure.x, core_onset, core) + onset_delay;
     let maturity = apparition(onset_zoom);
     let radius = select(u.radii.x, u.radii.y, core);
     let visible_radius = radius * mix(0.12, 1.0, maturity);
@@ -2057,7 +2079,7 @@ mod tests {
 
     #[test]
     fn detail_band_resists_boundary_chatter_in_both_directions() {
-        let twelve = DetailBand::for_zoom(12.5, TUBE_ONSET_ZOOM).expect("z12 owns trail detail");
+        let twelve = DetailBand::for_zoom(12.6, TUBE_ONSET_ZOOM).expect("z12 owns trail detail");
         let thirteen = DetailBand::for_zoom(13.5, TUBE_ONSET_ZOOM).expect("z13 owns trail detail");
 
         assert_eq!(
@@ -2091,10 +2113,9 @@ mod tests {
     }
 
     #[test]
-    fn disclosure_schedule_is_fixed_to_harriman_cartographic_scale() {
+    fn disclosure_schedule_obeys_the_measured_zoom_windows() {
         const HARRIMAN_LATITUDE_DEG: f64 = 41.25;
         const HARRIMAN_FILAMENT_P95_M: f64 = 182.9;
-        const REGIONAL_FRAME_ZOOM: f32 = 11.14;
         let apparent = |meters: f64, zoom: f32| {
             let parallel = EARTH_CIRCUMFERENCE_M * HARRIMAN_LATITUDE_DEG.to_radians().cos();
             meters * 256.0 * f64::from(zoom).exp2() / parallel
@@ -2103,10 +2124,18 @@ mod tests {
         let cadence = WorldLevel::at_zoom(pattern_zoom);
         let cadence_period = 2.0 * 256.0 * pattern_zoom.exp2() / cadence.cells_per_world();
 
-        assert!((2.65..=2.90).contains(&apparent(HARRIMAN_FILAMENT_P95_M, TUBE_ONSET_ZOOM)));
-        assert!((3.15..=3.45).contains(&apparent(HARRIMAN_FILAMENT_P95_M, CORE_ONSET_ZOOM)));
+        let exact = |value: f32, expected: f32| (value - expected).abs() < f32::EPSILON;
+        assert!(exact(TUBE_ONSET_ZOOM, 12.5));
+        assert!(exact(TUBE_ONSET_ZOOM + DISCLOSURE_SPAN_ZOOM, 13.0));
+        assert!(exact(TUBE_ONSET_ZOOM + ROADWAY_ONSET_DELAY_ZOOM, 13.5));
+        assert!(exact(
+            TUBE_ONSET_ZOOM + ROADWAY_ONSET_DELAY_ZOOM + DISCLOSURE_SPAN_ZOOM,
+            14.0
+        ));
+        assert!((8.5..=9.5).contains(&apparent(HARRIMAN_FILAMENT_P95_M, TUBE_ONSET_ZOOM)));
+        assert!((10.0..=11.5).contains(&apparent(HARRIMAN_FILAMENT_P95_M, CORE_ONSET_ZOOM)));
         assert!((8.0..=16.0).contains(&cadence_period));
-        assert!((1.9..=4.50).contains(
+        assert!((6.0..=16.0).contains(
             &(apparent(1_000.0, PATTERN_ONSET_ZOOM + DISCLOSURE_SPAN_ZOOM) / cadence_period)
         ));
 
@@ -2114,9 +2143,11 @@ mod tests {
             let phase = ((zoom - onset) / DISCLOSURE_SPAN_ZOOM).clamp(0.0, 1.0);
             phase * phase * 2.0_f32.mul_add(-phase, 3.0)
         };
-        assert!((0.55..=0.70).contains(&apparition(TUBE_ONSET_ZOOM, REGIONAL_FRAME_ZOOM)));
-        assert!(apparition(CORE_ONSET_ZOOM, REGIONAL_FRAME_ZOOM) < 0.10);
-        assert!(apparition(PATTERN_ONSET_ZOOM, REGIONAL_FRAME_ZOOM).abs() < f32::EPSILON);
+        assert!(apparition(TUBE_ONSET_ZOOM, TUBE_ONSET_ZOOM).abs() < f32::EPSILON);
+        assert!(exact(
+            apparition(TUBE_ONSET_ZOOM, TUBE_ONSET_ZOOM + DISCLOSURE_SPAN_ZOOM),
+            1.0
+        ));
     }
 
     #[test]
@@ -2142,7 +2173,7 @@ mod tests {
     #[test]
     fn deep_detail_owns_deep_spatial_tiles() {
         assert_eq!(
-            DetailBand::for_zoom(11.9, TUBE_ONSET_ZOOM)
+            DetailBand::for_zoom(12.6, TUBE_ONSET_ZOOM)
                 .unwrap()
                 .spatial_zoom(),
             12
@@ -2321,6 +2352,7 @@ mod tests {
             length_world: samples[2].arc_world,
             lineage: None,
             color: TrailClass::Trail.color(),
+            roadway: false,
             stepped: false,
             standing: TrailStanding::Established,
             terrain: Terrain::Trail,
@@ -2340,18 +2372,14 @@ mod tests {
         for pattern in 0..4 {
             let plain = CadenceStyle {
                 pattern,
-                informal: false,
                 terrain: 0,
-                blocked: false,
-                stepped: false,
+                flags: 0,
             }
             .word(37, RibbonBank::Negative);
             let adorned = CadenceStyle {
                 pattern,
-                informal: true,
                 terrain: terrain_code(Terrain::Water),
-                blocked: true,
-                stepped: true,
+                flags: INFORMAL_FLAG | BLOCKED_FLAG | STEPPED_FLAG | ROADWAY_FLAG,
             }
             .word(37, RibbonBank::Positive);
             for word in [plain, adorned] {
@@ -2365,6 +2393,7 @@ mod tests {
                 };
                 assert_eq!(point.law(), 37);
                 assert_eq!(point.pattern(), pattern);
+                assert_eq!(point.roadway(), word == adorned);
                 let style = point.cadence & CADENCE_STYLE_MASK;
                 point.set_law(91);
                 assert_eq!(point.law(), 91);
@@ -2384,10 +2413,8 @@ mod tests {
             0.25,
             CadenceStyle {
                 pattern: 0,
-                informal: false,
                 terrain: terrain_code(Terrain::Trail),
-                blocked: false,
-                stepped: false,
+                flags: 0,
             }
             .word(0, RibbonBank::Negative),
         );
@@ -2427,6 +2454,7 @@ mod tests {
                 points,
                 lineage: None,
                 color: class.map_or(TrailClass::Trail.color(), TrailClass::color),
+                roadway: class == Some(TrailClass::Road),
                 stepped: kind == WayKind::Steps,
                 standing: TrailStanding::Established,
                 terrain: Terrain::Trail,
@@ -2459,6 +2487,7 @@ mod tests {
             .map(|tile| tile.bands[0].indices.len())
             .sum::<usize>();
 
+        assert_eq!(edges.iter().filter(|edge| edge.roadway).count(), 2);
         assert_eq!(first_band_indices, classes.len() * 6);
     }
 }
