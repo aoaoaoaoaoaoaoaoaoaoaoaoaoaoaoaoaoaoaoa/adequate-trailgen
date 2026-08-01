@@ -31,6 +31,7 @@ const CORE_ONSET_ZOOM: f32 = TUBE_ONSET_ZOOM + 0.25;
 const PATTERN_ONSET_ZOOM: f32 = TUBE_ONSET_ZOOM + 0.68;
 const DISCLOSURE_SPAN_ZOOM: f32 = 0.50;
 const ROADWAY_ONSET_DELAY_ZOOM: f32 = 1.0;
+const ROADWAY_OVERVIEW_WIDTH: f32 = 0.72;
 const OVERLAY_ONSET_ZOOM: f32 = -100.0;
 const PEDESTRIAN_DIAGNOSTIC_TUBE_ONSET_ZOOM: f32 = 17.70;
 const PEDESTRIAN_DIAGNOSTIC_CORE_ONSET_ZOOM: f32 = 18.00;
@@ -1694,7 +1695,8 @@ struct Uniform {
     radii: [f32; 2],
     disclosure: [f32; 4],
     roadway_onset_delay: f32,
-    _roadway_padding: [f32; 3],
+    roadway_overview_width: f32,
+    _roadway_padding: [f32; 2],
     projection: [u32; 4],
     palette: [[f32; 4]; 11],
 }
@@ -1721,7 +1723,8 @@ impl Uniform {
             ],
             disclosure: paint.dialect.disclosure,
             roadway_onset_delay: ROADWAY_ONSET_DELAY_ZOOM,
-            _roadway_padding: [0.0; 3],
+            roadway_overview_width: ROADWAY_OVERVIEW_WIDTH,
+            _roadway_padding: [0.0; 2],
             projection: [coloring_shader_code(paint.coloring), 0, 0, 0],
             palette: trail_palette(paint.dialect.salience),
         }
@@ -1833,6 +1836,7 @@ struct Uniform {
     radii: vec2f,
     disclosure: vec4f,
     roadway_onset_delay: f32,
+    roadway_overview_width: f32,
     projection: vec4u,
     palette: array<vec4f, 11>,
 };
@@ -1913,7 +1917,12 @@ fn trail_vertex(
     let onset_zoom = select(u.disclosure.x, core_onset, core) + onset_delay;
     let maturity = apparition(onset_zoom);
     let radius = select(u.radii.x, u.radii.y, core);
-    let visible_radius = radius * mix(0.12, 1.0, maturity);
+    let roadway_width = select(
+        1.0,
+        mix(u.roadway_overview_width, 1.0, maturity),
+        roadway != 0u,
+    );
+    let visible_radius = radius * mix(0.12, 1.0, maturity) * roadway_width;
     let expanded_radius = visible_radius + 0.8;
     let offset = extrusion * expanded_radius * 2.0 / u.viewport;
     let clip = clip_at(local, origin_high, origin_low, tile_span, wrap)
