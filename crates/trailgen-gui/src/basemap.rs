@@ -356,6 +356,7 @@ pub struct StrokePoint {
     pub extrusion: [f32; 2],
     pub srgb: [u8; 4],
     pub radius_points: f32,
+    pub radius_world: f32,
     /// Magnitude is `onset_zoom + 1`; sign selects the extrusion bank.
     pub onset_side: f32,
 }
@@ -1313,6 +1314,7 @@ impl FillKind {
 struct StrokeStyle {
     color: [u8; 4],
     radius_points: f32,
+    radius_world: f32,
     onset_zoom: f32,
 }
 
@@ -1320,6 +1322,7 @@ const WATER_FILL: [u8; 4] = [101, 156, 181, 255];
 const WATER_STROKE: StrokeStyle = StrokeStyle {
     color: [71, 130, 154, 180],
     radius_points: 0.48,
+    radius_world: 0.0,
     onset_zoom: 0.0,
 };
 const TRAILHEAD_PARKING_ONSET_ZOOM: f32 = 10.25;
@@ -1431,7 +1434,7 @@ impl Forge {
         for feature in layer.features() {
             let tags = FeatureTags::read(feature)?;
             let geometry = feature.geometry()?;
-            if let Some(style) = road_style(tags.kind, tags.detail, tags.min_zoom, self.key.zoom) {
+            if let Some(style) = road_style(tags.kind, tags.detail, tags.min_zoom, self.key) {
                 self.stroke_geometry(&geometry, extent, style);
             }
             let Some(name) = tags.name else { continue };
@@ -1659,6 +1662,7 @@ impl Forge {
                     extrusion: [-extrusion[0], -extrusion[1]],
                     srgb: style.color,
                     radius_points: style.radius_points,
+                    radius_world: style.radius_world,
                     onset_side: -(style.onset_zoom.max(0.0) + 1.0),
                 },
                 StrokePoint {
@@ -1666,6 +1670,7 @@ impl Forge {
                     extrusion,
                     srgb: style.color,
                     radius_points: style.radius_points,
+                    radius_world: style.radius_world,
                     onset_side: style.onset_zoom.max(0.0) + 1.0,
                 },
             ]);
@@ -1713,6 +1718,7 @@ fn boundary_style(detail: Option<i64>, min_zoom: Option<f64>) -> StrokeStyle {
     StrokeStyle {
         color,
         radius_points: radius,
+        radius_world: 0.0,
         onset_zoom: disclosure_onset(min_zoom, fallback_onset),
     }
 }
@@ -1721,7 +1727,7 @@ fn road_style(
     kind: Option<&str>,
     detail: Option<&str>,
     min_zoom: Option<f64>,
-    source_zoom: u8,
+    key: TileKey,
 ) -> Option<StrokeStyle> {
     // The routable corpus exclusively owns pedestrian geometry. A second,
     // lower-fidelity PMTiles copy would disclose on an independent zoom
@@ -1729,34 +1735,53 @@ fn road_style(
     if kind == Some("path") {
         return None;
     }
-    let (color, radius, fallback_onset) = match (kind, detail) {
-        (Some("highway"), Some("motorway")) => (road_ink(235), 1.40, 4.0),
-        (Some("highway"), Some("motorway_link")) => (road_ink(220), 1.05, 7.0),
-        (Some("major_road"), Some("trunk" | "trunk_link")) => (road_ink(230), 1.25, 5.0),
-        (Some("major_road"), Some("primary" | "primary_link")) => (road_ink(220), 1.15, 7.0),
-        (Some("major_road"), Some("secondary" | "secondary_link")) => (road_ink(215), 1.05, 8.0),
-        (Some("major_road"), Some("tertiary" | "tertiary_link")) => (road_ink(210), 0.96, 9.0),
-        (Some("minor_road"), Some("residential" | "unclassified" | "road")) => {
-            (road_ink(170), 0.72, 10.5)
+    let (color, radius, width_m, fallback_onset) = match (kind, detail) {
+        (Some("highway"), Some("motorway")) => (road_ink(235), 1.40, 11.5, 4.0),
+        (Some("highway"), Some("motorway_link")) | (Some("major_road"), Some("trunk_link")) => {
+            (road_ink(220), 1.05, 7.0, 7.0)
         }
-        (Some("minor_road"), Some("service" | "alley" | "parking_aisle" | "driveway")) => {
-            (road_ink(132), 0.50, 11.5)
+        (Some("major_road"), Some("primary")) => (road_ink(220), 1.15, 10.0, 7.0),
+        (Some("major_road"), Some("primary_link")) => (road_ink(210), 0.95, 6.5, 8.0),
+        (Some("major_road"), Some("secondary_link")) => (road_ink(205), 0.90, 6.0, 9.0),
+        (Some("major_road"), Some("tertiary")) => (road_ink(210), 0.96, 8.0, 9.0),
+        (Some("major_road"), Some("tertiary_link")) => (road_ink(195), 0.82, 5.5, 10.0),
+        (Some("minor_road"), Some("residential" | "unclassified" | "road")) => {
+            (road_ink(170), 0.72, 7.0, 10.5)
+        }
+        (Some("minor_road"), Some("living_street")) => (road_ink(165), 0.68, 6.0, 10.5),
+        (Some("minor_road"), Some("service")) => (road_ink(132), 0.50, 4.5, 11.5),
+        (Some("minor_road"), Some("alley" | "parking_aisle" | "driveway")) => {
+            (road_ink(120), 0.44, 3.0, 12.0)
         }
         (Some("rail"), _) | (_, Some("rail" | "light_rail" | "tram" | "subway")) => {
-            ([104, 101, 94, 62], 0.15, 9.0)
+            ([104, 101, 94, 62], 0.15, 0.0, 9.0)
         }
-        (Some("ferry" | "ferryway"), _) => ([74, 129, 150, 60], 0.14, 8.0),
-        (Some("highway"), _) => (road_ink(230), 1.25, 5.0),
-        (Some("major_road"), _) => (road_ink(215), 1.05, 8.0),
-        (Some("minor_road"), _) => (road_ink(165), 0.70, 10.5),
+        (Some("ferry" | "ferryway"), _) => ([74, 129, 150, 60], 0.14, 0.0, 8.0),
+        (Some("highway"), _) | (Some("major_road"), Some("trunk")) => {
+            (road_ink(230), 1.25, 11.0, 5.0)
+        }
+        (Some("major_road"), _) => (road_ink(215), 1.05, 9.0, 8.0),
+        (Some("minor_road"), _) => (road_ink(165), 0.70, 7.0, 10.5),
         _ => return None,
     };
     let onset_zoom = disclosure_onset(min_zoom, fallback_onset);
-    (f32::from(source_zoom) + 1.0 >= onset_zoom).then_some(StrokeStyle {
+    (f32::from(key.zoom) + 1.0 >= onset_zoom).then_some(StrokeStyle {
         color,
         radius_points: radius,
+        radius_world: projected_radius_world(width_m * 0.5, key),
         onset_zoom,
     })
+}
+
+fn projected_radius_world(radius_m: f64, key: TileKey) -> f32 {
+    if radius_m <= 0.0 {
+        return 0.0;
+    }
+    let divisions = f64::from(1_u32 << key.zoom);
+    let latitude = map::world_to_coord([0.5, (f64::from(key.y) + 0.5) / divisions])
+        .lat
+        .to_radians();
+    (radius_m / (map::EARTH_CIRCUMFERENCE_M * latitude.cos())) as f32
 }
 
 const fn road_ink(alpha: u8) -> [u8; 4] {
@@ -2298,6 +2323,14 @@ mod tests {
         }
     }
 
+    fn equator_tile(zoom: u8) -> TileKey {
+        TileKey {
+            zoom,
+            x: 0,
+            y: 1_u32 << zoom.saturating_sub(1),
+        }
+    }
+
     #[test]
     fn cover_demands_one_fallback_and_current_detail_only() {
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
@@ -2535,16 +2568,26 @@ mod tests {
 
     #[test]
     fn source_min_zoom_overrides_cartographic_fallback() -> Result<()> {
-        let style = road_style(Some("minor_road"), Some("residential"), Some(11.25), 11)
-            .context("residential road style")?;
+        let style = road_style(
+            Some("minor_road"),
+            Some("residential"),
+            Some(11.25),
+            equator_tile(11),
+        )
+        .context("residential road style")?;
         assert!((style.onset_zoom - 11.25).abs() < f32::EPSILON);
         Ok(())
     }
 
     #[test]
     fn even_local_roads_hold_cartographic_authority() -> Result<()> {
-        let style = road_style(Some("minor_road"), Some("residential"), None, 15)
-            .context("residential road style")?;
+        let style = road_style(
+            Some("minor_road"),
+            Some("residential"),
+            None,
+            equator_tile(15),
+        )
+        .context("residential road style")?;
         assert!(style.radius_points > map::INDEX_ISOHYPSE_RADIUS_POINTS);
         assert!(style.color[3] >= 160);
         assert_eq!(style.color[..3], map::ROAD_SRGB);
@@ -2553,10 +2596,26 @@ mod tests {
 
     #[test]
     fn tertiary_roads_decisively_overprint_index_isohypses() -> Result<()> {
-        let style = road_style(Some("major_road"), Some("tertiary"), None, 15)
+        let style = road_style(Some("major_road"), Some("tertiary"), None, equator_tile(15))
             .context("tertiary road style")?;
         assert!(style.radius_points >= map::INDEX_ISOHYPSE_RADIUS_POINTS * 1.7);
         assert!(style.color[3] >= 200);
+        Ok(())
+    }
+
+    #[test]
+    fn road_classes_become_physical_widths_only_under_deep_magnification() -> Result<()> {
+        let key = equator_tile(15);
+        let motorway =
+            road_style(Some("highway"), Some("motorway"), None, key).context("motorway style")?;
+        let residential = road_style(Some("minor_road"), Some("residential"), None, key)
+            .context("residential style")?;
+        assert!(motorway.radius_world > residential.radius_world * 1.6);
+
+        let overview = 256.0 * 10.0_f32.exp2();
+        assert!(motorway.radius_world * overview < motorway.radius_points);
+        let deep = 256.0 * (Viewport::MAX_ZOOM as f32).exp2();
+        assert!(motorway.radius_world * deep > motorway.radius_points * 4.0);
         Ok(())
     }
 
@@ -2576,9 +2635,9 @@ mod tests {
     #[test]
     fn walking_corpus_exclusively_owns_pedestrian_geometry() {
         for detail in ["pedestrian", "cycleway", "track", "path", "footway"] {
-            assert!(road_style(Some("path"), Some(detail), Some(11.5), 15).is_none());
+            assert!(road_style(Some("path"), Some(detail), Some(11.5), equator_tile(15)).is_none());
         }
-        assert!(road_style(Some("path"), None, None, 15).is_none());
+        assert!(road_style(Some("path"), None, None, equator_tile(15)).is_none());
     }
 
     #[test]

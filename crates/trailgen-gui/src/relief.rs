@@ -949,6 +949,7 @@ fn raise_tiles(isohypses: &[Isohypse], law: ReliefLaw) -> Arc<[Arc<VectorTile>]>
                     extrusion: [-extrusion[0], -extrusion[1]],
                     srgb: color,
                     radius_points,
+                    radius_world: 0.0,
                     onset_side: -(onset_zoom + 1.0),
                 },
                 StrokePoint {
@@ -956,6 +957,7 @@ fn raise_tiles(isohypses: &[Isohypse], law: ReliefLaw) -> Arc<[Arc<VectorTile>]>
                     extrusion,
                     srgb: color,
                     radius_points,
+                    radius_world: 0.0,
                     onset_side: onset_zoom + 1.0,
                 },
             ]);

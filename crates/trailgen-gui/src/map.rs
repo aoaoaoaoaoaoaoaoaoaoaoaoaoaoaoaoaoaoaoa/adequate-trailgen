@@ -467,7 +467,7 @@ impl MapFramePlan {
 
 impl Viewport {
     pub const MIN_ZOOM: f64 = 1.0;
-    pub const MAX_ZOOM: f64 = 23.75;
+    pub const MAX_ZOOM: f64 = 18.5;
     pub const WORLD: Self = Self {
         center: [0.5, 0.5],
         zoom: 2.0,

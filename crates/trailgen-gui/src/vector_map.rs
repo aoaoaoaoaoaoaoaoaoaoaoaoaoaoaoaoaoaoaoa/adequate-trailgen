@@ -597,11 +597,12 @@ const fn fill_layout() -> wgpu::VertexBufferLayout<'static> {
 }
 
 const fn stroke_layout() -> wgpu::VertexBufferLayout<'static> {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+    const ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
         0 => Float32x2,
         1 => Float32x2,
         2 => Unorm8x4,
         3 => Float32,
+        9 => Float32,
         7 => Float32
     ];
     wgpu::VertexBufferLayout {
@@ -897,6 +898,7 @@ fn stroke_vertex(
     @location(1) extrusion: vec2f,
     @location(2) color: vec4f,
     @location(3) radius: f32,
+    @location(9) radius_world: f32,
     @location(7) onset_side: f32,
     @location(4) origin_high: vec2f,
     @location(5) origin_low: vec2f,
@@ -908,7 +910,7 @@ fn stroke_vertex(
     let onset_zoom = abs(onset_side) - 1.0;
     let side = sign(onset_side);
     let maturity = apparition(onset_zoom);
-    let visible_radius = radius * maturity;
+    let visible_radius = max(radius, radius_world * u.world_points) * maturity;
     let expanded_radius = visible_radius + 0.8;
     let offset = extrusion * expanded_radius * 2.0 / u.viewport;
     let clip = clip_at(local, origin_high, origin_low, tile_span, instance)
@@ -1087,8 +1089,8 @@ mod tests {
     }
 
     #[test]
-    fn stroke_vertex_keeps_onset_and_side_inside_seven_words() {
-        assert_eq!(size_of::<StrokePoint>(), 7 * size_of::<f32>());
+    fn stroke_vertex_carries_both_cartographic_and_world_radii_in_eight_words() {
+        assert_eq!(size_of::<StrokePoint>(), 8 * size_of::<f32>());
     }
 
     #[test]
