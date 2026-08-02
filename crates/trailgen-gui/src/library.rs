@@ -16,6 +16,20 @@ use trailgen_core::{
 const SCHEMA: u32 = 7;
 const INDEX: &str = "library/index.json";
 
+pub fn validate_trail_name(name: &str) -> Result<&str> {
+    let name = name.trim();
+    ensure!(!name.is_empty(), "trail name must not be empty");
+    ensure!(
+        name.chars().count() <= 80,
+        "trail name must not exceed 80 characters"
+    );
+    ensure!(
+        name.chars().all(|character| !character.is_control()),
+        "trail name must not contain control characters"
+    );
+    Ok(name)
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct TrailId(String);
@@ -592,16 +606,7 @@ impl Library {
     }
 
     pub fn rename_trail(&mut self, id: &TrailId, name: &str) -> Result<bool> {
-        let name = name.trim();
-        ensure!(!name.is_empty(), "trail name must not be empty");
-        ensure!(
-            name.chars().count() <= 80,
-            "trail name must not exceed 80 characters"
-        );
-        ensure!(
-            name.chars().all(|character| !character.is_control()),
-            "trail name must not contain control characters"
-        );
+        let name = validate_trail_name(name)?;
         let trail = self
             .trails
             .iter_mut()

@@ -4,7 +4,7 @@ use crate::{
     chrome,
     civic_area::{self, AddOutcome, CivicAreas, CivicKey, CivicRowState},
     gallery::{self, TrailSort},
-    library::{Library, SavedTrail, SearchRecipe, TrailId, Trailhead},
+    library::{Library, SavedTrail, SearchRecipe, TrailId, Trailhead, validate_trail_name},
     live_area::{self, RegionHandles, RegionScribe, ResizeEvent, ScribeEvent},
     map::{self, Atlas, SELECTED_TRAIL_COLOR, Viewport},
     portfolio::{self, CandidatePortfolio, CandidateWarmth},
@@ -13,7 +13,7 @@ use crate::{
     relief::Relief,
     search_boundary::{self, BoundaryEvent, BoundaryScribe},
     shortcut_help::{Mode as ShortcutMode, ShortcutHelp},
-    slate::Slate,
+    slate::{ManualDraft, Slate},
     trail_data::{
         Event as TrailDataEvent, Mutation as TrailDataMutation, TrailData, progress_status,
     },
@@ -365,6 +365,31 @@ struct MapGesture {
 }
 
 impl TrailEditor {
+    fn forge(
+        name: String,
+        origin: EditorOrigin,
+        return_to: EditorReturn,
+        shape: RouteShape,
+        support_points: Vec<SupportPoint>,
+    ) -> Self {
+        Self {
+            name,
+            name_draft: None,
+            origin,
+            return_to,
+            shape,
+            support_points,
+            realization: None,
+            realizing: None,
+            shape_guard: None,
+            profile: None,
+            fault: None,
+            notice: None,
+            history: UndoLog::default(),
+            drag: None,
+        }
+    }
+
     const fn ready(&self) -> bool {
         self.realizing.is_none() && self.fault.is_none() && self.realization.is_some()
     }
@@ -374,6 +399,17 @@ impl TrailEditor {
             shape: self.shape,
             support_points: self.support_points.clone(),
         }
+    }
+
+    fn durable_sketch(&self) -> TrailSketch {
+        let mut sketch = self
+            .drag
+            .as_ref()
+            .map_or_else(|| self.sketch(), |drag| drag.before.clone());
+        if let Some((_, previous)) = self.shape_guard {
+            sketch.shape = previous;
+        }
+        sketch
     }
 
     fn checkpoint(&mut self) {
@@ -834,6 +870,44 @@ fn raise_region_vector(
     )
 }
 
+fn resurrect_workbench(
+    slate: &Slate,
+    regions_empty: bool,
+) -> (Viewport, WorkbenchView, Fit, String) {
+    let browse_viewport = slate.viewport;
+    if let Some(draft) = slate.manual_draft.clone() {
+        let viewport = draft.viewport;
+        let editor = TrailEditor::forge(
+            draft.name,
+            EditorOrigin::New,
+            EditorReturn {
+                focus: None,
+                viewport: browse_viewport.unwrap_or(viewport),
+            },
+            draft.shape,
+            draft.support_points,
+        );
+        return (
+            viewport,
+            WorkbenchView::Edit(Box::new(editor)),
+            Fit::None,
+            "Restored an unfinished manual trail; preparing its route…".to_owned(),
+        );
+    }
+    let viewport = browse_viewport.unwrap_or(Viewport::WORLD);
+    let fit = match (browse_viewport, regions_empty) {
+        (Some(_), _) => Fit::None,
+        (None, false) => Fit::Regions,
+        (None, true) => Fit::Graph,
+    };
+    (
+        viewport,
+        WorkbenchView::Browse,
+        fit,
+        "Preparing trail network…".to_owned(),
+    )
+}
+
 impl TrailApp {
     pub(crate) fn raise(
         ctx: &egui::Context,
@@ -866,8 +940,8 @@ impl TrailApp {
             config,
             library,
         } = project;
-        let restored_viewport = slate.viewport;
-        let viewport = restored_viewport.unwrap_or(Viewport::WORLD);
+        let (viewport, view, fit, status) =
+            resurrect_workbench(&slate, trail_data.regions.is_empty());
         let cartography = map::CartographicClock::new(viewport);
         let mut app = Self {
             root,
@@ -889,18 +963,14 @@ impl TrailApp {
             edicts: EdgeEdicts::default(),
             edict_history: UndoLog::default(),
             search_due: None,
-            view: WorkbenchView::Browse,
+            view,
             sort: slate.sort,
             trail_coloring: slate.trail_coloring,
             viewport,
             cartography,
             scale_bar: map::ScaleBar::default(),
             focus_frame: FocusFrame::default(),
-            fit: match (restored_viewport, trail_data.regions.is_empty()) {
-                (Some(_), _) => Fit::None,
-                (None, false) => Fit::Regions,
-                (None, true) => Fit::Graph,
-            },
+            fit,
             serial: 0,
             forge_phase: ForgePhase::Idle,
             placing_trailhead: false,
@@ -924,7 +994,7 @@ impl TrailApp {
             observed_slate: slate,
             slate_dirty: None,
             water: forge_water(),
-            status: "Preparing trail network…".to_owned(),
+            status,
             trail_data_status: Some("Preparing trail network…".to_owned()),
             profile_cursor: ProfileCursor::default(),
             map_rect: egui::Rect::ZERO,
@@ -942,6 +1012,10 @@ impl TrailApp {
         product_phase!("pulse.editor_events", self.absorb_editor_events());
         product_phase!("pulse.saved_projections", self.absorb_saved_projections());
         product_phase!("pulse.corpus_events", self.absorb_corpus(ui.ctx()));
+        product_phase!(
+            "pulse.deferred_trail_refresh",
+            self.tend_post_armament(ui.ctx())
+        );
         if let Some(notice) = product_phase!("pulse.civic_events", self.civic.pulse()) {
             self.status = notice;
         }
@@ -4134,11 +4208,16 @@ impl TrailApp {
     }
 
     fn install_armament(&mut self, ctx: &egui::Context, armament: CorpusArmament) -> Result<()> {
+        let initial = self.sinew.is_none();
+        let restoring_manual = initial
+            && self
+                .view
+                .editor()
+                .is_some_and(|editor| matches!(editor.origin, EditorOrigin::New));
         anyhow::ensure!(
-            !self.view.is_editing(),
+            !self.view.is_editing() || restoring_manual,
             "finish the active trail edit before installing new trail data"
         );
-        let initial = self.sinew.is_none();
         if !initial {
             self.relief.retarget(ctx, &self.root)?;
         }
@@ -4203,16 +4282,36 @@ impl TrailApp {
             "Trail data ready in {} map area(s).",
             self.regions.len()
         ));
-        if initial {
+        if restoring_manual {
+            let supports = self
+                .view
+                .editor()
+                .map_or(0, |editor| editor.support_points.len());
+            let _serial = self.reforge_editor();
+            self.status = match supports {
+                1 => "Restored an unfinished manual trail with 1 pin.".to_owned(),
+                count => format!("Restored an unfinished manual trail with {count} pins."),
+            };
+        } else if initial {
             self.status = finder_counsel(&self.library);
         } else {
             "Updated trails are ready.".clone_into(&mut self.status);
         }
         self.flush_library();
-        if initial && let Some(mutation) = self.post_armament.take() {
-            self.strike_corpus(ctx, mutation)?;
-        }
         Ok(())
+    }
+
+    fn tend_post_armament(&mut self, ctx: &egui::Context) {
+        if self.sinew.is_none() || self.corpus.is_some() || self.view.is_editing() {
+            return;
+        }
+        let Some(mutation) = self.post_armament.take() else {
+            return;
+        };
+        if let Err(err) = self.strike_corpus(ctx, mutation) {
+            self.status = format!("Could not refresh trail data: {err:#}");
+            self.trail_data_status = Some("Trail refresh failed.".to_owned());
+        }
     }
 
     const fn active_trailhead(&self) -> Option<Trailhead> {
@@ -4304,25 +4403,16 @@ impl TrailApp {
         self.placing_trailhead = false;
         self.trailhead_drag = None;
         self.fit = Fit::None;
-        self.view = WorkbenchView::Edit(Box::new(TrailEditor {
+        self.view = WorkbenchView::Edit(Box::new(TrailEditor::forge(
             name,
-            name_draft: None,
             origin,
-            return_to: EditorReturn {
+            EditorReturn {
                 focus: return_focus,
                 viewport: self.viewport,
             },
             shape,
             support_points,
-            realization: None,
-            realizing: None,
-            shape_guard: None,
-            profile: None,
-            fault: None,
-            notice: None,
-            history: UndoLog::default(),
-            drag: None,
-        }));
+        )));
         let _serial = self.reforge_editor();
         "Trail editor ready. Place support points on the map.".clone_into(&mut self.status);
     }
@@ -4803,9 +4893,22 @@ impl TrailApp {
                 self.focus_frame.base(self.viewport)
             }
         };
+        let manual_draft = self.view.editor().and_then(|editor| {
+            if !matches!(editor.origin, EditorOrigin::New) {
+                return None;
+            }
+            let sketch = editor.durable_sketch();
+            (!sketch.support_points.is_empty()).then(|| ManualDraft {
+                name: editor.name.clone(),
+                shape: sketch.shape,
+                support_points: sketch.support_points,
+                viewport: self.viewport,
+            })
+        });
         Slate {
             project: self.root.clone(),
             viewport: Some(viewport),
+            manual_draft,
             shutters: self.shutters.clone(),
             inspector_scroll: self.inspector_scroll,
             sort: self.sort,
@@ -4884,10 +4987,7 @@ const fn toolbar_standing_color(standing: TrailStanding) -> Color32 {
 }
 
 fn trail_name_is_valid(name: &str) -> bool {
-    let name = name.trim();
-    !name.is_empty()
-        && name.chars().count() <= 80
-        && name.chars().all(|character| !character.is_control())
+    validate_trail_name(name).is_ok()
 }
 
 fn rename_shortcuts(ui: &egui::Ui, edit: &egui::Response) -> (bool, bool) {
@@ -5475,6 +5575,35 @@ mod tests {
         assert_eq!(editor.support_points, vec![first]);
         assert!(editor.redo());
         assert_eq!(editor.support_points, vec![second]);
+    }
+
+    #[test]
+    fn manual_autosave_rejects_uncommitted_drag_and_shape_previews() {
+        let first = SupportPoint::forge(Coord::new(-74.0, 41.0)).expect("valid support");
+        let dragged = SupportPoint::forge(Coord::new(-73.99, 41.01)).expect("valid support");
+        let mut editor = TrailEditor::forge(
+            "test".to_owned(),
+            EditorOrigin::New,
+            EditorReturn {
+                focus: None,
+                viewport: Viewport::WORLD,
+            },
+            RouteShape::Open,
+            vec![first],
+        );
+
+        editor.drag = Some(PinDrag {
+            slot: 0,
+            before: editor.sketch(),
+            grab: egui::Vec2::ZERO,
+        });
+        editor.support_points[0] = dragged;
+        assert_eq!(editor.durable_sketch().support_points, vec![first]);
+
+        editor.drag = None;
+        editor.shape = RouteShape::Loop;
+        editor.shape_guard = Some((7, RouteShape::Open));
+        assert_eq!(editor.durable_sketch().shape, RouteShape::Open);
     }
 
     #[test]

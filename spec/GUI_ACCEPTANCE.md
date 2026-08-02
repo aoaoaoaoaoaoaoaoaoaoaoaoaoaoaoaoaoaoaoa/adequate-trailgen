@@ -32,9 +32,10 @@ durable or rendered oracle before passing. Tests never call product internals.
    save a candidate.
 4. **Draw from nothing.** Enter the manual editor without search, place a
    partial-edge support, undo and redo, Shift-delete a middle support and prove
-   successor renumbering, restore it, close and reverse a loop, exercise the
-   elevation reticle, reject torn editor/focus presentation during save, and
-   recover the loop after restart.
+   successor renumbering, restore it, restart before saving and recover the
+   exact unfinished design, close and reverse a loop, exercise the elevation
+   reticle, reject torn editor/focus presentation during save, and recover the
+   loop after restart.
 5. **Work while preparing.** Open the real workbench while graph armament is
    deliberately stalled, edit and durably persist the search recipe, reject a
    graph-dependent search, focus and rename a saved trail, pan the map, then

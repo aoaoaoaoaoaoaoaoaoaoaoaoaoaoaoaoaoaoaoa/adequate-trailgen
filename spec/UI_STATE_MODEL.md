@@ -181,6 +181,10 @@ replacing its live state. The witness names this capability deficit
 or Survey. Library edits, saved-trail focus, and camera motion remain valid and
 durable throughout preparation. Graph-dependent gestures remain visibly
 disabled until armament arrives.
+An unfinished manual design is published with this shell: its pins and editing
+viewport do not depend on the graph. Armament later realizes the same design in
+place. An automatic provider refresh waits until that editor is saved or
+cancelled, because installing a successor graph may not evict authored work.
 
 - Search is `Idle` or `Striking(serial, progress, stopping)`.
 - Editor realization is `Idle` or `Realizing(serial)`. Each support, shape,
@@ -223,7 +227,11 @@ distance and moving-time windows, climb window, lower-limb-load target, shape,
 and segment edicts. Graph vertex IDs and solver frontier controls never enter
 durable UI state.
 XDG state owns the base Browse viewport, result sorting, inspector position,
-section shutters, and trail-color projection. Candidates, focus, editor drafts,
+section shutters, trail-color projection, and an unfinished `Edit(New)` design
+once it has at least one pin. The manual draft contains only its committed
+name, shape, ordered support points, and editing viewport; route realization is
+reconstructed from the project graph. It is cleared by Save, Cancel, or
+selecting Finder. Candidate and saved-trail editor drafts, candidates, focus,
 undo history, profile cursor, map gestures, worker progress, and navigation
 frames are session state.
 
@@ -242,6 +250,7 @@ without corrupting the viewport to which Back or Cancel returns.
 | select Finder | `Edit(*)` | exact return view and viewport, discarding the draft |
 | Cancel / Escape | `Edit(*)` | exact opening view and viewport |
 | Save | `Edit(*)` | `Focus(Saved)` |
+| restart with unfinished manual pins | process launch | `Edit(New)` at the editing viewport; realization follows graph armament |
 | previous / next | `Focus(kind)` | adjacent `Focus(kind)` |
 | parameter change | Find mode | prior results remain; warmed search scheduled |
 | click / Shift-click segment | Find mode | edict toggled; warmed search scheduled |

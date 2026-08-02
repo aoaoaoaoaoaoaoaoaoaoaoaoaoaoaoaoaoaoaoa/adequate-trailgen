@@ -25,10 +25,47 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
     harness
         .testbed
         .retain_on_failure("manual/library/index.json")?;
+    let (before_signature, trailhead) = {
+        let app = harness.launch_gui(Some(ROOT), DataMode::Offline, RunClass::Functional)?;
+        let mut story = harness.story(&app, RunClass::Functional)?;
+        let design = draw_open_route(&mut story)?;
+        let _persisted = story.wait_stable(
+            Duration::from_secs(3),
+            Duration::from_millis(650),
+            "unfinished manual design to remain stable through autosave",
+            |frame| {
+                (frame.state.view == View::Edit
+                    && frame
+                        .state
+                        .editor
+                        .as_ref()
+                        .is_some_and(|editor| editor.support_points.len() == SUPPORTS.len()))
+                .then_some(())
+            },
+        )?;
+        app.terminate()?;
+        design
+    };
+
     let app = harness.launch_gui(Some(ROOT), DataMode::Offline, RunClass::Functional)?;
     let mut story = harness.story(&app, RunClass::Functional)?;
-
-    let (before_signature, trailhead) = draw_open_route(&mut story)?;
+    let restored = story.wait_within(
+        Duration::from_secs(30),
+        shows::view(View::Edit)
+            & shows::editor_origin(EditorOrigin::New)
+            & shows::supports(SUPPORTS.len())
+            & shows::editor_ready(),
+    )?;
+    demand(
+        signature(&restored) == Some(before_signature),
+        "restarted manual editor realized a different unfinished route",
+    )?;
+    for (slot, expected) in SUPPORTS.iter().copied().enumerate() {
+        demand(
+            support(&restored, slot).is_some_and(|point| near(point, expected)),
+            format!("restarted manual editor corrupted support {slot}"),
+        )?;
+    }
     close_reverse_and_save(&mut story, before_signature, trailhead)?;
     verify_saved(harness)?;
 
