@@ -40,6 +40,7 @@ use trailgen_core::{
     TrailRealization, TrailStanding, TrailgenError, WalkGraph, WalkRealmIndex, WalkRouter,
 };
 use trailgen_data::SurveyRegion;
+use trailgen_shell::LivingWait;
 
 const PROFILE_HEIGHT: f32 = 178.0;
 const RESULTS_HEIGHT: f32 = 190.0;
@@ -107,6 +108,7 @@ pub struct TrailApp {
     slate_dirty: Option<Instant>,
     preferences: PreferenceLedger,
     water: Surface,
+    living_wait: LivingWait,
     status: String,
     trail_data_status: Option<String>,
     profile_cursor: ProfileCursor,
@@ -1039,6 +1041,7 @@ impl TrailApp {
             slate_dirty: None,
             preferences,
             water: forge_water(),
+            living_wait: LivingWait::default(),
             status,
             trail_data_status: Some("Preparing trail network…".to_owned()),
             profile_cursor: ProfileCursor::default(),
@@ -1315,6 +1318,7 @@ impl TrailApp {
         pixels_per_point: f32,
         tooltip_rects: &[egui::Rect],
     ) -> WaterFrame {
+        self.living_wait.compose(ctx, &mut self.water);
         self.water.frame(ctx, pixels_per_point, tooltip_rects, None)
     }
 
@@ -2356,15 +2360,14 @@ impl TrailApp {
             let _results = egui::Panel::bottom("trail-results")
                 .exact_size(RESULTS_HEIGHT)
                 .show_inside(ui, |ui| self.results_gallery(ui));
-        } else {
-            self.water.hide_loading();
         }
         let _map = egui::CentralPanel::default().show_inside(ui, |ui| self.map(ui));
     }
 
-    fn counsel(&self, ui: &mut egui::Ui) {
+    fn counsel(&mut self, ui: &mut egui::Ui) {
         ui.add_space(5.0);
         let _row = ui.horizontal(|ui| {
+            let waiting = self.corpus.is_some();
             let message = if self.sinew.is_none() {
                 &self.status
             } else if self.corpus.is_some() {
@@ -2390,9 +2393,14 @@ impl TrailApp {
             } else {
                 &self.status
             };
-            let _message = ui.add(
+            let message = ui.add(
                 egui::Label::new(RichText::new(message).monospace().color(chrome::TEXT)).wrap(),
             );
+            if waiting {
+                let rect = message.rect.expand(5.0);
+                self.living_wait.claim(rect);
+                crate::witness::anchor(ui, Target::TrailDataWait, rect);
+            }
         });
     }
 
@@ -2751,6 +2759,7 @@ impl TrailApp {
     fn results_gallery(&mut self, ui: &mut egui::Ui) {
         let Some(run) = self.candidates.as_ref() else {
             let striking = matches!(self.forge_phase, ForgePhase::Striking { .. });
+            let waiting = ui.available_rect_before_wrap();
             gallery_empty(
                 ui,
                 if striking {
@@ -2760,14 +2769,11 @@ impl TrailApp {
                 },
             );
             if striking {
-                self.water
-                    .show_loading(ui.ctx(), ui.available_rect_before_wrap());
-            } else {
-                self.water.hide_loading();
+                self.living_wait.claim(waiting);
+                crate::witness::rect(ui.ctx(), Target::SearchWait, waiting);
             }
             return;
         };
-        self.water.hide_loading();
         if run.routes.is_empty() {
             gallery_empty(ui, "NO TRAILS MATCHED THIS SEARCH");
             return;

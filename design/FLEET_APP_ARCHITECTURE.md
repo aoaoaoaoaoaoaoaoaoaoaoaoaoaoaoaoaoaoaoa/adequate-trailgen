@@ -226,6 +226,8 @@ applications:
 - resize, DPI, surface loss, and recovery;
 - egui input, tessellation, texture updates, and rendering;
 - Poolrooms water composition and final presentation;
+- one-frame arbitration of application waiting regions over Poolrooms' single
+  loading raft;
 - application GPU-resource registration;
 - fatal-error propagation;
 - optional post-surface-present observation enqueue;
@@ -251,6 +253,12 @@ state machine, first-run orchestration, migration, and corruption recovery
 remain design candidates. Their laws may be documented and tested locally, but
 their code is not shared until a second independent implementation proves the
 same semantics.
+
+Trailgen's `LivingWait` is the narrow exception that proves the seam without
+inventing an Activity framework. Product widgets claim rectangles; the shell
+chooses the largest claim and reconciles Poolrooms' one loading raft once per
+frame. It owns neither background-work state nor copy. Promotion requires a
+second app to use this exact claim-and-compose law without product branches.
 
 ## Poolrooms Boundary
 

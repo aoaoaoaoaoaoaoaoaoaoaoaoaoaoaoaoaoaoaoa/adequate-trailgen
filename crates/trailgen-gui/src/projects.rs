@@ -24,6 +24,7 @@ use std::{
 use trailgen_contract::Target;
 use trailgen_core::Coord;
 use trailgen_data::SurveyRegion;
+use trailgen_shell::LivingWait;
 
 pub struct Workbench {
     mode: WorkbenchMode,
@@ -296,11 +297,7 @@ impl ProjectWorkspace {
     ) -> WaterFrame {
         match self {
             Self::Trail(app) => app.water_frame(ctx, pixels_per_point, tooltip_rects),
-            Self::Survey(project) => {
-                project
-                    .water
-                    .frame(ctx, pixels_per_point, tooltip_rects, None)
-            }
+            Self::Survey(project) => project.water_frame(ctx, pixels_per_point, tooltip_rects),
         }
     }
 }
@@ -329,6 +326,7 @@ struct SurveyWorkbench {
     observed_slate: Slate,
     slate_dirty: Option<Instant>,
     water: Surface,
+    living_wait: LivingWait,
     map_rect: egui::Rect,
 }
 
@@ -374,6 +372,7 @@ impl SurveyWorkbench {
             observed_slate: slate,
             slate_dirty: None,
             water: forge_water(),
+            living_wait: LivingWait::default(),
             map_rect: egui::Rect::ZERO,
         };
         if !offline && !project.regions.is_empty() {
@@ -516,6 +515,7 @@ impl SurveyWorkbench {
     fn counsel(&mut self, ui: &mut egui::Ui) {
         ui.add_space(8.0);
         let _row = ui.horizontal(|ui| {
+            let waiting = self.corpus.is_some();
             let message = if self.corpus.is_some() {
                 &self.corpus_status
             } else if self.scribe.active() {
@@ -529,9 +529,14 @@ impl SurveyWorkbench {
             } else {
                 "Add another map area or refresh the downloaded trails."
             };
-            let _message = ui.add(
+            let message = ui.add(
                 egui::Label::new(RichText::new(message).monospace().color(chrome::TEXT)).wrap(),
             );
+            if waiting {
+                let rect = message.rect.expand(5.0);
+                self.living_wait.claim(rect);
+                crate::witness::anchor(ui, Target::TrailDataWait, rect);
+            }
             if self.corpus.is_none() && !self.scribe.active() {
                 let select = ui.add_enabled(
                     !self.offline,
@@ -544,6 +549,16 @@ impl SurveyWorkbench {
                 }
             }
         });
+    }
+
+    fn water_frame(
+        &mut self,
+        ctx: &egui::Context,
+        pixels_per_point: f32,
+        tooltip_rects: &[egui::Rect],
+    ) -> WaterFrame {
+        self.living_wait.compose(ctx, &mut self.water);
+        self.water.frame(ctx, pixels_per_point, tooltip_rects, None)
     }
 
     fn map(&mut self, ui: &mut egui::Ui) {

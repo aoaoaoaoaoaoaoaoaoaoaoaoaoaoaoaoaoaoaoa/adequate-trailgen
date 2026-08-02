@@ -137,6 +137,19 @@ Surface and wayfinding own the core cadence independently; no hue projection
 may rebuild, replace, phase-shift, or otherwise reinterpret solid, dashed,
 dash-dot, or dotted marks. Access alarms continue to outrank every projection.
 
+## Living Waits
+
+Real background work must leave its visible waiting surface alive. Claim the
+user-facing status label or empty-result region through
+`trailgen_shell::LivingWait`; its four-corner raft supplies restrained motion
+and excites the latent water table. Do not call Poolrooms' loading show/hide
+pair directly from competing panels. The arbiter admits the largest live claim
+for one frame and settles automatically when no work claims the next.
+
+Only actual in-flight work may animate. Empty, failed, and completed states are
+still. Waiting motion is decorative evidence of liveness, never a scheduler or
+an excuse to enlarge the main-thread transaction.
+
 ## Evidence
 
 Every material renderer change must be exercised in at least these states:

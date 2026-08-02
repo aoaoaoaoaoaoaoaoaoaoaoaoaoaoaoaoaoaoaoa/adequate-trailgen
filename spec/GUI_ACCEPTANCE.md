@@ -72,6 +72,15 @@ states survive polling and no atomic snapshot can disagree with the journal.
 An asynchronous publisher keeps serialization and filesystem I/O off the UI
 thread.
 
+Production motion remains enabled in acceptance builds. Exact whole-frame
+equality and pixel quiescence are therefore invalid readiness oracles: water,
+loading rafts, carets, and lawful ambient animation may keep changing after the
+requested state is ready. Synchronize through a presented semantic predicate,
+then judge a bounded region with a tolerant feature or change predicate, or use
+a durable external effect. A test of animation itself proves change inside the
+named animated Target; no ordinary story waits for the application to become
+still.
+
 ## Timing Classes
 
 Functional stories run under pinned software graphics with

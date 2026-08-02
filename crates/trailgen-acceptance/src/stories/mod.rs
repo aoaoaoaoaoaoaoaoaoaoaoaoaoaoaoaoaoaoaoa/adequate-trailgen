@@ -25,14 +25,11 @@ pub fn smoke(harness: &Harness<'_>) -> Result<()> {
             .chunks_exact(4)
             .any(|pixel| pixel[..3] != [0, 0, 0])
     };
-    if !visible(&first) {
-        let _first_product_pixels =
-            session.wait_changed(&first, 0.001, 2, std::time::Duration::from_secs(30))?;
-    }
-    let frame = session.wait_quiet(egui_tester::Quiet {
-        timeout: std::time::Duration::from_secs(12),
-        ..egui_tester::Quiet::default()
-    })?;
+    let frame = if visible(&first) {
+        first
+    } else {
+        session.wait_changed(&first, 0.001, 2, std::time::Duration::from_secs(30))?
+    };
     demand(
         visible(&frame),
         "uninstrumented Trailgen rendered only black pixels",

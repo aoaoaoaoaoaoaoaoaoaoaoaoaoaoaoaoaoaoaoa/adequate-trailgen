@@ -5,6 +5,7 @@
 //! in the application. Its name and repository are deliberately provisional
 //! until a second application proves the same boundary.
 
+pub mod living_wait;
 pub mod responsiveness;
 
 use anyhow::{Context as _, Result, bail};
@@ -26,6 +27,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub use living_wait::LivingWait;
 pub use responsiveness::TraceGuard;
 
 macro_rules! main_phase {

@@ -1,6 +1,6 @@
-use std::time::Duration;
+use std::{path::Path, time::Duration};
 
-use egui_tester::{Drag, Key, Result, demand};
+use egui_tester::{Drag, Key, PixelRegion, Result, demand};
 
 use crate::harness::{
     DataMode, Harness, RunClass, Target, TargetClass, first_anchor, read_json, screen_point,
@@ -20,7 +20,7 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
             .env("TRAILGEN_STALL_ARMAMENT_MS", "15000"),
     )?;
     let mut story = harness.story(&app, RunClass::Functional)?;
-    let _preparing = story.wait_within(
+    let preparing = story.wait_within(
         Duration::from_secs(6),
         shows::workspace(Workspace::Preparing)
             & shows::view(View::Browse)
@@ -28,6 +28,7 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
             & shows::areas(0)
             & shows::map(),
     )?;
+    prove_wait_is_alive(&story, &preparing, harness.artifacts)?;
 
     let _distance = story
         .replace_text(Target::DistanceMax, "12.3", shows::text_focused())?
@@ -108,6 +109,29 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
     )?;
     verify_library(harness)?;
     app.terminate()
+}
+
+fn prove_wait_is_alive(
+    story: &crate::harness::TrailStory<'_, '_>,
+    frame: &crate::harness::TrailFrame,
+    artifacts: Option<&Path>,
+) -> Result<()> {
+    let anchor = frame
+        .anchor(&Target::TrailDataWait.to_string())
+        .ok_or_else(|| crate::harness::verdict("preparing workbench omitted its waiting target"))?;
+    let baseline = story.capture()?;
+    let motion = story.session().wait_changed_region(
+        &baseline,
+        PixelRegion::anchor(anchor),
+        0.002,
+        2,
+        Duration::from_secs(4),
+    )?;
+    if let Some(artifacts) = artifacts {
+        baseline.save_png(artifacts.join("prepare-wait-before.png"))?;
+        motion.save_png(artifacts.join("prepare-wait-motion.png"))?;
+    }
+    Ok(())
 }
 
 fn migrate_legacy_library(harness: &Harness<'_>) -> Result<()> {
