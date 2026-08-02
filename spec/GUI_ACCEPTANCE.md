@@ -12,7 +12,9 @@ durable or rendered oracle before passing. Tests never call product internals.
    while rendered line cadence remains fixed; place a trailhead with Alt-click,
    lasso a search boundary, set moving-time bounds and a lower-limb-load target,
    start with Enter, observe eager candidate promotion, and save. Open the
-   shortcut guide with `?` and prove its rendered presentation. In a host-GPU
+   shortcut guide with `?` and prove its rendered presentation. Add Brooklyn
+   from civic-area completion without moving the camera, observe its prepared
+   boundary, explicitly fit it, and recover it offline. In a host-GPU
    continuation, draw a second map area with immediate feedback, retain the
    prior basemap through acquisition and installation, resize the area by its
    typed corner handle, refresh without unloading the saved trail or focused

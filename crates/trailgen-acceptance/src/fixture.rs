@@ -46,6 +46,11 @@ impl FixtureWorld {
             .env("TRAILGEN_OVERPASS_ENDPOINT", provider_url("overpass"))
             .env("TRAILGEN_USGS_TRAILS_ENDPOINT", provider_url("usgs"))
             .env("TRAILGEN_TERRAIN_ENDPOINT", provider_url("terrain"))
+            .env(
+                "TRAILGEN_CIVIC_CENSUS_ENDPOINT",
+                provider_url("civic/census"),
+            )
+            .env("TRAILGEN_CIVIC_NYC_ENDPOINT", provider_url("civic/nyc"))
             .private_env("TRAILGEN_HTTP_UNIX_SOCKET", PROVIDER_SOCKET)
     }
 
@@ -58,7 +63,8 @@ impl FixtureWorld {
         egui_tester::demand(
             self.server.overpass.load(Ordering::Acquire) != 0
                 && self.server.usgs.load(Ordering::Acquire) != 0
-                && self.server.terrain.load(Ordering::Acquire) != 0,
+                && self.server.terrain.load(Ordering::Acquire) != 0
+                && self.server.civic.load(Ordering::Acquire) != 0,
             "GUI map-area acquisition did not traverse every private provider",
         )
     }
@@ -71,6 +77,7 @@ struct FixtureServer {
     overpass: Arc<AtomicUsize>,
     usgs: Arc<AtomicUsize>,
     terrain: Arc<AtomicUsize>,
+    civic: Arc<AtomicUsize>,
     fault: Arc<Mutex<Option<String>>>,
 }
 
@@ -90,12 +97,14 @@ impl FixtureServer {
         let overpass = Arc::new(AtomicUsize::new(0));
         let usgs = Arc::new(AtomicUsize::new(0));
         let terrain = Arc::new(AtomicUsize::new(0));
+        let civic = Arc::new(AtomicUsize::new(0));
         let fault = Arc::new(Mutex::new(None));
         let worker = {
             let shutdown = Arc::clone(&shutdown);
             let overpass = Arc::clone(&overpass);
             let usgs = Arc::clone(&usgs);
             let terrain = Arc::clone(&terrain);
+            let civic = Arc::clone(&civic);
             let fault = Arc::clone(&fault);
             let socket = socket.clone();
             thread::Builder::new()
@@ -106,7 +115,7 @@ impl FixtureServer {
                         match listener.accept() {
                             Ok((stream, _)) => {
                                 if let Err(error) =
-                                    serve(stream, &terrain_png, &overpass, &usgs, &terrain)
+                                    serve(stream, &terrain_png, &overpass, &usgs, &terrain, &civic)
                                 {
                                     lodge_fault(&fault, error);
                                 }
@@ -135,6 +144,7 @@ impl FixtureServer {
             overpass,
             usgs,
             terrain,
+            civic,
             fault,
         })
     }
@@ -169,6 +179,7 @@ fn serve(
     overpass: &AtomicUsize,
     usgs: &AtomicUsize,
     terrain: &AtomicUsize,
+    civic: &AtomicUsize,
 ) -> std::result::Result<(), String> {
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
@@ -200,6 +211,9 @@ fn serve(
     } else if path.starts_with("/terrain/") {
         terrain.fetch_add(1, Ordering::AcqRel);
         ("200 OK", "image/png", terrain_png)
+    } else if path.starts_with("/civic/") {
+        civic.fetch_add(1, Ordering::AcqRel);
+        ("200 OK", "application/geo+json", CIVIC_BROOKLYN.as_bytes())
     } else {
         ("404 Not Found", "text/plain", b"not found")
     };
@@ -218,6 +232,24 @@ fn serve(
         .flush()
         .map_err(|error| format!("flush response: {error}"))
 }
+
+const CIVIC_BROOKLYN: &str = r#"{
+  "type": "FeatureCollection",
+  "features": [{
+    "type": "Feature",
+    "properties": { "BoroName": "Brooklyn" },
+    "geometry": {
+      "type": "Polygon",
+      "coordinates": [[
+        [-74.050, 40.570],
+        [-73.860, 40.570],
+        [-73.860, 40.740],
+        [-74.050, 40.740],
+        [-74.050, 40.570]
+      ]]
+    }
+  }]
+}"#;
 
 fn lodge_fault(fault: &Mutex<Option<String>>, detail: String) {
     match fault.lock() {

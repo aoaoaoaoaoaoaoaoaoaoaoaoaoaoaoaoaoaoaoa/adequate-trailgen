@@ -18,6 +18,7 @@ pub struct Observation {
     pub candidates: usize,
     pub map: Option<MapState>,
     pub areas: Option<AreaState>,
+    pub civic: Option<CivicState>,
     pub editor: Option<EditorState>,
     pub search: Option<SearchState>,
     pub survey: Option<SurveyState>,
@@ -38,6 +39,14 @@ pub struct AreaState {
     pub regions: usize,
     pub drawing: bool,
     pub resizing: Option<AreaResizeState>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CivicState {
+    pub active: usize,
+    pub ready: usize,
+    pub preparing: usize,
+    pub suggestions: usize,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -157,6 +166,42 @@ pub mod shows {
                 .as_ref()
                 .is_some_and(|areas| areas.regions == expected)
         })
+    }
+
+    pub fn civic(active: usize, ready: usize) -> Condition<Observation> {
+        condition(
+            format!("{active} active civic area(s), {ready} ready"),
+            move |state| {
+                state
+                    .civic
+                    .as_ref()
+                    .is_some_and(|civic| civic.active == active && civic.ready == ready)
+            },
+        )
+    }
+
+    pub fn civic_preparing(expected: usize) -> Condition<Observation> {
+        condition(
+            format!("{expected} civic area(s) preparing"),
+            move |state| {
+                state
+                    .civic
+                    .as_ref()
+                    .is_some_and(|civic| civic.preparing == expected)
+            },
+        )
+    }
+
+    pub fn civic_suggestions_at_least(minimum: usize) -> Condition<Observation> {
+        condition(
+            format!("at least {minimum} civic suggestion(s)"),
+            move |state| {
+                state
+                    .civic
+                    .as_ref()
+                    .is_some_and(|civic| civic.suggestions >= minimum)
+            },
+        )
     }
 
     pub fn area_drawing(active: bool) -> Condition<Observation> {
