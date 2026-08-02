@@ -2,8 +2,8 @@ use crate::{
     basemap::{self, TileKey},
     cadence::WorldLevel,
     map::{
-        CadenceLineage, MapFramePlan, TrailColoring, TrailMark, TrailSalience, WorldEdge,
-        coloring_shader_code, formality_color, terrain_color, trail_core_width,
+        CadenceLineage, MapFramePlan, TrailClass, TrailColoring, TrailMark, TrailSalience,
+        WorldEdge, coloring_shader_code, formality_color, terrain_color, trail_core_width,
     },
 };
 use bytemuck::{Pod, Zeroable};
@@ -30,8 +30,9 @@ const TUBE_ONSET_ZOOM: f32 = 12.50;
 const CORE_ONSET_ZOOM: f32 = TUBE_ONSET_ZOOM + 0.25;
 const PATTERN_ONSET_ZOOM: f32 = TUBE_ONSET_ZOOM + 0.68;
 const DISCLOSURE_SPAN_ZOOM: f32 = 0.50;
-const ROADWAY_ONSET_DELAY_ZOOM: f32 = 1.0;
-const ROADWAY_OVERVIEW_WIDTH: f32 = 0.72;
+const DEFERRED_ONSET_DELAY_ZOOM: f32 = 1.0;
+const WALKWAY_WIDTH_SCALE: f32 = 0.8;
+const ROAD_WIDTH_SCALE: f32 = 0.6;
 const OVERLAY_ONSET_ZOOM: f32 = -100.0;
 const PEDESTRIAN_DIAGNOSTIC_TUBE_ONSET_ZOOM: f32 = 17.70;
 const PEDESTRIAN_DIAGNOSTIC_CORE_ONSET_ZOOM: f32 = 18.00;
@@ -581,7 +582,7 @@ impl TrailMeshBuilder {
                     matches!(edge.access, Access::Closed | Access::Private),
                 )
                 | flag_if(STEPPED_FLAG, edge.stepped)
-                | flag_if(ROADWAY_FLAG, edge.roadway),
+                | context_class_code(edge.class),
         };
         let base = u32::try_from(self.vertices.len()).expect("trail tile vertex count fits u32");
         for (slot, point) in local.iter().copied().enumerate() {
@@ -710,16 +711,25 @@ const fn pattern_code(mark: TrailMark) -> u32 {
     }
 }
 
-const CADENCE_LAW_SHIFT: u32 = 11;
+const CADENCE_LAW_SHIFT: u32 = 12;
 const INFORMAL_FLAG: u32 = 1 << 3;
 const BLOCKED_FLAG: u32 = 1 << 8;
 const STEPPED_FLAG: u32 = 1 << 9;
-const ROADWAY_FLAG: u32 = 1 << 10;
+const CONTEXT_CLASS_SHIFT: u32 = 10;
 #[cfg(test)]
 const CADENCE_STYLE_MASK: u32 = (1 << CADENCE_LAW_SHIFT) - 1;
 
 const fn flag_if(flag: u32, present: bool) -> u32 {
     if present { flag } else { 0 }
+}
+
+const fn context_class_code(class: Option<TrailClass>) -> u32 {
+    let code = match class {
+        Some(TrailClass::Walkway) => 1,
+        Some(TrailClass::Road) => 2,
+        None | Some(TrailClass::Trail | TrailClass::Track | TrailClass::Bushwhack) => 0,
+    };
+    code << CONTEXT_CLASS_SHIFT
 }
 
 #[derive(Clone, Copy)]
@@ -797,8 +807,8 @@ impl TrailPoint {
         (self.cadence >> 1) & 3
     }
 
-    const fn roadway(&self) -> bool {
-        (self.cadence >> 10) & 1 != 0
+    const fn context_class(&self) -> u32 {
+        (self.cadence >> CONTEXT_CLASS_SHIFT) & 3
     }
 
     const fn set_law(&mut self, law: u32) {
@@ -1694,9 +1704,10 @@ struct Uniform {
     cadence_cells_per_world: f32,
     radii: [f32; 2],
     disclosure: [f32; 4],
-    roadway_onset_delay: f32,
-    roadway_overview_width: f32,
-    _roadway_padding: [f32; 2],
+    walkway_width_scale: f32,
+    road_width_scale: f32,
+    deferred_onset_delay: f32,
+    _context_padding: f32,
     projection: [u32; 4],
     palette: [[f32; 4]; 11],
 }
@@ -1722,9 +1733,10 @@ impl Uniform {
                 trail_core_width(paint.dialect.salience.width()) * 0.5,
             ],
             disclosure: paint.dialect.disclosure,
-            roadway_onset_delay: ROADWAY_ONSET_DELAY_ZOOM,
-            roadway_overview_width: ROADWAY_OVERVIEW_WIDTH,
-            _roadway_padding: [0.0; 2],
+            walkway_width_scale: WALKWAY_WIDTH_SCALE,
+            road_width_scale: ROAD_WIDTH_SCALE,
+            deferred_onset_delay: DEFERRED_ONSET_DELAY_ZOOM,
+            _context_padding: 0.0,
             projection: [coloring_shader_code(paint.coloring), 0, 0, 0],
             palette: trail_palette(paint.dialect.salience),
         }
@@ -1835,8 +1847,10 @@ struct Uniform {
     cadence_cells_per_world: f32,
     radii: vec2f,
     disclosure: vec4f,
-    roadway_onset_delay: f32,
-    roadway_overview_width: f32,
+    walkway_width_scale: f32,
+    road_width_scale: f32,
+    deferred_onset_delay: f32,
+    _context_padding: f32,
     projection: vec4u,
     palette: array<vec4f, 11>,
 };
@@ -1909,20 +1923,26 @@ fn trail_vertex(
     let terrain = (cadence >> 4u) & 15u;
     let blocked = (cadence >> 8u) & 1u;
     let stepped = (cadence >> 9u) & 1u;
-    let roadway = (cadence >> 10u) & 1u;
-    let law = cadence >> 11u;
+    let context_class = (cadence >> 10u) & 3u;
+    let law = cadence >> 12u;
     let core = layer == 1u;
     let core_onset = select(u.disclosure.y, u.disclosure.z, pattern != 0u);
-    let onset_delay = f32(roadway) * u.roadway_onset_delay;
+    let deferred = context_class != 0u;
+    let onset_delay = select(0.0, u.deferred_onset_delay, deferred);
     let onset_zoom = select(u.disclosure.x, core_onset, core) + onset_delay;
     let maturity = apparition(onset_zoom);
     let radius = select(u.radii.x, u.radii.y, core);
-    let roadway_width = select(
-        1.0,
-        mix(u.roadway_overview_width, 1.0, maturity),
-        roadway != 0u,
+    let deferred_width = select(
+        u.walkway_width_scale,
+        u.road_width_scale,
+        context_class == 2u,
     );
-    let visible_radius = radius * mix(0.12, 1.0, maturity) * roadway_width;
+    let class_width = select(
+        1.0,
+        deferred_width,
+        deferred,
+    );
+    let visible_radius = radius * mix(0.12, 1.0, maturity) * class_width;
     let expanded_radius = visible_radius + 0.8;
     let offset = extrusion * expanded_radius * 2.0 / u.viewport;
     let clip = clip_at(local, origin_high, origin_low, tile_span, wrap)
@@ -2136,11 +2156,13 @@ mod tests {
         let exact = |value: f32, expected: f32| (value - expected).abs() < f32::EPSILON;
         assert!(exact(TUBE_ONSET_ZOOM, 12.5));
         assert!(exact(TUBE_ONSET_ZOOM + DISCLOSURE_SPAN_ZOOM, 13.0));
-        assert!(exact(TUBE_ONSET_ZOOM + ROADWAY_ONSET_DELAY_ZOOM, 13.5));
+        assert!(exact(TUBE_ONSET_ZOOM + DEFERRED_ONSET_DELAY_ZOOM, 13.5));
         assert!(exact(
-            TUBE_ONSET_ZOOM + ROADWAY_ONSET_DELAY_ZOOM + DISCLOSURE_SPAN_ZOOM,
+            TUBE_ONSET_ZOOM + DEFERRED_ONSET_DELAY_ZOOM + DISCLOSURE_SPAN_ZOOM,
             14.0
         ));
+        assert!(exact(WALKWAY_WIDTH_SCALE, 0.8));
+        assert!(exact(ROAD_WIDTH_SCALE, 0.6));
         assert!((8.5..=9.5).contains(&apparent(HARRIMAN_FILAMENT_P95_M, TUBE_ONSET_ZOOM)));
         assert!((10.0..=11.5).contains(&apparent(HARRIMAN_FILAMENT_P95_M, CORE_ONSET_ZOOM)));
         assert!((8.0..=16.0).contains(&cadence_period));
@@ -2361,7 +2383,7 @@ mod tests {
             length_world: samples[2].arc_world,
             lineage: None,
             color: TrailClass::Trail.color(),
-            roadway: false,
+            class: Some(TrailClass::Trail),
             stepped: false,
             standing: TrailStanding::Established,
             terrain: Terrain::Trail,
@@ -2377,21 +2399,15 @@ mod tests {
     }
 
     #[test]
-    fn semantic_hue_bits_cannot_alias_cadence_bits() {
+    fn packed_context_style_cannot_alias_cadence_law() {
         for pattern in 0..4 {
-            let plain = CadenceStyle {
-                pattern,
-                terrain: 0,
-                flags: 0,
-            }
-            .word(37, RibbonBank::Negative);
-            let adorned = CadenceStyle {
-                pattern,
-                terrain: terrain_code(Terrain::Water),
-                flags: INFORMAL_FLAG | BLOCKED_FLAG | STEPPED_FLAG | ROADWAY_FLAG,
-            }
-            .word(37, RibbonBank::Positive);
-            for word in [plain, adorned] {
+            for class in [None, Some(TrailClass::Walkway), Some(TrailClass::Road)] {
+                let word = CadenceStyle {
+                    pattern,
+                    terrain: terrain_code(Terrain::Water),
+                    flags: INFORMAL_FLAG | BLOCKED_FLAG | STEPPED_FLAG | context_class_code(class),
+                }
+                .word(37, RibbonBank::Positive);
                 let mut point = TrailPoint {
                     local: [0.0; 2],
                     extrusion: [0.0; 2],
@@ -2402,7 +2418,15 @@ mod tests {
                 };
                 assert_eq!(point.law(), 37);
                 assert_eq!(point.pattern(), pattern);
-                assert_eq!(point.roadway(), word == adorned);
+                assert_eq!(
+                    point.context_class(),
+                    match class {
+                        None => 0,
+                        Some(TrailClass::Walkway) => 1,
+                        Some(TrailClass::Road) => 2,
+                        Some(_) => unreachable!(),
+                    }
+                );
                 let style = point.cadence & CADENCE_STYLE_MASK;
                 point.set_law(91);
                 assert_eq!(point.law(), 91);
@@ -2463,7 +2487,7 @@ mod tests {
                 points,
                 lineage: None,
                 color: class.map_or(TrailClass::Trail.color(), TrailClass::color),
-                roadway: class == Some(TrailClass::Road),
+                class,
                 stepped: kind == WayKind::Steps,
                 standing: TrailStanding::Established,
                 terrain: Terrain::Trail,
@@ -2496,7 +2520,13 @@ mod tests {
             .map(|tile| tile.bands[0].indices.len())
             .sum::<usize>();
 
-        assert_eq!(edges.iter().filter(|edge| edge.roadway).count(), 2);
+        assert_eq!(
+            edges
+                .iter()
+                .filter(|edge| edge.class == Some(TrailClass::Road))
+                .count(),
+            2
+        );
         assert_eq!(first_band_indices, classes.len() * 6);
     }
 }
