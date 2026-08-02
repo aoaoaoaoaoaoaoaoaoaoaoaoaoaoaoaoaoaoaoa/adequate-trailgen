@@ -11,6 +11,9 @@ trailgen
 
 The installer places the unified `trailgen` binary under `~/.local/bin`. Bare `trailgen` resumes the last chosen project or opens the project deck. New projects conventionally live beneath the operating system’s XDG documents directory in `trailgen/`; Trailgen honors its exact spelling and never invents `~/Documents`.
 
+Linux/X11 is the sole 1.0 release-tested platform coordinate. Wayland and
+other operating systems are not part of the present support claim.
+
 Projects are portable directories rooted by `trailgen.toml`. Project content, including the canonical saved-trail Library, stays in that directory. View and window state belongs under `$XDG_STATE_HOME/trailgen`, app-wide preferences under `$XDG_CONFIG_HOME/trailgen`, and shared map cache under `$XDG_CACHE_HOME/trailgen`.
 
 ## Workflow
@@ -40,12 +43,18 @@ Bare `trailgen` and `trailgen gui` launch the same native workbench. `saved` pri
 ## Verification
 
 ```sh
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+scripts/check
+scripts/audit
+scripts/verify-install
 scripts/test-gui
 ```
 
-`scripts/test-gui` is the hermetic native acceptance gate. Its complete user stories cover GUI project creation and provider acquisition, saved-trail refinement and restart, twelve-candidate comparison under cadence budgets, manual trail design, saved GPX export, and productive work while graph armament is deliberately stalled.
+`scripts/verify-install` proves a sterile non-default install and Cargo-tracked
+uninstall. `scripts/test-gui` is the hermetic native acceptance gate. Its
+complete user stories cover GUI project creation and provider acquisition,
+saved-trail refinement and restart, twelve-candidate comparison under cadence
+budgets, manual trail design, saved GPX export, and productive work while graph
+armament is deliberately stalled.
 
 See [installation](docs/installation.md), [project state](docs/config.md), [model](docs/model.md), [physical load and moving time](docs/physical-load.md), and [known limitations](docs/limitations.md).
 

@@ -1,0 +1,137 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUSTUP_TOOLCHAIN: 1.96.0
+
+jobs:
+  source:
+    name: Source contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install Rust 1.96
+        run: rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt
+      - name: Cache Cargo source gate
+        uses: actions/cache@a7833574556fa59680c1b7cb190c1735db73ebf0 # v5.0.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-source-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+      - name: Verify source
+        run: scripts/check
+
+  security:
+    name: Locked dependency audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install Rust 1.96
+        run: rustup toolchain install 1.96.0 --profile minimal
+      - name: Cache Cargo registry
+        uses: actions/cache@a7833574556fa59680c1b7cb190c1735db73ebf0 # v5.0.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-audit-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Audit dependencies
+        run: scripts/audit
+
+  lifecycle:
+    name: Install and uninstall
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install X11 and software graphics
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            libxkbcommon-x11-0 \
+            mesa-vulkan-drivers \
+            xauth \
+            xvfb
+      - name: Install Rust 1.96
+        run: rustup toolchain install 1.96.0 --profile minimal
+      - name: Cache Cargo lifecycle build
+        uses: actions/cache@a7833574556fa59680c1b7cb190c1735db73ebf0 # v5.0.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-lifecycle-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+      - name: Verify install lifecycle
+        env:
+          TRAILGEN_INSTALL_ARTIFACTS: /tmp/trailgen-install-artifacts
+        run: scripts/verify-install
+      - name: Retain failure evidence
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: trailgen-install-${{ github.run_id }}
+          path: /tmp/trailgen-install-artifacts
+          if-no-files-found: ignore
+          retention-days: 7
+
+  x11:
+    name: X11 functional acceptance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install X11 and software graphics
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            libxkbcommon-x11-0 \
+            mesa-vulkan-drivers \
+            xauth \
+            xvfb
+      - name: Install Rust 1.96
+        run: rustup toolchain install 1.96.0 --profile minimal
+      - name: Cache Cargo acceptance build
+        uses: actions/cache@a7833574556fa59680c1b7cb190c1735db73ebf0 # v5.0.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-x11-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+      - name: Run portable X11 stories
+        env:
+          TRAILGEN_ACCEPTANCE_ARTIFACTS: /tmp/trailgen-ci-artifacts
+        run: scripts/test-gui refine manual prepare
+      - name: Retain failure evidence
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: trailgen-x11-${{ github.run_id }}
+          path: /tmp/trailgen-ci-artifacts
+          if-no-files-found: ignore
+          retention-days: 7

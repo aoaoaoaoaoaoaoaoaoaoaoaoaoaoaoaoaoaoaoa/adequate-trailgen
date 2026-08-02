@@ -1,0 +1,46 @@
+#!/bin/sh
+set -eu
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+sandbox=$(mktemp -d "${TMPDIR:-/tmp}/trailgen-install.XXXXXX")
+trap 'rm -rf -- "$sandbox"' EXIT HUP INT TERM
+
+prefix=$sandbox/prefix
+home=$sandbox/home
+mkdir -p "$home"
+
+"$root/scripts/install-local.sh" "$prefix"
+binary=$prefix/bin/trailgen
+test -x "$binary"
+
+HOME=$home \
+XDG_CONFIG_HOME=$home/config \
+XDG_STATE_HOME=$home/state \
+XDG_CACHE_HOME=$home/cache \
+XDG_DATA_HOME=$home/data \
+  "$binary" --version >/dev/null
+HOME=$home \
+XDG_CONFIG_HOME=$home/config \
+XDG_STATE_HOME=$home/state \
+XDG_CACHE_HOME=$home/cache \
+XDG_DATA_HOME=$home/data \
+  "$binary" --help >/dev/null
+
+cargo build --release --package trailgen-acceptance
+TRAILGEN_ACCEPTANCE_BINARY=$binary \
+TRAILGEN_ACCEPTANCE_ARTIFACTS=${TRAILGEN_INSTALL_ARTIFACTS:-/tmp/trailgen-install-artifacts} \
+  cargo run --release --package trailgen-acceptance -- --smoke
+
+cargo uninstall --root "$prefix" trailgen
+if [ -e "$binary" ]; then
+  printf 'uninstall left executable at %s\n' "$binary" >&2
+  exit 1
+fi
+for path in config state cache data; do
+  if [ -e "$home/$path" ]; then
+    printf 'side-effect-free probes created %s\n' "$home/$path" >&2
+    exit 1
+  fi
+done
+
+printf 'install lifecycle verified under %s\n' "$sandbox"

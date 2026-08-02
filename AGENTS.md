@@ -25,6 +25,10 @@ Before changing a critical GUI behavior or its witness surface, read and obey
 [spec/GUI_ACCEPTANCE.md](spec/GUI_ACCEPTANCE.md). Acceptance scenarios are
 full user stories; xdotool choreography is forbidden.
 
+Before changing CI, release gates, supported platforms, installation, or
+removal, read and obey [design/CI_DOCTRINE.md](design/CI_DOCTRINE.md). CI is a
+thin scheduler over app-owned, independently runnable evidence units.
+
 Before extracting shared application-shell, contract, accessibility, or tester
 porcelain machinery, read
 [design/FLEET_APP_ARCHITECTURE.md](design/FLEET_APP_ARCHITECTURE.md). The

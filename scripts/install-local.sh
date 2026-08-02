@@ -9,7 +9,6 @@ cargo install \
     --bin trailgen \
     --root "$install_root" \
     --locked \
-    --quiet \
     --force
 
 "$install_root/bin/trailgen" --version >/dev/null

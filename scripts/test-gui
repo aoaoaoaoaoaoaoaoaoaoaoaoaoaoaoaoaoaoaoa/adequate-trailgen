@@ -8,7 +8,10 @@ cargo build --release --bin trailgen
 cargo build --release --package trailgen-acceptance
 cargo run --release --package trailgen-acceptance -- --smoke
 cargo build --release --bin trailgen --features egui-test
-for story in discover refine manual prepare compare; do
+if [ "$#" -eq 0 ]; then
+  set -- discover refine manual prepare compare
+fi
+for story do
   cargo run --release --package trailgen-acceptance -- \
     --story "$story" \
     --artifacts "${TRAILGEN_ACCEPTANCE_ARTIFACTS:-/tmp/trailgen-acceptance-artifacts}"
