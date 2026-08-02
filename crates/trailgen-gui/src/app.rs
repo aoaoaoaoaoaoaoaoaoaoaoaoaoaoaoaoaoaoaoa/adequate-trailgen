@@ -1016,8 +1016,8 @@ impl TrailApp {
             "pulse.deferred_trail_refresh",
             self.tend_post_armament(ui.ctx())
         );
-        if let Some(notice) = product_phase!("pulse.civic_events", self.civic.pulse()) {
-            self.status = notice;
+        if let Some(alarm) = product_phase!("pulse.civic_events", self.civic.pulse()) {
+            self.status = alarm;
         }
         product_phase!("pulse.input", {
             if !self.shortcuts.capture(ui.ctx()) {

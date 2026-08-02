@@ -293,7 +293,7 @@ impl CivicAreas {
                     .min(self.suggestions.len().saturating_sub(1));
             }
         }
-        let mut notice = None;
+        let mut alarm = None;
         while let Ok(event) = self.forge.events.try_recv() {
             match event {
                 ForgeEvent::Ready { generation, area } => {
@@ -301,9 +301,7 @@ impl CivicAreas {
                         row.generation == generation && row.record.key == area.record.key
                     }) {
                         area.record.clone_into(&mut row.record);
-                        let name = area.record.name.clone();
                         row.state = CivicRowState::Ready(area);
-                        notice = Some(format!("{name} boundary ready."));
                     }
                 }
                 ForgeEvent::Fault {
@@ -318,12 +316,12 @@ impl CivicAreas {
                     {
                         let name = row.record.name.clone();
                         row.state = CivicRowState::Fault(fault);
-                        notice = Some(format!("Could not prepare {name}."));
+                        alarm = Some(format!("Could not prepare {name}."));
                     }
                 }
             }
         }
-        notice
+        alarm
     }
 
     pub const fn query_mut(&mut self) -> &mut String {
