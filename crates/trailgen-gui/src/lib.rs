@@ -17,6 +17,7 @@ mod app;
 mod basemap;
 mod cadence;
 mod chrome;
+mod civic_area;
 mod forge;
 mod gallery;
 mod habitat;

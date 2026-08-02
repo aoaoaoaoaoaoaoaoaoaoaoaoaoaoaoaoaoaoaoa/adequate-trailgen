@@ -38,6 +38,7 @@ trailgen-core.workspace = true
 trailgen-contract.workspace = true
 trailgen-data.workspace = true
 trailgen-shell.workspace = true
+zstd.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -350,7 +350,7 @@ impl PlaceIndex for Nominatim {
     fn locate_us(&self, query: &str) -> Result<Place> {
         let query = query.trim();
         ensure!(!query.is_empty(), "enter a US place or trailhead");
-        let replies = http_client("place-search", self.timeout)
+        let replies = provider_client("place-search", self.timeout)
             .context("build OpenStreetMap place-search client")?
             .get(&self.endpoint)
             .query(&[
@@ -432,7 +432,7 @@ impl Overpass {
             "trail-data bounds span {area_deg2:.2} square degrees; limit is {MAX_REGION_DEG2:.2}"
         );
         let query = self.query(profile, bounds);
-        let client = http_client("trail-source", self.timeout)
+        let client = provider_client("trail-source", self.timeout)
             .context("build OpenStreetMap trail-source client")?;
         let mut faults = Vec::new();
         for endpoint in &self.endpoints {
@@ -2176,7 +2176,7 @@ fn user_agent(task: &str) -> String {
     )
 }
 
-fn http_client(task: &str, timeout: Duration) -> Result<reqwest::blocking::Client> {
+pub fn provider_client(task: &str, timeout: Duration) -> Result<reqwest::blocking::Client> {
     let builder = reqwest::blocking::Client::builder()
         .timeout(timeout)
         .user_agent(user_agent(task));

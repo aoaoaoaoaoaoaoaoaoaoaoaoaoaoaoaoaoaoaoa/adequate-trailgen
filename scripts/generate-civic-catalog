@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly vintage=2025
+readonly origin="https://www2.census.gov/geo/docs/maps-data/data/gazetteer/${vintage}_Gazetteer/${vintage}_Gaz_place_national.zip"
+readonly root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly target="${root}/crates/trailgen-gui/assets/civic-areas.tsv.zst"
+readonly scratch="$(mktemp -d)"
+trap 'rm -rf "${scratch}"' EXIT
+
+curl --fail --silent --show-error --location "${origin}" --output "${scratch}/places.zip"
+unzip -p "${scratch}/places.zip" | awk -F'|' '
+BEGIN { OFS="|" }
+NR > 1 {
+    kind=$5
+    sub(/^.* /, "", kind)
+    name=$5
+    sub(/ [^ ]+$/, "", name)
+    if (kind ~ /^(CDP|city|town|village|borough|municipality|comunidad|urbana)$/) {
+        source=($7 == "S" ? "cdp" : "inc")
+        print $1, $2, source, name, tolower(kind), $12, $13
+    }
+}' > "${scratch}/civic-areas.tsv"
+
+mkdir -p "$(dirname "${target}")"
+zstd --quiet --force -19 "${scratch}/civic-areas.tsv" -o "${target}"
+printf 'wrote %s (%s records)\n' "${target}" "$(wc -l < "${scratch}/civic-areas.tsv")"

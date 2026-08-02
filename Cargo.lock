@@ -4200,6 +4200,7 @@ dependencies = [
  "trailgen-core",
  "trailgen-data",
  "trailgen-shell",
+ "zstd",
 ]
 
 [[package]]
