@@ -3434,15 +3434,10 @@ impl TrailApp {
     }
 
     fn paint_map_header(&self, painter: &egui::Painter, rect: egui::Rect) {
-        let text = if self.sinew.is_none() {
+        let text = if self.corpus.is_some() {
+            None
+        } else if self.sinew.is_none() {
             Some(self.status.to_ascii_uppercase())
-        } else if self.corpus.is_some() {
-            Some(
-                self.trail_data_status
-                    .as_deref()
-                    .unwrap_or("Updating trails…")
-                    .to_ascii_uppercase(),
-            )
         } else if self.scribe.active() {
             Some("DRAW A MAP AREA".to_owned())
         } else if self.view.is_editing() {
