@@ -128,7 +128,7 @@ fn add_civic_area(story: &mut TrailStory<'_, '_>, harness: &Harness<'_>) -> Resu
     let _ready = story.wait_within(Duration::from_secs(10), shows::civic(1, 1))?;
     verify_civic_persistence(harness)?;
 
-    reveal_civic_search(story)?;
+    reveal_civic_target(story, Target::CivicArea(0))?;
     let fitted = story
         .click(Target::CivicArea(0))?
         .within(instant_budget())
@@ -155,6 +155,10 @@ fn add_civic_area(story: &mut TrailStory<'_, '_>, harness: &Harness<'_>) -> Resu
 }
 
 fn reveal_civic_search(story: &mut TrailStory<'_, '_>) -> Result<()> {
+    reveal_civic_target(story, Target::CivicSearch)
+}
+
+fn reveal_civic_target(story: &mut TrailStory<'_, '_>, target: Target) -> Result<()> {
     let frame = story.wait(shows::map())?;
     let map = frame
         .state
@@ -168,7 +172,7 @@ fn reveal_civic_search(story: &mut TrailStory<'_, '_>) -> Result<()> {
     ])?;
     let screen_bottom = f64::from(story.capture()?.height().saturating_sub(20));
     for _ in 0..4 {
-        let anchor = story.anchor(Target::CivicSearch)?;
+        let anchor = story.anchor(target)?;
         let center = anchor.center();
         if f64::from(center.1) >= 50.0 && f64::from(center.1) <= screen_bottom {
             return Ok(());
@@ -188,9 +192,9 @@ fn reveal_civic_search(story: &mut TrailStory<'_, '_>) -> Result<()> {
             )?
             .next_frame()?;
     }
-    Err(crate::harness::verdict(
-        "inspector could not reveal the civic-area search field",
-    ))
+    Err(crate::harness::verdict(format!(
+        "inspector could not reveal {target}"
+    )))
 }
 
 fn civic_ink(frame: &Frame, region: PixelRegion) -> Result<usize> {
