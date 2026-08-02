@@ -212,7 +212,12 @@ the primary view implicitly or perform graph-scale work on the event loop.
 
 ## Persistence
 
-The project owns its library, search recipe, downloaded regions, and graph.
+The project owns its library, search recipe, downloaded regions, civic areas,
+and graph. Civic areas are durable named context, independent of the primary
+view and routing graph. Adding one never moves the camera; clicking its ready
+inspector row is an explicit fit command. XDG state owns only the Overlays
+shutter, while completion text, suggestions, acquisition progress, hover, and
+prepared render projections remain session state.
 Search intent is geographic and graph-independent: trailhead, boundary,
 distance and moving-time windows, climb window, lower-limb-load target, shape,
 and segment edicts. Graph vertex IDs and solver frontier controls never enter

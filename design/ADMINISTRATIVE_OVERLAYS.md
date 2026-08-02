@@ -1,167 +1,122 @@
-# Administrative Overlays
+# Civic Area Overlays
 
-Status: design; implementation deferred until playtesting confirms the first
-search space.
+Status: MVP contract.
 
-## Contract
+## Purpose
 
-An `Overlay` is durable project context: one selected, named geographic area
-drawn without affecting routing, acquisition, search boundaries, or the active
-view. Search boundaries remain route constraints and must never be called
-overlays.
+The feature answers one question while planning a trail: where is the edge of a
+named civic area? Its proving use is a walk around Brooklyn. It does not alter
+routing, trail acquisition, search boundaries, or the active workbench view.
 
-The canonical identity is a versioned source key, not display text:
+The UI calls the inspector section `Overlays`. The implementation calls one
+selected region a `CivicArea`; `Overlay` already names graph annotations and
+`Boundary` already names the finder constraint.
+
+## Search Space
+
+The catalog contains United States Census Places, including incorporated
+places and census-designated places, plus the five New York City boroughs.
+Generic counties and larger geographies are excluded. The NYC records are
+boroughs even though four share county boundaries; county ontology does not
+leak into search or presentation.
+
+Autocomplete uses a release-generated, bundled Census catalog. Typing never
+requires the network. Two normalized characters admit suggestions. Exact and
+prefix matches precede token matches, then project proximity and lexical order.
+At most eight suggestions are presented; this is a completion-space bound, not
+a cap on active civic areas.
+
+## Identity And Ownership
 
 ```text
-BoundaryKey { dataset, vintage, geoid }
-BoundaryCatalogEntry { key, name, kind, jurisdiction, centroid, bounds }
-BoundarySnapshot { key, multipolygon, provenance }
+CivicKey { source, geoid }
+CivicRecord { key, name, kind, jurisdiction, anchor }
+CivicSnapshot { record, rings, bounds, provenance }
 ```
 
-Project state owns the ordered set of active keys and their normalized
-snapshots. XDG state owns only the `Overlays` shutter. Query text, suggestions,
-selection, hover, acquisition progress, and prepared meshes are session state.
-
-## First Search Space
-
-The first catalog contains active United States Census incorporated places and
-consolidated cities in the fifty states, District of Columbia, and Puerto Rico.
-It therefore includes the jurisdictional forms users normally call cities,
-towns, villages, boroughs, and municipalities without pretending their local
-legal names form one national ontology.
-
-Census-designated places are excluded: they are statistical areas, not city
-governments. Counties, county subdivisions, neighborhoods, ZIP Code
-Tabulation Areas, urban areas, metropolitan areas, parks, and tribal areas are
-also separate future providers. This prevents one search field from silently
-mixing incompatible meanings.
-
-`New York city, NY` is present. Brooklyn is not an incorporated place; a later
-county/borough provider should expose `Brooklyn / Kings County` rather than an
-alias that lies about the selected geometry.
-
-## Census Plane
-
-The national Places Gazetteer is the search catalog. It is compact, supplies
-stable identifiers, names, representative coordinates, land and water area,
-and covers the intended jurisdiction. A release-time generator should refine
-it with legal/status metadata and emit one compact, versioned index shipped
-with Trailgen. Autocomplete must be instant and offline; first input never
-starts a network request.
-
-Selection resolves geometry from the corresponding full-resolution,
-state-based TIGER/Line Place or Consolidated City product. The 1:500,000
-cartographic boundary files are deliberately rejected: their generalization
-can omit or materially displace small boundary details at Trailgen's deep map
-scales.
-
-Raw state archives belong in a shared XDG cache keyed by Census vintage and
-state. A selected, normalized `MultiPolygon` snapshot belongs in the project
-cache so restart and offline use reproduce the same boundary. A newer vintage
-never replaces project geometry silently; refresh is an explicit migration.
-
-References:
-
-- [2025 Census Gazetteer Files](https://www.census.gov/geographies/reference-files/time-series/geo/gazetteer-files.2025.html)
-- [Gazetteer record layouts](https://www.census.gov/programs-surveys/geography/technical-documentation/records-layout/gaz-record-layouts.html)
-- [2025 TIGER/Line files](https://www.census.gov/geographies/mapping-files/2025/geo/tiger-line-file.html)
-- [Cartographic boundary generalization](https://www.census.gov/programs-surveys/geography/technical-documentation/naming-convention/cartographic-boundary-file.html)
-
-## Inspector
-
-`Overlays` follows `Map Areas` in the left inspector. It contains one search
-field and the active overlay rows. Each row shows a swatch, canonical display
-name, jurisdiction, and Remove action. Hover emphasizes the overlay. Clicking
-the row fits it explicitly; adding one never moves the camera. Selecting an
-active result pulses its existing row and performs no mutation.
-
-There is no separate visibility toggle in the first version. An active overlay
-is visible in Browse, Focus, and Edit; Remove is the visibility operation. This
-keeps durable context independent of workbench mode and avoids another hidden
-state axis.
-
-## Completion
-
-The interaction copies Booru Viewer's proven completion grammar:
-
-- lookup begins after two normalized characters;
-- `name` and `name, ST` are accepted;
-- lookup runs on a serial background worker;
-- prior suggestions remain visible until the newest serial publishes;
-- Tab and Shift-Tab cycle, Enter accepts, Escape dismisses, and pointer click
-  accepts;
-- at most eight results appear;
-- exact name and prefix matches outrank token matches, followed by overlap with
-  project map areas, viewport distance, jurisdiction, and stable lexical order.
-
-Rows read as `Yonkers · NY · city`; source identifiers never enter ordinary UI.
-Fuzzy matching is deferred. A deterministic prefix/token index is sufficient
-until playtesting proves misspelling recovery worth its cost.
+Dataset vintage belongs to snapshot provenance, not identity. The project owns
+an ordered index of active records and a normalized geometry snapshot for each
+ready record. The snapshot contains enough display metadata and geometry to
+survive catalog changes and offline restart. XDG state owns only the `Overlays`
+shutter. Query text, suggestions, selection, progress, faults, hover, and
+prepared render projections are session state.
 
 ## Acquisition
 
-Acceptance creates an active row immediately in `Preparing boundary` state.
-Acquisition, archive decoding, polygon normalization, spatial indexing,
-tessellation, and persistence run off-thread under one generation identity.
-The worker atomically publishes a prepared snapshot; failure leaves a compact
-Retry/Remove fault row. Existing overlays and map presentation remain live.
+Accepting a suggestion creates its inspector row immediately in `Preparing`
+state. One serial worker fetches and decodes authoritative GeoJSON, normalizes
+polygon rings, prepares retained levels of detail, persists the snapshot
+atomically, and publishes one immutable projection. Existing map content and
+civic areas remain usable throughout. A fault row offers Retry and Remove.
 
-One selected key may occur only once. Removal invalidates its worker generation
-and drops project ownership; shared raw archives remain cache-managed.
+Census Places resolve through the current Census TIGERweb incorporated-place
+or census-designated-place feature layer. NYC boroughs resolve through the New
+York City Department of City Planning Borough Boundaries feature service.
+Raw provider payloads are not durable project state.
+
+Removal invalidates a pending generation and deletes project ownership. There
+is no refresh command in the MVP; a second source vintage must first prove the
+need and migration law.
+
+## Inspector
+
+`Overlays` follows `Map Areas`. It contains one completion field and the active
+civic-area rows. Rows show canonical name, jurisdiction, kind, state, and
+Remove. Clicking a ready row explicitly fits its bounds; adding one never moves
+the camera. Selecting an already-active suggestion identifies its row without
+duplicating it.
+
+Active civic areas remain visible in Browse, Focus, and Edit. Remove is the
+visibility operation. There is no mode selector, palette editor, opacity axis,
+or arbitrary active-area cap.
 
 ## Rendering
 
-Overlays use a translucent warm-bronze fill and a darker hatched boundary.
-Intersections may darken through ordinary alpha composition; overlay count does
-not allocate a unique categorical palette. Hover increases boundary weight and
-fill opacity without changing hue.
+A civic area renders only as a thin magenta boundary with a darker supporting
+stroke and world-anchored hatches. Retained nested simplifications and spatial
+chunks keep frame work proportional to visible geometry. Camera frames may
+cull, transform, and submit visible prepared chunks; they may not simplify,
+decode, hash, or scan a complete detailed polygon.
 
-Hatches are anchored in world coordinates and clipped to a narrow boundary
-band. Polygon and boundary meshes have retained, nested levels of detail with
-analytic zoom thresholds and hysteresis. Camera frames cull and submit prepared
-meshes; they never triangulate, simplify, hash, or scan complete polygons.
+Each area paints exactly one name whenever any part of its boundary intersects
+the viewport. The label is chosen from the visible boundary and may slide as
+the viewport changes. Civic labels are deliberately exempt from fixed-world
+label anchoring because their contract is continuous visible identification,
+not cross-scale cartographic stability.
 
-The composition order is:
+Composition is:
 
 ```text
 basemap and relief
-overlay fills
+walking context
 dead/live-area mask
-overlay boundaries
-walking context and privileged routes
-labels and parking
+civic boundary
+privileged routes
+ordinary labels and parking
+civic name
 controls
 ```
 
-This preserves routes as the primary content and prevents hatches from striking
-through labels or symbols.
+Routes remain primary; labels and symbols cannot be struck through.
 
 ## Evidence
 
-A deterministic acceptance fixture contains a small catalog and two disjoint
-polygons. One story types `yon`, selects by Tab and Enter, observes the
-preparing row without a stalled frame, proves the polygon externally after
-publication, adds a second overlay, removes the first, verifies that addition
-did not move the viewport, restarts, and proves persistence. The story budgets
-input-to-row acknowledgement and input-to-presented-overlay separately.
+A deterministic fixture supplies a compact catalog and civic GeoJSON through
+the existing private provider server. The acceptance story types `bro`, accepts
+Brooklyn by keyboard, observes immediate preparation without a stalled frame,
+proves the rendered boundary after publication, verifies that addition did not
+move the viewport, fits it explicitly, restarts offline, and proves persistence.
+Input-to-row acknowledgement and input-to-presented-boundary have separate
+budgets.
 
-## Rejected Shortcuts
+## Sources
 
-- Protomaps boundary tiles contain display strokes, not stable named polygon
-  identities.
-- Live Nominatim or equivalent search makes basic completion network-dependent
-  and inherits unstable ranking and service limits.
-- Nationwide full-resolution geometry in the executable is disproportionate;
-  the compact catalog plus state archive cache gives offline search without
-  shipping unused polygons.
-- Cartographic 1:500,000 geometry is unsuitable for a smoothly zoomable route
-  map.
+- [Census TIGERweb incorporated places](https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/tigerWMS_Current/MapServer/28)
+- [Census TIGERweb census-designated places](https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/tigerWMS_Current/MapServer/30)
+- [NYC Department of City Planning Borough Boundaries](https://services5.arcgis.com/GfwWNkhOj9bNBqoJ/arcgis/rest/services/NYC_Borough_Boundary/FeatureServer/0)
 
-## Checkpoints
+## Deferred
 
-1. Add the boundary types, project persistence, generated catalog fixture, and
-   Census adapter.
-2. Prove retained fill and hatched-border rendering against static polygons.
-3. Add asynchronous completion and acquisition to the inspector.
-4. Add the user-story acceptance test and responsiveness budgets, then
-   playtest before admitting another boundary provider.
+Neighborhoods, parks, districts, generic counties, states, federal geographies,
+provider selection, refresh, per-area styling, fill rendering, visibility
+matrices, and arbitrary import are outside the MVP.
