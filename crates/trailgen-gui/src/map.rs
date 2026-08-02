@@ -1,5 +1,9 @@
-use crate::chrome;
-use crate::{cadence, forge, library::SavedTrail, trail_map::TrailField};
+use crate::{
+    cadence, chrome, forge,
+    library::SavedTrail,
+    palette::{CARTOGRAPHIC_HUES, ColorCycle, CycleLaw, Span},
+    trail_map::TrailField,
+};
 use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, Vec2, pos2, vec2};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -77,152 +81,21 @@ pub fn candidate_color(ordinal: usize, selected: bool) -> Color32 {
     if selected {
         SELECTED_TRAIL_COLOR
     } else {
-        static PALETTE: OnceLock<Mutex<CandidatePalette>> = OnceLock::new();
+        const LAW: CycleLaw = CycleLaw::new(
+            Span::new(0.64, 0.805),
+            Span::new(0.17, 0.206),
+            &CARTOGRAPHIC_HUES,
+            0.0,
+            0.72,
+            0.17,
+        );
+        static PALETTE: OnceLock<Mutex<ColorCycle>> = OnceLock::new();
         PALETTE
-            .get_or_init(|| Mutex::new(CandidatePalette::default()))
+            .get_or_init(|| Mutex::new(ColorCycle::new(LAW)))
             .lock()
             .expect("candidate palette lock poisoned")
             .color(ordinal)
     }
-}
-
-#[derive(Default)]
-struct CandidatePalette {
-    colors: Vec<Color32>,
-    occupied: BTreeSet<[u8; 3]>,
-}
-
-impl CandidatePalette {
-    fn color(&mut self, ordinal: usize) -> Color32 {
-        while self.colors.len() <= ordinal {
-            let identity = self.colors.len();
-            let target = candidate_color_target(identity);
-            let [red, green, blue, _] = target.to_array();
-            let channels = [red, green, blue];
-            let color = (0..=1_530)
-                .filter_map(|probe| {
-                    if probe == 0 {
-                        return Some(channels);
-                    }
-                    let wave = (probe - 1) / 6 + 1;
-                    let axis = ((probe - 1) / 2) % 3;
-                    let sign = if probe % 2 == 0 { 1 } else { -1 };
-                    let wave = i16::try_from(wave).expect("palette probe fits i16");
-                    let value = i16::from(channels[axis]) + sign * wave;
-                    let mut candidate = channels;
-                    candidate[axis] = u8::try_from(value).ok()?;
-                    Some(candidate)
-                })
-                .find(|candidate| {
-                    let [red, green, blue] = *candidate;
-                    !(self.occupied.contains(candidate)
-                        || f32::from(green) > f32::from(red) * 1.15
-                            && f32::from(green) > f32::from(blue) * 1.15)
-                })
-                .expect("24-bit candidate palette exhausted near a perceptual target");
-            self.occupied.insert(color);
-            self.colors
-                .push(Color32::from_rgb(color[0], color[1], color[2]));
-        }
-        self.colors[ordinal]
-    }
-}
-
-fn candidate_color_target(ordinal: usize) -> Color32 {
-    let phase = if ordinal < 8 {
-        ordinal as f64 / 8.0
-    } else {
-        let base = 1_usize << ordinal.ilog2();
-        let slot = ordinal - base;
-        (slot * 2 + 1) as f64 / (base * 2) as f64
-    };
-    let hue = palette_hue(phase);
-    let grain = splitmix64(ordinal as u64);
-    let lightness = if ordinal < 8 {
-        0.72
-    } else {
-        ((grain & 15) as f64).mul_add(0.011, 0.64)
-    };
-    let chroma = (((grain >> 8) & 3) as f64).mul_add(0.012, 0.17);
-    oklch_srgb(lightness, chroma, hue)
-}
-
-fn palette_hue(phase: f64) -> f64 {
-    const WARM_START: f64 = 18.0;
-    const WARM_END: f64 = 82.0;
-    const COOL_START: f64 = 220.0;
-    const COOL_END: f64 = 355.0;
-    const WARM_SPAN: f64 = WARM_END - WARM_START;
-    const COOL_SPAN: f64 = COOL_END - COOL_START;
-    const SPAN: f64 = WARM_SPAN + COOL_SPAN;
-    let distance = phase * SPAN;
-    if distance < WARM_SPAN {
-        WARM_START + distance
-    } else {
-        COOL_START + distance - WARM_SPAN
-    }
-}
-
-const fn splitmix64(mut value: u64) -> u64 {
-    value = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
-    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    value ^ (value >> 31)
-}
-
-fn oklch_srgb(lightness: f64, chroma: f64, hue_degrees: f64) -> Color32 {
-    let hue = hue_degrees.to_radians();
-    let (sin, cos) = hue.sin_cos();
-    let in_gamut = |chroma: f64| {
-        let ok_a = chroma * cos;
-        let ok_b = chroma * sin;
-        let lms_l = 0.215_803_757_3_f64
-            .mul_add(ok_b, 0.396_337_777_4_f64.mul_add(ok_a, lightness))
-            .powi(3);
-        let lms_m = 0.063_854_172_8_f64
-            .mul_add(-ok_b, 0.105_561_345_8_f64.mul_add(-ok_a, lightness))
-            .powi(3);
-        let lms_s = 1.291_485_548_f64
-            .mul_add(-ok_b, 0.089_484_177_5_f64.mul_add(-ok_a, lightness))
-            .powi(3);
-        [
-            0.230_969_929_2_f64.mul_add(
-                lms_s,
-                3.307_711_591_3_f64.mul_add(-lms_m, 4.076_741_662_1 * lms_l),
-            ),
-            0.341_319_396_5_f64.mul_add(
-                -lms_s,
-                2.609_757_401_1_f64.mul_add(lms_m, -1.268_438_004_6 * lms_l),
-            ),
-            1.707_614_701_f64.mul_add(
-                lms_s,
-                0.703_418_614_7_f64.mul_add(-lms_m, -0.004_196_086_3 * lms_l),
-            ),
-        ]
-    };
-    let mut lo = 0.0;
-    let mut hi = chroma;
-    for _ in 0..14 {
-        let probe = (lo + hi) * 0.5;
-        if in_gamut(probe)
-            .into_iter()
-            .all(|channel| (0.0..=1.0).contains(&channel))
-        {
-            lo = probe;
-        } else {
-            hi = probe;
-        }
-    }
-    let [red, green, blue] = in_gamut(lo);
-    let gamma = |linear: f64| {
-        let srgb = if linear <= 0.003_130_8 {
-            12.92 * linear
-        } else {
-            1.055_f64.mul_add(linear.powf(1.0 / 2.4), -0.055)
-        };
-        (srgb.clamp(0.0, 1.0) * 255.0).round() as u8
-    };
-    Color32::from_rgb(gamma(red), gamma(green), gamma(blue))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

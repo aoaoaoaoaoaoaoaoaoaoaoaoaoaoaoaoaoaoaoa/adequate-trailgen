@@ -25,6 +25,7 @@ mod host;
 mod library;
 mod live_area;
 mod map;
+mod palette;
 mod portfolio;
 mod profile;
 mod project;

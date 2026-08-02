@@ -2853,7 +2853,9 @@ impl TrailApp {
                 &canvas,
                 frame,
                 cartography.zoom.get(),
-                self.civic.ready().cloned(),
+                self.civic
+                    .ready()
+                    .map(|(slot, area)| (slot, Arc::clone(area))),
             )
         );
         product_phase!("map.privileged_trails", self.paint_trails(&canvas, rect));

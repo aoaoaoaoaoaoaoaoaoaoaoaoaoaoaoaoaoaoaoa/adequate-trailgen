@@ -125,6 +125,12 @@ Selected routes dominate context by width and chroma. Overview disclosure may
 remove their internal pattern before the tube, but selection, candidate
 identity, and access warnings must remain legible.
 
+Unbounded categorical color belongs to the shared perceptual cycler, not to
+feature-local RGB arithmetic. A use site declares an OKLCH volume and lawful
+hue arcs; the cycler supplies a deterministic sparse prefix and then maximizes
+nearest ΔE in OKLab. Cartographic cycles exclude hues that alias dominant map
+ground. Ordinals come from stable semantic order, never frame arrival order.
+
 Trail hue is a user-selected semantic projection: class, formal/informal, or
 terrain. Switching it is a uniform-only operation over retained geometry.
 Surface and wayfinding own the core cadence independently; no hue projection

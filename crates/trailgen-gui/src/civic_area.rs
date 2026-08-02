@@ -1,4 +1,7 @@
-use crate::map;
+use crate::{
+    map,
+    palette::{CARTOGRAPHIC_HUES, ColorCycle, CycleLaw, Span},
+};
 use anyhow::{Context as _, Result, bail, ensure};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use egui::{
@@ -10,7 +13,7 @@ use std::{
     fs,
     io::{Cursor, Write as _},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex, OnceLock},
     thread,
     time::Duration,
 };
@@ -25,8 +28,14 @@ const CHUNK_POINTS: usize = 96;
 const CENSUS_ENDPOINT: &str =
     "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/tigerWMS_Current/MapServer";
 const NYC_ENDPOINT: &str = "https://services5.arcgis.com/GfwWNkhOj9bNBqoJ/arcgis/rest/services/NYC_Borough_Boundary/FeatureServer/0";
-const MAGENTA: Color32 = Color32::from_rgb(190, 91, 147);
-const MAGENTA_INK: Color32 = Color32::from_rgb(76, 34, 57);
+const CIVIC_COLORS: CycleLaw = CycleLaw::new(
+    Span::new(0.68, 0.68),
+    Span::new(0.15, 0.15),
+    &CARTOGRAPHIC_HUES,
+    0.875,
+    0.68,
+    0.15,
+);
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -421,11 +430,14 @@ impl CivicAreas {
         &self.rows
     }
 
-    pub fn ready(&self) -> impl Iterator<Item = &Arc<CivicArea>> {
-        self.rows.iter().filter_map(|row| match &row.state {
-            CivicRowState::Ready(area) => Some(area),
-            CivicRowState::Preparing | CivicRowState::Fault(_) => None,
-        })
+    pub fn ready(&self) -> impl Iterator<Item = (usize, &Arc<CivicArea>)> {
+        self.rows
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, row)| match &row.state {
+                CivicRowState::Ready(area) => Some((slot, area)),
+                CivicRowState::Preparing | CivicRowState::Fault(_) => None,
+            })
     }
 
     pub fn area(&self, key: &CivicKey) -> Option<&Arc<CivicArea>> {
@@ -1166,13 +1178,14 @@ pub struct CivicLabel {
     name: String,
     anchor: Pos2,
     angle: f32,
+    color: Color32,
 }
 
 pub fn paint_boundaries(
     painter: &Painter,
     frame: map::MapFramePlan,
     settled_zoom: f64,
-    areas: impl IntoIterator<Item = Arc<CivicArea>>,
+    areas: impl IntoIterator<Item = (usize, Arc<CivicArea>)>,
 ) -> Vec<CivicLabel> {
     let visible = {
         let [west, north, east, south] = frame.world_bounds();
@@ -1185,7 +1198,8 @@ pub fn paint_boundaries(
     };
     let hatch_spacing = hatch_spacing(256.0 * settled_zoom.exp2());
     let mut labels = Vec::new();
-    for area in areas {
+    for (ordinal, area) in areas {
+        let color = civic_color(ordinal);
         let mut shapes = Vec::new();
         let mut label = None;
         for ring in &area.rings {
@@ -1204,9 +1218,9 @@ pub fn paint_boundaries(
                 ));
                 shapes.push(Shape::line(
                     points,
-                    Stroke::new(1.25_f32, MAGENTA.gamma_multiply(0.92)),
+                    Stroke::new(1.25_f32, color.gamma_multiply(0.92)),
                 ));
-                paint_hatches(&mut shapes, frame, chunk, hatch_spacing);
+                paint_hatches(&mut shapes, frame, chunk, hatch_spacing, color);
                 best_label(&mut label, frame.rect, frame, chunk);
             }
         }
@@ -1216,6 +1230,7 @@ pub fn paint_boundaries(
                 name: area.record.name.to_ascii_uppercase(),
                 anchor,
                 angle,
+                color,
             });
         }
     }
@@ -1257,7 +1272,7 @@ pub fn paint_labels(painter: &Painter, labels: &[CivicLabel]) {
             TextShape::new(
                 label.anchor - galley.rect.center().to_vec2(),
                 galley,
-                MAGENTA_INK,
+                civic_ink(label.color),
             )
             .with_angle_and_anchor(label.angle, Align2::CENTER_CENTER),
         );
@@ -1274,6 +1289,7 @@ fn paint_hatches(
     frame: map::MapFramePlan,
     chunk: &LineChunk,
     spacing: f64,
+    color: Color32,
 ) {
     for pair in chunk.samples.windows(2) {
         let [start, end] = [pair[0], pair[1]];
@@ -1305,11 +1321,25 @@ fn paint_hatches(
             if frame.rect.expand(4.0).contains(center) {
                 shapes.push(Shape::line_segment(
                     [center - axis, center + axis],
-                    Stroke::new(1.0_f32, MAGENTA),
+                    Stroke::new(1.0_f32, color),
                 ));
             }
         }
     }
+}
+
+fn civic_color(ordinal: usize) -> Color32 {
+    static PALETTE: OnceLock<Mutex<ColorCycle>> = OnceLock::new();
+    PALETTE
+        .get_or_init(|| Mutex::new(ColorCycle::new(CIVIC_COLORS)))
+        .lock()
+        .expect("civic palette lock poisoned")
+        .color(ordinal)
+}
+
+fn civic_ink(color: Color32) -> Color32 {
+    let dim = |channel: u8| (u16::from(channel) * 2 / 5) as u8;
+    Color32::from_rgb(dim(color.r()), dim(color.g()), dim(color.b()))
 }
 
 fn best_label(
@@ -1396,6 +1426,27 @@ mod tests {
         assert_eq!(hits.first().map(|hit| hit.name.as_str()), Some("Brooklyn"));
         assert_eq!(hits.first().map(|hit| hit.kind.as_str()), Some("borough"));
         Ok(())
+    }
+
+    #[test]
+    fn civic_order_owns_a_distinct_legible_cycle() {
+        let colors = (0..64).map(civic_color).collect::<Vec<_>>();
+        assert_eq!(
+            colors
+                .iter()
+                .map(Color32::to_tuple)
+                .collect::<HashSet<_>>()
+                .len(),
+            colors.len()
+        );
+        assert!(colors.iter().all(|color| {
+            let ink = civic_ink(*color);
+            ink.r() <= color.r()
+                && ink.g() <= color.g()
+                && ink.b() <= color.b()
+                && u16::from(ink.r()) + u16::from(ink.g()) + u16::from(ink.b())
+                    < u16::from(color.r()) + u16::from(color.g()) + u16::from(color.b())
+        }));
     }
 
     #[test]

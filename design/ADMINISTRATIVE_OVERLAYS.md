@@ -72,11 +72,15 @@ or arbitrary active-area cap.
 
 ## Rendering
 
-A civic area renders only as a thin magenta boundary with a darker supporting
-stroke and world-anchored hatches. Retained nested simplifications and spatial
-chunks keep frame work proportional to visible geometry. Camera frames may
-cull, transform, and submit visible prepared chunks; they may not simplify,
-decode, hash, or scan a complete detailed polygon.
+A civic area renders only as a thin colored boundary with a darker supporting
+stroke and world-anchored hatches. Active-area order assigns a deterministic
+OKLab cycle: the sparse prefix maximizes hue separation at fixed lightness and
+chroma, excludes greens that alias park ground, and subsequent colors greedily
+maximize nearest ΔE over a fixed low-discrepancy probe reservoir. Retained
+nested simplifications and spatial chunks keep frame work proportional to
+visible geometry. Camera frames may cull, transform, and submit visible
+prepared chunks; they may not simplify, decode, hash, or scan a complete
+detailed polygon.
 
 Each area paints exactly one name whenever any part of its boundary intersects
 the viewport. The label is chosen from the visible boundary and may slide as
