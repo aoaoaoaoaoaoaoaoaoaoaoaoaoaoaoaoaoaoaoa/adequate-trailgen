@@ -2116,7 +2116,7 @@ impl TrailApp {
         let mut exported = None;
         for (slot, trail) in self.library.trails().iter().enumerate() {
             let selected = active.as_ref() == Some(&trail.id);
-            let response = library_button(ui, trail, pace, selected, navigable);
+            let response = library_button(ui, trail, selected, navigable);
             #[cfg(feature = "egui-test")]
             crate::witness::anchor(
                 ui,
@@ -5335,94 +5335,74 @@ struct LibraryResponses {
 fn library_button(
     ui: &mut egui::Ui,
     trail: &SavedTrail,
-    pace: crate::preferences::BasePace,
     selected: bool,
     enabled: bool,
 ) -> LibraryResponses {
     ui.add_enabled_ui(enabled, |ui| {
-        let (rect, plate) =
-            ui.allocate_exact_size(vec2(ui.available_width(), 42.0), egui::Sense::hover());
-        let export_rect = egui::Rect::from_min_max(
-            egui::pos2(rect.right() - 30.0, rect.top()),
-            rect.right_bottom(),
-        );
-        let open_rect =
-            egui::Rect::from_min_max(rect.min, egui::pos2(export_rect.left(), rect.bottom()));
-        let open = ui.interact(
-            open_rect,
-            ui.id().with(("saved-trail", trail.id.as_str())),
-            egui::Sense::click(),
-        );
-        let export = ui
-            .interact(
-                export_rect,
-                ui.id().with(("saved-export", trail.id.as_str())),
+        ui.horizontal(|ui| {
+            let export_side = 30.0;
+            let open_width =
+                (ui.available_width() - ui.spacing().item_spacing.x - export_side).max(1.0);
+            let (rect, _) = ui.allocate_exact_size(vec2(open_width, 38.0), egui::Sense::hover());
+            let open = ui.interact(
+                rect,
+                ui.id().with(("saved-trail", trail.id.as_str())),
                 egui::Sense::click(),
-            )
-            .on_hover_text("Export GPX");
-        if ui.is_rect_visible(rect) {
-            let fill = if selected {
-                chrome::RAISED
-            } else if plate.hovered() {
-                chrome::SURFACE.gamma_multiply(1.12)
-            } else {
-                chrome::SURFACE
-            };
-            let stroke = Stroke::new(
-                if selected { 1.4_f32 } else { 1.0_f32 },
-                if selected {
-                    chrome::HOT
+            );
+            if ui.is_rect_visible(rect) {
+                let fill = if selected {
+                    chrome::RAISED
+                } else if open.hovered() {
+                    chrome::SURFACE.gamma_multiply(1.12)
                 } else {
-                    chrome::EDGE_STRONG
-                },
-            );
-            let _plate = ui
-                .painter()
-                .rect(rect, 1.0, fill, stroke, egui::StrokeKind::Inside);
-            let ink = if enabled {
-                if selected { chrome::HOT } else { chrome::TEXT }
-            } else {
-                chrome::MUTED
-            };
-            ui.painter().with_clip_rect(open_rect).text(
-                rect.left_top() + vec2(8.0, 6.0),
-                egui::Align2::LEFT_TOP,
-                trail.name.to_ascii_uppercase(),
-                egui::FontId::monospace(12.5),
-                ink,
-            );
-            let measurements = readout::library_measurements(&trail.metrics, pace);
-            ui.painter().text(
-                rect.left_bottom() + vec2(8.0, -6.0),
-                egui::Align2::LEFT_BOTTOM,
-                measurements.text(),
-                egui::FontId::monospace(10.5),
-                chrome::MUTED,
-            );
-            let load = readout::library_load(&trail.metrics);
-            ui.painter().text(
-                rect.right_bottom() + vec2(-38.0, -6.0),
-                egui::Align2::RIGHT_BOTTOM,
-                load.text(),
-                egui::FontId::monospace(10.5),
-                chrome::MUTED,
-            );
-            if export.hovered() {
-                let _hover = ui.painter().rect_filled(
-                    export_rect.shrink2(vec2(4.0, 5.0)),
-                    1.0,
-                    chrome::RAISED,
+                    chrome::SURFACE
+                };
+                let stroke = Stroke::new(
+                    if selected { 1.4_f32 } else { 1.0_f32 },
+                    if selected {
+                        chrome::HOT
+                    } else {
+                        chrome::EDGE_STRONG
+                    },
+                );
+                let _plate = ui
+                    .painter()
+                    .rect(rect, 1.0, fill, stroke, egui::StrokeKind::Inside);
+                let ink = if enabled {
+                    if selected { chrome::HOT } else { chrome::TEXT }
+                } else {
+                    chrome::MUTED
+                };
+                ui.painter().text(
+                    rect.left_top() + vec2(8.0, 5.0),
+                    egui::Align2::LEFT_TOP,
+                    trail.name.to_ascii_uppercase(),
+                    egui::FontId::monospace(12.5),
+                    ink,
+                );
+                ui.painter().text(
+                    rect.left_bottom() + vec2(8.0, -5.0),
+                    egui::Align2::LEFT_BOTTOM,
+                    readout::library_measurements(&trail.metrics),
+                    egui::FontId::monospace(10.5),
+                    chrome::MUTED,
+                );
+                let load = readout::library_load(&trail.metrics);
+                ui.painter().text(
+                    rect.right_bottom() + vec2(-8.0, -5.0),
+                    egui::Align2::RIGHT_BOTTOM,
+                    load.text(),
+                    egui::FontId::monospace(10.5),
+                    chrome::MUTED,
                 );
             }
-            ui.painter().text(
-                export_rect.center_top() + vec2(0.0, 5.0),
-                egui::Align2::CENTER_TOP,
-                "↥",
-                egui::FontId::monospace(17.0),
-                if export.hovered() { chrome::HOT } else { ink },
-            );
-        }
-        LibraryResponses { open, export }
+            let export = ui
+                .add(chrome::command_button("↥", false).min_size(vec2(export_side, export_side)))
+                .on_hover_text("Export GPX");
+            chrome::tension(ui, &export);
+            LibraryResponses { open, export }
+        })
+        .inner
     })
     .inner
 }
@@ -5836,10 +5816,10 @@ mod tests {
             elevation_fraction: 1.0,
             ..RouteMetrics::default()
         };
-        let measurements =
-            readout::library_measurements(&metrics, crate::preferences::BasePace::default());
-        assert_eq!(measurements.text(), "12.3 KM · 3:24 · +567 M");
-        assert!(!measurements.text().contains("ASCENT"));
+        let measurements = readout::library_measurements(&metrics);
+        assert_eq!(measurements, "12.3 KM · +567 M");
+        assert!(!measurements.contains("ASCENT"));
+        assert!(!measurements.contains("3:24"));
         assert_eq!(readout::library_load(&metrics).text(), "68 FGJW KM");
     }
 

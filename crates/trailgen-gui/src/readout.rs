@@ -49,22 +49,16 @@ pub fn load_badge(metrics: &RouteMetrics) -> ExplainedText {
 }
 
 #[must_use]
-pub fn library_measurements(metrics: &RouteMetrics, pace: BasePace) -> ExplainedText {
-    let text = if metrics.elevation_fraction >= 0.8 {
+pub fn library_measurements(metrics: &RouteMetrics) -> String {
+    if metrics.elevation_fraction >= 0.8 {
         format!(
-            "{:.1} KM · {} · +{:.0} M",
+            "{:.1} KM · +{:.0} M",
             metrics.distance_m / 1_000.0,
-            moving_time(metrics.moving_time_s, pace),
             metrics.ascent_m
         )
     } else {
-        format!(
-            "{:.1} KM · {}",
-            metrics.distance_m / 1_000.0,
-            moving_time(metrics.moving_time_s, pace)
-        )
-    };
-    ExplainedText::forge(text, Glosses::MOVING_TIME)
+        format!("{:.1} KM", metrics.distance_m / 1_000.0)
+    }
 }
 
 #[must_use]
