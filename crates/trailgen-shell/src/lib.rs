@@ -13,18 +13,18 @@ use dwemer_poolrooms::water::{Engine, Frame as WaterFrame};
 use egui_wgpu::{
     RenderState, Renderer, RendererOptions, ScreenDescriptor, WgpuConfiguration, wgpu,
 };
-use egui_winit::winit::{
-    application::ApplicationHandler,
-    dpi::{LogicalSize, PhysicalSize},
-    event::{StartCause, WindowEvent},
-    event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
-    window::{Window, WindowAttributes},
-};
 #[cfg(feature = "egui-test")]
 use serde::Serialize;
 use std::{
     sync::{Arc, Mutex, MutexGuard},
     time::{Duration, Instant},
+};
+use winit::{
+    application::ApplicationHandler,
+    dpi::{LogicalSize, PhysicalSize},
+    event::{StartCause, WindowEvent},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
+    window::{Window, WindowAttributes},
 };
 
 pub use living_wait::LivingWait;
@@ -349,7 +349,7 @@ impl<A: NativeApp> ApplicationHandler<Spark> for Shell<A> {
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
-        _window_id: egui_winit::winit::window::WindowId,
+        _window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
         let event_name = match &event {

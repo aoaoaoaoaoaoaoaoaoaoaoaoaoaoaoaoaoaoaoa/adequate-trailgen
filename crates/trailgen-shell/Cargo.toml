@@ -5,7 +5,7 @@ description = "Private incubation of the shared native Poolrooms application hos
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-rust-version = "1.96"
+rust-version.workspace = true
 publish = false
 
 [features]
@@ -27,6 +27,7 @@ serde = { workspace = true, optional = true }
 tracing.workspace = true
 tracing-chrome.workspace = true
 tracing-subscriber.workspace = true
+winit.workspace = true
 
 [lints]
 workspace = true

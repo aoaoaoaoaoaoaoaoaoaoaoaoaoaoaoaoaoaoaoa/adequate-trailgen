@@ -14,7 +14,7 @@ resolver = "2"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/adequate-trailgen"
-rust-version = "1.88"
+rust-version = "1.96"
 
 [workspace.dependencies]
 anyhow = "1.0.98"
@@ -25,7 +25,7 @@ directories = "6.0.0"
 dwemer_poolrooms = "0.7.0"
 egui = "=0.34.3"
 egui-wgpu = "=0.34.3"
-egui-winit = "=0.34.3"
+egui-winit = { version = "=0.34.3", default-features = false, features = ["x11"] }
 fast-mvt = { version = "0.6.1", default-features = false, features = ["reader"] }
 futures-util = "0.3.31"
 geo-types = "0.7.19"
@@ -36,7 +36,7 @@ png = "0.18.0"
 roxmltree = "0.20.0"
 osmpbfreader = "0.19.1"
 pollster = "0.4"
-rfd = "0.17.2"
+rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
 protobuf = "3.7.2"
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "form", "json", "query", "rustls"] }
 rmp-serde = "1.3.0"
@@ -58,6 +58,7 @@ trailgen-contract = { path = "crates/trailgen-contract", version = "0.1.0" }
 trailgen-data = { path = "crates/trailgen-data", version = "0.1.0" }
 trailgen-gui = { path = "crates/trailgen-gui", version = "0.1.0" }
 trailgen-shell = { path = "crates/trailgen-shell", version = "0.1.0" }
+winit = { version = "0.30.13", default-features = false, features = ["rwh_06", "x11"] }
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 zstd = "0.13.3"
 

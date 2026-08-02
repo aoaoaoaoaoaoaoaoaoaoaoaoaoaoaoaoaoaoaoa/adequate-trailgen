@@ -5,7 +5,7 @@ description = "Stable UI identity shared by Trailgen and its black-box acceptanc
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-rust-version = "1.88"
+rust-version.workspace = true
 publish = false
 
 [dependencies]
