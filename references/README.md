@@ -4,6 +4,8 @@
 |------|--------|---------|
 | [Naismith, 1892, Cruach Ardran, Stobinian, and Ben More](naismith-1892-cruach-ardran.md) | Metadata only; original journal note | Introduces the distance-plus-ascent rule now called Naismith's rule. |
 | [Tobler, 1993, Three Presentations on Geographical Analysis and Modeling](tobler-1993-geographical-analysis.md) | Metadata only; technical report | Introduces an anisotropic slope-to-walking-speed function derived from Imhof's empirical data. |
+| [Pitman et al., 2012, Individualized Hiking Time Estimation](pitman-et-al-2012-individualized-hiking-time.md) | Metadata only; published conference paper | Uses flat-ground speed as one multiplicative personal calibration and updates it from elapsed GPS performance. |
+| [Higgins, 2021, Hiking with Tobler](higgins-2021-personalized-tobler.md) | CC BY-SA 4.0 version of record retained | Fits a complete slope-speed curve to four personal hikes, demonstrating both richer calibration and terrain confounding. |
 | [Soule and Goldman, 1972, Terrain Coefficients for Energy Cost Prediction](soule-goldman-1972-terrain-coefficients.md) | Metadata only; journal article | Establishes the terrain multipliers later used in the Pandolf load-carriage model. |
 | [Pandolf, Givoni, and Goldman, 1977, Predicting Energy Expenditure with Loads](pandolf-et-al-1977-load-carriage.md) | Metadata only; journal article | Predicts metabolic rate from mass, load, speed, grade, and terrain. |
 | [Minetti et al., 2002, Energy Cost of Walking and Running at Extreme Slopes](minetti-et-al-2002-energy-cost-slopes.md) | Version of record retained | Measures energy cost per unit distance from −45% to +45% grade. |
