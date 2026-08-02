@@ -190,14 +190,6 @@ const fn coloring_tab(coloring: TrailColoring) -> &'static str {
     }
 }
 
-const fn coloring_heading(coloring: TrailColoring) -> &'static str {
-    match coloring {
-        TrailColoring::Class => "COLOR · TRAIL TYPE",
-        TrailColoring::Formality => "COLOR · FORMALITY",
-        TrailColoring::Terrain => "COLOR · TERRAIN",
-    }
-}
-
 pub const fn coloring_shader_code(coloring: TrailColoring) -> u32 {
     match coloring {
         TrailColoring::Class => 0,
@@ -612,7 +604,6 @@ impl Atlas {
                     .inner_margin(9.0)
                     .show(ui, |ui| {
                         ui.set_width(WIDTH - 18.0);
-                        let _heading = ui.label(chrome::eyebrow("TRAIL COLORS"));
                         let _tabs = ui.horizontal(|ui| {
                             for coloring in TrailColoring::ALL {
                                 let response = chrome::command(
@@ -627,7 +618,6 @@ impl Atlas {
                             }
                         });
                         ui.add_space(4.0);
-                        let _heading = ui.label(chrome::eyebrow(coloring_heading(current)));
                         match current {
                             TrailColoring::Class => {
                                 for class in self.classes.iter().copied() {
@@ -663,8 +653,7 @@ impl Atlas {
                             }
                         }
                         ui.add_space(4.0);
-                        let _heading =
-                            ui.label(chrome::eyebrow("LINE STYLE · SURFACE / WAYFINDING"));
+                        let _heading = ui.label(chrome::eyebrow("SURFACE / WAYFINDING"));
                         for mark in TrailMark::ALL {
                             legend_row(
                                 ui,
