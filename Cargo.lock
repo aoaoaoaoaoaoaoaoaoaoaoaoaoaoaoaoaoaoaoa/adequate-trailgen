@@ -892,8 +892,8 @@ dependencies = [
 
 [[package]]
 name = "egui-tester"
-version = "0.5.0"
-source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester?rev=b99d44cd7eb41db66a406d00f563538c72d6dec2#b99d44cd7eb41db66a406d00f563538c72d6dec2"
+version = "0.6.0"
+source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester?rev=ab7d3924782d2576ae34ce3baa7e8e54de96ef40#ab7d3924782d2576ae34ce3baa7e8e54de96ef40"
 dependencies = [
  "bitflags 2.13.1",
  "egui-tester-witness",
@@ -909,8 +909,8 @@ dependencies = [
 
 [[package]]
 name = "egui-tester-witness"
-version = "0.5.0"
-source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester?rev=b99d44cd7eb41db66a406d00f563538c72d6dec2#b99d44cd7eb41db66a406d00f563538c72d6dec2"
+version = "0.6.0"
+source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester?rev=ab7d3924782d2576ae34ce3baa7e8e54de96ef40#ab7d3924782d2576ae34ce3baa7e8e54de96ef40"
 dependencies = [
  "egui",
  "rustix 1.1.4",

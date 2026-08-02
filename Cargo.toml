@@ -63,13 +63,13 @@ zstd = "0.13.3"
 
 [workspace.dependencies.egui-tester]
 git = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester"
-rev = "b99d44cd7eb41db66a406d00f563538c72d6dec2"
-version = "0.5.0"
+rev = "ab7d3924782d2576ae34ce3baa7e8e54de96ef40"
+version = "0.6.0"
 
 [workspace.dependencies.egui-tester-witness]
 git = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester"
-rev = "b99d44cd7eb41db66a406d00f563538c72d6dec2"
-version = "0.5.0"
+rev = "ab7d3924782d2576ae34ce3baa7e8e54de96ef40"
+version = "0.6.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
