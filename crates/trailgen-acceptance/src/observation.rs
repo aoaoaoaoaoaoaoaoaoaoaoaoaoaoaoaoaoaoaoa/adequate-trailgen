@@ -16,6 +16,7 @@ pub struct Observation {
     pub text_edit_focused: bool,
     pub saved_trails: usize,
     pub candidates: usize,
+    pub base_pace_kmh: Option<f64>,
     pub map: Option<MapState>,
     pub areas: Option<AreaState>,
     pub civic: Option<CivicState>,
@@ -132,6 +133,14 @@ pub mod shows {
     pub fn candidates_at_least(minimum: usize) -> Condition<Observation> {
         field("candidate count", |state: &Observation| state.candidates)
             .satisfies(format!(">= {minimum}"), move |count| *count >= minimum)
+    }
+
+    pub fn base_pace(expected_kmh: f64) -> Condition<Observation> {
+        condition(format!("base pace {expected_kmh:.1} km/h"), move |state| {
+            state
+                .base_pace_kmh
+                .is_some_and(|actual| (actual - expected_kmh).abs() <= 1.0e-9)
+        })
     }
 
     pub fn map() -> Condition<Observation> {

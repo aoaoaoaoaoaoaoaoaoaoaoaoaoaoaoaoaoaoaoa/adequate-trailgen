@@ -11,6 +11,7 @@ use std::{
 };
 
 const LIBRARY: &str = "trailgen";
+const PREFERENCES: &str = "preferences.toml";
 const SESSION: &str = "session.json";
 const SLATE: &str = "slate.toml";
 const SLATES: &str = "projects";
@@ -24,6 +25,7 @@ struct ProjectMark<'a> {
 
 #[derive(Clone, Debug)]
 pub struct Habitat {
+    config: PathBuf,
     library: Option<PathBuf>,
     state: PathBuf,
 }
@@ -63,13 +65,18 @@ impl ProjectPlace {
 impl Habitat {
     pub fn discover() -> Result<Self> {
         let platform = platform_dirs()?;
+        let config = platform.config_dir().to_owned();
         let state = platform
             .state_dir()
             .unwrap_or_else(|| platform.data_local_dir())
             .to_owned();
         let library =
             UserDirs::new().and_then(|dirs| dirs.document_dir().map(|root| root.join(LIBRARY)));
-        Ok(Self { library, state })
+        Ok(Self {
+            config,
+            library,
+            state,
+        })
     }
 
     pub fn resume(&self) -> Result<Option<PathBuf>> {
@@ -93,6 +100,10 @@ impl Habitat {
 
     pub fn library_root(&self) -> Option<&Path> {
         self.library.as_deref()
+    }
+
+    pub fn preferences_path(&self) -> PathBuf {
+        self.config.join(PREFERENCES)
     }
 
     pub fn slate_path(&self, root: &Path) -> PathBuf {
@@ -288,7 +299,7 @@ impl Drop for ProjectCradle {
 }
 
 #[cfg(unix)]
-fn create_private_dir(path: &Path) -> Result<()> {
+pub fn create_private_dir(path: &Path) -> Result<()> {
     use std::os::unix::fs::DirBuilderExt as _;
 
     let mut builder = fs::DirBuilder::new();
@@ -299,7 +310,7 @@ fn create_private_dir(path: &Path) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-fn create_private_dir(path: &Path) -> Result<()> {
+pub fn create_private_dir(path: &Path) -> Result<()> {
     fs::create_dir_all(path)
         .with_context(|| format!("create private application state {}", path.display()))
 }
@@ -310,6 +321,7 @@ mod tests {
 
     fn habitat(root: &Path) -> Habitat {
         Habitat {
+            config: root.join("config/trailgen"),
             library: Some(root.join("documents/trailgen")),
             state: root.join("state/trailgen"),
         }

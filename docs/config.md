@@ -63,9 +63,12 @@ For a GUI-managed corpus, `[area]` is the derived bounding hull of the live rect
 
 `max_route_snap_m` bounds connected route matching during `rate` and `import-seed`, defaulting to `100`. Every supplied GPX, GeoJSON, KML, KMZ, or CSV route segment must lie inside this distance and consecutive oriented anchors must admit a legal local connector through the graph; otherwise the command fails with snap or disconnected-transition diagnostics. Override one run with `--max-route-snap-m N` only when the source route is deliberately coarse or generalized. Imported seeds persist their snap statistics beside point count, snapped edge IDs, and metrics.
 
-Lower-limb load and moving time use fixed, population-level physical models,
-not project-tunable coefficients. Their direction-specific estimates are
-recomputed whenever geometry, elevation, or terrain changes. See
+Lower-limb load and stored moving time use fixed, population-level physical
+models, not project-tunable coefficients. Their direction-specific estimates
+are recomputed whenever geometry, elevation, or terrain changes. The GUI's
+app-wide Base Pace scales the Wood moving-time projection and lives in
+`$XDG_CONFIG_HOME/trailgen/preferences.toml`; it does not rewrite project or
+route facts. See
 [physical load and moving time](physical-load.md) for formulas, evidence, and
 limits.
 

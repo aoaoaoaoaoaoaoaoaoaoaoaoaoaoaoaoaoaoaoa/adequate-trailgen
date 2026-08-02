@@ -11,7 +11,7 @@ trailgen
 
 The installer places the unified `trailgen` binary under `~/.local/bin`. Bare `trailgen` resumes the last explicitly chosen project or opens the project deck. New projects conventionally live beneath the operating system’s XDG documents directory in `trailgen/`; Trailgen honors its exact spelling and never invents `~/Documents`.
 
-Projects are ordinary portable directories rooted by `trailgen.toml`. Per-project viewport, inspector, gallery, and sorting state lives under `$XDG_STATE_HOME/trailgen`. Shared map cache belongs under `$XDG_CACHE_HOME/trailgen`; no state is scattered through the project or home directory.
+Projects are ordinary portable directories rooted by `trailgen.toml`. Per-project viewport, inspector, gallery, and sorting state lives under `$XDG_STATE_HOME/trailgen`. App-wide preferences, including Base Pace, live under `$XDG_CONFIG_HOME/trailgen`; shared map cache belongs under `$XDG_CACHE_HOME/trailgen`. No state is scattered through the project or home directory.
 
 ## Workflow
 

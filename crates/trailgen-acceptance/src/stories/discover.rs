@@ -13,6 +13,7 @@ use crate::observation::{
 
 const ROOT: &str = "/test/discover-loop";
 const AREA_NAME: &str = "West Ridge";
+const BASE_PACE_KMH: f64 = 6.2;
 
 pub fn run(harness: &Harness<'_>) -> Result<()> {
     harness.testbed.retain_on_failure("discover-loop")?;
@@ -23,6 +24,7 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
     acquire_region(&mut story)?;
     exercise_shortcut_guide(&mut story, harness.artifacts)?;
     find_and_keep(&mut story)?;
+    verify_preferences(harness)?;
     add_civic_area(&mut story, harness)?;
     harness.fixtures.assert_harvested()?;
     verify_discovery(harness)?;
@@ -49,16 +51,15 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
             & shows::areas(2)
             & shows::civic(1, 1)
             & shows::basemap_tiles_at_least(1)
-            & shows::coloring(TrailColoring::Terrain),
+            & shows::coloring(TrailColoring::Terrain)
+            & shows::base_pace(BASE_PACE_KMH),
     )?;
     let trail = first_anchor(
         &restored,
         TargetClass::LibraryTrail,
         "restored Library row vanished",
     )?;
-    let _opened = story
-        .click_anchor(&trail)?
-        .until(shows::view(View::FocusSaved))?;
+    let _opened = focus_library_trail(&mut story, &trail)?;
     restarted.terminate()?;
     Ok(())
 }
@@ -129,6 +130,7 @@ fn add_civic_area(story: &mut TrailStory<'_, '_>, harness: &Harness<'_>) -> Resu
     verify_civic_persistence(harness)?;
 
     reveal_civic_target(story, Target::CivicArea(0))?;
+    let before_fit = neutral_capture(story)?;
     let fitted = story
         .click(Target::CivicArea(0))?
         .within(instant_budget())
@@ -142,8 +144,15 @@ fn add_civic_area(story: &mut TrailStory<'_, '_>, harness: &Harness<'_>) -> Resu
     let map = fitted
         .anchor(&Target::Map.to_string())
         .ok_or_else(|| crate::harness::verdict("fitted civic view omitted its map anchor"))?;
-    let frame = story.capture()?;
-    let ink = civic_ink(&frame, PixelRegion::anchor(map))?;
+    let region = PixelRegion::anchor(map);
+    let frame = story.session().wait_changed_region(
+        &before_fit,
+        region,
+        0.05,
+        8,
+        Duration::from_secs(3),
+    )?;
+    let ink = civic_ink(&frame, region)?;
     demand(
         ink >= 80,
         format!("fitted Brooklyn boundary rendered only {ink} magenta pixels"),
@@ -155,10 +164,18 @@ fn add_civic_area(story: &mut TrailStory<'_, '_>, harness: &Harness<'_>) -> Resu
 }
 
 fn reveal_civic_search(story: &mut TrailStory<'_, '_>) -> Result<()> {
-    reveal_civic_target(story, Target::CivicSearch)
+    reveal_inspector_target(story, Target::CivicSearch)
 }
 
 fn reveal_civic_target(story: &mut TrailStory<'_, '_>, target: Target) -> Result<()> {
+    reveal_inspector_target(story, target)
+}
+
+fn reveal_inspector_target(
+    story: &mut TrailStory<'_, '_>,
+    target: impl std::fmt::Display,
+) -> Result<()> {
+    let target = target.to_string();
     let frame = story.wait(shows::map())?;
     let map = frame
         .state
@@ -172,9 +189,19 @@ fn reveal_civic_target(story: &mut TrailStory<'_, '_>, target: Target) -> Result
     ])?;
     let screen_bottom = f64::from(story.capture()?.height().saturating_sub(20));
     for _ in 0..4 {
-        let anchor = story.anchor(target)?;
+        let anchor = story.anchor(target.as_str())?;
         let center = anchor.center();
         if f64::from(center.1) >= 50.0 && f64::from(center.1) <= screen_bottom {
+            let _settled = story.wait_stable(
+                Duration::from_secs(2),
+                Duration::from_millis(80),
+                format!("inspector target `{target}` to stop moving"),
+                |frame| {
+                    frame
+                        .anchor(target.as_str())
+                        .map(|anchor| anchor.rect.map(f32::to_bits))
+                },
+            )?;
             return Ok(());
         }
         let ticks = if f64::from(center.1) > screen_bottom {
@@ -195,6 +222,17 @@ fn reveal_civic_target(story: &mut TrailStory<'_, '_>, target: Target) -> Result
     Err(crate::harness::verdict(format!(
         "inspector could not reveal {target}"
     )))
+}
+
+fn focus_library_trail(
+    story: &mut TrailStory<'_, '_>,
+    trail: &egui_tester::Anchor,
+) -> Result<crate::harness::TrailFrame> {
+    reveal_inspector_target(story, trail.name.as_str())?;
+    Ok(story
+        .click(trail.name.as_str())?
+        .until(shows::view(View::FocusSaved))?
+        .into_value())
 }
 
 fn civic_ink(frame: &Frame, region: PixelRegion) -> Result<usize> {
@@ -364,14 +402,12 @@ fn exercise_refresh(story: &mut TrailStory<'_, '_>) -> Result<()> {
         TargetClass::LibraryTrail,
         "saved trail vanished before corpus refresh",
     )?;
-    let focused = story
-        .click_anchor(&saved)?
-        .until(shows::view(View::FocusSaved))?
-        .into_value();
+    let focused = focus_library_trail(story, &saved)?;
     let baseline = focused
         .state
         .map
         .ok_or_else(|| crate::harness::verdict("saved trail omitted its viewport"))?;
+    reveal_inspector_target(story, Target::AddMapArea)?;
     let armed = story
         .click(Target::AddMapArea)?
         .until(shows::view(View::Browse))?
@@ -391,10 +427,9 @@ fn exercise_refresh(story: &mut TrailStory<'_, '_>) -> Result<()> {
         TargetClass::LibraryTrail,
         "saved trail vanished after cancelling Add Map Area",
     )?;
-    let _focused = story
-        .click_anchor(&saved)?
-        .until(shows::view(View::FocusSaved))?;
+    let _focused = focus_library_trail(story, &saved)?;
 
+    reveal_inspector_target(story, Target::RefreshTrails)?;
     let _started = story
         .click(Target::RefreshTrails)?
         .within(instant_budget())
@@ -724,6 +759,7 @@ fn find_and_keep(story: &mut TrailStory<'_, '_>) -> Result<()> {
 }
 
 fn configure_search(story: &mut TrailStory<'_, '_>) -> Result<()> {
+    exercise_calibration(story)?;
     let frame = story.wait(shows::map())?;
     let initial_scale = frame
         .state
@@ -776,6 +812,43 @@ fn configure_search(story: &mut TrailStory<'_, '_>) -> Result<()> {
         .replace_text(Target::LowerLimbLoad, "8.0", shows::text_focused())?
         .next_frame()?;
     Ok(())
+}
+
+fn exercise_calibration(story: &mut TrailStory<'_, '_>) -> Result<()> {
+    reveal_inspector_target(story, Target::BasePace)?;
+    let _pace = story
+        .replace_text(Target::BasePace, "6.2", shows::text_focused())?
+        .until(shows::base_pace(BASE_PACE_KMH))?;
+
+    let baseline = neutral_capture(story)?;
+    let pace = story.anchor(Target::BasePace)?.center();
+    let motion = story.session().move_to(pace.0, pace.1)?;
+    let _hovered = story.reaction(motion).next_frame()?;
+    let card = story.anchor(Target::GlossCard)?;
+    let region = PixelRegion::anchor(&card);
+    let visible =
+        story
+            .session()
+            .wait_changed_region(&baseline, region, 0.02, 2, Duration::from_secs(4))?;
+    demand(
+        baseline.difference_region(&visible, region, 2)? >= 0.02,
+        "Base Pace exposed a semantic gloss without presenting it",
+    )
+}
+
+fn verify_preferences(harness: &Harness<'_>) -> Result<()> {
+    let preferences = harness
+        .testbed
+        .read_private_to_string("xdg/config/trailgen/preferences.toml")?
+        .parse::<toml::Table>()
+        .map_err(|error| crate::harness::verdict(format!("parse preferences: {error}")))?;
+    demand(
+        preferences
+            .get("base_pace_kmh")
+            .and_then(toml::Value::as_float)
+            == Some(BASE_PACE_KMH),
+        "Base Pace did not reach XDG configuration",
+    )
 }
 
 fn exercise_color_legend(

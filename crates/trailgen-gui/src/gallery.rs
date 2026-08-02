@@ -1,11 +1,14 @@
 use crate::chrome;
 use crate::{
     cadence,
+    lexicon::Glosses,
     library::SavedTrail,
     map::{
         candidate_color, frailest_standing, paint_trail_tube_at, trail_mark, trail_standing_badge,
         trail_standing_color,
     },
+    preferences::BasePace,
+    readout,
 };
 use egui::{Color32, Pos2, Rect, Response, Sense, Stroke, Ui, pos2, vec2};
 use serde::{Deserialize, Serialize};
@@ -74,6 +77,7 @@ pub fn candidate_tile(
     ui: &mut Ui,
     route: &Route,
     preview: &CandidatePreview,
+    pace: BasePace,
     identity: usize,
     active: bool,
 ) -> Response {
@@ -81,6 +85,7 @@ pub fn candidate_tile(
         ui,
         route.name.as_str(),
         &route.metrics,
+        pace,
         preview.standing,
         active,
         |ui, rect| {
@@ -365,21 +370,24 @@ fn point_segment_distance(point: Pos2, start: Pos2, end: Pos2) -> f32 {
     point.distance(start + edge * progress)
 }
 
-pub fn saved_preview(ui: &mut Ui, trail: &SavedTrail, preview: &SavedPreview) {
+pub fn saved_preview(ui: &mut Ui, trail: &SavedTrail, preview: &SavedPreview, pace: BasePace) {
     let _tile = tile_shell(
         ui,
         trail.name.as_str(),
         &trail.metrics,
+        pace,
         preview.standing,
         false,
         |ui, rect| preview.paint(ui, rect),
     );
+    Glosses::ROUTE_METRICS.card(ui);
 }
 
 fn tile_shell(
     ui: &mut Ui,
     name: &str,
     metrics: &trailgen_core::RouteMetrics,
+    pace: BasePace,
     standing: Option<TrailStanding>,
     active: bool,
     paint: impl FnOnce(&Ui, Rect),
@@ -414,8 +422,9 @@ fn tile_shell(
         ui.painter()
             .galley(badge.min + vec2(3.5, 2.0), galley, chrome::TEXT);
     }
+    let load_text = readout::load_badge(metrics);
     let load = ui.painter().layout_no_wrap(
-        lower_limb_load_badge(metrics),
+        load_text.text().to_owned(),
         egui::FontId::monospace(9.0),
         chrome::TEXT,
     );
@@ -446,37 +455,15 @@ fn tile_shell(
         egui::FontId::monospace(12.0),
         if active { chrome::HOT } else { chrome::TEXT },
     );
-    let measurements = if metrics.elevation_fraction >= 0.8 {
-        format!(
-            "{:.1} KM   {}   ASCENT {:.0} M",
-            metrics.distance_m / 1_000.0,
-            moving_time(metrics.moving_time_s),
-            metrics.ascent_m,
-        )
-    } else {
-        format!(
-            "{:.1} KM   {}   NO ELEVATION",
-            metrics.distance_m / 1_000.0,
-            moving_time(metrics.moving_time_s)
-        )
-    };
+    let measurements = readout::tile_measurements(metrics, pace);
     ui.painter().text(
         pos2(title.left(), title.bottom()),
         egui::Align2::LEFT_BOTTOM,
-        measurements,
+        measurements.text(),
         egui::FontId::monospace(10.5),
         chrome::MUTED,
     );
-    response
-}
-
-fn lower_limb_load_badge(metrics: &trailgen_core::RouteMetrics) -> String {
-    format!("LOAD {:.0} FGJW KM", metrics.lower_limb_load_km)
-}
-
-fn moving_time(seconds: f64) -> String {
-    let minutes = (seconds.max(0.0) / 60.0).round();
-    format!("{:.0}:{:02.0}", (minutes / 60.0).floor(), minutes % 60.0)
+    Glosses::ROUTE_METRICS.explain(response)
 }
 
 #[derive(Clone, Copy)]
@@ -597,6 +584,6 @@ mod tests {
             ..route.metrics
         };
 
-        assert_eq!(lower_limb_load_badge(&metrics), "LOAD 68 FGJW KM");
+        assert_eq!(readout::load_badge(&metrics).text(), "LOAD 68 FGJW KM");
     }
 }

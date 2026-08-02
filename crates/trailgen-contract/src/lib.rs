@@ -7,7 +7,7 @@ use std::{borrow::Cow, fmt};
 
 use serde::{Deserialize, Serialize};
 
-pub const UI_FINGERPRINT: &str = "trailgen.ui/9";
+pub const UI_FINGERPRINT: &str = "trailgen.ui/10";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -134,6 +134,8 @@ pub enum Target {
     MovingTimeMin,
     MovingTimeMax,
     LowerLimbLoad,
+    BasePace,
+    GlossCard,
     FocusBack,
     FocusEdit,
     FocusSave,
@@ -158,7 +160,7 @@ pub enum Target {
 }
 
 impl Target {
-    pub const STATIC: [Self; 34] = [
+    pub const STATIC: [Self; 36] = [
         Self::ProjectName,
         Self::ProjectParent,
         Self::ProjectCreate,
@@ -180,6 +182,8 @@ impl Target {
         Self::MovingTimeMin,
         Self::MovingTimeMax,
         Self::LowerLimbLoad,
+        Self::BasePace,
+        Self::GlossCard,
         Self::FocusBack,
         Self::FocusEdit,
         Self::FocusSave,
@@ -219,6 +223,8 @@ impl Target {
             Self::MovingTimeMin => "search.moving-time.min",
             Self::MovingTimeMax => "search.moving-time.max",
             Self::LowerLimbLoad => "search.lower-limb-load",
+            Self::BasePace => "calibration.base-pace",
+            Self::GlossCard => "gloss.card",
             Self::FocusBack => "focus.back",
             Self::FocusEdit => "focus.edit",
             Self::FocusSave => "focus.save",

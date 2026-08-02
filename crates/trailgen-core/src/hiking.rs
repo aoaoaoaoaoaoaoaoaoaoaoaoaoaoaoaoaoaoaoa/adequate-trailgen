@@ -52,6 +52,12 @@ impl EdgeTraversal {
 pub struct HikingModel;
 
 impl HikingModel {
+    /// Level-ground speed of the Wood population model for an ordinary path.
+    #[must_use]
+    pub fn reference_flat_speed_kmh() -> f64 {
+        1.580_f64.exp()
+    }
+
     #[must_use]
     pub fn estimate(self, geometry: &LineString, attr: &EdgeAttr) -> EdgeTraversal {
         self.estimate_leg(
@@ -308,5 +314,14 @@ mod tests {
         assert!(ascent.windows(2).all(|pair| pair[0] <= pair[1]));
         assert!((joint_work_factor(-0.50) - 1.69).abs() <= f64::EPSILON);
         assert!((joint_work_factor(0.50) - 1.57).abs() <= f64::EPSILON);
+    }
+
+    #[test]
+    fn public_flat_speed_is_the_wood_model_intercept() {
+        let wood = wood_coefficients(WayKind::Path, Terrain::Trail, None);
+        assert!(
+            (HikingModel::reference_flat_speed_kmh() - wood.speed_kmh(0.0, 0.0)).abs()
+                <= f64::EPSILON
+        );
     }
 }

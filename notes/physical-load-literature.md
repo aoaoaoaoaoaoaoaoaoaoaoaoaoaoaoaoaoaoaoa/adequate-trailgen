@@ -212,9 +212,11 @@ needed only to form a load ratio. A first-order factor
 proportional increases in walking mechanics and ground-reaction forces, but
 heavy-load damage remains nonlinear and outside an ordinary day-hike model.
 
-Expected time remains a separate Wood-style prediction. Hydration, hazards,
-navigation, source confidence, access, and route quality remain separate
-dimensions.
+Expected time remains a separate Wood-style prediction. A single personal
+flat-ground-speed ratio may scale that prediction without changing its terrain
+or slope response; Pitman et al. establish this as a useful first-order
+personalization. Hydration, hazards, navigation, source confidence, access,
+and route quality remain separate dimensions.
 
 ## Sources
 

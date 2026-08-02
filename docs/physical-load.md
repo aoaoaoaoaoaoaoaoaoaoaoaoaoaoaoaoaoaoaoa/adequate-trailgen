@@ -66,25 +66,38 @@ moving_time = Σ segment_length_km / speed_km_h
 
 Terrain enrichment estimates the surrounding hill slope independently of
 along-path grade. Without complete DEM context, the geometrically necessary
-minimum `|walking slope|` is used. The model is a population point estimate:
-the source reports roughly 13.5–15.5% mean whole-route error across the
-compared methods, and Trailgen does not disguise that as personalized
-precision.
+minimum `|walking slope|` is used. The stored model is a population point
+estimate: the source reports roughly 13.5–15.5% mean whole-route error across
+the compared methods.
+
+The GUI projects that estimate through one app-wide **Base Pace**, defaulting
+to 5.0 km/h. The Wood model's flat-path intercept is `exp(1.580) ≈ 4.855 km/h`,
+so displayed duration is:
+
+```text
+personal_moving_time = population_moving_time × 4.855 / Base Pace
+```
+
+The same inverse conversion is applied to GUI time constraints before search.
+This scalar calibration preserves Wood's terrain and grade response while
+matching the user's flat-ground speed.
 
 ## Product Contract
 
 The GUI persists a moving-time window and one lower-limb-load target in the
-project library. The project and debug CLI may also impose hard load bounds:
+project library. It persists Base Pace separately in XDG configuration because
+the calibration belongs to the user, not the project. The project and debug CLI
+may also impose hard load bounds:
 `min_lower_limb_load_km`, `max_lower_limb_load_km`,
 `target_lower_limb_load_km`, `min_moving_time_s`, and `max_moving_time_s`.
 CLI one-run overrides use hours for time:
 `--min-moving-time-h`, `--max-moving-time-h`, and
 `--target-lower-limb-load-km`.
 
-`trailgen rate <project> --route completed.gpx` reports both estimates for an
-imported route. There is deliberately no universal user calibration: sex,
-height, and body mass do not turn route geometry into a defensible capacity or
-injury forecast. Personal history may become a separate future layer.
+`trailgen rate <project> --route completed.gpx` reports both population
+estimates for an imported route. Base Pace calibrates time only; sex, height,
+and body mass do not turn route geometry into a defensible capacity or injury
+forecast.
 
 See [the literature ledger](../notes/physical-load-literature.md) and
 [reference corpus](../references/README.md) for the derivation, alternatives,

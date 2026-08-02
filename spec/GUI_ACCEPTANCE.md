@@ -10,7 +10,8 @@ durable or rendered oracle before passing. Tests never call product internals.
 1. **Discover and keep.** Create a project, draw a map area, acquire local OSM,
    USGS, and terrain fixtures; switch class → formal/informal → terrain colors
    while rendered line cadence remains fixed; place a trailhead with Alt-click,
-   lasso a search boundary, set moving-time bounds and a lower-limb-load target,
+   set and explain Base Pace, lasso a search boundary, set moving-time bounds
+   and a lower-limb-load target,
    start with Enter, observe eager candidate promotion, and save. Open the
    shortcut guide with `?` and prove its rendered presentation. Add Brooklyn
    from civic-area completion without moving the camera, observe its prepared
@@ -19,7 +20,8 @@ durable or rendered oracle before passing. Tests never call product internals.
    prior basemap through acquisition and installation, resize the area by its
    typed corner handle, refresh without unloading the saved trail or focused
    view, then recover both areas, the trail, and the color projection after
-   restart. No intervening witness may report zero presented basemap tiles.
+   restart. Base Pace must reach XDG configuration and survive restart. No
+   intervening witness may report zero presented basemap tiles.
 2. **Refine deliberately.** Open and rename a saved trail, drag a support onto
    another branch, prove recomputation occurs after release, verify the native
    window title, undo, redo, cancel without disk mutation, repeat, save, and

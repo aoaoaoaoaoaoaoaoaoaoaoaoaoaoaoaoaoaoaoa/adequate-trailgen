@@ -13,7 +13,7 @@ Bare startup first honors a project in the current directory, then the last vali
 
 New projects open on a low-zoom US vector map. **Add Map Area** turns a drag gesture into a durable fetch rectangle; acquisition and union indexing begin without a CLI handoff. Once trail data is ready, the workbench exposes a project-owned trail library and one compact project search. The search recipe and saved trail geometry live in `library/index.json`. Candidate results are transient.
 
-The native workbench needs a functioning Vulkan or OpenGL graphics stack and an X11 or Wayland session. Shared bootstrap and roaming vectors live beneath `$XDG_CACHE_HOME/trailgen`; content-addressed project cuts live under the project’s `cache/`. Viewport, inspector, gallery, and sorting state are atomically debounced beneath `$XDG_STATE_HOME/trailgen/projects/`. `--offline` suppresses network acquisition while retaining cached maps, trails, search, and profiles. `TRAILGEN_BASEMAP_ARCHIVE=/path/to/map.pmtiles` selects a prepared vector archive.
+The native workbench needs a functioning Vulkan or OpenGL graphics stack and an X11 or Wayland session. Shared bootstrap and roaming vectors live beneath `$XDG_CACHE_HOME/trailgen`; content-addressed project cuts live under the project’s `cache/`. Viewport, inspector, gallery, and sorting state are atomically debounced beneath `$XDG_STATE_HOME/trailgen/projects/`. App-wide preferences live in `$XDG_CONFIG_HOME/trailgen/preferences.toml`. `--offline` suppresses network acquisition while retaining cached maps, trails, search, and profiles. `TRAILGEN_BASEMAP_ARCHIVE=/path/to/map.pmtiles` selects a prepared vector archive.
 
 Useful verification gates:
 

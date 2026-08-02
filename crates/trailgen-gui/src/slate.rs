@@ -90,7 +90,7 @@ impl Slate {
         slate.shutters.retain(|section, _| {
             matches!(
                 section.as_str(),
-                "search" | "library" | "areas" | "overlays"
+                "search" | "library" | "calibration" | "areas" | "overlays"
             )
         });
         slate

@@ -4,12 +4,15 @@ use crate::{
     chrome,
     civic_area::{self, AddOutcome, CivicAreas, CivicKey, CivicRowState},
     gallery::{self, TrailSort},
+    lexicon::{ExplainedText, Glosses},
     library::{Library, SavedTrail, SearchRecipe, TrailId, Trailhead, validate_trail_name},
     live_area::{self, RegionHandles, RegionScribe, ResizeEvent, ScribeEvent},
     map::{self, Atlas, SELECTED_TRAIL_COLOR, Viewport},
     portfolio::{self, CandidatePortfolio, CandidateWarmth},
+    preferences::PreferenceLedger,
     profile::ElevationProfile,
     project::{Project, SearchEvent, SearchForge, SearchHandle, SearchRequest},
+    readout,
     relief::Relief,
     search_boundary::{self, BoundaryEvent, BoundaryScribe},
     shortcut_help::{Mode as ShortcutMode, ShortcutHelp},
@@ -102,6 +105,7 @@ pub struct TrailApp {
     committed_slate: Slate,
     observed_slate: Slate,
     slate_dirty: Option<Instant>,
+    preferences: PreferenceLedger,
     water: Surface,
     status: String,
     trail_data_status: Option<String>,
@@ -284,6 +288,38 @@ struct SavedProjection {
 struct SearchEdit {
     changed: bool,
     submitted: bool,
+}
+
+#[derive(Clone, Copy)]
+enum MeasureKind {
+    Distance,
+    MovingTime,
+    Climb,
+}
+
+impl MeasureKind {
+    const fn id(self) -> &'static str {
+        match self {
+            Self::Distance => "distance",
+            Self::MovingTime => "moving-time",
+            Self::Climb => "climb",
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Distance => "DISTANCE · KM",
+            Self::MovingTime => "MOVING TIME · H",
+            Self::Climb => "CLIMB · M",
+        }
+    }
+
+    const fn glosses(self) -> Glosses {
+        match self {
+            Self::MovingTime => Glosses::MOVING_TIME,
+            Self::Distance | Self::Climb => Glosses::NONE,
+        }
+    }
 }
 
 impl SearchEdit {
@@ -914,6 +950,7 @@ impl TrailApp {
         root: &Path,
         offline: bool,
         slate_path: PathBuf,
+        preferences_path: PathBuf,
         trail_data: trailgen_data::TrailDataConfig,
         indexed: Option<&trailgen_data::Summary>,
     ) -> Result<Self> {
@@ -925,6 +962,10 @@ impl TrailApp {
         .entered();
         let project = product_phase!("project.open", Project::open(root)?);
         let slate = product_phase!("project.slate", Slate::load(&slate_path, &project.root));
+        let mut preferences = product_phase!(
+            "project.preferences",
+            PreferenceLedger::raise(ctx, preferences_path)?
+        );
         let refresh = !offline && !trail_data.regions.is_empty() && indexed.is_none();
         let vector = raise_region_vector(ctx, &project.root, &trail_data.regions, offline)?;
         let relief = product_phase!("project.relief", Relief::raise(ctx, &project.root)?);
@@ -940,8 +981,11 @@ impl TrailApp {
             config,
             library,
         } = project;
-        let (viewport, view, fit, status) =
+        let (viewport, view, fit, mut status) =
             resurrect_workbench(&slate, trail_data.regions.is_empty());
+        if let Some(alarm) = preferences.tend(ctx) {
+            status = alarm;
+        }
         let cartography = map::CartographicClock::new(viewport);
         let mut app = Self {
             root,
@@ -993,6 +1037,7 @@ impl TrailApp {
             committed_slate: slate.clone(),
             observed_slate: slate,
             slate_dirty: None,
+            preferences,
             water: forge_water(),
             status,
             trail_data_status: Some("Preparing trail network…".to_owned()),
@@ -1063,6 +1108,11 @@ impl TrailApp {
         product_phase!("pulse.search_commit", self.tend_search(ui.ctx()));
         product_phase!("pulse.library_commit", self.tend_library(ui.ctx()));
         product_phase!("pulse.slate_commit", self.tend_slate(ui.ctx()));
+        if let Some(alarm) =
+            product_phase!("pulse.preference_commit", self.preferences.tend(ui.ctx()))
+        {
+            self.status = alarm;
+        }
         self.workspace_signal.take()
     }
 
@@ -1147,6 +1197,7 @@ impl TrailApp {
                 .candidates
                 .as_ref()
                 .map_or(0, |portfolio| portfolio.routes.len()),
+            base_pace_kmh: Some(self.preferences.base_pace().kmh()),
             map: self.map_rect.is_positive().then(|| {
                 crate::witness::MapState::forge(
                     self.map_rect,
@@ -1292,8 +1343,34 @@ impl TrailApp {
         ui.add_space(3.0);
         self.section(ui, "library", "saved trails", true, Self::library_panel);
         self.section(ui, "search", "trail creator", true, Self::search_panel);
+        self.section(
+            ui,
+            "calibration",
+            "calibration",
+            true,
+            Self::calibration_panel,
+        );
         self.section(ui, "areas", "map areas", true, Self::area_panel);
         self.section(ui, "overlays", "overlays", true, Self::civic_panel);
+    }
+
+    fn calibration_panel(&mut self, ui: &mut egui::Ui) {
+        let label = ui.label(chrome::eyebrow("BASE PACE · KM/H"));
+        let _label = Glosses::BASE_PACE.explain(label);
+        let mut kmh = self.preferences.base_pace().kmh();
+        let pace = ui.add(
+            egui::DragValue::new(&mut kmh)
+                .suffix(" KM/H")
+                .range(0.5..=15.0)
+                .speed(0.1)
+                .max_decimals(1),
+        );
+        crate::witness::anchor(ui, Target::BasePace, pace.rect);
+        let changed = pace.changed();
+        let _pace = Glosses::BASE_PACE.explain(pace);
+        if changed && self.preferences.revise_base_pace(kmh) {
+            self.schedule_revision();
+        }
     }
 
     fn civic_panel(&mut self, ui: &mut egui::Ui) {
@@ -1375,9 +1452,7 @@ impl TrailApp {
             } else {
                 let name = record.name.clone();
                 match self.civic.add(record) {
-                    AddOutcome::Added(_) => {
-                        self.status = format!("Preparing {name} boundary…");
-                    }
+                    AddOutcome::Added(_) => {}
                     AddOutcome::Existing(_) => {
                         self.status = format!("{name} is already active.");
                     }
@@ -1810,33 +1885,28 @@ impl TrailApp {
         );
         let climb = measure_range(
             ui,
-            "climb",
-            "CLIMB · M",
+            MeasureKind::Climb,
             &mut recipe.climb_m.min,
             &mut recipe.climb_m.max,
             10.0,
             [None, None],
         );
-        let _load = ui
-            .label(chrome::eyebrow("LOWER-LIMB LOAD · FGJW KM"))
-            .on_hover_text(
-                "Mass-normalized joint work, expressed as the equivalent distance on flat gravel.",
-            );
-        let load = ui
-            .add(
-                egui::DragValue::new(&mut recipe.lower_limb_load_km)
-                    .prefix("TARGET ")
-                    .range(0.0..=1_000.0)
-                    .speed(0.5)
-                    .max_decimals(1),
-            )
-            .on_hover_text(
-                "Target flat-gravel joint-work-equivalent kilometers. This ranks routes; it is not a safety or capacity rating.",
-            );
+        let load_label = ui.label(chrome::eyebrow("LOWER-LIMB LOAD · FGJW KM"));
+        let _load_label = Glosses::FGJW.explain(load_label);
+        let load = ui.add(
+            egui::DragValue::new(&mut recipe.lower_limb_load_km)
+                .prefix("TARGET ")
+                .range(0.0..=1_000.0)
+                .speed(0.5)
+                .max_decimals(1),
+        );
         crate::witness::anchor(ui, Target::LowerLimbLoad, load.rect);
+        let load_changed = load.changed();
+        let load_submitted = response_submitted(ui, &load);
+        let _load = Glosses::FGJW.explain(load);
         let load_edit = SearchEdit {
-            changed: load.changed(),
-            submitted: response_submitted(ui, &load),
+            changed: load_changed,
+            submitted: load_submitted,
         };
         let _shape = ui.label(chrome::eyebrow("SHAPE"));
         let mut shape_changed = false;
@@ -2026,10 +2096,11 @@ impl TrailApp {
             _ => None,
         };
         let navigable = !self.view.is_editing();
+        let pace = self.preferences.base_pace();
         let mut opened = None;
         for trail in self.library.trails() {
             let selected = active.as_ref() == Some(&trail.id);
-            let response = library_button(ui, trail, selected, navigable);
+            let response = library_button(ui, trail, pace, selected, navigable);
             #[cfg(feature = "egui-test")]
             crate::witness::anchor(
                 ui,
@@ -2044,7 +2115,7 @@ impl TrailApp {
                     .and_then(Option::as_ref)
                 {
                     response.show_tooltip_ui(|ui| {
-                        gallery::saved_preview(ui, trail, &projection.miniature);
+                        gallery::saved_preview(ui, trail, &projection.miniature, pace);
                     });
                 }
                 self.hovered_saved = Some(trail.id.clone());
@@ -2407,7 +2478,11 @@ impl TrailApp {
             if let Some((name, metrics)) = &summary {
                 ui.separator();
                 rename_action = self.focus_name_control(ui, saved_id.as_ref(), name);
-                let _metrics = toolbar_text(ui, metrics_summary(metrics), chrome::MUTED);
+                let _metrics = toolbar_text(
+                    ui,
+                    readout::metrics_summary(metrics, self.preferences.base_pace()),
+                    chrome::MUTED,
+                );
                 if let Some(standing) = self
                     .focus_standing()
                     .filter(|standing| *standing != TrailStanding::Established)
@@ -2548,7 +2623,9 @@ impl TrailApp {
             .ready()
             .then_some(editor)
             .and_then(|editor| editor.realization.as_ref())
-            .map(|realization| metrics_summary(&realization.route.metrics));
+            .map(|realization| {
+                readout::metrics_summary(&realization.route.metrics, self.preferences.base_pace())
+            });
         let mut action = None;
         let _row = ui.horizontal(|ui| {
             let renaming = self
@@ -2715,6 +2792,7 @@ impl TrailApp {
                             ui,
                             &run.routes[slot],
                             &run.previews[slot],
+                            self.preferences.base_pace(),
                             identity,
                             active,
                         );
@@ -3944,11 +4022,15 @@ impl TrailApp {
                 .seed
                 .wrapping_add(serial.wrapping_mul(0x9e37_79b9_7f4a_7c15));
         }
+        let mut constraints = recipe.constraints(&self.defaults)?;
+        let pace = self.preferences.base_pace();
+        constraints.min_moving_time_s = pace.population_time_s(constraints.min_moving_time_s);
+        constraints.max_moving_time_s = pace.population_time_s(constraints.max_moving_time_s);
         Ok(SearchRequest {
             serial,
             start,
             boundary: recipe.boundary.clone(),
-            constraints: recipe.constraints(&self.defaults)?,
+            constraints,
             params,
             solver: self.solver,
             count: CANDIDATE_COUNT,
@@ -4960,13 +5042,19 @@ fn primary_click_modifiers(ui: &egui::Ui, rect: egui::Rect) -> Option<egui::Modi
     })
 }
 
-fn toolbar_text(ui: &mut egui::Ui, text: impl Into<String>, color: Color32) -> egui::Response {
-    ui.label(
-        RichText::new(text.into())
+fn toolbar_text(
+    ui: &mut egui::Ui,
+    text: impl Into<ExplainedText>,
+    color: Color32,
+) -> egui::Response {
+    let text = text.into();
+    let response = ui.label(
+        RichText::new(text.text())
             .monospace()
             .size(12.0)
             .color(color),
-    )
+    );
+    text.explain(response)
 }
 
 fn toolbar_title(ui: &mut egui::Ui, text: impl Into<String>) -> egui::Response {
@@ -5068,31 +5156,12 @@ const fn contract_route_shape(shape: RouteShape) -> trailgen_contract::RouteShap
     }
 }
 
-fn metrics_summary(metrics: &RouteMetrics) -> String {
-    let head = format!(
-        "{:.2} KM · LOAD {:.1} FGJW KM · MOVING {} · QUALITY {:.0}",
-        metrics.distance_m / 1_000.0,
-        metrics.lower_limb_load_km,
-        moving_time(metrics.moving_time_s),
-        metrics.quality
-    );
-    if metrics.elevation_fraction >= 0.8 {
-        format!(
-            "{head} · ASCENT {:.0} M · DESCENT {:.0} M",
-            metrics.ascent_m, metrics.descent_m
-        )
-    } else {
-        format!("{head} · ELEVATION UNAVAILABLE")
-    }
-}
-
 fn distance_range(ui: &mut egui::Ui, floor_m: &mut f64, ceiling_m: &mut f64) -> SearchEdit {
     let mut low = *floor_m / 1_000.0;
     let mut high = *ceiling_m / 1_000.0;
     let edit = measure_range(
         ui,
-        "distance",
-        "DISTANCE · KM",
+        MeasureKind::Distance,
         &mut low,
         &mut high,
         0.1,
@@ -5110,8 +5179,7 @@ fn moving_time_range(ui: &mut egui::Ui, floor_s: &mut f64, ceiling_s: &mut f64) 
     let mut high = *ceiling_s / 3_600.0;
     let edit = measure_range(
         ui,
-        "moving-time",
-        "MOVING TIME · H",
+        MeasureKind::MovingTime,
         &mut low,
         &mut high,
         0.25,
@@ -5126,15 +5194,15 @@ fn moving_time_range(ui: &mut egui::Ui, floor_s: &mut f64, ceiling_s: &mut f64) 
 
 fn measure_range(
     ui: &mut egui::Ui,
-    id: &'static str,
-    label: &str,
+    kind: MeasureKind,
     minimum: &mut f64,
     maximum: &mut f64,
     speed: f64,
     targets: [Option<Target>; 2],
 ) -> SearchEdit {
     ui.vertical(|ui| {
-        let _label = ui.label(chrome::eyebrow(label));
+        let label = ui.label(chrome::eyebrow(kind.label()));
+        let _label = kind.glosses().explain(label);
         ui.horizontal(|ui| {
             let low = ui.add(
                 egui::DragValue::new(minimum)
@@ -5146,7 +5214,7 @@ fn measure_range(
             if let Some(target) = targets[0] {
                 crate::witness::anchor(ui, target, low.rect);
             } else {
-                crate::witness::anchor(ui, format!("search.{id}.min"), low.rect);
+                crate::witness::anchor(ui, format!("search.{}.min", kind.id()), low.rect);
             }
             let high = ui.add(
                 egui::DragValue::new(maximum)
@@ -5158,14 +5226,18 @@ fn measure_range(
             if let Some(target) = targets[1] {
                 crate::witness::anchor(ui, target, high.rect);
             } else {
-                crate::witness::anchor(ui, format!("search.{id}.max"), high.rect);
+                crate::witness::anchor(ui, format!("search.{}.max", kind.id()), high.rect);
             }
             let low_changed = low.changed();
             let high_changed = high.changed();
+            let low_submitted = response_submitted(ui, &low);
+            let high_submitted = response_submitted(ui, &high);
             reconcile_range(minimum, maximum, low_changed, high_changed);
+            let _low = kind.glosses().explain(low);
+            let _high = kind.glosses().explain(high);
             SearchEdit {
                 changed: low_changed || high_changed,
-                submitted: response_submitted(ui, &low) || response_submitted(ui, &high),
+                submitted: low_submitted || high_submitted,
             }
         })
         .inner
@@ -5190,6 +5262,7 @@ fn reconcile_range(minimum: &mut f64, maximum: &mut f64, low_changed: bool, high
 fn library_button(
     ui: &mut egui::Ui,
     trail: &SavedTrail,
+    pace: crate::preferences::BasePace,
     selected: bool,
     enabled: bool,
 ) -> egui::Response {
@@ -5227,17 +5300,19 @@ fn library_button(
                 egui::FontId::monospace(12.5),
                 ink,
             );
+            let measurements = readout::library_measurements(&trail.metrics, pace);
             ui.painter().text(
                 rect.left_bottom() + vec2(8.0, -6.0),
                 egui::Align2::LEFT_BOTTOM,
-                library_measurements(&trail.metrics),
+                measurements.text(),
                 egui::FontId::monospace(10.5),
                 chrome::MUTED,
             );
+            let load = readout::library_load(&trail.metrics);
             ui.painter().text(
                 rect.right_bottom() + vec2(-8.0, -6.0),
                 egui::Align2::RIGHT_BOTTOM,
-                library_load(&trail.metrics),
+                load.text(),
                 egui::FontId::monospace(10.5),
                 chrome::MUTED,
             );
@@ -5283,27 +5358,6 @@ fn area_row(
     action
 }
 
-fn library_measurements(metrics: &RouteMetrics) -> String {
-    if metrics.elevation_fraction >= 0.8 {
-        format!(
-            "{:.1} KM · {} · +{:.0} M",
-            metrics.distance_m / 1_000.0,
-            moving_time(metrics.moving_time_s),
-            metrics.ascent_m
-        )
-    } else {
-        format!(
-            "{:.1} KM · {}",
-            metrics.distance_m / 1_000.0,
-            moving_time(metrics.moving_time_s)
-        )
-    }
-}
-
-fn library_load(metrics: &RouteMetrics) -> String {
-    format!("{:.0} FGJW KM", metrics.lower_limb_load_km)
-}
-
 fn gallery_empty(ui: &egui::Ui, message: &str) {
     let _empty = ui.painter().text(
         ui.available_rect_before_wrap().center(),
@@ -5337,11 +5391,6 @@ fn duration(duration: Duration) -> String {
     } else {
         format!("{} ms", duration.as_millis())
     }
-}
-
-fn moving_time(seconds: f64) -> String {
-    let minutes = (seconds.max(0.0) / 60.0).round();
-    format!("{:.0}:{:02.0}", (minutes / 60.0).floor(), minutes % 60.0)
 }
 
 impl Drop for TrailApp {
@@ -5682,9 +5731,11 @@ mod tests {
             elevation_fraction: 1.0,
             ..RouteMetrics::default()
         };
-        assert_eq!(library_measurements(&metrics), "12.3 KM · 3:30 · +567 M");
-        assert!(!library_measurements(&metrics).contains("ASCENT"));
-        assert_eq!(library_load(&metrics), "68 FGJW KM");
+        let measurements =
+            readout::library_measurements(&metrics, crate::preferences::BasePace::default());
+        assert_eq!(measurements.text(), "12.3 KM · 3:24 · +567 M");
+        assert!(!measurements.text().contains("ASCENT"));
+        assert_eq!(readout::library_load(&metrics).text(), "68 FGJW KM");
     }
 
     #[test]

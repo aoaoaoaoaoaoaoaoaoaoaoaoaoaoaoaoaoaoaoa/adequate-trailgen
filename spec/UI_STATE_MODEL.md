@@ -226,7 +226,10 @@ Search intent is geographic and graph-independent: trailhead, boundary,
 distance and moving-time windows, climb window, lower-limb-load target, shape,
 and segment edicts. Graph vertex IDs and solver frontier controls never enter
 durable UI state.
-XDG state owns the base Browse viewport, result sorting, inspector position,
+XDG configuration owns app-wide Base Pace. Stored route metrics remain the
+population Wood estimate; GUI moving-time readouts and time-window constraints
+are projections through Base Pace. XDG state owns the base Browse viewport,
+result sorting, inspector position,
 section shutters, trail-color projection, and an unfinished `Edit(New)` design
 once it has at least one pin. The manual draft contains only its committed
 name, shape, ordered support points, and editing viewport; route realization is

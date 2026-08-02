@@ -1140,6 +1140,7 @@ fn open_project(
             &root,
             offline,
             habitat.slate_path(&root),
+            habitat.preferences_path(),
             config,
             indexed.as_ref(),
         )?))
