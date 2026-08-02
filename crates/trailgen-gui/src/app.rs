@@ -514,6 +514,12 @@ enum Fit {
     None,
 }
 
+enum CivicRowAction {
+    Fit(CivicKey, egui::Rect),
+    Retry(usize, egui::Rect),
+    Remove(usize, egui::Rect),
+}
+
 #[derive(Debug, Default)]
 enum ForgePhase {
     #[default]
@@ -1217,6 +1223,15 @@ impl TrailApp {
     }
 
     fn civic_panel(&mut self, ui: &mut egui::Ui) {
+        self.civic_completion(ui);
+        ui.add_space(5.0);
+        let _count = chrome::note(ui, format!("{} ACTIVE", self.civic.rows().len()));
+        if let Some(action) = self.civic_rows(ui) {
+            self.apply_civic_row_action(action);
+        }
+    }
+
+    fn civic_completion(&mut self, ui: &mut egui::Ui) {
         let before = self.civic.query().to_owned();
         let entry = ui.add(
             egui::TextEdit::singleline(self.civic.query_mut())
@@ -1295,14 +1310,9 @@ impl TrailApp {
                 }
             }
         }
+    }
 
-        ui.add_space(5.0);
-        let _count = chrome::note(ui, format!("{} ACTIVE", self.civic.rows().len()));
-        enum RowAction {
-            Fit(CivicKey, egui::Rect),
-            Retry(usize, egui::Rect),
-            Remove(usize, egui::Rect),
-        }
+    fn civic_rows(&self, ui: &mut egui::Ui) -> Option<CivicRowAction> {
         let mut action = None;
         for (slot, row) in self.civic.rows().iter().enumerate() {
             let key = row.record.key.clone();
@@ -1315,12 +1325,12 @@ impl TrailApp {
                             ui.add_sized([width, 27.0], chrome::command_button(caption, false));
                         crate::witness::anchor(ui, Target::CivicArea(slot), area.rect);
                         if area.clicked() {
-                            action = Some(RowAction::Fit(key, area.rect));
+                            action = Some(CivicRowAction::Fit(key, area.rect));
                         }
                         let remove = chrome::command(ui, "REMOVE", false);
                         crate::witness::anchor(ui, Target::CivicRemove(slot), remove.rect);
                         if remove.clicked() {
-                            action = Some(RowAction::Remove(slot, remove.rect));
+                            action = Some(CivicRowAction::Remove(slot, remove.rect));
                         }
                     });
                 }
@@ -1345,34 +1355,37 @@ impl TrailApp {
                         let retry = chrome::command(ui, "RETRY", false);
                         crate::witness::anchor(ui, Target::CivicRetry(slot), retry.rect);
                         if retry.clicked() {
-                            action = Some(RowAction::Retry(slot, retry.rect));
+                            action = Some(CivicRowAction::Retry(slot, retry.rect));
                         }
                         let remove = chrome::command(ui, "REMOVE", false);
                         crate::witness::anchor(ui, Target::CivicRemove(slot), remove.rect);
                         if remove.clicked() {
-                            action = Some(RowAction::Remove(slot, remove.rect));
+                            action = Some(CivicRowAction::Remove(slot, remove.rect));
                         }
                     });
                 }
             }
             ui.add_space(3.0);
         }
+        action
+    }
+
+    fn apply_civic_row_action(&mut self, action: CivicRowAction) {
         match action {
-            Some(RowAction::Fit(key, rect)) => {
+            CivicRowAction::Fit(key, rect) => {
                 self.fit = Fit::Civic(key);
                 self.water.click(rect);
             }
-            Some(RowAction::Retry(slot, rect)) => {
+            CivicRowAction::Retry(slot, rect) => {
                 self.civic.retry(slot);
                 self.water.click(rect);
             }
-            Some(RowAction::Remove(slot, rect)) => {
+            CivicRowAction::Remove(slot, rect) => {
                 if let Some(record) = self.civic.remove(slot) {
                     self.status = format!("Removed {} boundary.", record.name);
                 }
                 self.water.click(rect);
             }
-            None => {}
         }
     }
 
@@ -1383,8 +1396,8 @@ impl TrailApp {
         let count = self.regions.len() as f64;
         let (lon, lat) = self.regions.iter().fold((0.0, 0.0), |(lon, lat), region| {
             (
-                lon + (region.bounds.west + region.bounds.east) * 0.5,
-                lat + (region.bounds.south + region.bounds.north) * 0.5,
+                (region.bounds.west + region.bounds.east).mul_add(0.5, lon),
+                (region.bounds.south + region.bounds.north).mul_add(0.5, lat),
             )
         });
         Coord::new(lon / count, lat / count)

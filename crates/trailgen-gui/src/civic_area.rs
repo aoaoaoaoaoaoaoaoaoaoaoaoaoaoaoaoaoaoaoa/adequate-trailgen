@@ -98,7 +98,7 @@ impl CivicBounds {
         north: f64::NEG_INFINITY,
     };
 
-    fn admit(&mut self, coord: Coord) {
+    const fn admit(&mut self, coord: Coord) {
         self.west = self.west.min(coord.lon);
         self.south = self.south.min(coord.lat);
         self.east = self.east.max(coord.lon);
@@ -120,7 +120,7 @@ impl CivicBounds {
     }
 
     #[must_use]
-    pub fn fit_points(self) -> [Coord; 2] {
+    pub const fn fit_points(self) -> [Coord; 2] {
         [
             Coord::new(self.west, self.south),
             Coord::new(self.east, self.north),
@@ -205,7 +205,7 @@ impl WorldBounds {
         south: f64::NEG_INFINITY,
     };
 
-    fn admit(&mut self, point: [f64; 2]) {
+    const fn admit(&mut self, point: [f64; 2]) {
         self.west = self.west.min(point[0]);
         self.north = self.north.min(point[1]);
         self.east = self.east.max(point[0]);
@@ -317,7 +317,7 @@ impl CivicAreas {
         notice
     }
 
-    pub fn query_mut(&mut self) -> &mut String {
+    pub const fn query_mut(&mut self) -> &mut String {
         &mut self.query
     }
 
@@ -1266,7 +1266,7 @@ pub fn paint_labels(painter: &Painter, labels: &[CivicLabel]) {
 
 fn hatch_spacing(world_points: f64) -> f64 {
     let desired = 13.0 / world_points;
-    2.0_f64.powf(desired.log2().ceil())
+    desired.log2().ceil().exp2()
 }
 
 fn paint_hatches(
@@ -1330,7 +1330,7 @@ fn best_label(
             continue;
         }
         let anchor = a.lerp(b, 0.5);
-        let centrality = 1.0 / (1.0 + anchor.distance(canvas.center()) * 0.01);
+        let centrality = 1.0 / anchor.distance(canvas.center()).mul_add(0.01, 1.0);
         let score = length * centrality;
         if best.as_ref().is_none_or(|prior| score > prior.0) {
             let mut angle = course.angle();
