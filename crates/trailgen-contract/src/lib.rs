@@ -7,7 +7,7 @@ use std::{borrow::Cow, fmt};
 
 use serde::{Deserialize, Serialize};
 
-pub const UI_FINGERPRINT: &str = "trailgen.ui/8";
+pub const UI_FINGERPRINT: &str = "trailgen.ui/9";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -126,6 +126,7 @@ pub enum Target {
     Manual,
     AddMapArea,
     RefreshTrails,
+    CivicSearch,
     Boundary,
     Find,
     Stop,
@@ -150,10 +151,14 @@ pub enum Target {
     AreaRename(usize),
     AreaRenameField(usize),
     AreaHandle { slot: usize, corner: AreaCorner },
+    CivicSuggestion(usize),
+    CivicArea(usize),
+    CivicRemove(usize),
+    CivicRetry(usize),
 }
 
 impl Target {
-    pub const STATIC: [Self; 33] = [
+    pub const STATIC: [Self; 34] = [
         Self::ProjectName,
         Self::ProjectParent,
         Self::ProjectCreate,
@@ -167,6 +172,7 @@ impl Target {
         Self::Manual,
         Self::AddMapArea,
         Self::RefreshTrails,
+        Self::CivicSearch,
         Self::Boundary,
         Self::Find,
         Self::Stop,
@@ -205,6 +211,7 @@ impl Target {
             Self::Manual => "creator.manual",
             Self::AddMapArea => "areas.add",
             Self::RefreshTrails => "areas.refresh",
+            Self::CivicSearch => "overlays.search",
             Self::Boundary => "search.boundary",
             Self::Find => "search.find",
             Self::Stop => "search.stop",
@@ -232,6 +239,16 @@ impl Target {
             }
             Self::AreaHandle { slot, corner } => {
                 return Cow::Owned(format!("areas.handle/{slot}/{}", corner.ordinal()));
+            }
+            Self::CivicSuggestion(slot) => {
+                return Cow::Owned(format!("overlays.suggestion/{slot}"));
+            }
+            Self::CivicArea(slot) => return Cow::Owned(format!("overlays.area/{slot}")),
+            Self::CivicRemove(slot) => {
+                return Cow::Owned(format!("overlays.area/{slot}/remove"));
+            }
+            Self::CivicRetry(slot) => {
+                return Cow::Owned(format!("overlays.area/{slot}/retry"));
             }
         };
         Cow::Borrowed(static_name)

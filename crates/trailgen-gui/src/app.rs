@@ -2,6 +2,7 @@ use crate::{
     annotation,
     basemap::Source as BasemapSource,
     chrome,
+    civic_area::{self, AddOutcome, CivicAreas, CivicKey, CivicRowState},
     gallery::{self, TrailSort},
     library::{Library, SavedTrail, SearchRecipe, TrailId, Trailhead},
     live_area::{self, RegionHandles, RegionScribe, ResizeEvent, ScribeEvent},
@@ -87,6 +88,7 @@ pub struct TrailApp {
     relief: Relief,
     regions: Vec<SurveyRegion>,
     region_names: BTreeMap<String, String>,
+    civic: CivicAreas,
     area_rename: Option<AreaRenameDraft>,
     corpus: Option<CorpusTask>,
     scribe: RegionScribe,
@@ -508,6 +510,7 @@ enum Fit {
         identity: usize,
     },
     Saved(TrailId),
+    Civic(CivicKey),
     None,
 }
 
@@ -845,6 +848,10 @@ impl TrailApp {
         let refresh = !offline && !trail_data.regions.is_empty() && indexed.is_none();
         let vector = raise_region_vector(ctx, &project.root, &trail_data.regions, offline)?;
         let relief = product_phase!("project.relief", Relief::raise(ctx, &project.root)?);
+        let civic = product_phase!(
+            "project.civic_areas",
+            CivicAreas::raise(ctx, &project.root, offline)?
+        );
         let projection_forge = ProjectionForge::spawn(ctx.clone())?;
         let legacy_routes_pending = project.library.legacy_routes_pending();
         let armament = CorpusForge::spawn(ctx, project.root.clone(), legacy_routes_pending)?;
@@ -896,6 +903,7 @@ impl TrailApp {
             relief,
             regions: trail_data.regions,
             region_names: trail_data.region_names,
+            civic,
             area_rename: None,
             corpus: Some(CorpusTask::Preparing(armament)),
             scribe: RegionScribe::default(),
@@ -928,6 +936,9 @@ impl TrailApp {
         product_phase!("pulse.editor_events", self.absorb_editor_events());
         product_phase!("pulse.saved_projections", self.absorb_saved_projections());
         product_phase!("pulse.corpus_events", self.absorb_corpus(ui.ctx()));
+        if let Some(notice) = product_phase!("pulse.civic_events", self.civic.pulse()) {
+            self.status = notice;
+        }
         product_phase!("pulse.input", {
             if !self.shortcuts.capture(ui.ctx()) {
                 self.take_keys(ui.ctx());
@@ -1075,6 +1086,22 @@ impl TrailApp {
                     .resizing()
                     .map(|(slot, corner)| crate::witness::AreaResizeState { slot, corner }),
             }),
+            civic: Some(crate::witness::CivicState {
+                active: self.civic.rows().len(),
+                ready: self
+                    .civic
+                    .rows()
+                    .iter()
+                    .filter(|row| matches!(row.state, CivicRowState::Ready(_)))
+                    .count(),
+                preparing: self
+                    .civic
+                    .rows()
+                    .iter()
+                    .filter(|row| matches!(row.state, CivicRowState::Preparing))
+                    .count(),
+                suggestions: self.civic.suggestions().len(),
+            }),
             editor: self.witness_editor(),
             search: Some(self.witness_search()),
             survey: None,
@@ -1186,6 +1213,181 @@ impl TrailApp {
         self.section(ui, "library", "saved trails", true, Self::library_panel);
         self.section(ui, "search", "trail creator", true, Self::search_panel);
         self.section(ui, "areas", "map areas", true, Self::area_panel);
+        self.section(ui, "overlays", "overlays", true, Self::civic_panel);
+    }
+
+    fn civic_panel(&mut self, ui: &mut egui::Ui) {
+        let before = self.civic.query().to_owned();
+        let entry = ui.add(
+            egui::TextEdit::singleline(self.civic.query_mut())
+                .font(egui::TextStyle::Monospace)
+                .hint_text("city or borough…")
+                .desired_width(ui.available_width()),
+        );
+        crate::witness::anchor(ui, Target::CivicSearch, entry.rect);
+        if let Some(wake) = chrome::text_wake(ui, &entry, &before, self.civic.query()) {
+            self.water.text(wake);
+        }
+        if self.civic.query() != before {
+            let anchor = self.civic_project_anchor();
+            self.civic.lookup(anchor);
+        }
+        let owns_keys = entry.has_focus() || !ui.ctx().text_edit_focused();
+        let suggestions_open = !self.civic.suggestions().is_empty();
+        if suggestions_open
+            && owns_keys
+            && ui.input_mut(|input| input.consume_key(egui::Modifiers::SHIFT, egui::Key::Tab))
+        {
+            self.civic.cycle_suggestion(true);
+        } else if suggestions_open
+            && owns_keys
+            && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Tab))
+        {
+            self.civic.cycle_suggestion(false);
+        }
+        if suggestions_open
+            && owns_keys
+            && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            self.civic.dismiss_suggestions();
+        }
+        let accepted_by_key = suggestions_open
+            && owns_keys
+            && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+        let mut accepted = accepted_by_key
+            .then(|| self.civic.selected_suggestion())
+            .flatten();
+        let suggestions = self.civic.suggestions().to_vec();
+        let selected = self.civic.suggestion_pick();
+        if !suggestions.is_empty() {
+            ui.add_space(3.0);
+            let _suggestions = ui.horizontal_wrapped(|ui| {
+                for (slot, suggestion) in suggestions.iter().enumerate() {
+                    let picked = slot == selected;
+                    let cursor = if picked { "▸ " } else { "" };
+                    let response = chrome::complete_chip(
+                        ui,
+                        RichText::new(format!("{cursor}{}", suggestion.caption())),
+                        picked,
+                    );
+                    crate::witness::anchor(ui, Target::CivicSuggestion(slot), response.rect);
+                    if response.hovered() {
+                        self.civic.set_suggestion_pick(slot);
+                    }
+                    if response.clicked() {
+                        accepted = Some(suggestion.clone());
+                    }
+                }
+            });
+        }
+        if let Some(record) = accepted {
+            if self.offline {
+                "Reconnect to add a civic boundary.".clone_into(&mut self.status);
+            } else {
+                let name = record.name.clone();
+                match self.civic.add(record) {
+                    AddOutcome::Added(_) => {
+                        self.status = format!("Preparing {name} boundary…");
+                    }
+                    AddOutcome::Existing(_) => {
+                        self.status = format!("{name} is already active.");
+                    }
+                }
+            }
+        }
+
+        ui.add_space(5.0);
+        let _count = chrome::note(ui, format!("{} ACTIVE", self.civic.rows().len()));
+        enum RowAction {
+            Fit(CivicKey, egui::Rect),
+            Retry(usize, egui::Rect),
+            Remove(usize, egui::Rect),
+        }
+        let mut action = None;
+        for (slot, row) in self.civic.rows().iter().enumerate() {
+            let key = row.record.key.clone();
+            let caption = row.record.caption();
+            match &row.state {
+                CivicRowState::Ready(_) => {
+                    let _row = ui.horizontal(|ui| {
+                        let width = (ui.available_width() - 61.0).max(72.0);
+                        let area =
+                            ui.add_sized([width, 27.0], chrome::command_button(caption, false));
+                        crate::witness::anchor(ui, Target::CivicArea(slot), area.rect);
+                        if area.clicked() {
+                            action = Some(RowAction::Fit(key, area.rect));
+                        }
+                        let remove = chrome::command(ui, "REMOVE", false);
+                        crate::witness::anchor(ui, Target::CivicRemove(slot), remove.rect);
+                        if remove.clicked() {
+                            action = Some(RowAction::Remove(slot, remove.rect));
+                        }
+                    });
+                }
+                CivicRowState::Preparing => {
+                    let area = ui.add_enabled(
+                        false,
+                        chrome::command_button(caption, false)
+                            .min_size(egui::vec2(ui.available_width(), 27.0)),
+                    );
+                    crate::witness::anchor(ui, Target::CivicArea(slot), area.rect);
+                    let _state = chrome::note(ui, "PREPARING BOUNDARY…");
+                }
+                CivicRowState::Fault(fault) => {
+                    let area = ui.add_enabled(
+                        false,
+                        chrome::command_button(caption, false)
+                            .min_size(egui::vec2(ui.available_width(), 27.0)),
+                    );
+                    crate::witness::anchor(ui, Target::CivicArea(slot), area.rect);
+                    let _fault = chrome::note(ui, fault.to_ascii_uppercase());
+                    let _commands = ui.horizontal(|ui| {
+                        let retry = chrome::command(ui, "RETRY", false);
+                        crate::witness::anchor(ui, Target::CivicRetry(slot), retry.rect);
+                        if retry.clicked() {
+                            action = Some(RowAction::Retry(slot, retry.rect));
+                        }
+                        let remove = chrome::command(ui, "REMOVE", false);
+                        crate::witness::anchor(ui, Target::CivicRemove(slot), remove.rect);
+                        if remove.clicked() {
+                            action = Some(RowAction::Remove(slot, remove.rect));
+                        }
+                    });
+                }
+            }
+            ui.add_space(3.0);
+        }
+        match action {
+            Some(RowAction::Fit(key, rect)) => {
+                self.fit = Fit::Civic(key);
+                self.water.click(rect);
+            }
+            Some(RowAction::Retry(slot, rect)) => {
+                self.civic.retry(slot);
+                self.water.click(rect);
+            }
+            Some(RowAction::Remove(slot, rect)) => {
+                if let Some(record) = self.civic.remove(slot) {
+                    self.status = format!("Removed {} boundary.", record.name);
+                }
+                self.water.click(rect);
+            }
+            None => {}
+        }
+    }
+
+    fn civic_project_anchor(&self) -> Coord {
+        if self.regions.is_empty() {
+            return map::world_to_coord(self.viewport.center);
+        }
+        let count = self.regions.len() as f64;
+        let (lon, lat) = self.regions.iter().fold((0.0, 0.0), |(lon, lat), region| {
+            (
+                lon + (region.bounds.west + region.bounds.east) * 0.5,
+                lat + (region.bounds.south + region.bounds.north) * 0.5,
+            )
+        });
+        Coord::new(lon / count, lat / count)
     }
 
     fn section(
@@ -2632,6 +2834,15 @@ impl TrailApp {
             );
         }
         product_phase!("map.live_areas", self.paint_live_area(&canvas, rect));
+        let civic_labels = product_phase!(
+            "map.civic_boundaries",
+            civic_area::paint_boundaries(
+                &canvas,
+                frame,
+                cartography.zoom.get(),
+                self.civic.ready().cloned(),
+            )
+        );
         product_phase!("map.privileged_trails", self.paint_trails(&canvas, rect));
         if self.shows_search_context() {
             self.paint_edicts(&canvas, rect);
@@ -2642,6 +2853,10 @@ impl TrailApp {
         if self.shows_search_context() {
             self.paint_search_boundary(&canvas, rect);
         }
+        product_phase!(
+            "map.civic_labels",
+            civic_area::paint_labels(&canvas, &civic_labels)
+        );
         self.paint_profile_marker(&canvas, rect);
         if self.view.is_editing() {
             self.paint_support_points(&canvas, rect);
@@ -4387,6 +4602,10 @@ impl TrailApp {
                 .library
                 .trail(id)
                 .map(|trail| Viewport::fit_saved(trail, rect)),
+            Fit::Civic(key) => self
+                .civic
+                .area(key)
+                .map(|area| map::fit_coords(area.bounds.fit_points().into_iter(), rect)),
             Fit::None => None,
         };
         if let Some(viewport) = viewport {

@@ -52,9 +52,12 @@ impl Slate {
             slate.inspector_scroll = 0.0;
         }
         slate.inspector_scroll = slate.inspector_scroll.max(0.0);
-        slate
-            .shutters
-            .retain(|section, _| matches!(section.as_str(), "search" | "library" | "areas"));
+        slate.shutters.retain(|section, _| {
+            matches!(
+                section.as_str(),
+                "search" | "library" | "areas" | "overlays"
+            )
+        });
         slate
     }
 

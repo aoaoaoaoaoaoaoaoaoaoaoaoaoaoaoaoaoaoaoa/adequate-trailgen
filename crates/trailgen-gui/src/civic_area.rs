@@ -1,4 +1,4 @@
-use crate::{chrome, map};
+use crate::map;
 use anyhow::{Context as _, Result, bail, ensure};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use egui::{
@@ -327,6 +327,11 @@ impl CivicAreas {
 
     pub fn suggestions(&self) -> &[CivicRecord] {
         &self.suggestions
+    }
+
+    pub fn dismiss_suggestions(&mut self) {
+        self.suggestions.clear();
+        self.suggestion_pick = 0;
     }
 
     pub const fn suggestion_pick(&self) -> usize {
@@ -1224,8 +1229,30 @@ pub fn paint_labels(painter: &Painter, labels: &[CivicLabel]) {
             FontId::monospace(13.0),
             Color32::PLACEHOLDER,
         );
-        let plate = Rect::from_center_size(label.anchor, galley.size() + vec2(8.0, 4.0));
-        painter.rect_filled(plate, 1.0, chrome::SURFACE.gamma_multiply(0.88));
+        let plate_size = galley.size() + vec2(8.0, 4.0);
+        let half = plate_size * 0.5;
+        let (sin, cos) = label.angle.sin_cos();
+        let rotate = |point: Vec2| {
+            vec2(
+                point.x.mul_add(cos, -point.y * sin),
+                point.x.mul_add(sin, point.y * cos),
+            )
+        };
+        let mut plate = egui::Mesh::default();
+        for point in [
+            vec2(-half.x, -half.y),
+            vec2(half.x, -half.y),
+            vec2(half.x, half.y),
+            vec2(-half.x, half.y),
+        ] {
+            plate.colored_vertex(
+                label.anchor + rotate(point),
+                map::MAP_GROUND.gamma_multiply(0.94),
+            );
+        }
+        plate.add_triangle(0, 1, 2);
+        plate.add_triangle(0, 2, 3);
+        let _plate = painter.add(Shape::mesh(plate));
         let _ink = painter.add(
             TextShape::new(
                 label.anchor - galley.rect.center().to_vec2(),

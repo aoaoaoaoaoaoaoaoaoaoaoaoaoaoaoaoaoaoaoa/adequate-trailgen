@@ -101,11 +101,11 @@ Routes remain primary; labels and symbols cannot be struck through.
 
 ## Evidence
 
-A deterministic fixture supplies a compact catalog and civic GeoJSON through
-the existing private provider server. The acceptance story types `bro`, accepts
-Brooklyn by keyboard, observes immediate preparation without a stalled frame,
-proves the rendered boundary after publication, verifies that addition did not
-move the viewport, fits it explicitly, restarts offline, and proves persistence.
+A deterministic fixture supplies civic GeoJSON through the existing private
+provider server. The acceptance story completes Brooklyn borough by keyboard,
+observes immediate preparation without a stalled frame, proves the rendered
+boundary after publication, verifies that addition did not move the viewport,
+fits it explicitly, restarts offline, and proves persistence.
 Input-to-row acknowledgement and input-to-presented-boundary have separate
 budgets.
 
@@ -118,5 +118,5 @@ budgets.
 ## Deferred
 
 Neighborhoods, parks, districts, generic counties, states, federal geographies,
-provider selection, refresh, per-area styling, fill rendering, visibility
-matrices, and arbitrary import are outside the MVP.
+provider selection, refresh, per-area styling, visibility matrices, and
+arbitrary import are outside the MVP.

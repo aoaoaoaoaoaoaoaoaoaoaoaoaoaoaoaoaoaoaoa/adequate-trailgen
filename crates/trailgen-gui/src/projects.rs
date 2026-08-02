@@ -715,6 +715,7 @@ impl SurveyWorkbench {
                 .resizing()
                 .map(|(slot, corner)| crate::witness::AreaResizeState { slot, corner }),
         });
+        state.civic = None;
         state.survey = Some(crate::witness::SurveyState {
             acquiring: self.corpus.is_some(),
         });

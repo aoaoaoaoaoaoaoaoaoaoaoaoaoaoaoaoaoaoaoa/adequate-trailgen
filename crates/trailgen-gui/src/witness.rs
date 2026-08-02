@@ -47,6 +47,7 @@ mod active {
         pub candidates: usize,
         pub map: Option<MapState>,
         pub areas: Option<AreaState>,
+        pub civic: Option<CivicState>,
         pub editor: Option<EditorState>,
         pub search: Option<SearchState>,
         pub survey: Option<SurveyState>,
@@ -66,6 +67,7 @@ mod active {
                 candidates: 0,
                 map: None,
                 areas: None,
+                civic: None,
                 editor: None,
                 search: None,
                 survey: None,
@@ -134,6 +136,14 @@ mod active {
         pub regions: usize,
         pub drawing: bool,
         pub resizing: Option<AreaResizeState>,
+    }
+
+    #[derive(Serialize)]
+    pub struct CivicState {
+        pub active: usize,
+        pub ready: usize,
+        pub preparing: usize,
+        pub suggestions: usize,
     }
 
     #[derive(Serialize)]
