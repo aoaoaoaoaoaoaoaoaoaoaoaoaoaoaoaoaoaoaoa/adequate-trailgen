@@ -19,6 +19,7 @@ serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 trailgen-contract.workspace = true
+trailgen-core.workspace = true
 
 [lints]
 workspace = true

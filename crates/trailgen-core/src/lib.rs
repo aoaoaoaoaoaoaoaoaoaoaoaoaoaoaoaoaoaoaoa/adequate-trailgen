@@ -1,6 +1,5 @@
 //! Provider-agnostic trail graph, scoring, routing, and route I/O.
 
-pub mod alltrails;
 pub mod builder;
 pub mod cache;
 pub mod conflate;
@@ -10,7 +9,6 @@ pub mod enrich;
 pub mod geo;
 pub mod hiking;
 pub mod io;
-pub mod milp;
 pub mod model;
 pub mod optimizer;
 pub mod overlay;
@@ -40,11 +38,6 @@ pub use enrich::{
 };
 pub use geo::{Coord, LineString};
 pub use hiking::{EdgeTraversal, HikingModel, TraversalEstimate, joint_work_factor};
-pub use milp::{
-    LinearRow, LinearSense, LinearTerm, LoopMilpFormulation, MilpIncumbentError, MilpSelectedArc,
-    VariableBound, route_edges_from_selected_arcs, route_edges_from_solution,
-    selected_arcs_from_solution,
-};
 pub use model::{
     Access, CoverageGap, CoverageGapKind, CrossingControl, CrossingEvidence, CrossingKind, Edge,
     EdgeAttr, EdgeId, EdgeIndex, EdgeProjection, EdgeTravel, GeometryClaim, GradeDistribution,

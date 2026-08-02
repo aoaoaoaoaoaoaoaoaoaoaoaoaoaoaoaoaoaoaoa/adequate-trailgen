@@ -2,22 +2,16 @@ use std::collections::BTreeMap;
 use std::io::Cursor;
 
 use protobuf::{Message, MessageField};
-use trailgen_core::alltrails::{
-    ALLTRAILS_POLICY_VERIFIED_ON, AllTrailsExchange, BridgeStatus, RouteExchangeFormat,
-    TrailgenExchangeAction, alltrails_plan,
-};
-use trailgen_core::io::{
-    csv, geojson, gpx, json_route, kml, kmz, osm, report, shapefile as shp_io,
-};
+use trailgen_core::io::{csv, geojson, gpx, json_route, kml, osm, shapefile as shp_io};
 use trailgen_core::source::{
     SourceCoverageStatus, SourceKind, adapter_registry, classify_path, discovery_recommendations,
     source_coverage, summarize_source_coverage,
 };
 use trailgen_core::{
     Access, ArcAsciiGrid, CrossingKind, DailyTimeWindow, EdgeId, EdgeTravel, ElevationSample,
-    ElevationSampler, ExactLoopSolver, GeoTiffDem, LoopMilpFormulation, MilpSelectedArc, MonthDay,
-    PlanningDate, PlanningMoment, PlanningTime, RasterCrs, Route, RouteMetrics, RouteShape,
-    RoutingLaw, SearchParams, SeasonalWindow, SolverKind, VertexId, VrtDem, Weekday, WeekdaySet,
+    ElevationSampler, ExactLoopSolver, GeoTiffDem, MonthDay, PlanningDate, PlanningMoment,
+    PlanningTime, RasterCrs, Route, RouteMetrics, RouteShape, RoutingLaw, SearchParams,
+    SeasonalWindow, SolverKind, VertexId, VrtDem, Weekday, WeekdaySet,
 };
 use trailgen_core::{
     Coord, CrossingControl, EnrichmentConfig, GeometryClaim, GraphBuilder, JunctionPolicy,
@@ -25,7 +19,7 @@ use trailgen_core::{
     SeedRoute, SegmentDraft, Terrain, TrailMarking, TrailStanding, TurnRestrictionDraft,
     TurnRestrictionRule, WalkGraph, WayKind, WayRealm, apply_access_overlays,
     apply_access_overlays_at, apply_context_overlays, apply_terrain_overlays, enrich_graph,
-    rank_routes, route_edges_from_selected_arcs, route_edges_from_solution,
+    rank_routes,
 };
 
 const WGS84_PRJ: &str = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["Degree",0.0174532925199433]]"#;
@@ -167,52 +161,6 @@ fn solvers_respect_directed_turn_bans() {
             .hunt(&graph, graph.edges[0].a, &constraints, 4)
             .is_empty()
     );
-}
-
-#[test]
-fn milp_respects_directed_turn_bans() {
-    let graph = directed_turn_ban_graph();
-    let constraints = LoopConstraints {
-        min_distance_m: 0.0,
-        max_distance_m: 10_000.0,
-        max_lower_limb_load_km: 10_000.0,
-        ..LoopConstraints::default()
-    };
-    let formulation = LoopMilpFormulation::formulate(&graph, graph.edges[0].a, &constraints);
-    assert!(
-        formulation
-            .rows
-            .iter()
-            .any(|row| row.name.starts_with("forbid_turn_"))
-    );
-    let via = graph.edges[0].b;
-    let crown = graph.edges[1].other(via).unwrap();
-    let error = route_edges_from_selected_arcs(
-        &graph,
-        graph.edges[0].a,
-        vec![
-            MilpSelectedArc {
-                edge: EdgeId(0),
-                from: graph.edges[0].a,
-                to: via,
-            },
-            MilpSelectedArc {
-                edge: EdgeId(1),
-                from: via,
-                to: crown,
-            },
-            MilpSelectedArc {
-                edge: EdgeId(2),
-                from: crown,
-                to: graph.edges[0].a,
-            },
-        ],
-    )
-    .unwrap_err();
-    assert!(matches!(
-        error,
-        trailgen_core::MilpIncumbentError::ForbiddenTurn { .. }
-    ));
 }
 
 fn directed_turn_ban_graph() -> WalkGraph {
@@ -749,22 +697,6 @@ fn geojson_network_preserves_surface_tags() {
         geojson::graph_to_geojson(&graph)["features"][0]["properties"]["surface"],
         "asphalt"
     );
-    let report = report::render(
-        &graph,
-        &[Route::from_edges(
-            "surface",
-            &graph,
-            edge.a,
-            vec![edge.id],
-            &LoopConstraints {
-                min_distance_m: 0.0,
-                max_distance_m: 10_000.0,
-                allowed_shapes: vec![RouteShape::Open],
-                ..LoopConstraints::default()
-            },
-        )],
-    );
-    assert!(report.contains("surface asphalt"));
 }
 
 #[test]
@@ -1923,112 +1855,6 @@ fn access_restrictions_are_hard_route_constraints() {
 }
 
 #[test]
-fn route_geojson_exports_full_diagnostics() {
-    let drafts = geojson::network_from_str(include_str!("fixtures/mini_network.geojson")).unwrap();
-    let mut graph = GraphBuilder::default().build(&drafts).unwrap();
-    let overlays =
-        geojson::access_overlays_from_str(include_str!("fixtures/closure_overlay.geojson"))
-            .unwrap();
-    apply_access_overlays(&mut graph, &overlays, None);
-    let closed_edge = graph
-        .edges
-        .iter()
-        .find(|edge| edge.attr.access == Access::Closed)
-        .map(|edge| (edge.id, edge.a))
-        .expect("fixture closure should touch an edge");
-    graph.edges[closed_edge.0.0].attr.confidence = 0.42;
-    let mut route = Route::from_edges(
-        "closed-segment",
-        &graph,
-        closed_edge.1,
-        vec![closed_edge.0],
-        &LoopConstraints {
-            min_distance_m: 0.0,
-            max_distance_m: 10_000.0,
-            max_lower_limb_load_km: 10_000.0,
-            allowed_shapes: vec![RouteShape::Open],
-            ..LoopConstraints::default()
-        },
-    );
-    let expected_score = route.computed_score();
-    route.score = 0.0;
-
-    let gj = geojson::routes_to_geojson(&graph, &[route.clone()]);
-    let properties = &gj["features"][0]["properties"];
-    let report = report::render(&graph, &[route]);
-
-    assert!(
-        properties["score"]
-            .as_f64()
-            .is_some_and(|score| (score - expected_score).abs() <= 1.0e-9 && score > 0.0)
-    );
-    assert!(report.contains(&format!("- score: {expected_score:.2}")));
-    assert!(report.contains("- sustained steepness:"));
-    assert!(report.contains("Grade distribution:"));
-    assert!(report.contains("Constraint audit:"));
-    assert_eq!(properties["restricted_access_fraction"], 1.0);
-    assert!(properties["sustained_steep_m"].is_number());
-    assert!(properties["grade_distribution"].is_object());
-    assert!(
-        properties["grade_distribution"]["flat_m"]
-            .as_f64()
-            .is_some_and(|x| x >= 0.0)
-    );
-    assert_eq!(properties["access_fraction"]["closed"], 1.0);
-    assert!(
-        properties["constraint_audit"]
-            .as_array()
-            .is_some_and(|rows| {
-                rows.iter().any(|row| {
-                    row["metric"] == "maximum restricted-access exposure"
-                        && row["measured"] == "100.0%"
-                        && row["requirement"] == "≤ 0.0%"
-                        && row["satisfied"] == false
-                })
-            })
-    );
-    assert!(properties["terrain_fraction"].is_object());
-    assert!(properties["terrain_m"].is_object());
-    assert!(properties["access_m"].is_object());
-    assert!(
-        properties["constraint_penalty"]
-            .as_f64()
-            .is_some_and(|x| x > 0.0)
-    );
-    assert_eq!(properties["edge_count"], 1);
-    assert_eq!(
-        properties["lower_limb_load_hotspots"][0]["edge_id"],
-        closed_edge.0.0
-    );
-    assert_eq!(
-        properties["access_warning_edges"][0]["edge_id"],
-        closed_edge.0.0
-    );
-    assert_eq!(properties["access_warning_edges"][0]["access"], "closed");
-    assert!(properties["access_warning_edges"][0]["access_provenance"].is_array());
-    assert_eq!(
-        properties["low_confidence_edges"][0]["edge_id"],
-        closed_edge.0.0
-    );
-    assert_eq!(properties["low_confidence_edges"][0]["confidence"], 0.42);
-    assert!(properties["low_confidence_edges"][0]["terrain_evidence"].is_array());
-    assert!(properties["low_confidence_edges"][0]["traversal"].is_object());
-    assert!(
-        properties["low_confidence_edges"][0]["traversal"]["forward"]["lower_limb_load_km"]
-            .is_number()
-    );
-    assert!(properties["low_confidence_edges"][0]["elevation_provenance"].is_array());
-    assert!(properties["low_confidence_edges"][0]["source_provenance"].is_array());
-    assert!(properties["low_confidence_edges"][0]["road_exposure"].is_number());
-    assert_eq!(properties["dubious_edges"][0]["edge_id"], closed_edge.0.0);
-    assert!(
-        properties["source_provenance"]
-            .as_array()
-            .is_some_and(|xs| !xs.is_empty())
-    );
-}
-
-#[test]
 fn context_overlays_infer_road_and_water_crossings() {
     let drafts = geojson::network_from_str(include_str!("fixtures/mini_network.geojson")).unwrap();
     let mut graph = GraphBuilder::default().build(&drafts).unwrap();
@@ -2101,10 +1927,6 @@ fn context_overlays_infer_road_and_water_crossings() {
             .unwrap_or_default()
             > 0
     );
-    let rendered = report::render(&graph, &[route]);
-    assert!(rendered.contains("Crossings:"));
-    assert!(rendered.contains("Road:"));
-    assert!(rendered.contains("Water:"));
 }
 
 #[test]
@@ -2257,25 +2079,6 @@ fn terrain_overlays_override_edges_with_provenance_and_physical_estimates() {
     assert!(overlaid.iter().all(|edge| edge.attr.traversal.valid()
         && edge.attr.traversal.forward.lower_limb_load_km > 0.0
         && edge.attr.traversal.forward.moving_time_s > 0.0));
-    let overlaid_edge = overlaid[0];
-    let rendered = report::render(
-        &graph,
-        &[Route::from_edges(
-            "overlaid",
-            &graph,
-            overlaid_edge.a,
-            vec![overlaid_edge.id],
-            &LoopConstraints {
-                min_distance_m: 0.0,
-                max_distance_m: 10_000.0,
-                max_lower_limb_load_km: 10_000.0,
-                allowed_shapes: vec![RouteShape::Open],
-                ..LoopConstraints::default()
-            },
-        )],
-    );
-    assert!(rendered.contains("current Talus"));
-    assert!(rendered.contains("terrain overlay (fixture-landcover:"));
     let evidence_count = graph
         .edges
         .iter()
@@ -2363,51 +2166,6 @@ fn fixture_generates_nontrivial_loops() {
             .iter()
             .all(|r| r.metrics.grade_distribution.total_m() > 0.0)
     );
-}
-
-#[test]
-fn report_explains_physical_load_and_moving_time() {
-    let drafts = geojson::network_from_str(include_str!("fixtures/mini_network.geojson")).unwrap();
-    let mut graph = GraphBuilder::default().build(&drafts).unwrap();
-    let start = graph.nearest_vertex(Coord::new(-105.0, 40.0)).unwrap();
-    let route = LoopHunter::default()
-        .hunt(
-            &graph,
-            start,
-            &LoopConstraints {
-                min_distance_m: 3_000.0,
-                max_distance_m: 8_000.0,
-                max_lower_limb_load_km: 10_000.0,
-                ..LoopConstraints::default()
-            },
-            1,
-        )
-        .into_iter()
-        .next()
-        .unwrap();
-    let low_confidence_edge = route.edges[0];
-    graph.edges[low_confidence_edge.0].attr.confidence = 0.42;
-    let rendered = report::render(&graph, &[route]);
-    assert!(rendered.contains("- score:"));
-    assert!(rendered.contains("Route sequence:"));
-    assert!(rendered.contains("- start vertex:"));
-    assert!(rendered.contains("- edge ids:"));
-    assert!(rendered.contains("- vertex ids:"));
-    assert!(rendered.contains("- lower-limb load:"));
-    assert!(rendered.contains("- population moving time:"));
-    assert!(rendered.contains("- sustained steepness:"));
-    assert!(rendered.contains("Grade distribution:"));
-    assert!(rendered.contains("- distance:"));
-    assert!(rendered.contains("- ascent/descent:"));
-    assert!(rendered.contains("Largest lower-limb load contributors:"));
-    assert!(rendered.contains("Low-confidence segments:"));
-    assert!(rendered.contains("confidence 0.42"));
-    assert!(rendered.contains("terrain evidence"));
-    assert!(rendered.contains("elevation sources"));
-    assert!(rendered.contains("Source provenance:"));
-    assert!(rendered.contains("fixture:"));
-    assert!(rendered.contains("edge "));
-    assert!(rendered.contains("grade bins flat"));
 }
 
 #[test]
@@ -2934,53 +2692,6 @@ fn graph_builder_collapses_physical_support_duplicated_by_snapping() {
 }
 
 #[test]
-fn directed_travel_diagnostics_are_exported() {
-    let graph = GraphBuilder::default()
-        .build(&[
-            bent_branch(0.0005, EdgeTravel::Forward, "forward"),
-            bent_branch(-0.0005, EdgeTravel::Backward, "backward"),
-        ])
-        .unwrap();
-    let start = graph.nearest_vertex(Coord::new(0.0, 0.0)).unwrap();
-    let route = ExactLoopSolver {
-        params: SearchParams {
-            max_hops: 2,
-            max_frontier: 100,
-            keep: 4,
-            ..SearchParams::default()
-        },
-    }
-    .enumerate(
-        &graph,
-        start,
-        &LoopConstraints {
-            min_distance_m: 0.0,
-            max_distance_m: 10_000.0,
-            max_lower_limb_load_km: 10_000.0,
-            allowed_shapes: vec![RouteShape::Loop],
-            ..LoopConstraints::default()
-        },
-        4,
-    )
-    .into_iter()
-    .find(|route| route.metrics.shape == RouteShape::Loop && route.edges.len() == 2)
-    .unwrap();
-
-    let geojson = geojson::routes_to_geojson(&graph, std::slice::from_ref(&route));
-    let directed = geojson["features"][0]["properties"]["directed_travel_edges"]
-        .as_array()
-        .unwrap();
-    assert_eq!(directed.len(), 2);
-    assert!(directed.iter().any(|edge| edge["travel"] == "forward"));
-    assert!(directed.iter().any(|edge| edge["travel"] == "backward"));
-
-    let text = report::render_titled("Routes", &graph, std::slice::from_ref(&route));
-    assert!(text.contains("Directed travel constraints:"));
-    assert!(text.contains("Forward"));
-    assert!(text.contains("Backward"));
-}
-
-#[test]
 fn temporal_direction_overlay_constrains_route_generation() {
     let drafts = [
         bent_branch(0.0005, EdgeTravel::Both, "out"),
@@ -3046,199 +2757,6 @@ fn temporal_direction_overlay_constrains_route_generation() {
             .all(|edge| edge.attr.travel == EdgeTravel::Forward)
     );
     assert!(solver.enumerate(&graph, start, &constraints, 4).is_empty());
-}
-
-#[test]
-fn milp_formulation_exports_connected_loop_model() {
-    let graph = GraphBuilder::default().build(&square_drafts()).unwrap();
-    let start = graph.nearest_vertex(Coord::new(0.0, 0.0)).unwrap();
-    let constraints = LoopConstraints {
-        min_distance_m: 0.0,
-        max_distance_m: 10_000.0,
-        min_terrain_fraction: BTreeMap::from([(Terrain::Trail, 0.50)]),
-        forbidden_terrain: vec![Terrain::Road],
-        ..LoopConstraints::default()
-    };
-    let formulation = LoopMilpFormulation::formulate(&graph, start, &constraints);
-    let lp = formulation.to_lp();
-
-    assert!(formulation.binaries.iter().any(|var| var == "y_v0"));
-    assert!(
-        formulation
-            .binaries
-            .iter()
-            .any(|var| var.starts_with("z_e0_v"))
-    );
-    assert!(
-        formulation
-            .rows
-            .iter()
-            .any(|row| row.name == "flow_start_supplies_visited_vertices")
-    );
-    assert!(
-        formulation
-            .rows
-            .iter()
-            .any(|row| row.name == "distance_min")
-    );
-    assert!(
-        formulation
-            .rows
-            .iter()
-            .any(|row| row.name == "road_fraction_max")
-    );
-    assert!(lp.contains("Minimize\n obj:"));
-    assert!(lp.contains("Subject To\n"));
-    assert!(lp.contains("force_start: + 1 y_v0 = 1"));
-    assert!(lp.contains("Binary\n"));
-    assert!(lp.ends_with("End\n"));
-}
-
-#[test]
-fn milp_formulation_respects_one_way_arc_feasibility() {
-    let graph = GraphBuilder::default()
-        .build(&[SegmentDraft {
-            junctions: JunctionPolicy::default(),
-            turn_ref: None,
-            junction_keys: None,
-            turn_restrictions: Vec::new(),
-            geometry: LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0)]).unwrap(),
-            way_kind: WayKind::default(),
-            realm: WayRealm::default(),
-            geometry_claim: GeometryClaim::default(),
-            crossing_control: CrossingControl::default(),
-            standing: TrailStanding::Unknown,
-            marking: TrailMarking::default(),
-            terrain: Terrain::Trail,
-            terrain_confidence: None,
-            surface: None,
-            access: Access::Open,
-            travel: EdgeTravel::Forward,
-            road_exposure: 0.0,
-            confidence: 1.0,
-            provenance: vec![Provenance::fixture("one-way")],
-        }])
-        .unwrap();
-    let formulation = LoopMilpFormulation::formulate(
-        &graph,
-        graph.vertices[0].id,
-        &LoopConstraints {
-            min_distance_m: 0.0,
-            max_distance_m: 10_000.0,
-            ..LoopConstraints::default()
-        },
-    );
-
-    assert!(formulation.binaries.iter().any(|var| var == "z_e0_v0_v1"));
-    assert!(formulation.binaries.iter().all(|var| var != "z_e0_v1_v0"));
-}
-
-#[test]
-fn milp_incumbent_solution_reconstructs_directed_start_loop() {
-    let graph = GraphBuilder::default().build(&square_drafts()).unwrap();
-    let start = graph.nearest_vertex(Coord::new(0.0, 0.0)).unwrap();
-    let edges = [0, 1, 2, 3]
-        .into_iter()
-        .map(|i| &graph.edges[i])
-        .collect::<Vec<_>>();
-    let raw = format!(
-        "# HiGHS-style and value-first assignments are both accepted\n\
-         z_e{}_v{}_v{} 1\n\
-         1 z_e{}_v{}_v{}\n\
-         z_e{}_v{}_v{} = 0\n\
-         z_e{}_v{}_v{} 1\n\
-         z_e{}_v{}_v{} 1\n",
-        edges[0].id.0,
-        edges[0].a.0,
-        edges[0].b.0,
-        edges[1].id.0,
-        edges[1].a.0,
-        edges[1].b.0,
-        edges[1].id.0,
-        edges[1].b.0,
-        edges[1].a.0,
-        edges[2].id.0,
-        edges[2].a.0,
-        edges[2].b.0,
-        edges[3].id.0,
-        edges[3].a.0,
-        edges[3].b.0
-    );
-
-    assert_eq!(
-        route_edges_from_solution(&graph, start, &raw).unwrap(),
-        vec![EdgeId(0), EdgeId(1), EdgeId(2), EdgeId(3)]
-    );
-}
-
-#[test]
-fn milp_incumbent_rejects_disconnected_subtours() {
-    let mut drafts = square_drafts();
-    let detached_a = Coord::new(1.0, 1.0);
-    let detached_b = Coord::new(1.01, 1.0);
-    drafts.extend([
-        SegmentDraft {
-            junctions: JunctionPolicy::default(),
-            turn_ref: None,
-            junction_keys: None,
-            turn_restrictions: Vec::new(),
-            geometry: LineString::new(vec![detached_a, detached_b]).unwrap(),
-            way_kind: WayKind::default(),
-            realm: WayRealm::default(),
-            geometry_claim: GeometryClaim::default(),
-            crossing_control: CrossingControl::default(),
-            standing: TrailStanding::Unknown,
-            marking: TrailMarking::default(),
-            terrain: Terrain::Trail,
-            terrain_confidence: None,
-            surface: None,
-            access: Access::Open,
-            travel: EdgeTravel::Forward,
-            road_exposure: 0.0,
-            confidence: 1.0,
-            provenance: vec![Provenance::fixture("detached-out")],
-        },
-        SegmentDraft {
-            junctions: JunctionPolicy::default(),
-            turn_ref: None,
-            junction_keys: None,
-            turn_restrictions: Vec::new(),
-            geometry: LineString::new(vec![detached_b, detached_a]).unwrap(),
-            way_kind: WayKind::default(),
-            realm: WayRealm::default(),
-            geometry_claim: GeometryClaim::default(),
-            crossing_control: CrossingControl::default(),
-            standing: TrailStanding::Unknown,
-            marking: TrailMarking::default(),
-            terrain: Terrain::Trail,
-            terrain_confidence: None,
-            surface: None,
-            access: Access::Open,
-            travel: EdgeTravel::Forward,
-            road_exposure: 0.0,
-            confidence: 1.0,
-            provenance: vec![Provenance::fixture("detached-back")],
-        },
-    ]);
-    let graph = GraphBuilder::default().build(&drafts).unwrap();
-    let start = graph.nearest_vertex(Coord::new(0.0, 0.0)).unwrap();
-    let selected = graph
-        .edges
-        .iter()
-        .map(|edge| MilpSelectedArc {
-            edge: edge.id,
-            from: edge.a,
-            to: edge.b,
-        })
-        .collect::<Vec<_>>();
-
-    let err = route_edges_from_selected_arcs(&graph, start, selected)
-        .expect_err("disconnected incumbent must fail");
-
-    assert!(
-        err.to_string()
-            .contains("outside the reconstructed start loop")
-    );
 }
 
 #[test]
@@ -3492,64 +3010,6 @@ fn gpx_rejects_disconnected_track_segments() {
 }
 
 #[test]
-fn kml_round_trip_reads_exported_route() {
-    let drafts = geojson::network_from_str(include_str!("fixtures/mini_network.geojson")).unwrap();
-    let graph = GraphBuilder::default().build(&drafts).unwrap();
-    let start = graph.nearest_vertex(Coord::new(-105.0, 40.0)).unwrap();
-    let route = LoopHunter::default()
-        .hunt(
-            &graph,
-            start,
-            &LoopConstraints {
-                min_distance_m: 3_000.0,
-                max_distance_m: 8_000.0,
-                ..LoopConstraints::default()
-            },
-            1,
-        )
-        .into_iter()
-        .next()
-        .unwrap();
-    let xml = kml::route_to_kml(&graph, &route);
-    assert!(xml.contains("<description>score "));
-    assert!(xml.contains("low-confidence"));
-    let line = kml::route_line_from_str(&xml).unwrap();
-    assert!(line.length_m() > 3_000.0);
-    let file = kml::route_file_from_str(&xml).unwrap();
-    assert_eq!(file.metadata.title.as_deref(), Some(route.name.as_str()));
-    assert!(
-        file.metadata
-            .description
-            .as_deref()
-            .is_some_and(|description| description.contains("constraints "))
-    );
-}
-
-#[test]
-fn kmz_round_trip_reads_exported_route() {
-    let drafts = geojson::network_from_str(include_str!("fixtures/mini_network.geojson")).unwrap();
-    let graph = GraphBuilder::default().build(&drafts).unwrap();
-    let start = graph.nearest_vertex(Coord::new(-105.0, 40.0)).unwrap();
-    let route = LoopHunter::default()
-        .hunt(
-            &graph,
-            start,
-            &LoopConstraints {
-                min_distance_m: 3_000.0,
-                max_distance_m: 8_000.0,
-                ..LoopConstraints::default()
-            },
-            1,
-        )
-        .into_iter()
-        .next()
-        .unwrap();
-    let bytes = kmz::route_to_kmz(&graph, &route).unwrap();
-    let line = kmz::route_line_from_bytes(&bytes).unwrap();
-    assert!(line.length_m() > 3_000.0);
-}
-
-#[test]
 fn csv_route_import_reads_headered_lon_lat_ele() {
     let line = csv::route_line_from_str(
         "longitude,latitude,elevation_m\n-105.0,40.0,1600\n-105.0,40.01,1700\n",
@@ -3621,36 +3081,6 @@ fn route_file_import_preserves_provider_neutral_metadata() {
     .unwrap();
     assert_eq!(csv.metadata.title.as_deref(), Some("Spreadsheet Loop"));
     assert_eq!(csv.metadata.activity_type.as_deref(), Some("hike"));
-}
-
-#[test]
-fn csv_round_trip_reads_exported_route() {
-    let drafts = geojson::network_from_str(include_str!("fixtures/mini_network.geojson")).unwrap();
-    let graph = GraphBuilder::default().build(&drafts).unwrap();
-    let start = graph.nearest_vertex(Coord::new(-105.0, 40.0)).unwrap();
-    let route = LoopHunter::default()
-        .hunt(
-            &graph,
-            start,
-            &LoopConstraints {
-                min_distance_m: 3_000.0,
-                max_distance_m: 8_000.0,
-                ..LoopConstraints::default()
-            },
-            1,
-        )
-        .into_iter()
-        .next()
-        .unwrap();
-    let text = csv::route_to_csv(&graph, &route);
-    assert!(text.starts_with("# name: "));
-    assert!(text.contains("# description: score "));
-    assert!(text.contains("\nlongitude,latitude,elevation_m\n"));
-    let line = csv::route_line_from_str(&text).unwrap();
-    assert!(line.length_m() > 3_000.0);
-    let file = csv::route_file_from_str(&text).unwrap();
-    assert_eq!(file.metadata.title.as_deref(), Some(route.name.as_str()));
-    assert_eq!(file.metadata.activity_type.as_deref(), Some("hiking"));
 }
 
 #[test]
@@ -4331,57 +3761,6 @@ fn write_context_shapefile(path: &std::path::Path, name: &str, kind: &str) {
     };
     record.insert("source".to_owned(), source.to_owned().into());
     writer.write_shape_and_record(&line, &record).unwrap();
-}
-
-#[test]
-fn alltrails_bridge_refuses_undocumented_write_api() {
-    let import_plan = alltrails_plan(
-        AllTrailsExchange::ImportUserExport,
-        RouteExchangeFormat::Geojson,
-    );
-    assert_eq!(import_plan.status, BridgeStatus::Supported);
-    assert_eq!(
-        import_plan.trailgen_action,
-        TrailgenExchangeAction::ImportSeed
-    );
-    assert_eq!(import_plan.verified_on, ALLTRAILS_POLICY_VERIFIED_ON);
-    assert!(
-        import_plan
-            .trailgen_template
-            .contains("trailgen import-seed <project> --route alltrails-export.geojson")
-    );
-
-    let upload_plan = alltrails_plan(
-        AllTrailsExchange::ManualUploadCustomRoute,
-        RouteExchangeFormat::Kmz,
-    );
-    assert_eq!(upload_plan.status, BridgeStatus::Manual);
-    assert_eq!(
-        upload_plan.trailgen_action,
-        TrailgenExchangeAction::ExportGeneratedRoute
-    );
-    assert_eq!(upload_plan.verified_on, ALLTRAILS_POLICY_VERIFIED_ON);
-    assert!(
-        upload_plan
-            .trailgen_template
-            .contains("trailgen export <project> --route candidate-1 --format kmz")
-    );
-
-    let direct_write = alltrails_plan(AllTrailsExchange::DirectWriteApi, RouteExchangeFormat::Gpx);
-    assert_eq!(direct_write.status, BridgeStatus::Undocumented);
-    assert_eq!(
-        direct_write.trailgen_action,
-        TrailgenExchangeAction::Unsupported
-    );
-    assert_eq!(direct_write.verified_on, ALLTRAILS_POLICY_VERIFIED_ON);
-    assert_eq!(
-        alltrails_plan(
-            AllTrailsExchange::ManualUploadActivity,
-            RouteExchangeFormat::Geojson,
-        )
-        .status,
-        BridgeStatus::Undocumented
-    );
 }
 
 #[test]

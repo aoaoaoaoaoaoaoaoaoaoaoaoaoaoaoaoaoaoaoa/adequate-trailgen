@@ -1,9 +1,6 @@
 use crate::geo::{Coord, LineString};
-use crate::io::route_file::{RouteFile, RouteFileMetadata, clean_text, export_summary};
-use crate::model::WalkGraph;
-use crate::route::Route;
+use crate::io::route_file::{RouteFile, RouteFileMetadata, clean_text};
 use crate::{Result, TrailgenError};
-use std::fmt::Write as _;
 
 pub fn route_line_from_str(s: &str) -> Result<LineString> {
     route_file_from_str(s).map(|route| route.line)
@@ -38,47 +35,6 @@ pub fn route_file_from_str(s: &str) -> Result<RouteFile> {
         LineString::new(points)?,
         metadata_from_doc(&doc),
     ))
-}
-
-#[must_use]
-pub fn route_to_kml(graph: &WalkGraph, route: &Route) -> String {
-    let line = route.geometry(graph);
-    let mut s = String::from(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<kml xmlns="http://www.opengis.net/kml/2.2">
-  <Document>
-"#,
-    );
-    s.push_str("    <Placemark>\n      <name>");
-    escape_xml(&route.name, &mut s);
-    s.push_str("</name>\n      <description>");
-    escape_xml(&export_summary(route), &mut s);
-    s.push_str(
-        "</description>\n      <LineString>\n        <tessellate>1</tessellate>\n        <coordinates>\n",
-    );
-    for c in line.points {
-        let _ = match c.ele {
-            Some(ele) => writeln!(s, "          {:.8},{:.8},{ele:.2}", c.lon, c.lat),
-            None => writeln!(s, "          {:.8},{:.8},0", c.lon, c.lat),
-        };
-    }
-    s.push_str(
-        "        </coordinates>\n      </LineString>\n    </Placemark>\n  </Document>\n</kml>\n",
-    );
-    s
-}
-
-fn escape_xml(raw: &str, out: &mut String) {
-    for ch in raw.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            _ => out.push(ch),
-        }
-    }
 }
 
 fn metadata_from_doc(doc: &roxmltree::Document<'_>) -> RouteFileMetadata {

@@ -1,6 +1,6 @@
 use crate::geo::LineString;
 use crate::model::GradeDistribution;
-use crate::route::Route;
+use crate::route::{Route, RouteMetrics};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 
@@ -59,26 +59,35 @@ pub fn export_summary(route: &Route) -> String {
         "violated"
     };
     let mut s = format!(
-        "score {:.2}; pareto rank {}; shape {:?}; distance {:.2} km; ascent/descent {:.0}/{:.0} m; sustained-steep {:.2} km; grade {}; lower-limb load {:.2} FGJW km; moving time {:.2} h; road {:.1}%; low-confidence {:.1}%; restricted-access {:.1}%; repeated-edge {:.1}%; constraints {verdict}",
+        "score {:.2}; pareto rank {}; {}; constraints {verdict}",
         route.computed_score(),
         route.pareto_rank,
-        route.metrics.shape,
-        route.metrics.distance_m / 1_000.0,
-        route.metrics.ascent_m,
-        route.metrics.descent_m,
-        route.metrics.sustained_steep_m / 1_000.0,
-        grade_summary(route.metrics.grade_distribution),
-        route.metrics.lower_limb_load_km,
-        route.metrics.moving_time_s / 3_600.0,
-        route.metrics.road_fraction * 100.0,
-        route.metrics.low_confidence_fraction * 100.0,
-        route.metrics.restricted_access_fraction * 100.0,
-        route.metrics.repeated_edge_fraction * 100.0,
+        metrics_summary(&route.metrics),
     );
     if !route.verdict.violations.is_empty() {
         let _ = write!(s, "; violations {}", route.verdict.violations.join(" | "));
     }
     s
+}
+
+/// A provider-neutral account of the durable measurements carried by a route.
+#[must_use]
+pub fn metrics_summary(metrics: &RouteMetrics) -> String {
+    format!(
+        "shape {:?}; distance {:.2} km; ascent/descent {:.0}/{:.0} m; sustained-steep {:.2} km; grade {}; lower-limb load {:.2} FGJW km; moving time {:.2} h; road {:.1}%; low-confidence {:.1}%; restricted-access {:.1}%; repeated-edge {:.1}%",
+        metrics.shape,
+        metrics.distance_m / 1_000.0,
+        metrics.ascent_m,
+        metrics.descent_m,
+        metrics.sustained_steep_m / 1_000.0,
+        grade_summary(metrics.grade_distribution),
+        metrics.lower_limb_load_km,
+        metrics.moving_time_s / 3_600.0,
+        metrics.road_fraction * 100.0,
+        metrics.low_confidence_fraction * 100.0,
+        metrics.restricted_access_fraction * 100.0,
+        metrics.repeated_edge_fraction * 100.0,
+    )
 }
 
 fn grade_summary(d: GradeDistribution) -> String {

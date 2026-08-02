@@ -59,7 +59,7 @@ The search envelope lives under `[search]`:
 - `routing.road_aversion`: finite road detour cost
 
 The GUI defaults to 5,000 frontier states, one closure, 12 retained candidates, seed 2, and road
-aversion 2. The CLI retains a larger diagnostic envelope.
+aversion 2.
 
 ## Ranking And Diversity
 
@@ -82,16 +82,6 @@ distance(a, b) = 1 - shared_length / min(length(a), length(b))
 
 It admits ranked routes at exclusion radii 0.35, 0.20, 0.08, then 0. This spends result slots on
 different spines or lobes before allowing close variants, while still filling the gallery in a
-sparse network. `--count` is consequently an upper bound, not a promise to fabricate duplicates.
-
-## Reproduction
-
-Both built-in solvers are deterministic for a fixed graph, effective config, start snap, seed, and
-seed-route ledger. `trailgen generate` records those inputs, source fingerprints, graph summaries,
-one-run overlays, exact edge sequences, measurements, verdicts, scores, ranks, and emitted artifact
-fingerprints in `routes/generated.manifest.json`. `trailgen verify-generation` verifies the ledger,
-replays metric and constraint computation, and reruns native generation before comparing candidates.
-
-`trailgen formulate-milp` and `trailgen import-milp-solution` remain the exact external-solver seam
-for connected simple loops. They share graph legality, measurements, reports, and artifact emission
-with native generation rather than forming another product vertical.
+sparse network. The requested candidate count is consequently an upper bound, not a promise to
+fabricate duplicates. Both built-in solvers are deterministic for a fixed graph, effective search
+law, trailhead, seed, and edge edicts. Search output remains transient until the user saves a trail.

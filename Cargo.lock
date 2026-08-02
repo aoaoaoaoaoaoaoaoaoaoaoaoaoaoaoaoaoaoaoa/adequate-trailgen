@@ -4096,20 +4096,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "osmpbfreader",
- "protobuf",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "shapefile",
- "tempfile",
- "tiff",
- "toml",
- "trailgen-core",
- "trailgen-data",
  "trailgen-gui",
- "zip",
 ]
 
 [[package]]
@@ -4126,6 +4113,7 @@ dependencies = [
  "serde_json",
  "toml",
  "trailgen-contract",
+ "trailgen-core",
 ]
 
 [[package]]

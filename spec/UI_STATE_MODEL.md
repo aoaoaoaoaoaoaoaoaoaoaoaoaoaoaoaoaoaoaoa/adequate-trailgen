@@ -77,6 +77,13 @@ The Library’s Rename action and the pencil beside a focused trail’s name ope
 the same inline rename transaction; `F2` is its keyboard entrance. Renaming
 changes metadata in place; deleting removes the canonical trail. Neither
 operation changes route identity or transient Results.
+The `↥` control beside a Library name exports that exact durable trail as GPX.
+It neither enters Focus nor changes the active view. Export is unavailable
+while Edit owns an unsaved draft, and candidates have no export control: Save
+is the sole transition that grants export authority. Destination choice is a
+deliberate native dialog; GPX serialization and filesystem work occur on the
+saved-trail export worker, whose completion changes only status and the export
+receipt.
 Library navigation is inert while Edit owns an unsaved draft; only Save,
 Cancel, or explicitly selecting Finder may leave that editor. Selecting Finder
 is a visible cancellation and restores the exact editor return frame. Map-area names are metadata keyed by the

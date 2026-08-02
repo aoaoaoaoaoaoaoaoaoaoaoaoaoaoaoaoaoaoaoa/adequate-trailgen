@@ -1,25 +1,13 @@
 # Known Limitations
 
-The app is useful today as a local-first route generator over normalized project data, but several seams are intentionally incomplete.
+- The automatic US corpus currently combines OSM/Overpass, USGS National Digital Trails, and admitted New York and Texas state-park authorities. Each additional authority still needs provider-native lifecycle, walking-use, access, licensing, and acceptance evidence.
+- OSM ingestion admits a broad pedestrian graph for manual design and a recreational projection for Finder. Simple node-via foot turn restrictions are enforced; complex via-way or conditional restrictions, non-US implicit-access defaults, historical diffs, live permits, quotas, and booking inventory are not.
+- Input vectors normalize to geographic longitude/latitude. Native WGS84/NAD83/CRS84, declared EPSG:3857, and WGS84/NAD83 UTM are supported; other projected CRSs are rejected rather than guessed.
+- The exact solver is a bounded edge-simple enumerator for small graphs. Large graphs use the deterministic `LoopHunter` heuristic. There is no parallel MILP export/import backend.
+- The manual editor changes a support-point trail design, not provider topology. It cannot synthesize safe bushwhack corridors from blank land cover.
+- Automatic elevation uses bounded-zoom bare-earth Mapzen terrain. Raster voids and bathymetric outliers are rejected, but bridge decks may inherit ground or water elevation beneath them.
+- GPX is the sole product export. Export requires a saved trail and uses a manual AllTrails handoff; there is no direct account integration, private API automation, activity upload, or timestamp fabrication.
+- Terrain inference is transparent but coarse. Explicit tags, overlays, roads, slope, and confidence do not replace field judgment.
+- Large regions can still exceed practical search envelopes. The workbench bounds acquisition rectangles and solver work, but it cannot make every continental-scale query useful.
 
-- The automatic US corpus currently combines OSM/Overpass, USGS National Digital Trails, and admitted
-  New York and Texas state-park authorities. The nationwide census is not yet a nationwide adapter
-  roster: every additional authority still needs provider-native lifecycle, walking-use, access, and
-  licensing tests before admission.
-- Arbitrary projected GeoTIFF DEMs remain a planned seam. Current elevation sampling supports Arc/Info ASCII Grid, affine WGS84/NAD83, EPSG:3857, or WGS84/NAD83 UTM (EPSG:326xx/327xx/269xx) single-band GeoTIFF DEMs including rotated/sheared `ModelTransformationTag` rasters, and full-raster identity GDAL VRT wrappers around those GeoTIFF DEMs with affine `GeoTransform` sampling. Shapefile vector support exists for trail-network polylines, terrain overlays, access/closure overlays, and road/hydrology context linework.
-- OSM XML/PBF ingestion retains the full pedestrian graph for Manual, including pedestrian-admitted `highway=cycleway` ways, while Finder projects only recreational ways, hiking-route members, and nearest street bridges of at most 1 km between genuine trail junctions. It preserves hiking/foot/walking route relations, marks informal/unmaintained/historical standing, and enforces simple `from` way / `via` node / `to` way foot turn restrictions. Point barriers, more complex `via`-way or conditional restrictions, non-US implicit access defaults, and planet-diff workflows are not yet consumed. Historical OSM is a manual forensic source, not an automatic provider.
-- Input vector geometries normalize to geographic lon/lat decimal degrees inside the adapters. Native WGS84/NAD83/CRS84, declared EPSG:3857 Web Mercator, and WGS84/NAD83 UTM (EPSG:326xx/327xx/269xx) are supported; other projected CRS inputs are rejected instead of silently ingested.
-- Dated, recurring seasonal, recurring weekday, and daily hourly access/closure overlays are represented with `active_from`/`active_to`, `seasonal_from`/`seasonal_to`, `weekdays`/`day_of_week`, `time_from`/`time_to`, optional temporal `travel`/`direction`, and a project planning moment. Permit or timed-entry reservation flags can mark active edges as restricted, but live quota inventory and booking availability are not represented. Edges are bidirectional by default, with one-way travel preserved when source attributes or active overlays prove it.
-- The exact generation backend is a bounded edge-simple enumerator for small graphs. `formulate-milp` can export a connected simple-loop LP/MILP formulation and `import-milp-solution` can ingest selected directed-arc incumbents from an external solver, but the CLI does not yet invoke MILP/CP-SAT solving itself. Large graphs use the deterministic k-shortest-closure `LoopHunter` heuristic, not a stochastic annealer.
-- The native workbench acquires and conflates the default rectangle-scoped authority, OSM, USGS, and
-  terrain corpus, searches it, and persists graph-independent support-point trail designs. Its manual
-  editor reshapes routes through support points; it does not edit the underlying provider topology.
-  Route export and generation manifests remain debug CLI contracts. The separate `trailgen map`
-  artifact remains a self-contained offline SVG/HTML diagnostic.
-- Automatic elevation is bare-earth Mapzen terrain sampled at a bounded tile zoom. Raster void or bathymetric outliers are rejected, but bridge decks and other structures may inherit the ground or water elevation beneath them until a structure-aware source is added.
-- AllTrails write-back uses only manual-compatible exports. The core deliberately avoids brittle private APIs.
-- Terrain inference is transparent but coarse. Explicit tags, overlays, road context, slope, and confidence are preserved; they do not replace field judgment.
-- Explicit bushwhack lines are first-class pathless graph edges with independent surrounding terrain, lower-limb load, and moving-time estimates, but the solver does not yet synthesize safe off-network corridors from blank land cover. Automatic bushwhack generation requires obstacle, ownership/access, vegetation, and substrate evidence rather than arbitrary straight lines.
-- Large real regions will need careful source curation and search-parameter tuning. The fixture demo proves the pipeline, not global performance.
-
-These are product boundaries, not excuses. New work should reduce this list only by adding reproducible code, tests, docs, and demo evidence.
+These are product boundaries, not shadow CLI opportunities. A new capability belongs in the shared application engine and GUI first; the debug shell may project it later when a concrete need exists.

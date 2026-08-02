@@ -15,6 +15,7 @@ pub struct Observation {
     pub shortcut_help: bool,
     pub text_edit_focused: bool,
     pub saved_trails: usize,
+    pub last_exported: Option<String>,
     pub candidates: usize,
     pub base_pace_kmh: Option<f64>,
     pub map: Option<MapState>,
@@ -124,6 +125,12 @@ pub mod shows {
             state.saved_trails
         })
         .eq(expected)
+    }
+
+    pub fn exported() -> Condition<Observation> {
+        condition("a completed saved-trail export", |state| {
+            state.last_exported.is_some()
+        })
     }
 
     pub fn candidates(expected: usize) -> Condition<Observation> {

@@ -10,6 +10,10 @@ use egui_tester::{
 };
 use num_traits::ToPrimitive as _;
 use serde_json::Value;
+use trailgen_core::{
+    Coord, GraphBuilder, LoopConstraints, RouteShape, SearchParams, SolverKind, decode_graph,
+    encode_graph, io::geojson,
+};
 
 use crate::{fixture::FixtureWorld, observation::Observation};
 
@@ -56,44 +60,74 @@ impl<'a> Harness<'a> {
     }
 
     pub fn seed_project(&self, root: &str, source: &str, route: bool) -> Result<()> {
-        self.run_cli(&["init", root, "--name", "Acceptance"])?;
-        self.run_cli(&["build", root, "--source", source])?;
+        let relative_root = Path::new(root)
+            .strip_prefix("/test")
+            .map_err(|_| verdict(format!("fixture project escaped /test: {root}")))?;
+        let relative_source = Path::new(source)
+            .strip_prefix("/test")
+            .map_err(|_| verdict(format!("fixture source escaped /test: {source}")))?;
+        let raw = self.testbed.read_private_to_string(relative_source)?;
+        let drafts = geojson::network_from_str(&raw)
+            .map_err(|error| verdict(format!("parse fixture network: {error}")))?;
+        let graph = GraphBuilder::default()
+            .build(&drafts)
+            .map_err(|error| verdict(format!("build fixture graph: {error}")))?;
+        let encoded = encode_graph(&graph)
+            .map_err(|error| verdict(format!("encode fixture graph: {error}")))?;
+        let graph = decode_graph(&encoded)
+            .map_err(|error| verdict(format!("decode fixture graph: {error}")))?;
+        let _config = self.testbed.write_private(
+            relative_root.join("trailgen.toml"),
+            b"name = \"Acceptance\"\n",
+        )?;
+        let _graph = self
+            .testbed
+            .write_private(relative_root.join("cache/graph.bin"), encoded)?;
         if route {
-            self.run_cli(&[
-                "generate",
-                root,
-                "--start=-105.0,40.0",
-                "--min-km",
-                "0",
-                "--max-km",
-                "10",
-                "--count",
-                "1",
-                "--solver",
-                "exact",
-            ])?;
+            let constraints = LoopConstraints {
+                min_distance_m: 0.0,
+                max_distance_m: 10_000.0,
+                max_low_confidence_fraction: 1.0,
+                max_restricted_access_fraction: 1.0,
+                allowed_shapes: vec![RouteShape::Loop],
+                ..LoopConstraints::default()
+            };
+            let start = graph
+                .nearest_vertex(Coord {
+                    lon: -105.0,
+                    lat: 40.0,
+                    ele: None,
+                })
+                .ok_or_else(|| verdict("fixture graph has no trailhead"))?;
+            let routes = SolverKind::Exact.solve(
+                SearchParams {
+                    max_hops: 256,
+                    max_frontier: 200_000,
+                    keep: 12,
+                    closure_paths: 4,
+                    seed: 2,
+                    routing: trailgen_core::RoutingLaw::default(),
+                },
+                &graph,
+                start,
+                &constraints,
+                1,
+            );
+            demand(!routes.is_empty(), "fixture network yielded no saved route")?;
+            let generated_graph = serde_json::to_vec(&graph)
+                .map_err(|error| verdict(format!("serialize fixture graph: {error}")))?;
+            let generated_routes = serde_json::to_vec(&routes)
+                .map_err(|error| verdict(format!("serialize fixture route: {error}")))?;
+            let _legacy_graph = self.testbed.write_private(
+                relative_root.join("routes/generated.graph.json"),
+                generated_graph,
+            )?;
+            let _legacy_routes = self.testbed.write_private(
+                relative_root.join("routes/generated.routes.json"),
+                generated_routes,
+            )?;
         }
         Ok(())
-    }
-
-    pub fn run_cli(&self, args: &[&str]) -> Result<()> {
-        let command = args.join(" ");
-        let app = self.testbed.launch(
-            AppCommand::new(self.binary)
-                .args(args.iter().copied())
-                .runtime(Duration::from_secs(45)),
-        )?;
-        let exit = app.wait(Duration::from_secs(45))?;
-        app.terminate()?;
-        if exit.success() {
-            Ok(())
-        } else {
-            Err(Error::Command {
-                command,
-                status: format!("code {}, result {}", exit.code, exit.result),
-                stderr: exit.stderr,
-            })
-        }
     }
 
     pub fn gui(&self, project: Option<&str>, data: DataMode, run: RunClass) -> AppCommand {
@@ -104,7 +138,7 @@ impl<'a> Harness<'a> {
         if data == DataMode::Offline {
             args.push("--offline");
         }
-        let command = AppCommand::new(self.binary)
+        let mut command = AppCommand::new(self.binary)
             .args(args)
             .env("TRAILGEN_BASEMAP_ARCHIVE", "/test/fixtures/basemap.pmtiles")
             .graphics(match run {
@@ -114,6 +148,12 @@ impl<'a> Harness<'a> {
             .network(Network::Deny)
             .witness("probes/trailgen.observations")
             .runtime(Duration::from_mins(3));
+        if let Some(project) = project {
+            command = command.env(
+                "TRAILGEN_ACCEPTANCE_EXPORT_PATH",
+                format!("{project}/exported.gpx"),
+            );
+        }
         match data {
             DataMode::Offline => command,
             DataMode::FixtureProviders => FixtureWorld::admit(command),

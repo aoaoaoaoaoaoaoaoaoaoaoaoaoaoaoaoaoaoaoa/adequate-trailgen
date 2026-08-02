@@ -18,6 +18,7 @@ mod basemap;
 mod cadence;
 mod chrome;
 mod civic_area;
+mod export;
 mod forge;
 mod gallery;
 mod habitat;
@@ -45,6 +46,8 @@ mod witness;
 
 use anyhow::Result;
 use std::path::PathBuf;
+
+pub use export::{SavedTrailListing, export_saved_gpx, saved_trails};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProjectIntent {

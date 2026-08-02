@@ -25,9 +25,8 @@ scripts/test-gui
 ```
 
 The shared trail-data engine uses Overpass, USGS National Digital Trails, and spatially applicable
-state authorities for the default rectangle-scoped corpus. Nominatim remains available only to the
-CLI `survey --place` debug frontend. `TRAILGEN_GEOCODER_ENDPOINT`,
-`TRAILGEN_OVERPASS_ENDPOINT`, `TRAILGEN_USGS_TRAILS_ENDPOINT`,
+state authorities for the default rectangle-scoped corpus. `TRAILGEN_OVERPASS_ENDPOINT`,
+`TRAILGEN_USGS_TRAILS_ENDPOINT`,
 `TRAILGEN_NY_STATE_PARKS_ENDPOINT`, and `TRAILGEN_TEXAS_STATE_PARKS_ENDPOINT` replace those endpoints
 for private or test deployments. Network access is needed only for uncached trail acquisition, a
 missing project basemap, or uncached territory outside its cut.

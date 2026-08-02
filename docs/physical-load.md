@@ -86,16 +86,11 @@ matching the user's flat-ground speed.
 
 The GUI persists a moving-time window and one lower-limb-load target in the
 project library. It persists Base Pace separately in XDG configuration because
-the calibration belongs to the user, not the project. The project and debug CLI
+the calibration belongs to the user, not the project. Advanced project defaults
 may also impose hard load bounds:
 `min_lower_limb_load_km`, `max_lower_limb_load_km`,
 `target_lower_limb_load_km`, `min_moving_time_s`, and `max_moving_time_s`.
-CLI one-run overrides use hours for time:
-`--min-moving-time-h`, `--max-moving-time-h`, and
-`--target-lower-limb-load-km`.
-
-`trailgen rate <project> --route completed.gpx` reports both population
-estimates for an imported route. Base Pace calibrates time only; sex, height,
+Base Pace calibrates time only; sex, height,
 and body mass do not turn route geometry into a defensible capacity or injury
 forecast.
 

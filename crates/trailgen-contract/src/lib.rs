@@ -151,6 +151,7 @@ pub enum Target {
     Profile,
     ShortcutHelp,
     ShortcutHelpCard,
+    SavedExport(usize),
     Support(usize),
     AreaRename(usize),
     AreaRenameField(usize),
@@ -244,6 +245,7 @@ impl Target {
             Self::Profile => "profile.canvas",
             Self::ShortcutHelp => "shortcut-help",
             Self::ShortcutHelpCard => "shortcut-help.card",
+            Self::SavedExport(slot) => return Cow::Owned(format!("library.export/{slot}")),
             Self::Support(slot) => return Cow::Owned(format!("editor.support/{slot}")),
             Self::AreaRename(slot) => return Cow::Owned(format!("areas.rename/{slot}")),
             Self::AreaRenameField(slot) => {
@@ -311,6 +313,11 @@ mod tests {
     #[test]
     fn support_targets_are_indexed_without_raw_string_construction() {
         assert_eq!(Target::Support(17).wire(), "editor.support/17");
+    }
+
+    #[test]
+    fn saved_export_targets_name_the_visible_library_slot() {
+        assert_eq!(Target::SavedExport(4).wire(), "library.export/4");
     }
 
     #[test]

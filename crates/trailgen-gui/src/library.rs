@@ -35,7 +35,6 @@ pub fn validate_trail_name(name: &str) -> Result<&str> {
 pub struct TrailId(String);
 
 impl TrailId {
-    #[cfg(feature = "egui-test")]
     pub fn as_str(&self) -> &str {
         &self.0
     }

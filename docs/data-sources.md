@@ -112,39 +112,18 @@ types stop at this boundary;
 `WalkGraph`, routing, the library, and the GUI remain provider-neutral. Adapter revision changes
 invalidate only that provider's receipts.
 
-## Debug Frontend
+## Product Boundary
 
-The CLI is a diagnostic frontend over the same engine:
-
-```sh
-trailgen survey PROJECT --place "Harriman State Park, NY" --radius-km 20
-trailgen coverage PROJECT --route owned-route.csv --max-snap-m 40 --output coverage.json
-trailgen stats PROJECT
-```
-
-`survey` uses US-restricted Nominatim only to turn a place into one rectangle. The GUI normally skips
-place lookup and lets the user draw exact live regions. `coverage` reports remote geometry and true
-topological discontinuities separately; it does not mutate the graph.
-
-Lower-level development commands remain available for explicit source work:
-
-- `acquire-osm` prints or caches a bounded trails, roads, hydrology, or combined Overpass query.
-- `cache-source`, `discover`, `source-plan`, `verify-sources`, and `vet-sources` manage inspectable
-  local candidates and content fingerprints.
-- `build` accepts GeoJSON, OSM XML/PBF, or shapefile networks and GPX, GeoJSON/JSON, KML/KMZ, or CSV
-  route scaffolds.
-- `apply-elevation`, `apply-terrain`, `apply-context`, and `apply-access` enrich one graph rather than
-  creating parallel products.
-- `assemble` deterministically realizes the registered source manifest.
+Users draw exact live regions in the GUI. The trail-data engine then acquires, sequesters,
+normalizes, conflates, enriches, and publishes the successor corpus through one worker path. The
+debug shell does not provide a second assembly language for those phases.
 
 Vector adapters accept geographic WGS84/NAD83/CRS84, declared EPSG:3857, and WGS84/NAD83 UTM
 (EPSG:326xx/327xx/269xx). Other projected coordinate systems fail with a reproject-first diagnostic.
 Elevation accepts Arc/Info ASCII Grid, the supported affine GeoTIFF projections, and VRT wrappers.
 
-Every consumed source has byte count and SHA-256 identity in `sources/manifest.json`. Generation
-snapshots that manifest, its coverage summary, the effective graph, constraints, solver, start snap,
-seed ledger, and emitted artifact fingerprints. `verify-generation` replays those laws rather than
-trusting filenames.
+Every consumed source has byte count and SHA-256 identity in `sources/manifest.json`. The trail index
+and graph cache carry the receipts required to decide whether a provider stratum can be reused.
 
 ## Personal And Historical Data
 

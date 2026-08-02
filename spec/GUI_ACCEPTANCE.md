@@ -36,8 +36,9 @@ durable or rendered oracle before passing. Tests never call product internals.
    partial-edge support, undo and redo, Shift-delete a middle support and prove
    successor renumbering, restore it, restart before saving and recover the
    exact unfinished design, close and reverse a loop, exercise the elevation
-   reticle, reject torn editor/focus presentation during save, and recover the
-   loop after restart.
+   reticle, reject torn editor/focus presentation during save, export through
+   the saved-row `↥` target, parse the resulting GPX through the production
+   route reader, and recover the loop after restart.
 5. **Work while preparing.** Open the real workbench while graph armament is
    deliberately stalled, edit and durably persist the search recipe, reject a
    graph-dependent search, focus and rename a saved trail, pan the map, then
@@ -63,7 +64,8 @@ durable-geometry assertion; it cannot satisfy that assertion.
 
 Before the first injected input, each story verifies
 `trailgen-contract::UI_FINGERPRINT`. GUI and acceptance consume the same Target
-and wire-state enums. Dynamic Targets such as `Support(1)` are values, not raw
+and wire-state enums. Dynamic Targets such as `Support(1)` and
+`SavedExport(0)` are values, not raw
 string construction.
 
 The standard witness is one launch-sealed, length-framed semantic journal.
@@ -71,6 +73,10 @@ The standard witness is one launch-sealed, length-framed semantic journal.
 states survive polling and no atomic snapshot can disagree with the journal.
 An asynchronous publisher keeps serialization and filesystem I/O off the UI
 thread.
+The observational binary receives a confined deterministic export destination
+instead of opening a native chooser; the gesture, saved-trail selection,
+worker, serializer, publication, and external file oracle remain the product
+path.
 
 Production motion remains enabled in acceptance builds. Exact whole-frame
 equality and pixel quiescence are therefore invalid readiness oracles: water,

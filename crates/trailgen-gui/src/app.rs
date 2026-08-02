@@ -3,6 +3,7 @@ use crate::{
     basemap::Source as BasemapSource,
     chrome,
     civic_area::{self, AddOutcome, CivicAreas, CivicKey, CivicRowState},
+    export::{ExportEvent, ExportForge, ExportJob, suggested_filename},
     gallery::{self, TrailSort},
     lexicon::{ExplainedText, Glosses},
     library::{Library, SavedTrail, SearchRecipe, TrailId, Trailhead, validate_trail_name},
@@ -69,6 +70,8 @@ pub struct TrailApp {
     library_dirty: Option<Instant>,
     saved_projections: BTreeMap<TrailId, Option<SavedProjection>>,
     projection_forge: ProjectionForge,
+    export_forge: ExportForge,
+    last_exported: Option<TrailId>,
     hovered_saved: Option<TrailId>,
     rename: Option<RenameDraft>,
     candidates: Option<CandidatePortfolio>,
@@ -976,6 +979,7 @@ impl TrailApp {
             CivicAreas::raise(ctx, &project.root, offline)?
         );
         let projection_forge = ProjectionForge::spawn(ctx.clone())?;
+        let export_forge = ExportForge::spawn(ctx.clone())?;
         let legacy_routes_pending = project.library.legacy_routes_pending();
         let armament = CorpusForge::spawn(ctx, project.root.clone(), legacy_routes_pending)?;
         let Project {
@@ -1002,6 +1006,8 @@ impl TrailApp {
             library_dirty: None,
             saved_projections: BTreeMap::new(),
             projection_forge,
+            export_forge,
+            last_exported: None,
             hovered_saved: None,
             rename: None,
             candidates: None,
@@ -1059,6 +1065,7 @@ impl TrailApp {
         product_phase!("pulse.search_events", self.absorb_events(ui.ctx()));
         product_phase!("pulse.editor_events", self.absorb_editor_events());
         product_phase!("pulse.saved_projections", self.absorb_saved_projections());
+        product_phase!("pulse.exports", self.absorb_export_events());
         product_phase!("pulse.corpus_events", self.absorb_corpus(ui.ctx()));
         product_phase!(
             "pulse.deferred_trail_refresh",
@@ -1196,6 +1203,10 @@ impl TrailApp {
             shortcut_help: self.shortcuts.open(),
             text_edit_focused,
             saved_trails: self.library.trails().len(),
+            last_exported: self
+                .last_exported
+                .as_ref()
+                .map(|identity| identity.as_str().to_owned()),
             candidates: self
                 .candidates
                 .as_ref()
@@ -2102,34 +2113,40 @@ impl TrailApp {
         let navigable = !self.view.is_editing();
         let pace = self.preferences.base_pace();
         let mut opened = None;
-        for trail in self.library.trails() {
+        let mut exported = None;
+        for (slot, trail) in self.library.trails().iter().enumerate() {
             let selected = active.as_ref() == Some(&trail.id);
             let response = library_button(ui, trail, pace, selected, navigable);
             #[cfg(feature = "egui-test")]
             crate::witness::anchor(
                 ui,
                 format!("library.trail/{}", trail.id.as_str()),
-                response.rect,
+                response.open.rect,
             );
-            let hovered = response.hovered();
+            crate::witness::anchor(ui, Target::SavedExport(slot), response.export.rect);
+            let hovered = response.open.hovered();
             if hovered {
                 if let Some(projection) = self
                     .saved_projections
                     .get(&trail.id)
                     .and_then(Option::as_ref)
                 {
-                    response.show_tooltip_ui(|ui| {
+                    response.open.show_tooltip_ui(|ui| {
                         gallery::saved_preview(ui, trail, &projection.miniature, pace);
                     });
                 }
                 self.hovered_saved = Some(trail.id.clone());
                 self.water
-                    .hover(("saved-library", &trail.id), response.rect);
+                    .hover(("saved-library", &trail.id), response.open.rect);
             }
-            if response.clicked()
-                || (response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)))
+            if response.open.clicked()
+                || (response.open.has_focus()
+                    && ui.input(|input| input.key_pressed(egui::Key::Enter)))
             {
-                opened = Some((trail.id.clone(), response.rect));
+                opened = Some((trail.id.clone(), response.open.rect));
+            }
+            if response.export.clicked() {
+                exported = Some((trail.id.clone(), response.export.rect));
             }
             ui.add_space(3.0);
         }
@@ -2137,6 +2154,10 @@ impl TrailApp {
         if let Some((id, rect)) = opened {
             self.rename = None;
             self.enter_focus(Focus::Saved(id));
+            self.water.click(rect);
+        }
+        if let Some((id, rect)) = exported {
+            self.begin_export(&id);
             self.water.click(rect);
         }
     }
@@ -4940,6 +4961,52 @@ impl TrailApp {
         }
     }
 
+    fn begin_export(&mut self, id: &TrailId) {
+        let Some(trail) = self.library.trail(id).cloned() else {
+            return;
+        };
+        let suggested = suggested_filename(&trail.name);
+        #[cfg(feature = "egui-test")]
+        let destination = std::env::var_os("TRAILGEN_ACCEPTANCE_EXPORT_PATH")
+            .map(PathBuf::from)
+            .or_else(|| {
+                rfd::FileDialog::new()
+                    .set_title("Export saved trail")
+                    .add_filter("GPS Exchange Format", &["gpx"])
+                    .set_file_name(&suggested)
+                    .save_file()
+            });
+        #[cfg(not(feature = "egui-test"))]
+        let destination = rfd::FileDialog::new()
+            .set_title("Export saved trail")
+            .add_filter("GPS Exchange Format", &["gpx"])
+            .set_file_name(&suggested)
+            .save_file();
+        let Some(destination) = destination else {
+            return;
+        };
+        self.last_exported = None;
+        self.status = format!("Exporting {}…", trail.name);
+        if let Err(error) = self.export_forge.strike(ExportJob { trail, destination }) {
+            self.status = format!("Could not export that trail: {error:#}");
+        }
+    }
+
+    fn absorb_export_events(&mut self) {
+        while let Ok(event) = self.export_forge.events().try_recv() {
+            match event {
+                ExportEvent::Written { id, destination } => {
+                    self.last_exported = Some(id);
+                    self.status = format!("Trail exported to {}.", destination.display());
+                }
+                ExportEvent::Fault(fault) => {
+                    self.last_exported = None;
+                    self.status = format!("Could not export that trail: {fault}");
+                }
+            }
+        }
+    }
+
     fn flush_library(&mut self) {
         match self.library.save(&self.root) {
             Ok(()) => {
@@ -5260,20 +5327,43 @@ fn reconcile_range(minimum: &mut f64, maximum: &mut f64, low_changed: bool, high
     }
 }
 
+struct LibraryResponses {
+    open: egui::Response,
+    export: egui::Response,
+}
+
 fn library_button(
     ui: &mut egui::Ui,
     trail: &SavedTrail,
     pace: crate::preferences::BasePace,
     selected: bool,
     enabled: bool,
-) -> egui::Response {
+) -> LibraryResponses {
     ui.add_enabled_ui(enabled, |ui| {
-        let (rect, response) =
-            ui.allocate_exact_size(vec2(ui.available_width(), 42.0), egui::Sense::click());
+        let (rect, plate) =
+            ui.allocate_exact_size(vec2(ui.available_width(), 42.0), egui::Sense::hover());
+        let export_rect = egui::Rect::from_min_max(
+            egui::pos2(rect.right() - 30.0, rect.top()),
+            rect.right_bottom(),
+        );
+        let open_rect =
+            egui::Rect::from_min_max(rect.min, egui::pos2(export_rect.left(), rect.bottom()));
+        let open = ui.interact(
+            open_rect,
+            ui.id().with(("saved-trail", trail.id.as_str())),
+            egui::Sense::click(),
+        );
+        let export = ui
+            .interact(
+                export_rect,
+                ui.id().with(("saved-export", trail.id.as_str())),
+                egui::Sense::click(),
+            )
+            .on_hover_text("Export GPX");
         if ui.is_rect_visible(rect) {
             let fill = if selected {
                 chrome::RAISED
-            } else if response.hovered() {
+            } else if plate.hovered() {
                 chrome::SURFACE.gamma_multiply(1.12)
             } else {
                 chrome::SURFACE
@@ -5294,7 +5384,7 @@ fn library_button(
             } else {
                 chrome::MUTED
             };
-            ui.painter().text(
+            ui.painter().with_clip_rect(open_rect).text(
                 rect.left_top() + vec2(8.0, 6.0),
                 egui::Align2::LEFT_TOP,
                 trail.name.to_ascii_uppercase(),
@@ -5311,14 +5401,28 @@ fn library_button(
             );
             let load = readout::library_load(&trail.metrics);
             ui.painter().text(
-                rect.right_bottom() + vec2(-8.0, -6.0),
+                rect.right_bottom() + vec2(-38.0, -6.0),
                 egui::Align2::RIGHT_BOTTOM,
                 load.text(),
                 egui::FontId::monospace(10.5),
                 chrome::MUTED,
             );
+            if export.hovered() {
+                let _hover = ui.painter().rect_filled(
+                    export_rect.shrink2(vec2(4.0, 5.0)),
+                    1.0,
+                    chrome::RAISED,
+                );
+            }
+            ui.painter().text(
+                export_rect.center_top() + vec2(0.0, 5.0),
+                egui::Align2::CENTER_TOP,
+                "↥",
+                egui::FontId::monospace(17.0),
+                if export.hovered() { chrome::HOT } else { ink },
+            );
         }
-        response
+        LibraryResponses { open, export }
     })
     .inner
 }

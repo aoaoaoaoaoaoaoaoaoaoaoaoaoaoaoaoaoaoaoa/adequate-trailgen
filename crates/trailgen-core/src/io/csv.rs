@@ -1,9 +1,6 @@
 use crate::geo::{Coord, LineString};
-use crate::io::route_file::{RouteFile, RouteFileMetadata, clean_text, export_summary};
-use crate::model::WalkGraph;
-use crate::route::Route;
+use crate::io::route_file::{RouteFile, RouteFileMetadata, clean_text};
 use crate::{Result, TrailgenError};
-use std::fmt::Write as _;
 
 pub fn route_line_from_str(s: &str) -> Result<LineString> {
     route_file_from_str(s).map(|route| route.line)
@@ -88,27 +85,6 @@ fn field_f64(fields: &[&str], index: usize, name: &str) -> Result<f64> {
         .trim()
         .parse()
         .map_err(|e| TrailgenError::InvalidData(format!("invalid CSV {name}: {e}")))
-}
-
-#[must_use]
-pub fn route_to_csv(graph: &WalkGraph, route: &Route) -> String {
-    let mut out = format!(
-        "# name: {}\n# description: {}\n# activity: hiking\nlongitude,latitude,elevation_m\n",
-        csv_comment(&route.name),
-        csv_comment(&export_summary(route))
-    );
-    for Coord { lon, lat, ele } in route.geometry(graph).points {
-        writeln!(out, "{lon:.7},{lat:.7},{}", csv_ele(ele)).expect("write to string");
-    }
-    out
-}
-
-fn csv_comment(raw: &str) -> String {
-    raw.replace(['\n', '\r'], " ")
-}
-
-fn csv_ele(ele: Option<f64>) -> String {
-    ele.map_or_else(String::new, |x| format!("{x:.3}"))
 }
 
 fn metadata_from_comments(s: &str) -> RouteFileMetadata {

@@ -67,6 +67,7 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
         )?;
     }
     close_reverse_and_save(&mut story, before_signature, trailhead)?;
+    verify_export(&mut story, harness)?;
     verify_saved(harness)?;
 
     if let Some(artifacts) = harness.artifacts {
@@ -78,6 +79,25 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
     drop(story);
     drop(app);
     verify_restart(harness)
+}
+
+fn verify_export(story: &mut TrailStory<'_, '_>, harness: &Harness<'_>) -> Result<()> {
+    let _exported = story
+        .click(Target::SavedExport(0))?
+        .until(shows::exported())?;
+    let raw = harness
+        .testbed
+        .read_private_to_string("manual/exported.gpx")?;
+    let route = trailgen_core::io::gpx::route_file_from_str(&raw)
+        .map_err(|error| verdict(format!("saved export is not valid GPX: {error}")))?;
+    demand(
+        route.metadata.title.as_deref() == Some("manual trail"),
+        "saved export lost the Library trail name",
+    )?;
+    demand(
+        route.line.points.len() >= SUPPORTS.len(),
+        "saved export lost the realized trail geometry",
+    )
 }
 
 fn draw_open_route(story: &mut TrailStory<'_, '_>) -> Result<(u64, [f64; 2])> {

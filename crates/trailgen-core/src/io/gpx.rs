@@ -52,19 +52,43 @@ fn parse_point(node: roxmltree::Node<'_, '_>) -> Result<Coord> {
 
 #[must_use]
 pub fn route_to_gpx(graph: &WalkGraph, route: &Route) -> String {
-    let line = route.geometry(graph);
+    route_file_to_gpx(&RouteFile::new(
+        route.geometry(graph),
+        RouteFileMetadata {
+            title: Some(route.name.clone()),
+            description: Some(export_summary(route)),
+            recorded_at: None,
+            activity_type: Some("hiking".to_owned()),
+        },
+    ))
+}
+
+/// Serialize one planned route as one contiguous GPX track.
+#[must_use]
+pub fn route_file_to_gpx(route: &RouteFile) -> String {
     let mut s = String::from(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="adequate-trailgen" xmlns="http://www.topografix.com/GPX/1/1">
   <trk>
 "#,
     );
-    s.push_str("    <name>");
-    escape_xml(&route.name, &mut s);
-    s.push_str("</name>\n    <desc>");
-    escape_xml(&export_summary(route), &mut s);
-    s.push_str("</desc>\n    <type>hiking</type>\n    <trkseg>\n");
-    for c in line.points {
+    if let Some(name) = &route.metadata.title {
+        s.push_str("    <name>");
+        escape_xml(name, &mut s);
+        s.push_str("</name>\n");
+    }
+    if let Some(description) = &route.metadata.description {
+        s.push_str("    <desc>");
+        escape_xml(description, &mut s);
+        s.push_str("</desc>\n");
+    }
+    if let Some(activity_type) = &route.metadata.activity_type {
+        s.push_str("    <type>");
+        escape_xml(activity_type, &mut s);
+        s.push_str("</type>\n");
+    }
+    s.push_str("    <trkseg>\n");
+    for c in &route.line.points {
         let _ = write!(s, r#"      <trkpt lat="{:.8}" lon="{:.8}">"#, c.lat, c.lon);
         if let Some(ele) = c.ele {
             let _ = write!(s, "<ele>{ele:.2}</ele>");

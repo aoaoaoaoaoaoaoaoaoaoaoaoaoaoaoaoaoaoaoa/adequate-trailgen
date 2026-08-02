@@ -1,7 +1,7 @@
 [package]
 name = "trailgen"
 version = "0.1.0"
-description = "CLI for designing constrained long-day-hike loops over normalized trail graphs."
+description = "Native trail-design workbench and narrow debug shell."
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -16,22 +16,7 @@ egui-test = ["trailgen-gui/egui-test"]
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-reqwest.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-sha2.workspace = true
-toml.workspace = true
-trailgen-core.workspace = true
-trailgen-data.workspace = true
 trailgen-gui.workspace = true
-zip.workspace = true
-
-[dev-dependencies]
-osmpbfreader.workspace = true
-protobuf.workspace = true
-shapefile.workspace = true
-tempfile.workspace = true
-tiff.workspace = true
 
 [lints]
 workspace = true

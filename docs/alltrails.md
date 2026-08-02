@@ -1,28 +1,23 @@
-# AllTrails Import And Reinjection Status
+# AllTrails Navigation Handoff
 
-Checked against official AllTrails support material on 2026-07-06. AllTrails is useful for discovery, seed routes, popularity hints, and manual exchange. The core model is provider-agnostic and does not depend on private AllTrails APIs.
+Verified against [AllTrails’ official upload instructions](https://support.alltrails.com/hc/en-us/articles/37228498475028-Uploading-files-to-AllTrails) on 2026-08-02.
 
-Supported now:
+Trailgen’s supported boundary is a manual GPX handoff. It does not automate an AllTrails account or private API.
 
-- import user-supplied AllTrails GPX exports via `trailgen import-seed --route file.gpx` or `trailgen rate --route file.gpx`
-- import user-supplied GeoJSON, JSON, KML, KMZ, and CSV route/network files
-- export generated routes as GPX, GeoJSON, CSV, KML, and KMZ with route diagnostics in structured GeoJSON properties or standard description/comment fields
-- expose `ManualAllTrailsBridge` capabilities and canonical exchange plans for future connectors
-- preserve provider-neutral imported route metadata: title, description, recorded timestamp, and activity type when present
+1. Finish the route and save it to the project Library.
+2. Press `↥` beside its name under **Saved Trails** and choose a `.gpx` destination.
+3. In the AllTrails mobile app, open **Saved → Lists → Custom routes & maps**, use the overflow menu, and select **Upload route**. On the website, use **Explore → Build custom route → Upload a route**.
+4. Open the resulting custom route in the mobile app and use Navigate. Download its map before departure if offline navigation is required.
 
-Not implemented:
+AllTrails currently accepts GPX tracks and routes on web and mobile, with a documented 20 MB upload limit. Trailgen emits one contiguous GPX 1.1 hiking track with the saved name, route geometry, available elevations, and compact measurements. It deliberately omits timestamps because this is a planned route, not a recorded activity.
 
-- direct write-back to an AllTrails account
-- private API automation
+Export requires a saved trail. Search candidates are transient, and an unfinished editor draft has not crossed the Library’s durability boundary. Save-first therefore prevents a navigational file from claiming identity the project itself has not retained.
 
-Official support pages describe sanctioned manual upload paths with a 20 MB file-size limit: upload an activity on the website, or create a custom route through Build custom route → Upload a route on the website, or Saved → Custom routes → Upload route in mobile apps. AllTrails lists GPX, KML, KMZ, CSV, and many other formats as uploadable. Official support also documents downloads from activities, custom routes, and trail pages, including GPX route/track, GeoJSON track, JSON track, KML, KMZ, and CSV.
+The debug equivalent is:
 
-Current best workflow: export a generated `routes/candidate-N.gpx`, `routes/candidate-N.csv`, `routes/candidate-N.kml`, or `routes/candidate-N.kmz` file and use AllTrails’ manual upload path. The portable exports keep the route name plus a compact score, Pareto rank, distance, ascent/descent, exposure, and constraint verdict summary in fields other tools usually preserve. `trailgen alltrails-status` prints this document plus machine-readable `ManualAllTrailsBridge` capabilities and canonical plans. Each plan binds an AllTrails exchange, route format, local `trailgen` command template, manual/supported/undocumented status, workflow note, official source URL, and `verified_on` date.
+```sh
+trailgen saved PROJECT
+trailgen export PROJECT --trail NAME_OR_ID --output route.gpx
+```
 
-The bridge is a typed seam, not a hidden API client. If AllTrails publishes a documented route-create/import API, add an implementation behind the `AllTrailsBridge` trait, leaving graph construction and optimization untouched. Unsupported combinations, including direct write API requests today, resolve to an `unsupported` local action.
-
-Official references:
-
-- <https://support.alltrails.com/hc/en-us/articles/37228498475028-Uploading-files-to-AllTrails>
-- <https://support.alltrails.com/hc/en-us/articles/37230403315476-Downloading-files-from-AllTrails>
-- <https://support.alltrails.com/hc/en-us/sections/360006411352-Importing-and-exporting-files>
+Both frontends invoke the same Library reader and GPX serializer. There is no separate AllTrails bridge, format policy registry, generated-candidate snapshot, or write-back client.
