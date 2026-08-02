@@ -32,8 +32,8 @@ pub fn pan_during_search(
     let action = session.stroke(
         &knots,
         Stroke {
-            steps_per_leg: 4,
-            leg_duration: Duration::from_millis(60),
+            steps_per_leg: 6,
+            leg_duration: Duration::from_millis(100),
             ..Stroke::default()
         },
     )?;
@@ -50,6 +50,9 @@ pub fn stress_portfolio(
     frames: &FrameProbe,
     frame: &TrailFrame,
 ) -> Result<PortfolioReport> {
+    const RETREAT_TICKS: i32 = 5;
+    const STRESS_TICKS: i32 = -16;
+
     let (cx, cy) = frame
         .anchor(&Target::Map.to_string())
         .ok_or_else(|| verdict("portfolio omitted the map canvas"))?
@@ -67,8 +70,8 @@ pub fn stress_portfolio(
     let pan = story.session().stroke(
         &knots,
         Stroke {
-            steps_per_leg: 6,
-            leg_duration: Duration::from_millis(60),
+            steps_per_leg: 8,
+            leg_duration: Duration::from_millis(80),
             ..Stroke::default()
         },
     )?;
@@ -81,13 +84,13 @@ pub fn stress_portfolio(
     let wheel = |tick_duration| Wheel {
         tick_duration: Duration::from_millis(tick_duration),
     };
-    let retreat = story.session().wheel(cx, cy, 5, wheel(20))?;
+    let retreat = story.session().wheel(cx, cy, RETREAT_TICKS, wheel(20))?;
     let _retreated = frames.trace(
         story.session().application(),
         &retreat,
         Duration::from_secs(10),
     )?;
-    let zoom_action = story.session().wheel(cx, cy, -10, wheel(28))?;
+    let zoom_action = story.session().wheel(cx, cy, STRESS_TICKS, wheel(28))?;
     let trace = frames.trace(
         story.session().application(),
         &zoom_action,
@@ -97,7 +100,9 @@ pub fn stress_portfolio(
         "zoom a twelve-candidate portfolio",
         cadence_budget().minimum_frames(7),
     )?;
-    let restore = story.session().wheel(cx, cy, 5, wheel(20))?;
+    let restore = story
+        .session()
+        .wheel(cx, cy, -(RETREAT_TICKS + STRESS_TICKS), wheel(20))?;
     let _restored = frames.trace(
         story.session().application(),
         &restore,
