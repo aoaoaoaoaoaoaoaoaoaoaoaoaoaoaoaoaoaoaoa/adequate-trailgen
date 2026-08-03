@@ -76,6 +76,11 @@ jobs:
             mesa-vulkan-drivers \
             xauth \
             xvfb
+      - name: Admit contained user namespaces
+        run: |
+          if test -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns; then
+            sudo sysctl --write kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - name: Raise the user service manager
         run: |
           sudo loginctl enable-linger "$(id -un)"
@@ -132,6 +137,11 @@ jobs:
             mesa-vulkan-drivers \
             xauth \
             xvfb
+      - name: Admit contained user namespaces
+        run: |
+          if test -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns; then
+            sudo sysctl --write kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - name: Raise the user service manager
         run: |
           sudo loginctl enable-linger "$(id -un)"

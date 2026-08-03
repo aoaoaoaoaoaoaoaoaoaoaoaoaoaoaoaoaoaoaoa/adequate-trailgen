@@ -70,10 +70,13 @@ excuse those obligations.
 The X11 harness owns stronger host prerequisites than Xvfb alone. A runner
 must provide Bubblewrap, Xauth, a normalized read-only lavapipe root, and a
 canonical `systemd --user` manager with its D-Bus socket at
-`/run/user/$UID/bus`. Workflow setup may raise that disposable user manager
-and project a distribution's multiarch Mesa package into the harness's fixed
+`/run/user/$UID/bus`; its kernel must admit the unprivileged namespaces used by
+the systemd and Bubblewrap sandboxes. Workflow setup may enable those
+namespaces on a disposable runner, raise its user manager, and project a
+distribution's multiarch Mesa package into the harness's fixed
 software-Vulkan layout. The app-owned acceptance command must not grow a
-hosted-runner escape hatch or weaken containment when either is absent.
+hosted-runner escape hatch or weaken containment when any prerequisite is
+absent.
 
 ## Lifecycle Law
 
