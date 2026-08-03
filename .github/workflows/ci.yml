@@ -70,10 +70,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends --yes \
+            bubblewrap \
+            dbus-user-session \
             libxkbcommon-x11-0 \
             mesa-vulkan-drivers \
             xauth \
             xvfb
+      - name: Raise the user service manager
+        run: |
+          sudo loginctl enable-linger "$(id -un)"
+          sudo systemctl start "user@$(id -u).service"
+          test -S "/run/user/$(id -u)/bus"
       - name: Install Rust 1.96
         run: rustup toolchain install 1.96.0 --profile minimal
       - name: Cache Cargo lifecycle build
@@ -108,10 +115,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends --yes \
+            bubblewrap \
+            dbus-user-session \
             libxkbcommon-x11-0 \
             mesa-vulkan-drivers \
             xauth \
             xvfb
+      - name: Raise the user service manager
+        run: |
+          sudo loginctl enable-linger "$(id -un)"
+          sudo systemctl start "user@$(id -u).service"
+          test -S "/run/user/$(id -u)/bus"
       - name: Install Rust 1.96
         run: rustup toolchain install 1.96.0 --profile minimal
       - name: Cache Cargo acceptance build

@@ -1,6 +1,6 @@
 # Native Application CI Doctrine
 
-- **Status:** Trailgen incubation; prepared for post-1.0 nucleation
+- **Status:** Trailgen reference implementation; shared code awaits a second adopter
 - **Release coordinate:** Linux x86_64 with X11
 - **Excluded coordinates:** Wayland, macOS, and Windows
 
@@ -66,6 +66,12 @@ Hosted runners are suitable for deterministic functional stories under
 software graphics. Production latency and cadence evidence requires a named,
 representative host-GPU coordinate; a hosted software renderer cannot pass or
 excuse those obligations.
+
+The X11 harness owns stronger host prerequisites than Xvfb alone. A runner
+must provide Bubblewrap, Xauth, software Vulkan, and a canonical `systemd
+--user` manager with its D-Bus socket at `/run/user/$UID/bus`. Workflow setup
+may raise that disposable user manager; the app-owned acceptance command must
+not grow a hosted-runner escape hatch or weaken containment when it is absent.
 
 ## Lifecycle Law
 
