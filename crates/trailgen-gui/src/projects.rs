@@ -16,6 +16,7 @@ use crate::{
 use anyhow::{Context as _, Result, ensure};
 use dwemer_poolrooms::water::{Frame as WaterFrame, Surface};
 use egui::{Color32, RichText, Stroke, vec2};
+use eternalist_apps::{Inspector, LivingWait};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -24,7 +25,6 @@ use std::{
 use trailgen_contract::Target;
 use trailgen_core::Coord;
 use trailgen_data::SurveyRegion;
-use trailgen_shell::LivingWait;
 
 pub struct Workbench {
     mode: WorkbenchMode,
@@ -398,10 +398,8 @@ impl SurveyWorkbench {
             self.area_handles.cancel();
         }
         self.absorb_corpus(&mut action);
-        let _left = egui::Panel::left("survey-inspector")
-            .resizable(false)
-            .exact_size(chrome::INSPECTOR_WIDTH)
-            .show_inside(ui, |ui| self.inspector(ui, &mut action));
+        let _left =
+            Inspector::new("survey-inspector").show(ui, |ui| self.inspector(ui, &mut action));
         let _center = egui::CentralPanel::default().show_inside(ui, |ui| self.arena(ui));
         self.shortcuts.show(ui.ctx(), ShortcutMode::Survey);
         self.tend_slate(ui.ctx());

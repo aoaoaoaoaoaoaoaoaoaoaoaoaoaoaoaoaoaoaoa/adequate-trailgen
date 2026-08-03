@@ -27,6 +27,7 @@ use anyhow::{Context as _, Result};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, unbounded};
 use dwemer_poolrooms::water::{Domain, Frame as WaterFrame, Surface, Wetness};
 use egui::{Color32, RichText, Stroke, vec2};
+use eternalist_apps::{Inspector, LivingWait};
 use std::{
     collections::{BTreeMap, VecDeque},
     path::{Path, PathBuf},
@@ -41,7 +42,6 @@ use trailgen_core::{
     TrailRealization, TrailStanding, TrailgenError, WalkGraph, WalkRealmIndex, WalkRouter,
 };
 use trailgen_data::SurveyRegion;
-use trailgen_shell::LivingWait;
 
 const PROFILE_HEIGHT: f32 = 178.0;
 const RESULTS_HEIGHT: f32 = 190.0;
@@ -1083,25 +1083,15 @@ impl TrailApp {
         self.profile_cursor.bind(profile_owner);
         self.hovered_saved = None;
         self.profile_cursor.marker = None;
-        let _left = product_phase!(
+        let inspector = product_phase!(
             "pulse.inspector",
-            egui::Panel::left("trail-inspector")
-                .resizable(false)
-                .exact_size(chrome::INSPECTOR_WIDTH)
-                .show_inside(ui, |ui| {
-                    let scroll = egui::ScrollArea::vertical()
-                        .id_salt("trail-inspector-scroll")
-                        .vertical_scroll_offset(self.inspector_scroll)
-                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            ui.add_space(ui.spacing().item_spacing.x);
-                            self.inspector(ui);
-                        });
-                    self.inspector_scroll = scroll.state.offset.y.max(0.0);
-                    self.water.heave(ui.ctx(), scroll.state.offset.y);
-                })
+            Inspector::new("trail-inspector")
+                .scroll_id("trail-inspector-scroll")
+                .scroll_offset(self.inspector_scroll)
+                .show(ui, |ui| self.inspector(ui))
         );
+        self.inspector_scroll = inspector.scroll_offset;
+        self.water.heave(ui.ctx(), inspector.scroll_offset);
         let _center = product_phase!(
             "pulse.arena",
             egui::CentralPanel::default().show_inside(ui, |ui| self.arena(ui))

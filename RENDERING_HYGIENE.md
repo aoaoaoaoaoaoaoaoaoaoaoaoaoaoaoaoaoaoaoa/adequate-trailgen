@@ -141,7 +141,7 @@ dash-dot, or dotted marks. Access alarms continue to outrank every projection.
 
 Real background work must leave its visible waiting surface alive. Claim the
 user-facing status label or empty-result region through
-`trailgen_shell::LivingWait`; its four-corner raft supplies restrained motion
+`eternalist_apps::LivingWait`; its four-corner raft supplies restrained motion
 and excites the latent water table. Do not call Poolrooms' loading show/hide
 pair directly from competing panels. The arbiter admits the largest live claim
 for one frame and settles automatically when no work claims the next.

@@ -926,6 +926,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "eternalist-apps"
+version = "0.1.0"
+source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/eternalist-apps?rev=752752db4412eebfe28262102bfaa1deea444862#752752db4412eebfe28262102bfaa1deea444862"
+dependencies = [
+ "anyhow",
+ "dwemer_poolrooms",
+ "egui",
+ "egui-tester-witness",
+ "egui-wgpu",
+ "egui-winit",
+ "pollster",
+ "serde",
+ "tracing",
+ "tracing-chrome",
+ "tracing-subscriber",
+ "winit",
+]
+
+[[package]]
 name = "euclid"
 version = "0.22.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3853,6 +3872,7 @@ dependencies = [
  "egui",
  "egui-tester-witness",
  "egui-wgpu",
+ "eternalist-apps",
  "fast-mvt",
  "futures-util",
  "geo-types",
@@ -3869,26 +3889,7 @@ dependencies = [
  "trailgen-contract",
  "trailgen-core",
  "trailgen-data",
- "trailgen-shell",
  "zstd",
-]
-
-[[package]]
-name = "trailgen-shell"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dwemer_poolrooms",
- "egui",
- "egui-tester-witness",
- "egui-wgpu",
- "egui-winit",
- "pollster",
- "serde",
- "tracing",
- "tracing-chrome",
- "tracing-subscriber",
- "winit",
 ]
 
 [[package]]

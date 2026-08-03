@@ -11,7 +11,7 @@ keywords = ["gis", "hiking", "routing", "egui", "wgpu"]
 categories = ["gui", "science::geo"]
 
 [features]
-egui-test = ["dep:egui-tester-witness", "trailgen-shell/egui-test"]
+egui-test = ["dep:egui-tester-witness", "eternalist-apps/egui-test"]
 
 [dependencies]
 anyhow.workspace = true
@@ -22,6 +22,7 @@ dwemer_poolrooms.workspace = true
 egui.workspace = true
 egui-wgpu.workspace = true
 egui-tester-witness = { workspace = true, optional = true, features = ["egui"] }
+eternalist-apps.workspace = true
 fast-mvt.workspace = true
 futures-util.workspace = true
 geo-types.workspace = true
@@ -38,7 +39,6 @@ tracing.workspace = true
 trailgen-core.workspace = true
 trailgen-contract.workspace = true
 trailgen-data.workspace = true
-trailgen-shell.workspace = true
 zstd.workspace = true
 
 [lints]

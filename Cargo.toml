@@ -6,7 +6,6 @@ members = [
   "crates/trailgen-data",
   "crates/trailgen-cli",
   "crates/trailgen-gui",
-  "crates/trailgen-shell",
 ]
 resolver = "2"
 
@@ -26,6 +25,7 @@ dwemer_poolrooms = "0.7.0"
 egui = "=0.34.3"
 egui-wgpu = "=0.34.3"
 egui-winit = { version = "=0.34.3", default-features = false, features = ["x11"] }
+eternalist-apps = { git = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/eternalist-apps", rev = "752752db4412eebfe28262102bfaa1deea444862", version = "0.1.0" }
 fast-mvt = { version = "0.6.1", default-features = false, features = ["reader"] }
 futures-util = "0.3.31"
 geo-types = "0.7.19"
@@ -57,7 +57,6 @@ trailgen-core = { path = "crates/trailgen-core", version = "0.1.0" }
 trailgen-contract = { path = "crates/trailgen-contract", version = "0.1.0" }
 trailgen-data = { path = "crates/trailgen-data", version = "0.1.0" }
 trailgen-gui = { path = "crates/trailgen-gui", version = "0.1.0" }
-trailgen-shell = { path = "crates/trailgen-shell", version = "0.1.0" }
 winit = { version = "0.30.13", default-features = false, features = ["rwh_06", "x11"] }
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 zstd = "0.13.3"

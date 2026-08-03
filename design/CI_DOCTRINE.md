@@ -84,10 +84,9 @@ extend it with artifact-native evidence.
 
 ## Nucleation Gate
 
-Nothing is extracted from Trailgen yet. After Trailgen 1.0, HRRR and Booru
-Viewer should each adopt these semantic units with app-owned commands. Shared
-code becomes admissible only when two adoptions expose the same mechanism and
-the same failure contract. The expected promotion targets are:
+The native host has moved to `eternalist-apps`; CI machinery has not. HRRR and
+Booru Viewer should adopt these semantic units with app-owned commands before
+common CI code becomes admissible. The expected promotion targets remain:
 
 - toolchain and Cargo-gate orchestration;
 - sterile install-root and XDG containment;

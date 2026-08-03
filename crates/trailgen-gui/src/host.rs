@@ -1,9 +1,9 @@
 use crate::{projects::Workbench, trail_map::TrailMapGpu, vector_map::VectorMapGpu};
 use anyhow::Result;
-use trailgen_shell::{NativeApp, WindowSpec};
+use eternalist_apps::{NativeApp, WindowSpec};
 
 pub fn run(ctx: egui::Context, app: Workbench) -> Result<()> {
-    trailgen_shell::run(ctx, app)
+    eternalist_apps::run(ctx, app)
 }
 
 impl NativeApp for Workbench {

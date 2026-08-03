@@ -35,6 +35,10 @@ porcelain machinery, read
 terminal architecture is evidence-gated; do not manufacture deferred crates or
 macros before their promotion gates are satisfied.
 
+The native host and optional inspector live in the pinned `eternalist-apps`
+dependency. Do not recreate local event-loop, water-composition, trace-spine,
+or inspector-layout rivals.
+
 A feature is not done until its release build has been installed locally with
 `scripts/install-local.sh` and the `trailgen` executable resolved through
 `PATH` has been verified. An installation failure is a release blocker.

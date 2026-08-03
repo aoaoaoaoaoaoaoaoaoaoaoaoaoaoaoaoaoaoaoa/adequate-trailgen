@@ -1,7 +1,7 @@
 # Shared Native Application Architecture
 
-- **Status:** evidence-gated design with a green Trailgen incubation
-- **Recorded:** 2026-07-30
+- **Status:** native host nucleated; later layers remain evidence-gated
+- **Recorded:** 2026-08-03
 - **Scope:** Trailgen, HRRR, Booru Viewer, Dwemer Poolrooms, and `egui-tester`
 
 This document records the intended ownership boundaries and extraction order
@@ -29,7 +29,7 @@ in advance.
 The local [Native Responsiveness Doctrine](RESPONSIVENESS_DOCTRINE.md) governs
 the current shell instrumentation experiment and its promotion gates.
 
-`egui-tester` and the future shell remain separate repositories for now. Their
+`egui-tester` and `eternalist-apps` remain separate repositories. Their
 only required runtime seam is `egui-tester-witness`. Co-location may be
 reconsidered if sustained co-evolution supplies evidence for it.
 
@@ -69,9 +69,9 @@ behavior, platform accessibility, or a later cold start.
 coordinate spaces, and latency classes. It does not contain domain behavior,
 fixtures, oracles, or a mirror of application state.
 
-`eternalist` is not yet an admissible framework name: `eternalist.moe` already
-names another project in the same fleet namespace. The shell remains unnamed
-until this collision is resolved.
+`eternalist-apps` names the native host and its agent bootstrap doctrine.
+`eternalist.moe` remains a distinct product; the compound name prevents the
+bare `eternalist` namespace from acquiring two meanings.
 
 ## Dependency Topology
 
@@ -82,9 +82,9 @@ is:
 xyz-gui
   → xyz-contract
   → dwemer_poolrooms
-  → trailgen-shell               private, provisional incubation
+  → eternalist-apps
 
-trailgen-shell
+eternalist-apps
   → dwemer_poolrooms
   ── egui-test feature ─→ egui-tester-witness
 
@@ -213,12 +213,12 @@ destabilize the proven vertical.
 
 ## Shell Boundary
 
-Trailgen now contains the unpublished `trailgen-shell` incubation. The former
-local `boiler.rs` has been deleted; all standing release-mode X11 stories and
-the dense host-GPU cadence contract cross the shell seam. Its crate name and
-repository remain provisional until HRRR supplies the second consumer.
+Trailgen pins the public `eternalist-apps` repository and contains no local host
+rival. The former `boiler.rs` and `trailgen-shell` incubation are deleted. All
+standing release-mode X11 stories and the dense host-GPU cadence contract cross
+the dependency seam.
 
-The incubation includes only mechanics already reproduced across the
+The extracted crate includes only mechanics already reproduced across the
 applications:
 
 - winit lifecycle and repaint deadlines;
@@ -231,6 +231,7 @@ applications:
 - application GPU-resource registration;
 - fatal-error propagation;
 - optional post-surface-present observation enqueue;
+- optional persistent-left-inspector geometry and scrolling;
 - ordinary close disposition.
 
 The shell should expose one small application trait or an equivalently bounded
@@ -363,22 +364,24 @@ than preserving the present duplication in amber.
    identity, and diagnostic predicate combinators to Trailgen.
 2. **Completed:** deny IP networking, use a private Unix-socket HTTP fixture,
    and make semantic-frame delivery lossless and polling-independent.
-3. **Completed:** extract the private `trailgen-shell` crate under all four
+3. **Completed:** extract the private `trailgen-shell` incubation under all
    release-mode X11 stories and host-GPU cadence evidence.
-4. Write HRRR acceptance stories before changing its runtime; cover boot,
+4. **Completed:** nucleate `eternalist-apps`, pin Trailgen to its immutable
+   revision, adopt its optional inspector, and delete the local crate.
+5. Write HRRR acceptance stories before changing its runtime; cover boot,
    first run, offline behavior, and one product-defining field interaction.
-5. Bring HRRR to the current Poolrooms generation, then port it to the shell
+6. Bring HRRR to the current Poolrooms generation, then port it to the shell
    through a narrow tray-presence seam.
-6. Move Booru's acceptance executable into Booru, port Booru to the shell, and
+7. Move Booru's acceptance executable into Booru, port Booru to the shell, and
    retire its private probe only after its demo and acceptance consumers have
    migrated.
-7. Extract the shared contract algebra after two products demonstrate the same
+8. Extract the shared contract algebra after two products demonstrate the same
    Command, Target, coordinate, and latency vocabulary.
-8. Run the AccessKit parity experiment and remove obsolete anchor machinery
+9. Run the AccessKit parity experiment and remove obsolete anchor machinery
    only after equivalent evidence is green.
-9. Extract cartography when a real HRRR map change forces Trailgen and HRRR to
+10. Extract cartography when a real HRRR map change forces Trailgen and HRRR to
    reconcile their diverged implementations.
-10. Add the story proc-macro front end if two product suites still exhibit
+11. Add the story proc-macro front end if two product suites still exhibit
     repeated authoring ceremony over the proven runtime.
 
 Fleet rule registries, capability-generated suites, codemods, and waiver
