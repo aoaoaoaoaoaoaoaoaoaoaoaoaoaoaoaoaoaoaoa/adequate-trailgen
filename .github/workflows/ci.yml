@@ -81,6 +81,17 @@ jobs:
           sudo loginctl enable-linger "$(id -un)"
           sudo systemctl start "user@$(id -u).service"
           test -S "/run/user/$(id -u)/bus"
+      - name: Normalize software Vulkan
+        run: |
+          root="$RUNNER_TEMP/egui-tester-lavapipe"
+          library=$(find /usr/lib -name libvulkan_lvp.so -print -quit)
+          manifest=$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)
+          test -f "$library"
+          test -f "$manifest"
+          install -d "$root/usr/lib" "$root/usr/share/vulkan/icd.d"
+          ln -s "$library" "$root/usr/lib/libvulkan_lvp.so"
+          install -m 0644 "$manifest" "$root/usr/share/vulkan/icd.d/lvp_icd.json"
+          printf 'EGUI_TESTER_LAVAPIPE=%s\n' "$root" >> "$GITHUB_ENV"
       - name: Install Rust 1.96
         run: rustup toolchain install 1.96.0 --profile minimal
       - name: Cache Cargo lifecycle build
@@ -126,6 +137,17 @@ jobs:
           sudo loginctl enable-linger "$(id -un)"
           sudo systemctl start "user@$(id -u).service"
           test -S "/run/user/$(id -u)/bus"
+      - name: Normalize software Vulkan
+        run: |
+          root="$RUNNER_TEMP/egui-tester-lavapipe"
+          library=$(find /usr/lib -name libvulkan_lvp.so -print -quit)
+          manifest=$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)
+          test -f "$library"
+          test -f "$manifest"
+          install -d "$root/usr/lib" "$root/usr/share/vulkan/icd.d"
+          ln -s "$library" "$root/usr/lib/libvulkan_lvp.so"
+          install -m 0644 "$manifest" "$root/usr/share/vulkan/icd.d/lvp_icd.json"
+          printf 'EGUI_TESTER_LAVAPIPE=%s\n' "$root" >> "$GITHUB_ENV"
       - name: Install Rust 1.96
         run: rustup toolchain install 1.96.0 --profile minimal
       - name: Cache Cargo acceptance build

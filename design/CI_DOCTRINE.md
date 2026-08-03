@@ -68,10 +68,12 @@ representative host-GPU coordinate; a hosted software renderer cannot pass or
 excuse those obligations.
 
 The X11 harness owns stronger host prerequisites than Xvfb alone. A runner
-must provide Bubblewrap, Xauth, software Vulkan, and a canonical `systemd
---user` manager with its D-Bus socket at `/run/user/$UID/bus`. Workflow setup
-may raise that disposable user manager; the app-owned acceptance command must
-not grow a hosted-runner escape hatch or weaken containment when it is absent.
+must provide Bubblewrap, Xauth, a normalized read-only lavapipe root, and a
+canonical `systemd --user` manager with its D-Bus socket at
+`/run/user/$UID/bus`. Workflow setup may raise that disposable user manager
+and project a distribution's multiarch Mesa package into the harness's fixed
+software-Vulkan layout. The app-owned acceptance command must not grow a
+hosted-runner escape hatch or weaken containment when either is absent.
 
 ## Lifecycle Law
 
