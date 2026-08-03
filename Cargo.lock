@@ -792,7 +792,7 @@ dependencies = [
 [[package]]
 name = "egui-tester"
 version = "0.6.0"
-source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester?rev=5c2d1a197076c740e6d51a84b3260a7faacad0a1#5c2d1a197076c740e6d51a84b3260a7faacad0a1"
+source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester?rev=ea7308a50cc8029ad807377b71c3aec8f5c95a57#ea7308a50cc8029ad807377b71c3aec8f5c95a57"
 dependencies = [
  "bitflags 2.13.1",
  "egui-tester-witness",
@@ -809,7 +809,7 @@ dependencies = [
 [[package]]
 name = "egui-tester-witness"
 version = "0.6.0"
-source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester?rev=5c2d1a197076c740e6d51a84b3260a7faacad0a1#5c2d1a197076c740e6d51a84b3260a7faacad0a1"
+source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester?rev=ea7308a50cc8029ad807377b71c3aec8f5c95a57#ea7308a50cc8029ad807377b71c3aec8f5c95a57"
 dependencies = [
  "egui",
  "rustix 1.1.4",
@@ -928,7 +928,7 @@ dependencies = [
 [[package]]
 name = "eternalist-apps"
 version = "0.1.0"
-source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/eternalist-apps?rev=6d5504822e88ed26b07fdbb48e0cc3899c4a901b#6d5504822e88ed26b07fdbb48e0cc3899c4a901b"
+source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/eternalist-apps?rev=25199d1f4085c81d20fc012a9091d9acfaa5d131#25199d1f4085c81d20fc012a9091d9acfaa5d131"
 dependencies = [
  "anyhow",
  "dwemer_poolrooms",
