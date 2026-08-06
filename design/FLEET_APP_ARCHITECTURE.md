@@ -1,88 +1,60 @@
-# Shared Native Application Architecture
+# Eternalist Fleet Architecture
 
-- **Status:** native host nucleated; later layers remain evidence-gated
-- **Recorded:** 2026-08-03
-- **Scope:** Trailgen, HRRR, Booru Viewer, Dwemer Poolrooms, and `egui-tester`
+- **Status:** lifecycle extracted; application-primitive promotion underway
+- **Recorded:** 2026-08-05
+- **Scope:** Trailgen, HRRR, Adequate Booru Viewer, Eternalist Apps, Dwemer
+  Poolrooms, and `egui-tester`
 
-This document records the intended ownership boundaries and extraction order
-for the native egui application fleet. It incorporates an independent,
-read-only Fable inspection of all five repositories. It is not authorization
-to manufacture the terminal crate graph before its seams have been proved.
+## North Star
 
-## Decision
+An Eternalist application should tend toward thin, explicit domain glue over
+typed `eternalist-apps` primitives, with its real binary verified from outside
+through `egui-tester`. This is a Platonic direction, not permission to invent a
+framework before reuse exists. Raw egui, direct Poolrooms composition, and
+product-local UI remain lawful whenever no shared law has been proved.
 
-The fleet needs three distinct layers:
+The system has four owners:
 
-1. Dwemer Poolrooms owns visual and physical primitives.
-2. A shared application shell may own native host mechanics that the
-   applications have independently reproduced.
-3. `egui-tester` owns external control, containment, timing, and judgment.
+| Owner | Law |
+| --- | --- |
+| Dwemer Poolrooms | Low-level physical GUI embodiment and living water |
+| Eternalist Apps | Native lifecycle and reusable high-level logical application primitives |
+| product repository | Domain meaning, workers, persistence projections, unpromoted UI, fixtures, oracles, and stories |
+| `egui-tester` | External containment, native input, synchronization, capture, timing, and failure evidence |
 
-Product repositories retain their domain models, application-specific
-presentation, fixtures, oracles, and immature mechanisms.
+## Rectified Names
 
-The first implementation increment is tester porcelain written in ordinary
-Rust. Proc macros remain the expected eventual authoring surface, but their
-natural language must be recovered from a proven runtime rather than invented
-in advance.
+**Mechanism** is a low-level physical GUI element. Buttons, rollers, sliders,
+tiles, frames, material, motion, intrinsic interaction, and displaced water are
+Poolrooms mechanisms.
 
-The local [Native Responsiveness Doctrine](RESPONSIVENESS_DOCTRINE.md) governs
-the current shell instrumentation experiment and its promotion gates.
+**Application primitive** is a reusable logical state machine or composition.
+Inspectors, managers, menus, storage interactions, loading assemblies, and
+similar application-scale laws belong to Eternalist Apps after promotion.
 
-`egui-tester` and `eternalist-apps` remain separate repositories. Their
-only required runtime seam is `egui-tester-witness`. Co-location may be
-reconsidered if sustained co-evolution supplies evidence for it.
+**Product glue** maps domain state into primitives and interprets their typed
+actions. It is expected to be thin, but domain complexity is not moved into a
+shared crate merely to shorten an application entry point.
 
-Applications may depend directly on Dwemer Poolrooms. The shell must not
-interpose a counterfeit wrapper around every Poolrooms control or flourish.
-Both the shell and an application may use Poolrooms directly, provided Cargo
-resolves one compatible version.
+**Witness** is one-way, launch-sealed, post-present semantic telemetry used to
+release acceptance waits. It is not a correctness oracle.
 
-## Names
+**Oracle** is external evidence such as pixels, durable files, process state,
+protocol traffic, or behavior after a cold restart.
 
-**Shell** is the shared native host: event loop, rendering lifecycle, window,
-presentation, and narrowly proven host policy. It is not the application.
+Ownership follows the governing invariant rather than the everyday noun. A
+menu actuator may be a Poolrooms mechanism while its command model, routing,
+storage, and composition form an Eternalist primitive.
 
-**Command** is a stable user intention such as save, undo, or begin search. A
-button, menu item, and shortcut may all invoke the same Command.
+## Dependency Law
 
-**Target** is a visible recipient of a gesture. `Support(3)`, a map canvas, and
-a saved-trail row are Targets. A Target's statically admitted gesture classes
-are distinct from its dynamic availability in the current application mode.
-
-**Coordinate space** gives a destination meaning. Geographic coordinates,
-profile distance, and window pixels are different coordinate spaces.
-
-**Latency class** names a product obligation such as immediate reaction,
-durable commit, or sustained pan cadence.
-
-**Observation** is an acceptance-owned, deliberately partial interpretation of
-one-way product telemetry. It releases waits; it does not decide correctness.
-
-**Witness** is the versioned, launch-sealed frame envelope carrying timestamps,
-targets, scale, and serialized product telemetry.
-
-**Oracle** is external product evidence: pixels, durable files, process
-behavior, platform accessibility, or a later cold start.
-
-**Contract** is the shared product vocabulary of identity, Commands, Targets,
-coordinate spaces, and latency classes. It does not contain domain behavior,
-fixtures, oracles, or a mirror of application state.
-
-`eternalist-apps` names the native host and its agent bootstrap doctrine.
-`eternalist.moe` remains a distinct product; the compound name prevents the
-bare `eternalist` namespace from acquiring two meanings.
-
-## Dependency Topology
-
-The intended product topology, with `A → B` meaning that `A` depends on `B`,
-is:
+The intended product topology, with `A → B` meaning that `A` depends on `B`, is:
 
 ```text
 xyz-gui
   → xyz-contract
-  → dwemer_poolrooms
   → eternalist-apps
+  → dwemer_poolrooms
 
 eternalist-apps
   → dwemer_poolrooms
@@ -93,326 +65,141 @@ xyz-acceptance
   → egui-tester
 ```
 
+Poolrooms never depends on Eternalist. It remains independently usable by
+native and WebGPU applications with unrelated layouts and interaction grammar.
+Applications may depend directly on Poolrooms and may freely combine its
+mechanisms with Eternalist and product-local UI.
+
 `xyz-acceptance` is unpublished and lives in the product repository. It never
-depends on `xyz-gui` or calls product internals. It launches the optimized
-application binary and crosses the same native input and rendering boundaries
-as a user.
+depends on `xyz-gui` or invokes product internals. The GUI never depends on the
+tester controller. Its optional `egui-test` feature adds observation only.
 
-`xyz-gui` never depends on the tester controller. Its optional test feature
-adds one-way observation only.
+## Primitive Contract
 
-The future `xyz-contract` may depend on a small shared contract-language crate.
-That shared crate will contain handwritten traits and descriptors. A proc
-macro companion may later compile declarations into this algebra, but the
-algebra remains manually implementable and semantically authoritative.
+An Eternalist application primitive:
 
-No common contract-language crate should be published before two products
-demonstrate the same vocabulary. A product-specific contract may incubate
-locally before that extraction.
+- accepts explicit state and dependencies;
+- composes Poolrooms mechanisms rather than counterfeiting their appearance;
+- owns one coherent logical interaction and failure law;
+- emits standard semantic anchors and witness state where useful;
+- returns typed responses or actions for the product to interpret;
+- may own persistence-neutral UI state;
+- remains composable beside raw egui, Poolrooms, and product-local UI.
 
-`trailgen-contract` is that first incubation. It depends only on Serde and owns
-application identity, schema fingerprint, typed Target wire names, and the
-small UI-state enums shared across the observation boundary. Tester gesture
-methods accept any `Display` value, so the contract does not know the tester;
-the GUI and acceptance executable nevertheless consume the same vocabulary.
-Commands, coordinate descriptors, latency classes, derives, and a shared
-contract-language crate remain deferred until repeated use gives them a
-natural shape.
+It does not discover services, invoke domain commands, dictate a product
+persistence schema, require a global panel registry, or close the set of
+application roles. The resulting DSL is library-shaped, not registry-shaped.
 
-## Contract Boundary
-
-The initial lawful contract surface is:
-
-- application and contract identity;
-- Commands and their labels, shortcuts, focus scopes, and named latency
-  classes;
-- Targets and their stable wire identities;
-- typed coordinate spaces and their boundary transforms;
-- a schema fingerprint checked before the first injected input.
-
-The contract does not initially own:
-
-- product witness-state structures;
-- fixtures or external oracles;
-- panel layout or responsive policy;
-- domain entities merely because a Target refers to them;
-- fleet capabilities, doctrine rules, or waiver machinery;
-- background-work semantics beyond an identity that a proven cancellation
-  interaction requires.
-
-The application serializes a minimal telemetry projection. Acceptance defines
-its own partial `Deserialize` Observation containing only the fields that its
-stories consume. This asymmetry is intentional: it keeps the consumer
-authoritative and makes product telemetry less tempting as a correctness
-oracle.
-
-Static Target metadata describes gesture potential, not current permission.
-For example, a support pin may admit dragging in principle while the current
-mode, focus scope, or transaction makes it unavailable. Dynamic availability
-belongs to the presented UI and its witness or accessibility tree.
-
-## Tester Architecture
-
-The `egui-tester` hard kernel survives:
-
-- private display and filesystem;
-- cgroup and process lifecycle;
-- declared network authority;
-- native input and action receipts;
-- temporally eligible observation and surface-present fencing;
-- screenshot and external-oracle machinery;
-- reaction and sustained-cadence budgets;
-- transcripts and failure artifacts.
-
-The first porcelain layer uses ordinary Rust:
-
-1. `Story<O>` binds the application, session, probe, and default reaction
-   budget.
-2. Acceptance-local typed Observations remove raw JSON navigation.
-3. Target identity removes duplicated anchor strings.
-4. Predicate combinators are values with structured failure diagnostics.
-5. Gesture methods own receipt creation, fresh-frame waits, and budget
-   adjudication.
-6. File and pixel proof must be as cheap to express as witness predicates.
-7. One launch-sealed observation journal preserves every semantic frame in
-   order; `Probe` retains its own newest complete frame for targeting.
-
-The handwritten porcelain materially contracts Trailgen's four stories
-without weakening their gestures, oracles, restart checks, or performance
-obligations. Exact line-count targets are rejected as architectural evidence:
-the remaining ceremony must be compared against a second product before it can
-define a language.
-
-A proc-macro story language becomes justified only after this runtime has at
-least two substantial consumers and repeated residual syntax remains. The
-macro must be a compiler front end over the ordinary runtime, preserve source
-spans, emit a flat execution plan, support explanation, and leave the raw API
-usable. It must not own causal semantics or generate a tower of nested generic
-types.
-
-Every accepted story retains the law:
-
-```text
-native gesture
-    → temporally eligible surface-submitted observation
-    → rendered or external oracle
-```
-
-No checked-in xdotool choreography may substitute for a missing tester
-capability.
-
-## Platform Doctrine
-
-X11 is the sole release-tested acceptance vertical. It must remain complete
-across private display authority, real input, capture, presentation fencing,
-reaction budgets, cadence evidence, and failure artifacts. The existing
-headless Wayland capture smoke makes no parity claim. Generic Wayland input,
-compositor policy, and platform-specific acceptance are deferred until the X11
-architecture survives another product adoption; horizontal expansion may not
-destabilize the proven vertical.
-
-## Shell Boundary
-
-Trailgen pins the public `eternalist-apps` repository and contains no local host
-rival. The former `boiler.rs` and `trailgen-shell` incubation are deleted. All
-standing release-mode X11 stories and the dense host-GPU cadence contract cross
-the dependency seam.
-
-The extracted crate includes only mechanics already reproduced across the
-applications:
-
-- winit lifecycle and repaint deadlines;
-- window and egui/wgpu surface construction;
-- resize, DPI, surface loss, and recovery;
-- egui input, tessellation, texture updates, and rendering;
-- Poolrooms water composition and final presentation;
-- one-frame arbitration of application waiting regions over Poolrooms' single
-  loading raft;
-- application GPU-resource registration;
-- fatal-error propagation;
-- optional post-surface-present observation enqueue;
-- optional persistent-left-inspector geometry and scrolling;
-- ordinary close disposition.
-
-The shell should expose one small application trait or an equivalently bounded
-set of explicit hooks. Likely variation points are application construction,
-one UI pulse, GPU resource registration, water-frame composition, close
-disposition, and optional diagnostics. A general plugin registry and a growing
-constructor option bag are rejected.
-
-Product-specific tray implementation, map rendering, domain workers, Booru
-debug capture, and storage/cache policy remain local. A divergent application
-may keep a local mechanism rather than purchasing one more permanent shell
-option.
-
-XDG root resolution, concurrent-instance locking, tray presence, and native
-dialogs remain outside this first seam. They may enter only after a second
-application proves one common law for them.
-
-Semantic panel roles, responsive `ShellPlan` archetypes, a common Activity
-state machine, first-run orchestration, migration, and corruption recovery
-remain design candidates. Their laws may be documented and tested locally, but
-their code is not shared until a second independent implementation proves the
-same semantics.
-
-Trailgen's `LivingWait` is the narrow exception that proves the seam without
-inventing an Activity framework. Product widgets claim rectangles; the shell
-chooses the largest claim and reconciles Poolrooms' one loading raft once per
-frame. It owns neither background-work state nor copy. Promotion requires a
-second app to use this exact claim-and-compose law without product branches.
-
-## Poolrooms Boundary
-
-Dwemer Poolrooms owns:
-
-- fonts, palette, spacing, and visual materials;
-- machined controls and their intrinsic interaction semantics;
-- water simulation, forcing, and composition primitives;
-- intrinsic accessibility information for each control.
-
-Poolrooms does not own application Commands, Target identities, panel roles,
-product lifecycle, persistence, or test witnesses.
-
-Direct `xyz-gui → dwemer_poolrooms` dependency is expected. Applications must
-be free to compose controls, water, and custom chrome without routing every
-choice through the shell. The shell may also depend on Poolrooms for its own
-host-level composition.
-
-Poolrooms' present string-anchor instrumentation is transitional. It may be
-deleted only after its current consumers have migrated and AccessKit or typed
-target publication has demonstrated behavioral parity. Booru's demo machinery
-currently consumes those anchors, so deletion cannot precede that migration.
-
-## AccessKit
-
-AccessKit is not currently active in any of the inspected applications.
-Poolrooms already emits egui `WidgetInfo`, which provides a plausible
-substrate, but stable tree identity, final-pass bounds, custom-canvas
-representation, platform behavior, and frame cost remain unproved.
-
-Adoption therefore proceeds as a parity experiment:
-
-1. Enable the egui-to-AccessKit path in one instrumented application.
-2. Observe the tree without using accessibility actions as input.
-3. Resolve ordinary controls from the tree, then inject native input at their
-   bounds.
-4. Compare identities and bounds against the standing typed-anchor stories.
-5. Represent custom canvas entities accessibly where semantics are honest;
-   retain typed custom targets where an accessibility node is unsuitable.
-6. Delete an anchor path only after every consumer passes the same stories.
-
-AccessKit is targeting and accessibility evidence, not proof of correct
-pixels. Generic Wayland input also remains absent: the present Wayland backend
-captures output but cannot inject compositor-authorized input.
-
-## Evidence Ledger
-
-The 2026-07-30 repository inspection established:
-
-- Poolrooms instrumentation, `egui-tester-witness`, and Booru's probe form
-  three competing anchor systems.
-- Booru's acceptance executable lives in the tester repository rather than the
-  product repository.
-- HRRR has no acceptance suite or witness integration and remains several
-  Poolrooms releases behind the other applications.
-- Native dialogs, tray choreography, generic Wayland input, and deterministic
-  time control remain outside the tester's evidence surface.
-- Visual golden and perceptual comparison remain weaker than the map-heavy
-  products require.
-
-Trailgen closed two original defects during this incubation:
-
-- provider fixtures now speak ordinary HTTP over a filesystem Unix socket
-  inside the disposable test root while the product retains `Network::Deny`;
-- `egui-tester-witness` now appends every semantic frame to one lossless
-  observation journal, and reaction waits select the earliest temporally
-  eligible match rather than the latest polled snapshot.
-
-The tester-independent `trailgen-contract` also proves the first shared
-vocabulary: the GUI and acceptance executable consume one Target enum plus
-wire-state enums and verify `trailgen.ui/2` before the first input. These
-closures are evidence for the present boundary, not permission to expand it.
+Modules inside `eternalist-apps` are the default unit of organization. A new
+crate requires a materially different dependency universe, target claim, or
+release authority. Reusable widgets do not each receive a package.
 
 ## Promotion Law
 
-A common mechanism crosses the shared boundary only through:
+A logical primitive is promoted through either gate:
+
+1. Two applications use it with the same behavioral and failure law, and a
+   further independent reuse is plainly expected.
+2. Three applications use it identically, whether or not further reuse was
+   predicted.
+
+The complete operation is:
 
 ```text
 incubate locally
-    → prove with executable evidence
-    → encounter a second independent consumer
-    → state the common law
-    → extract
-    → migrate every adopter
-    → delete every local copy
-    → publish and pin coherently
+→ prove with executable evidence
+→ satisfy a promotion gate
+→ state the smallest common law
+→ extract
+→ migrate every adopter
+→ delete every local rival
+→ publish and advance the fleet cohort
 ```
 
-A `utils` crate is forbidden. Structural similarity does not establish shared
-semantics. An extraction that leaves local rivals or permanent compatibility
-adapters has not completed.
+Structural resemblance alone proves nothing. Promotion does not preserve every
+local variation behind options. A real divergence remains product-local until
+another consumer proves its own law.
 
-The native host loop already has three independent implementations and has
-earned an extraction attempt, but Trailgen's acceptance suite must guard the
-first port. Cartography has two factual consumers but should wait for HRRR's
-next real map requirement so that extraction answers a current need rather
-than preserving the present duplication in amber.
+## Verification Law
 
-## Implementation Order
+Every consequential acceptance step retains:
 
-1. **Completed:** add ordinary-Rust story context, typed observations, Target
-   identity, and diagnostic predicate combinators to Trailgen.
-2. **Completed:** deny IP networking, use a private Unix-socket HTTP fixture,
-   and make semantic-frame delivery lossless and polling-independent.
-3. **Completed:** extract the private `trailgen-shell` incubation under all
-   release-mode X11 stories and host-GPU cadence evidence.
-4. **Completed:** nucleate `eternalist-apps`, pin Trailgen to its immutable
-   revision, adopt its optional inspector, and delete the local crate.
-5. Write HRRR acceptance stories before changing its runtime; cover boot,
-   first run, offline behavior, and one product-defining field interaction.
-6. Bring HRRR to the current Poolrooms generation, then port it to the shell
-   through a narrow tray-presence seam.
-7. Move Booru's acceptance executable into Booru, port Booru to the shell, and
-   retire its private probe only after its demo and acceptance consumers have
-   migrated.
-8. Extract the shared contract algebra after two products demonstrate the same
-   Command, Target, coordinate, and latency vocabulary.
-9. Run the AccessKit parity experiment and remove obsolete anchor machinery
-   only after equivalent evidence is green.
-10. Extract cartography when a real HRRR map change forces Trailgen and HRRR to
-   reconcile their diverged implementations.
-11. Add the story proc-macro front end if two product suites still exhibit
-    repeated authoring ceremony over the proven runtime.
+```text
+native gesture
+→ temporally eligible post-present witness
+→ rendered or external oracle
+```
 
-Fleet rule registries, capability-generated suites, codemods, and waiver
-machinery remain deferred until fleet scale or repeated manual conformance
-work supplies a payer.
+Acceptance executables live with products. `egui-tester` owns generic control
+and evidence, not Booru, HRRR, or Trailgen stories. Checked-in xdotool
+choreography may direct demos, but it cannot substitute for acceptance.
+
+Poolrooms mechanisms carry unit, interaction, native-gallery, and WebGPU
+evidence. Eternalist primitives carry focused fixture stories. Products prove
+their user obligations over the integrated optimized binary.
+
+X11 is the sole current native acceptance vertical. Compilation elsewhere does
+not create a platform claim. Poolrooms' renderer-independent chrome and WebGPU
+gallery have their own evidence and do not inherit the Eternalist host's X11
+boundary.
+
+## Cohorts And Interlocks
+
+Factory lockstep means every shared-layer change must do one of three things:
+
+1. remain compatible with every registered consumer;
+2. arrive with coordinated consumer migrations;
+3. carry an explicit, expiring divergence record.
+
+A process-only fleet rig should record stable and forge cohorts, repositories,
+exact revisions, shared versions, affected joints, and required gates. Shared
+head changes fan out through ephemeral downstream canaries. Product lockfiles
+retain exact reproducibility; compatible manifest ranges admit automated,
+grouped cohort updates.
+
+Touching one side of a registered duplicated joint requires `propagate`,
+`diverge`, or `extract`. Silence is not a disposition.
+
+A single Cargo workspace is not presently required. Co-location is justified
+only when the joint ledger shows that changes truly require atomic source or
+resolution. Governance and canaries come first.
+
+## Release Law
+
+Shared packages publish only from a clean, tagged checkout after their source
+gate, `cargo package --locked`, and downstream head canaries pass. The manifest
+version, tag, packaged VCS metadata, and commit must identify the same source.
+`--allow-dirty` is forbidden.
+
+Release order follows the dependency graph:
+
+```text
+Poolrooms and egui-tester witness/controller
+→ Eternalist Apps
+→ grouped application lockfile updates
+```
+
+A tested cohort, not a common release date or version number, defines fleet
+synchrony.
+
+## Current Joint Register
+
+| Joint | Disposition |
+| --- | --- |
+| Native lifecycle | Extracted into Eternalist; HRRR migration is in progress and ABV remains |
+| Inspector and LivingWait | Eternalist application primitives |
+| HRRR and ABV shelved collection | Promote as an Eternalist `Cabinet` after exact model/UI law is reconciled under stories |
+| Trailgen and HRRR map pin | Promote physical die into Poolrooms; keep logical map manipulation above it |
+| Trailgen and ABV text plate | Promote physical control into Poolrooms |
+| Trailgen and HRRR cartography | Watched joint only; extract the smallest factual kernel when a live change forces reconciliation |
+| ABV probe and external acceptance | Replace with standard witness; move product stories into ABV |
+| Demo directors | Keep distinct from acceptance while reusing semantic targets and containment machinery where proved |
 
 ## Falsification Gates
 
-The design must be revised if:
-
-- the ordinary-Rust porcelain cannot materially contract Trailgen without
-  weakening evidence;
-- the shell requires product-named branches or an expanding option inventory;
-- HRRR or Booru must circumvent the shell's lifecycle to retain existing
-  behavior;
-- shared Command identity slows ordinary UI iteration enough that applications
-  route around it;
-- AccessKit cannot provide stable ordinary-widget identity and bounds;
-- witness convenience causes stories to lose external or rendered oracles;
-- version skew forces applications onto incompatible shell, Poolrooms, or
-  witness generations.
-
-## Open Decisions
-
-- the shell and contract-language names;
-- whether later co-evolution justifies one shell/tester workspace;
-- whether the Unix-socket HTTP fixture should become tester porcelain after a
-  second product needs it;
-- the eventual platform path for native Wayland input, explicitly deferred
-  until the X11 vertical survives another adoption;
-- native dialog and tray-host testing;
-- the visual-golden and perceptual-comparison contract;
-- whether layout roles and Activity semantics eventually earn shared code;
-- the residual syntax that will determine the proc-macro language.
+Revise this architecture if Eternalist primitives require product-named
+branches, if products must route around shared primitives to remain correct, if
+Poolrooms becomes dependent on Eternalist application policy, if typed
+composition cannot preserve direct egui escape hatches, or if coordinated
+release work repeatedly requires atomic repository changes that the fleet rig
+cannot stage safely.

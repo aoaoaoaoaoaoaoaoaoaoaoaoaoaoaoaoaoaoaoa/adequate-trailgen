@@ -750,9 +750,9 @@ dependencies = [
 
 [[package]]
 name = "dwemer_poolrooms"
-version = "0.7.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "163460f6715bc0f6d791c98b4d0580ca47ee1644b16d694f746007ce27246b21"
+checksum = "aaaf78038b19c175b1cfcbafb297f460d3e7c21437c3edfbd3e031a1716ff0a2"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -795,7 +795,7 @@ version = "0.6.0"
 source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester?rev=ea7308a50cc8029ad807377b71c3aec8f5c95a57#ea7308a50cc8029ad807377b71c3aec8f5c95a57"
 dependencies = [
  "bitflags 2.13.1",
- "egui-tester-witness",
+ "egui-tester-witness 0.6.0 (git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester?rev=ea7308a50cc8029ad807377b71c3aec8f5c95a57)",
  "png",
  "rustix 1.1.4",
  "serde",
@@ -809,9 +809,21 @@ dependencies = [
 [[package]]
 name = "egui-tester-witness"
 version = "0.6.0"
-source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester?rev=ea7308a50cc8029ad807377b71c3aec8f5c95a57#ea7308a50cc8029ad807377b71c3aec8f5c95a57"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "872f2c5043dbf4c5f24230a1587401313b4f72d7b4e746f69c94c5172096dd71"
 dependencies = [
  "egui",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "egui-tester-witness"
+version = "0.6.0"
+source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester?rev=ea7308a50cc8029ad807377b71c3aec8f5c95a57#ea7308a50cc8029ad807377b71c3aec8f5c95a57"
+dependencies = [
  "rustix 1.1.4",
  "serde",
  "serde_json",
@@ -927,13 +939,14 @@ dependencies = [
 
 [[package]]
 name = "eternalist-apps"
-version = "0.1.0"
-source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/eternalist-apps?rev=25199d1f4085c81d20fc012a9091d9acfaa5d131#25199d1f4085c81d20fc012a9091d9acfaa5d131"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3181bc1a3a05e887ce235f67878848a41a619de760bdfd006af6c8636d5a48e0"
 dependencies = [
  "anyhow",
  "dwemer_poolrooms",
  "egui",
- "egui-tester-witness",
+ "egui-tester-witness 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "egui-wgpu",
  "egui-winit",
  "pollster",
@@ -3870,7 +3883,7 @@ dependencies = [
  "directories",
  "dwemer_poolrooms",
  "egui",
- "egui-tester-witness",
+ "egui-tester-witness 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "egui-wgpu",
  "eternalist-apps",
  "fast-mvt",
