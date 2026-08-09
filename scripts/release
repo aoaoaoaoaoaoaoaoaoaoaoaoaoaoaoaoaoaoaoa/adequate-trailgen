@@ -66,6 +66,7 @@ scripts/check
 scripts/audit
 scripts/verify-install
 scripts/test-gui
+scripts/package
 
 if [ "$mode" = publish ]; then
     publish_once trailgen-contract "$version"
@@ -75,10 +76,5 @@ if [ "$mode" = publish ]; then
     publish_once trailgen "$version"
     scripts/package
 else
-    cargo package --locked --package trailgen-contract
-    cargo package --locked --package trailgen-core
-    cargo package --locked --no-verify --package trailgen-data
-    cargo package --locked --no-verify --package trailgen-gui
-    cargo package --locked --no-verify --package trailgen
     printf 'release candidate v%s passed; publication was not requested\n' "$version"
 fi
