@@ -53,10 +53,10 @@ toml = "0.8.23"
 tracing = "0.1.44"
 tracing-chrome = "0.7.2"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry"] }
-trailgen-core = { path = "crates/trailgen-core", version = "0.1.0" }
-trailgen-contract = { path = "crates/trailgen-contract", version = "0.1.0" }
-trailgen-data = { path = "crates/trailgen-data", version = "0.1.0" }
-trailgen-gui = { path = "crates/trailgen-gui", version = "0.1.0" }
+trailgen-core = { path = "crates/trailgen-core", version = "0.1.1" }
+trailgen-contract = { path = "crates/trailgen-contract", version = "0.1.1" }
+trailgen-data = { path = "crates/trailgen-data", version = "0.1.1" }
+trailgen-gui = { path = "crates/trailgen-gui", version = "0.1.1" }
 winit = { version = "0.30.13", default-features = false, features = ["rwh_06", "x11"] }
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 zstd = "0.13.3"
