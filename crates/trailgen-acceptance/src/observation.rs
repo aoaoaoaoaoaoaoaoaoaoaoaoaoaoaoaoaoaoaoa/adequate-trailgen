@@ -75,6 +75,7 @@ pub struct SearchState {
     pub results: ResultsPhase,
     pub trailhead: bool,
     pub boundary: bool,
+    pub boundary_drawing: bool,
     pub required: usize,
     pub forbidden: usize,
     pub revision_scheduled: bool,
@@ -322,6 +323,22 @@ pub mod shows {
         condition("a committed search boundary", |state| {
             state.search.as_ref().is_some_and(|search| search.boundary)
         })
+    }
+
+    pub fn boundary_drawing(active: bool) -> Condition<Observation> {
+        condition(
+            if active {
+                "search-boundary drawing to be armed"
+            } else {
+                "search-boundary drawing to be idle"
+            },
+            move |state| {
+                state
+                    .search
+                    .as_ref()
+                    .is_some_and(|search| search.boundary_drawing == active)
+            },
+        )
     }
 
     pub fn revision() -> Condition<Observation> {

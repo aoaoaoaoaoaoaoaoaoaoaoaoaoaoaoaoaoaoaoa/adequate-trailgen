@@ -104,7 +104,7 @@ fn arm_boundary_without_camera_travel(
         .ok_or_else(|| crate::harness::verdict("focused candidate omitted its viewport"))?;
     let armed = story
         .click(Target::Boundary)?
-        .until(shows::view(View::Browse))?
+        .until(shows::view(View::Browse) & shows::boundary_drawing(true))?
         .into_value();
     let actual = armed
         .state
@@ -115,7 +115,9 @@ fn arm_boundary_without_camera_travel(
             && (actual.world_points - baseline.world_points).abs() <= 1.0e-6,
         format!("arming the search boundary moved the viewport from {baseline:?} to {actual:?}"),
     )?;
-    let _disarmed = story.key(Key::Escape)?.next_frame()?;
+    let _disarmed = story
+        .key(Key::Escape)?
+        .until(shows::boundary_drawing(false))?;
     story.wait_stable(
         Duration::from_secs(3),
         Duration::from_millis(180),

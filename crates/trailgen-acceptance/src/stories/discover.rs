@@ -799,7 +799,12 @@ fn configure_search(story: &mut TrailStory<'_, '_>) -> Result<()> {
     let _placed = story
         .modified_click_at(trailhead, Button::Primary, Modifiers::ALT)?
         .until(shows::trailhead())?;
-    let _armed = story.click(Target::Boundary)?.next_frame()?;
+    // Trailhead placement settles after inspector layout; fence its reflow before targeting it again.
+    let reflow = story.session().move_to(4, 4)?;
+    let _reflowed = story.reaction(reflow).next_frame()?;
+    let _armed = story
+        .click(Target::Boundary)?
+        .until(shows::boundary_drawing(true))?;
 
     let _bounded = lasso_boundary(story, 0.15)?;
     let _time_min = story

@@ -1294,6 +1294,7 @@ impl TrailApp {
             },
             trailhead: recipe.trailhead.is_some(),
             boundary: recipe.boundary.is_some(),
+            boundary_drawing: self.boundary_scribe.active(),
             required: self.edicts.required_count(),
             forbidden: self.edicts.forbidden_count(),
             revision_scheduled: self.search_due.is_some(),

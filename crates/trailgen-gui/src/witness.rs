@@ -125,6 +125,7 @@ mod active {
         pub results: trailgen_contract::ResultsPhase,
         pub trailhead: bool,
         pub boundary: bool,
+        pub boundary_drawing: bool,
         pub required: usize,
         pub forbidden: usize,
         pub revision_scheduled: bool,
