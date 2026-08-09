@@ -35,6 +35,8 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+#[cfg(feature = "egui-test")]
+use trailgen_contract::BoundaryPhase;
 use trailgen_contract::Target;
 use trailgen_core::{
     Coord, EdgeDisposition, EdgeEdicts, EdgeIndex, LoopConstraints, RouteMetrics, RouteShape,
@@ -1293,8 +1295,12 @@ impl TrailApp {
                 trailgen_contract::ResultsPhase::Dormant
             },
             trailhead: recipe.trailhead.is_some(),
-            boundary: recipe.boundary.is_some(),
-            boundary_drawing: self.boundary_scribe.active(),
+            boundary: match (recipe.boundary.is_some(), self.boundary_scribe.active()) {
+                (false, false) => BoundaryPhase::Unlimited,
+                (false, true) => BoundaryPhase::Drawing,
+                (true, false) => BoundaryPhase::Committed,
+                (true, true) => BoundaryPhase::Redrawing,
+            },
             required: self.edicts.required_count(),
             forbidden: self.edicts.forbidden_count(),
             revision_scheduled: self.search_due.is_some(),

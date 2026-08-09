@@ -7,7 +7,7 @@ use std::{borrow::Cow, fmt};
 
 use serde::{Deserialize, Serialize};
 
-pub const UI_FINGERPRINT: &str = "trailgen.ui/12";
+pub const UI_FINGERPRINT: &str = "trailgen.ui/13";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -50,6 +50,27 @@ pub enum RouteShape {
 pub enum SearchPhase {
     Idle,
     Running,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BoundaryPhase {
+    Unlimited,
+    Drawing,
+    Committed,
+    Redrawing,
+}
+
+impl BoundaryPhase {
+    #[must_use]
+    pub const fn committed(self) -> bool {
+        matches!(self, Self::Committed | Self::Redrawing)
+    }
+
+    #[must_use]
+    pub const fn drawing(self) -> bool {
+        matches!(self, Self::Drawing | Self::Redrawing)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -337,5 +358,19 @@ mod tests {
             "areas.handle/3/3"
         );
         assert_eq!(AreaCorner::ALL.map(AreaCorner::ordinal), [0_usize, 1, 2, 3]);
+    }
+
+    #[test]
+    fn boundary_phase_preserves_committed_and_drawing_axes() {
+        let phases = [
+            (BoundaryPhase::Unlimited, false, false),
+            (BoundaryPhase::Drawing, false, true),
+            (BoundaryPhase::Committed, true, false),
+            (BoundaryPhase::Redrawing, true, true),
+        ];
+        for (phase, committed, drawing) in phases {
+            assert_eq!(phase.committed(), committed);
+            assert_eq!(phase.drawing(), drawing);
+        }
     }
 }

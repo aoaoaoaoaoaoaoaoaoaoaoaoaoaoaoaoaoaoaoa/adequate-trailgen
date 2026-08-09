@@ -32,7 +32,8 @@ mod active {
     use egui::Rect;
     use serde::Serialize;
     use trailgen_contract::{
-        CorpusPhase, EditorOrigin, RouteShape, SearchPhase, TrailColoring, View, Workspace,
+        BoundaryPhase, CorpusPhase, EditorOrigin, RouteShape, SearchPhase, TrailColoring, View,
+        Workspace,
     };
 
     #[derive(Serialize)]
@@ -124,8 +125,7 @@ mod active {
         pub corpus: CorpusPhase,
         pub results: trailgen_contract::ResultsPhase,
         pub trailhead: bool,
-        pub boundary: bool,
-        pub boundary_drawing: bool,
+        pub boundary: BoundaryPhase,
         pub required: usize,
         pub forbidden: usize,
         pub revision_scheduled: bool,

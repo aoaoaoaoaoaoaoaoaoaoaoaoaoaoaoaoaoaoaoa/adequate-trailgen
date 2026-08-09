@@ -2,8 +2,8 @@ use egui_tester::{Condition, field};
 use serde::Deserialize;
 
 pub use trailgen_contract::{
-    AreaCorner, CorpusPhase, EditorOrigin, ResultsPhase, RouteShape, SearchPhase, TrailColoring,
-    View, Workspace,
+    AreaCorner, BoundaryPhase, CorpusPhase, EditorOrigin, ResultsPhase, RouteShape, SearchPhase,
+    TrailColoring, View, Workspace,
 };
 
 #[derive(Debug, Deserialize)]
@@ -74,8 +74,7 @@ pub struct SearchState {
     pub corpus: CorpusPhase,
     pub results: ResultsPhase,
     pub trailhead: bool,
-    pub boundary: bool,
-    pub boundary_drawing: bool,
+    pub boundary: BoundaryPhase,
     pub required: usize,
     pub forbidden: usize,
     pub revision_scheduled: bool,
@@ -321,7 +320,10 @@ pub mod shows {
 
     pub fn boundary() -> Condition<Observation> {
         condition("a committed search boundary", |state| {
-            state.search.as_ref().is_some_and(|search| search.boundary)
+            state
+                .search
+                .as_ref()
+                .is_some_and(|search| search.boundary.committed())
         })
     }
 
@@ -336,7 +338,7 @@ pub mod shows {
                 state
                     .search
                     .as_ref()
-                    .is_some_and(|search| search.boundary_drawing == active)
+                    .is_some_and(|search| search.boundary.drawing() == active)
             },
         )
     }
