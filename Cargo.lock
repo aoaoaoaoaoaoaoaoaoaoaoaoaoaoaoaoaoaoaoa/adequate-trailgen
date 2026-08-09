@@ -3808,7 +3808,7 @@ dependencies = [
 
 [[package]]
 name = "trailgen"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -3817,7 +3817,7 @@ dependencies = [
 
 [[package]]
 name = "trailgen-acceptance"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "egui-tester",
  "fast-mvt",
@@ -3834,14 +3834,14 @@ dependencies = [
 
 [[package]]
 name = "trailgen-contract"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "trailgen-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "num-traits",
  "osmpbfreader",
@@ -3861,7 +3861,7 @@ dependencies = [
 
 [[package]]
 name = "trailgen-data"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "png",
@@ -3877,7 +3877,7 @@ dependencies = [
 
 [[package]]
 name = "trailgen-gui"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "bytemuck",
