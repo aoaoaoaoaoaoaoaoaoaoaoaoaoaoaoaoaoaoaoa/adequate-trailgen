@@ -750,9 +750,9 @@ dependencies = [
 
 [[package]]
 name = "dwemer_poolrooms"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88c6ba7028afde2838add444462b4c172e3647e359c2bfb40a2efee9467c2459"
+checksum = "b90c53e79cf0b7961b1849a31eb51df92b850f6b160c0ac6526bb10c0556d5e9"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -791,9 +791,9 @@ dependencies = [
 
 [[package]]
 name = "egui-tester"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "148b44ac83ff6e5193a150c551c2a87335193c28ab20481b2b1e4dcce5b8035b"
+checksum = "13a00bc6eac9e1889b49c90d3a549f83d0e84a991e8015f34e7ebf7a425ade1f"
 dependencies = [
  "bitflags 2.13.1",
  "egui-tester-witness",
@@ -809,15 +809,16 @@ dependencies = [
 
 [[package]]
 name = "egui-tester-witness"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "872f2c5043dbf4c5f24230a1587401313b4f72d7b4e746f69c94c5172096dd71"
+checksum = "70af569f222c02628b43e6d7f6fb86bbe57239b0afb6691bb91f26db66b7d29c"
 dependencies = [
  "egui",
  "rustix 1.1.4",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -929,9 +930,9 @@ dependencies = [
 
 [[package]]
 name = "eternalist-apps"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4c9b90bb558df9d17ea8eb5a80cb6c7c7c962aad22b788e90896ad291b75bbe"
+checksum = "d4d6eaf5ab5c39fb5532d03ad5ad18e61197786f6ba94146c182d3eac9654943"
 dependencies = [
  "anyhow",
  "dwemer_poolrooms",
@@ -3808,7 +3809,7 @@ dependencies = [
 
 [[package]]
 name = "trailgen"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -3817,7 +3818,7 @@ dependencies = [
 
 [[package]]
 name = "trailgen-acceptance"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "egui-tester",
  "fast-mvt",
@@ -3834,14 +3835,14 @@ dependencies = [
 
 [[package]]
 name = "trailgen-contract"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "trailgen-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "num-traits",
  "osmpbfreader",
@@ -3861,7 +3862,7 @@ dependencies = [
 
 [[package]]
 name = "trailgen-data"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "png",
@@ -3877,7 +3878,7 @@ dependencies = [
 
 [[package]]
 name = "trailgen-gui"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "bytemuck",

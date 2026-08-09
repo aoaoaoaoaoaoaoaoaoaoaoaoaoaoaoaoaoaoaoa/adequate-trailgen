@@ -52,8 +52,9 @@ cd "$root"
 [ -z "$(git status --porcelain --untracked-files=no)" ] || die 'tracked worktree is dirty'
 [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] ||
     die 'HEAD is not the pushed origin/main commit'
-[ "$(git tag --points-at HEAD)" = "v$version" ] ||
-    die "v$version does not uniquely tag HEAD"
+git tag --points-at HEAD | grep -Fqx "v$version" ||
+    die "v$version does not tag HEAD"
+git tag -v "v$version" >/dev/null 2>&1 || die "v$version is not a valid signed tag"
 for manifest in crates/trailgen-contract/Cargo.toml crates/trailgen-core/Cargo.toml \
     crates/trailgen-data/Cargo.toml crates/trailgen-gui/Cargo.toml \
     crates/trailgen-cli/Cargo.toml; do
