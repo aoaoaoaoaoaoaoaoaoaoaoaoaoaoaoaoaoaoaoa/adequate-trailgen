@@ -6,11 +6,17 @@ die() {
     exit 1
 }
 
+is_published() {
+    package=$1
+    package_version=$2
+    (cd / && cargo info --registry crates-io "$package@$package_version" >/dev/null 2>&1)
+}
+
 wait_for_registry() {
     package=$1
     package_version=$2
     attempts=0
-    until cargo info "$package@$package_version" >/dev/null 2>&1; do
+    until is_published "$package" "$package_version"; do
         attempts=$((attempts + 1))
         [ "$attempts" -lt 90 ] || die "$package@$package_version did not reach the registry"
         sleep 2
@@ -20,7 +26,7 @@ wait_for_registry() {
 publish_once() {
     package=$1
     package_version=$2
-    if cargo info "$package@$package_version" >/dev/null 2>&1; then
+    if is_published "$package" "$package_version"; then
         printf '%s\n' "$package@$package_version is already published"
         return
     fi
