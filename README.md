@@ -61,6 +61,12 @@ saved-trail refinement and restart, twelve-candidate comparison under cadence
 budgets, manual trail design, saved GPX export, and productive work while graph
 armament is deliberately stalled.
 
+`scripts/package` fully verifies every archive whose internal dependencies are
+already on crates.io and names the downstream archives Cargo must defer.
+`scripts/release VERSION publish` requires the pushed commit and a valid signed
+tag, repeats every gate, publishes the five-crate graph in dependency order,
+then verifies the complete registry-resolved package graph.
+
 See [installation](docs/installation.md), [project state](docs/config.md), [model](docs/model.md), [physical load and moving time](docs/physical-load.md), and [known limitations](docs/limitations.md).
 
 ## License
