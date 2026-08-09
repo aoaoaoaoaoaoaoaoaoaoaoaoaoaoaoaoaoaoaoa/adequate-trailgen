@@ -7,7 +7,7 @@ members = [
   "crates/trailgen-cli",
   "crates/trailgen-gui",
 ]
-resolver = "2"
+resolver = "3"
 
 [workspace.package]
 edition = "2024"
@@ -21,11 +21,11 @@ bytemuck = { version = "1.24.0", features = ["derive"] }
 clap = { version = "4.5.40", features = ["derive"] }
 crossbeam-channel = "0.5.15"
 directories = "6.0.0"
-dwemer_poolrooms = "0.8.0"
+dwemer_poolrooms = "0.9.0"
 egui = "=0.34.3"
 egui-wgpu = "=0.34.3"
 egui-winit = { version = "=0.34.3", default-features = false, features = ["x11"] }
-eternalist-apps = "0.2.0"
+eternalist-apps = "0.3.0"
 fast-mvt = { version = "0.6.1", default-features = false, features = ["reader"] }
 futures-util = "0.3.31"
 geo-types = "0.7.19"
@@ -62,8 +62,6 @@ zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 zstd = "0.13.3"
 
 [workspace.dependencies.egui-tester]
-git = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester"
-rev = "ea7308a50cc8029ad807377b71c3aec8f5c95a57"
 version = "0.6.0"
 
 [workspace.dependencies.egui-tester-witness]

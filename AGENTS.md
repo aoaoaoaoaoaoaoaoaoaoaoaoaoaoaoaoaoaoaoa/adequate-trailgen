@@ -29,11 +29,10 @@ Before changing CI, release gates, supported platforms, installation, or
 removal, read and obey [design/CI_DOCTRINE.md](design/CI_DOCTRINE.md). CI is a
 thin scheduler over app-owned, independently runnable evidence units.
 
-Before extracting shared application-shell, contract, accessibility, or tester
-porcelain machinery, read
-[design/FLEET_APP_ARCHITECTURE.md](design/FLEET_APP_ARCHITECTURE.md). The
-terminal architecture is evidence-gated; do not manufacture deferred crates or
-macros before their promotion gates are satisfied.
+Before extracting lifecycle, application primitives, physical controls, or
+tester machinery, load the `$eternalist-apps` skill and inspect the current
+Eternalist Apps, Dwemer Poolrooms, and egui-tester contracts. Do not manufacture
+shared machinery before its common law has been proved.
 
 The native host and optional inspector live in the pinned `eternalist-apps`
 dependency. Do not recreate local event-loop, water-composition, trace-spine,

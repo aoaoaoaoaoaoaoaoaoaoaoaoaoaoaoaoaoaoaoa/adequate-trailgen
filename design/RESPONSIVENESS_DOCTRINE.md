@@ -165,7 +165,8 @@ A responsiveness change is incomplete without:
 
 The shell phase vocabulary may move into shared middleware after a second
 application uses it without product-specific branches. Latency classes and
-trace-artifact conventions may enter the fleet skill after that same trial.
+trace-artifact conventions may become reusable adoption guidance after that
+same trial.
 Product phase helpers, automatic trace capture on budget failure, and stronger
 budget types require evidence from at least two distinct workloads. Proc macros
 remain deferred until repeated handwritten declarations reveal a stable

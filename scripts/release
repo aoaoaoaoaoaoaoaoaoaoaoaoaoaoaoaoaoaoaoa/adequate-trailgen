@@ -1,0 +1,77 @@
+#!/bin/sh
+set -eu
+
+die() {
+    printf 'release refused: %s\n' "$1" >&2
+    exit 1
+}
+
+wait_for_registry() {
+    package=$1
+    package_version=$2
+    attempts=0
+    until cargo info "$package@$package_version" >/dev/null 2>&1; do
+        attempts=$((attempts + 1))
+        [ "$attempts" -lt 90 ] || die "$package@$package_version did not reach the registry"
+        sleep 2
+    done
+}
+
+publish_once() {
+    package=$1
+    package_version=$2
+    if cargo info "$package@$package_version" >/dev/null 2>&1; then
+        printf '%s\n' "$package@$package_version is already published"
+        return
+    fi
+    cargo publish --locked --package "$package"
+    wait_for_registry "$package" "$package_version"
+}
+
+version=${1:-}
+mode=${2:-check}
+[ -n "$version" ] || die 'usage: scripts/release VERSION [check|publish]'
+case "$version" in
+    *[!0-9.]*|'') die "invalid version: $version" ;;
+esac
+case "$mode" in
+    check|publish) ;;
+    *) die "invalid mode: $mode" ;;
+esac
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$root"
+
+[ "$(git branch --show-current)" = main ] || die 'release checkout is not main'
+[ -z "$(git status --porcelain --untracked-files=no)" ] || die 'tracked worktree is dirty'
+[ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] ||
+    die 'HEAD is not the pushed origin/main commit'
+[ "$(git tag --points-at HEAD)" = "v$version" ] ||
+    die "v$version does not uniquely tag HEAD"
+for manifest in crates/trailgen-contract/Cargo.toml crates/trailgen-core/Cargo.toml \
+    crates/trailgen-data/Cargo.toml crates/trailgen-gui/Cargo.toml \
+    crates/trailgen-cli/Cargo.toml; do
+    grep -Fqx "version = \"$version\"" "$manifest" ||
+        die "$manifest does not declare package version $version"
+done
+
+scripts/check
+scripts/audit
+scripts/verify-install
+scripts/test-gui
+
+if [ "$mode" = publish ]; then
+    publish_once trailgen-contract "$version"
+    publish_once trailgen-core "$version"
+    publish_once trailgen-data "$version"
+    publish_once trailgen-gui "$version"
+    publish_once trailgen "$version"
+    scripts/package
+else
+    cargo package --locked --package trailgen-contract
+    cargo package --locked --package trailgen-core
+    cargo package --locked --no-verify --package trailgen-data
+    cargo package --locked --no-verify --package trailgen-gui
+    cargo package --locked --no-verify --package trailgen
+    printf 'release candidate v%s passed; publication was not requested\n' "$version"
+fi

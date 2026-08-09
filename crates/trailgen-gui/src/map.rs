@@ -1431,7 +1431,9 @@ fn surface_has_any(surface: Option<&str>, needles: &[&str]) -> bool {
 
 pub fn paint_start(painter: &Painter, trailhead: Coord, view: Viewport, rect: Rect, seized: bool) {
     let anchor = screen_at(view, rect, world_from_coord(trailhead));
-    forge::pin(painter, anchor, seized);
+    chrome::ForgePin::new(anchor)
+        .size(chrome::MechanismSize::Medium)
+        .paint(painter, seized);
 }
 
 fn paint_scale_length(

@@ -60,6 +60,17 @@ jobs:
       - name: Audit dependencies
         run: scripts/audit
 
+  package:
+    name: Published package graph
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install Rust 1.96
+        run: rustup toolchain install 1.96.0 --profile minimal
+      - name: Verify crates.io packages
+        run: scripts/package
+
   lifecycle:
     name: Install and uninstall
     runs-on: ubuntu-24.04

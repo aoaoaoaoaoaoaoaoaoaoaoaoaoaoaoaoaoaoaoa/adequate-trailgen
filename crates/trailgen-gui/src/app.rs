@@ -2288,6 +2288,7 @@ impl TrailApp {
             }
             let action = area_row(
                 ui,
+                &mut self.water,
                 self.region_names.get(&id).map(String::as_str),
                 slot,
                 mutable,
@@ -2581,8 +2582,11 @@ impl TrailApp {
             saved_id.is_some_and(|id| self.rename.as_ref().is_some_and(|draft| &draft.trail == id));
         if !renaming {
             let action = saved_id.and_then(|id| {
-                let rename =
-                    chrome::command(ui, "✎", false).on_hover_text("Rename this saved trail · F2");
+                let rename = chrome::Monoglyph::symbol(chrome::Symbol::Rename)
+                    .size(chrome::MechanismSize::Medium)
+                    .show(ui)
+                    .on_hover_text("Rename this saved trail · F2");
+                self.water.monoglyph(&rename);
                 crate::witness::anchor(ui, Target::FocusRename, rename.rect);
                 rename
                     .clicked()
@@ -2681,8 +2685,11 @@ impl TrailApp {
                     action = Some(EditorNameAction::Cancel);
                 }
             } else {
-                let rename =
-                    chrome::command(ui, "✎", false).on_hover_text("Rename this trail · F2");
+                let rename = chrome::Monoglyph::symbol(chrome::Symbol::Rename)
+                    .size(chrome::MechanismSize::Medium)
+                    .show(ui)
+                    .on_hover_text("Rename this trail · F2");
+                self.water.monoglyph(&rename);
                 crate::witness::anchor(ui, Target::EditorRename, rename.rect);
                 if rename.clicked() {
                     action = Some(EditorNameAction::Begin(rename.rect));
@@ -3380,7 +3387,8 @@ impl TrailApp {
                 input.pointer.button_down(egui::PointerButton::Primary),
             )
         });
-        let hot = pointer.is_some_and(|pointer| crate::forge::pin_grip(anchor).contains(pointer));
+        let hardware = chrome::ForgePin::new(anchor).size(chrome::MechanismSize::Medium);
+        let hot = pointer.is_some_and(|pointer| hardware.grip().contains(pointer));
         if pressed
             && hot
             && let Some(pointer) = pointer
@@ -3638,7 +3646,11 @@ impl TrailApp {
         } else {
             format!("Trailhead set; snapped {distance_m:.0} m to the trail.")
         };
-        self.water.click(crate::forge::pin_grip(pointer));
+        self.water.click(
+            chrome::ForgePin::new(pointer)
+                .size(chrome::MechanismSize::Medium)
+                .grip(),
+        );
     }
 
     fn editor_support_at(&self, pointer: egui::Pos2, rect: egui::Rect) -> Option<usize> {
@@ -3651,7 +3663,9 @@ impl TrailApp {
             .find_map(|(slot, support)| {
                 let anchor =
                     map::screen_at(self.viewport, rect, map::world_from_coord(support.coord()));
-                crate::forge::pin_grip(anchor)
+                chrome::ForgePin::new(anchor)
+                    .size(chrome::MechanismSize::Medium)
+                    .grip()
                     .contains(pointer)
                     .then_some(slot)
             })
@@ -3667,30 +3681,24 @@ impl TrailApp {
         for (slot, support) in editor.support_points.iter().enumerate() {
             let anchor =
                 map::screen_at(self.viewport, rect, map::world_from_coord(support.coord()));
-            let hot = hover_pointer
-                .is_some_and(|pointer| crate::forge::pin_grip(anchor).contains(pointer));
-            crate::forge::pin(
+            let hardware = chrome::ForgePin::new(anchor).size(chrome::MechanismSize::Medium);
+            let hot = hover_pointer.is_some_and(|pointer| hardware.grip().contains(pointer));
+            let hardware = hardware.inscription(if excising {
+                "×".to_owned()
+            } else {
+                slot.to_string()
+            });
+            let hardware = if excising {
+                hardware.inscription_size(17.0)
+            } else {
+                hardware
+            };
+            hardware.paint(
                 painter,
-                anchor,
                 editor.drag.as_ref().is_some_and(|drag| drag.slot == slot) || (excising && hot),
             );
             #[cfg(feature = "egui-test")]
-            crate::witness::rect(
-                painter.ctx(),
-                Target::Support(slot),
-                crate::forge::pin_grip(anchor),
-            );
-            painter.text(
-                crate::forge::pin_bulb(anchor),
-                egui::Align2::CENTER_CENTER,
-                if excising {
-                    "×".to_owned()
-                } else {
-                    slot.to_string()
-                },
-                egui::FontId::monospace(if excising { 17.0 } else { 12.0 }),
-                chrome::TEXT,
-            );
+            crate::witness::rect(painter.ctx(), Target::Support(slot), hardware.grip());
         }
     }
 
@@ -5399,6 +5407,7 @@ fn library_button(
 
 fn area_row(
     ui: &mut egui::Ui,
+    water: &mut Surface,
     name: Option<&str>,
     slot: usize,
     mutable: bool,
@@ -5408,11 +5417,14 @@ fn area_row(
     let name = name.map_or_else(|| format!("AREA {slot:02}"), str::to_ascii_uppercase);
     let _row = ui.horizontal(|ui| {
         let rename = ui
-            .add_enabled(
-                renameable,
-                chrome::command_button("✎", false).min_size(vec2(24.0, 22.0)),
-            )
+            .add_enabled_ui(renameable, |ui| {
+                chrome::Monoglyph::symbol(chrome::Symbol::Rename)
+                    .size(chrome::MechanismSize::Medium)
+                    .show(ui)
+            })
+            .inner
             .on_hover_text("Rename this map area");
+        water.monoglyph(&rename);
         crate::witness::anchor(ui, Target::AreaRename(slot), rename.rect);
         let _label = ui.add(egui::Label::new(chrome::muted(name)).truncate());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

@@ -5,11 +5,16 @@ Trailgen is a native Rust workbench for finding, drawing, inspecting, and keepin
 ## Install
 
 ```sh
-./scripts/install-local.sh
+cargo install trailgen --locked
 trailgen
 ```
 
-The installer places the unified `trailgen` binary under `~/.local/bin`. Bare `trailgen` resumes the last chosen project or opens the project deck. New projects conventionally live beneath the operating system’s XDG documents directory in `trailgen/`; Trailgen honors its exact spelling and never invents `~/Documents`.
+Cargo places the unified `trailgen` binary under its configured binary root.
+For a checkout build, `./scripts/install-local.sh` installs the same binary
+beneath `~/.local/bin`. Bare `trailgen` resumes the last chosen project or
+opens the project deck. New projects conventionally live beneath the operating
+system’s XDG documents directory in `trailgen/`; Trailgen honors its exact
+spelling and never invents `~/Documents`.
 
 Linux/X11 is the sole 1.0 release-tested platform coordinate. Wayland and
 other operating systems are not part of the present support claim.

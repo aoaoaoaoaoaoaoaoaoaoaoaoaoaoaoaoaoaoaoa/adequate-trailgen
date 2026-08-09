@@ -1,13 +1,17 @@
 # Installation
 
-Trailgen is a Rust workspace with no mandatory external GIS binary. Install the unified release binary locally:
+Trailgen has no mandatory external GIS binary. Install the unified release
+binary from crates.io:
 
 ```sh
-./scripts/install-local.sh
+cargo install trailgen --locked
 trailgen
 ```
 
-The installer uses `cargo install --locked --force` and writes `trailgen` beneath `${TRAILGEN_INSTALL_ROOT:-$HOME/.local}/bin`. Pass a different root as the first argument for an isolated installation.
+From a source checkout, `./scripts/install-local.sh` uses
+`cargo install --locked --force` and writes `trailgen` beneath
+`${TRAILGEN_INSTALL_ROOT:-$HOME/.local}/bin`. Pass a different root as the first
+argument for an isolated installation.
 
 Remove the installed executable through the same Cargo root:
 
