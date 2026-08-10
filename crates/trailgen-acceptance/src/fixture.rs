@@ -18,6 +18,8 @@ use num_traits::ToPrimitive as _;
 use pmtiles::{Compression, PmTilesWriter, TileCoord, TileType};
 
 const PROVIDER_SOCKET: &str = "fixtures/provider.sock";
+const MINI_NETWORK: &[u8] =
+    include_bytes!("../../trailgen-core/tests/fixtures/mini_network.geojson");
 
 pub struct FixtureWorld {
     server: FixtureServer,
@@ -25,14 +27,7 @@ pub struct FixtureWorld {
 
 impl FixtureWorld {
     pub fn raise(testbed: &Testbed) -> Result<Self> {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(2)
-            .ok_or_else(|| verdict("acceptance crate escaped the Trailgen workspace"))?;
-        let _mini = testbed.copy_private(
-            "fixtures/mini_network.geojson",
-            root.join("crates/trailgen-core/tests/fixtures/mini_network.geojson"),
-        )?;
+        let _mini = testbed.write_private("fixtures/mini_network.geojson", MINI_NETWORK)?;
         let _dense = testbed.write_private("fixtures/dense_network.geojson", dense_network())?;
         let basemap = testbed.private_path("fixtures/basemap.pmtiles")?;
         fixture_basemap(&basemap)?;
@@ -466,10 +461,6 @@ fn segment(id: &str, a: [f64; 3], b: [f64; 3]) -> serde_json::Value {
         },
         "geometry": {"type": "LineString", "coordinates": [a, b]}
     })
-}
-
-fn verdict(detail: &'static str) -> Error {
-    verdict_owned(detail.to_owned())
 }
 
 const fn verdict_owned(detail: String) -> Error {
