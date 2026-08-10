@@ -27,7 +27,7 @@ Bare startup first honors a project in the current directory, then the last vali
 
 New projects open on a low-zoom US vector map. **Add Map Area** turns a drag gesture into a durable fetch rectangle; acquisition and union indexing begin without a CLI handoff. Once trail data is ready, the workbench exposes a project-owned trail library and one compact project search. The search recipe and saved trail geometry live in `library/index.json`. Candidate results are transient.
 
-The 1.0 workbench needs a functioning Vulkan or OpenGL graphics stack and an
+The 1.0 workbench needs a functioning Vulkan graphics stack and an
 X11 session. X11 is the sole release-tested platform coordinate; Wayland and
 other operating systems are presently outside the support claim. Shared
 bootstrap and roaming vectors live beneath `$XDG_CACHE_HOME/trailgen`;
