@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$root"
+
+cargo build --release --locked --bin trailgen --features egui-test
+cargo build --release --locked --package trailgen-acceptance
+cargo run --release --locked --package trailgen-acceptance -- \
+    --smoke \
+    --backend wayland \
+    --artifacts "${TRAILGEN_ACCEPTANCE_ARTIFACTS:-/tmp/trailgen-wayland-artifacts}"

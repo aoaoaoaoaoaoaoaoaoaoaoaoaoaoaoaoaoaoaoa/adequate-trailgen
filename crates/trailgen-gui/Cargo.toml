@@ -1,6 +1,6 @@
 [package]
 name = "trailgen-gui"
-version = "0.1.4"
+version = "0.1.5"
 description = "Native Dwemer Poolrooms workbench for constrained trail-loop generation."
 edition.workspace = true
 license.workspace = true

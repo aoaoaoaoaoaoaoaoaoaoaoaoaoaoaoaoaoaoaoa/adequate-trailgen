@@ -12,12 +12,15 @@ trailgen
 Cargo places the unified `trailgen` binary under its configured binary root.
 For a checkout build, `./scripts/install-local.sh` installs the same binary
 beneath `~/.local/bin`. Bare `trailgen` resumes the last chosen project or
-opens the project deck. New projects conventionally live beneath the operating
-system’s XDG documents directory in `trailgen/`; Trailgen honors its exact
-spelling and never invents `~/Documents`.
+opens the project deck. New projects conventionally live beneath the host
+platform's Documents directory in `trailgen/`; Trailgen honors the directory
+reported by the operating system and never invents a Linux `~/Documents`.
 
-Linux/X11 is the sole 1.0 release-tested platform coordinate. Wayland and
-other operating systems are not part of the present support claim.
+Trailgen is release-tested on Linux/X11, Linux/Wayland, macOS on Apple and
+Intel silicon, and 64-bit Windows. Linux delivery is the ordinary Cargo
+install above. Releases also carry an unsigned universal macOS disk image and
+an unsigned current-user Windows installer; Gatekeeper or SmartScreen may
+therefore require an explicit user override.
 
 Projects are portable directories rooted by `trailgen.toml`. Project content, including the canonical saved-trail Library, stays in that directory. View and window state belongs under `$XDG_STATE_HOME/trailgen`, app-wide preferences under `$XDG_CONFIG_HOME/trailgen`, and shared map cache under `$XDG_CACHE_HOME/trailgen`.
 
@@ -52,20 +55,25 @@ scripts/check
 scripts/audit
 scripts/verify-install
 scripts/test-gui
+scripts/test-wayland
 ```
 
 `scripts/verify-install` proves a sterile non-default install and Cargo-tracked
-uninstall. `scripts/test-gui` is the hermetic native acceptance gate. Its
+uninstall. `scripts/test-gui` is the hermetic X11 acceptance gate. Its
 complete user stories cover GUI project creation and provider acquisition,
 saved-trail refinement and restart, twelve-candidate comparison under cadence
 budgets, manual trail design, saved GPX export, and productive work while graph
-armament is deliberately stalled.
+armament is deliberately stalled. `scripts/test-wayland` owns the narrower
+isolated Wayland contract: native launch, first presentation, semantic witness,
+and nonblack compositor capture.
 
-`scripts/package` fully verifies every archive whose internal dependencies are
-already on crates.io and names the downstream archives Cargo must defer.
+`scripts/package` executes a locked workspace package transaction for every
+publishable crate without relying on already-published internal versions.
 `scripts/release VERSION publish` requires the pushed commit and a valid signed
 tag, repeats every gate, publishes the five-crate graph in dependency order,
-then verifies the complete registry-resolved package graph.
+then verifies the complete registry-resolved package graph. The pinned Foundry
+workflow publishes the unsigned native artifacts and a machine-readable support
+receipt only after the declared proof graph passes.
 
 See [installation](docs/installation.md), [project state](docs/config.md), [model](docs/model.md), [physical load and moving time](docs/physical-load.md), and [known limitations](docs/limitations.md).
 

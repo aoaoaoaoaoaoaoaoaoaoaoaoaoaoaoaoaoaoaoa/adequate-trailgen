@@ -122,10 +122,13 @@ application-created symlinks.
 
 ## Platform Doctrine
 
-X11 is the sole release-tested GUI vertical. It owns private display authority,
+X11 owns the complete release-tested GUI vertical: private display authority,
 native input, capture, surface-present fencing, performance evidence, and
-failure artifacts end to end. Wayland expansion is deferred until this
-architecture survives another application adoption.
+failure artifacts end to end. Wayland owns an isolated release gate for native
+launch, first presentation, the typed semantic witness, and nonblack compositor
+capture; it does not counterfeit X11's full interaction or cadence evidence.
+macOS and Windows prove native launch through the same witness contract and the
+install/uninstall lifecycle of their packaged artifacts.
 
 No Trailgen test may reintroduce checked-in xdotool choreography or touch the
 live desktop. Missing kernel capabilities are recorded as design defects. The

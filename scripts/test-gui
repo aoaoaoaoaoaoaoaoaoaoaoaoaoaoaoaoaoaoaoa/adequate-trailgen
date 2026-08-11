@@ -1,18 +1,19 @@
 #!/bin/sh
 set -eu
 
-root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
-cargo build --release --bin trailgen
-cargo build --release --package trailgen-acceptance
-cargo run --release --package trailgen-acceptance -- --smoke
-cargo build --release --bin trailgen --features egui-test
+cargo build --release --locked --bin trailgen
+cargo build --release --locked --package trailgen-acceptance
+cargo run --release --locked --package trailgen-acceptance -- --smoke --backend x11
+cargo build --release --locked --bin trailgen --features egui-test
 if [ "$#" -eq 0 ]; then
   set -- discover refine manual prepare compare
 fi
 for story do
-  cargo run --release --package trailgen-acceptance -- \
+  cargo run --release --locked --package trailgen-acceptance -- \
+    --backend x11 \
     --story "$story" \
     --artifacts "${TRAILGEN_ACCEPTANCE_ARTIFACTS:-/tmp/trailgen-acceptance-artifacts}"
 done

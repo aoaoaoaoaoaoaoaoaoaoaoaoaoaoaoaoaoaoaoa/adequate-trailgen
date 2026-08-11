@@ -1,6 +1,6 @@
 [package]
 name = "trailgen"
-version = "0.1.4"
+version = "0.1.5"
 description = "Native trail-design workbench and narrow debug shell."
 edition.workspace = true
 license.workspace = true
@@ -20,3 +20,22 @@ trailgen-gui.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.packager]
+product-name = "Trailgen"
+identifier = "dev.adequate.trailgen"
+publisher = "Eternalist"
+category = "Travel"
+binaries = [{ path = "trailgen", main = true }]
+resources = [
+  { src = "../../LICENSE-MIT", target = "LICENSE-MIT" },
+  { src = "../../LICENSE-APACHE", target = "LICENSE-APACHE" },
+]
+
+[package.metadata.packager.macos]
+minimum-system-version = "13.0"
+
+[package.metadata.packager.nsis]
+compression = "lzma"
+installer-mode = "currentUser"
+languages = ["English"]

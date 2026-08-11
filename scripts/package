@@ -1,35 +1,9 @@
 #!/bin/sh
 set -eu
 
-root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
-version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' crates/trailgen-cli/Cargo.toml)
-[ -n "$version" ] || {
-    printf 'trailgen has no package version\n' >&2
-    exit 1
-}
-
-is_published() {
-    package=$1
-    (cd / && cargo info --registry crates-io "$package@$version" >/dev/null 2>&1)
-}
-
-package() {
-    crate=$1
-    shift
-    for dependency do
-        if ! is_published "$dependency"; then
-            printf 'deferring %s package verification; %s@%s is not published\n' \
-                "$crate" "$dependency" "$version"
-            return
-        fi
-    done
-    cargo package --locked --package "$crate"
-}
-
-package trailgen-contract
-package trailgen-core
-package trailgen-data trailgen-core
-package trailgen-gui trailgen-contract trailgen-core trailgen-data
-package trailgen trailgen-gui
+cargo package --workspace --locked \
+    --exclude trailgen-acceptance \
+    --exclude trailgen-portability

@@ -1,0 +1,19 @@
+[package]
+name = "trailgen-portability"
+version = "0.1.0"
+description = "Platform-neutral runtime proof for Trailgen release hosts"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+egui-tester-witness.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+trailgen-contract.workspace = true
+
+[lints]
+workspace = true

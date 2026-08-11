@@ -1,0 +1,77 @@
+#!/bin/sh
+set -eu
+
+die() {
+    printf 'macOS package refused: %s\n' "$1" >&2
+    exit 1
+}
+
+[ "$(uname -s)" = Darwin ] || die 'host is not macOS'
+command -v cargo-packager >/dev/null 2>&1 ||
+    die 'cargo-packager 0.11.8 is required'
+[ "$(cargo packager --version)" = 'cargo-packager 0.11.8' ] ||
+    die 'cargo-packager must be exactly 0.11.8'
+command -v lipo >/dev/null 2>&1 || die 'lipo is required'
+
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+target=${CARGO_TARGET_DIR:-$root/target}
+stage=$target/universal-apple-darwin/release
+out=${TRAILGEN_PACKAGE_DIR:-${FOUNDRY_ARTIFACT_DIR:-$root/dist}}
+raw=$target/trailgen-macos-package-$$
+artifact=$out/trailgen-macos-universal.dmg
+
+[ ! -e "$artifact" ] || die "$artifact already exists"
+mkdir -p "$stage" "$out" "$raw"
+
+export MACOSX_DEPLOYMENT_TARGET=13.0
+cd "$root"
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+cargo build --release --locked --package trailgen --bin trailgen \
+    --features egui-test --target aarch64-apple-darwin
+cargo build --release --locked --package trailgen --bin trailgen \
+    --features egui-test --target x86_64-apple-darwin
+lipo -create \
+    "$target/aarch64-apple-darwin/release/trailgen" \
+    "$target/x86_64-apple-darwin/release/trailgen" \
+    -output "$stage/trailgen"
+lipo "$stage/trailgen" -verify_arch arm64 x86_64
+
+cargo packager --release --formats dmg --target universal-apple-darwin \
+    --packages trailgen --out-dir "$raw"
+set -- "$raw"/*.dmg
+[ "$#" -eq 1 ] && [ -f "$1" ] || die 'packager did not emit exactly one DMG'
+mv "$1" "$artifact"
+
+mount=$target/trailgen-dmg-mount-$$
+mkdir -p "$mount"
+mounted=false
+detach() {
+    if [ "$mounted" = true ]; then
+        hdiutil detach "$mount" >/dev/null
+    fi
+}
+trap detach EXIT HUP INT TERM
+hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$artifact" >/dev/null
+mounted=true
+[ -L "$mount/Applications" ] || die 'DMG contains no Applications drop target'
+[ "$(readlink "$mount/Applications")" = /Applications ] ||
+    die 'DMG Applications drop target is misdirected'
+binary=$mount/Trailgen.app/Contents/MacOS/trailgen
+[ -x "$binary" ] || die 'DMG contains no executable Trailgen app'
+[ -f "$mount/Trailgen.app/Contents/Resources/LICENSE-MIT" ] ||
+    die 'DMG omits the MIT license'
+[ -f "$mount/Trailgen.app/Contents/Resources/LICENSE-APACHE" ] ||
+    die 'DMG omits the Apache license'
+lipo "$binary" -verify_arch arm64 x86_64
+"$binary" --version
+TRAILGEN_PORTABILITY_BINARY=$binary \
+TRAILGEN_PORTABILITY_ARTIFACTS=${TRAILGEN_PORTABILITY_ARTIFACTS:-$target/trailgen-packaged-portability} \
+    cargo run --release --locked --package trailgen-portability
+hdiutil detach "$mount" >/dev/null
+mounted=false
+
+(
+    cd "$out"
+    shasum -a 256 "$(basename "$artifact")" >"$(basename "$artifact").sha256"
+)
+printf 'proved %s\n' "$artifact"

@@ -45,7 +45,7 @@ case "$mode" in
     *) die "invalid mode: $mode" ;;
 esac
 
-root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
 [ "$(git branch --show-current)" = main ] || die 'release checkout is not main'
@@ -66,6 +66,7 @@ scripts/check
 scripts/audit
 scripts/verify-install
 scripts/test-gui
+scripts/test-wayland
 scripts/package
 
 if [ "$mode" = publish ]; then

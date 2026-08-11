@@ -1,110 +1,64 @@
 # Native Application CI Doctrine
 
-- **Status:** Trailgen reference implementation; shared code awaits a second adopter
-- **Release coordinate:** Linux x86_64 with X11
-- **Excluded coordinates:** Wayland, macOS, and Windows
+- **Scheduler and judge:** Eternalist Foundry
+- **Release-tested coordinates:** Linux x86_64/X11/Vulkan,
+  Linux x86_64/Wayland/Vulkan, macOS arm64/Metal, macOS x86_64/Metal, and
+  Windows x86_64/DX12
+- **Delivery:** Cargo on Linux, unsigned universal DMG on macOS, unsigned
+  current-user NSIS installer on Windows
 
-CI schedules evidence. It does not own product law. Every consequential gate
-must be an app-owned command that runs unchanged outside GitHub Actions,
-produces one intelligible verdict, and can later move behind shared porcelain
-without changing its contract.
+`foundry.toml` is the complete support and evidence declaration. The pinned
+reusable workflow schedules that declaration, seals each proof receipt, judges
+the complete graph, and publishes only judged release artifacts. Product law
+remains in the commands below; workflow YAML contains no copied Cargo command
+lists, fixtures, gestures, or release policy.
 
 ## Evidence Units
 
-Trailgen admits four units:
-
 | Unit | Owner | Proves |
 | --- | --- | --- |
-| source | `scripts/check` | formatting, lints, unit and integration behavior, documentation construction |
-| security | `scripts/audit` | the locked dependency graph has no admitted RustSec vulnerability, unmaintained crate, or yanked release |
-| lifecycle | `scripts/verify-install` | the documented source installer works under a sterile non-default prefix, the installed GUI renders through X11, inert probes create no XDG state, and Cargo removes the tracked executable |
-| native acceptance | `scripts/test-gui` | the optimized X11 product crosses real input, rendering, persistence, and external-oracle boundaries |
+| source | `scripts/check` | formatting, lints, unit and integration behavior, and documentation construction |
+| security | `scripts/audit` | the locked dependency graph has no admitted RustSec defect |
+| source package | `scripts/package` | every publishable crate resolves and verifies together through Cargo's workspace packaging transaction |
+| runtime | `scripts/prove-runtime` | host compilation, public Cargo install/uninstall, CLI identity, and first presentation on every declared coordinate |
+| X11 acceptance | `scripts/test-gui` | full optimized user stories through private X11 input, capture, persistence, and external oracles |
+| Wayland smoke | `scripts/test-wayland` | isolated compositor launch, witnessed surface presentation, and nonblack output capture |
+| macOS artifact | `scripts/package-macos` | universal unsigned DMG structure, both architectures, public identity, first presentation, and mounted-artifact lifecycle |
+| Windows artifact | `scripts/package-windows.ps1` | unsigned current-user NSIS install, identity, first presentation, uninstall, user-data preservation, and checksum |
 
-Each unit is complete at its own boundary. Workflow YAML may select an honest
-subset of named GUI stories when hosted graphics cannot adjudicate production
-budgets; it may not weaken, dilate, or reinterpret those budgets. The complete
-`scripts/test-gui` remains a release gate on representative host graphics.
+X11 owns native input and full story parity. Wayland owns only launch,
+surface-present synchronization, and output capture; the support claim does
+not counterfeit compositor-independent input injection. macOS and Windows
+prove the ordinary product and packaged lifecycle but do not claim the X11
+story suite.
 
 ## Capability Law
 
-An adopter first declares three disjoint platform sets:
+`release-tested`, `excluded`, and unclaimed coordinates are disjoint. A new
+operating system, architecture, window system, renderer, installer, or trust
+mode enters the support manifest only with an evidence unit that can falsify
+it. Empty jobs and waivers are forbidden.
 
-1. **release-tested:** every advertised behavior is backed by the applicable
-   source, lifecycle, and native acceptance evidence;
-2. **supported:** deliberately carried behavior with explicit but possibly
-   narrower evidence;
-3. **unclaimed:** code may happen to compile or run, but the release promises
-   nothing.
-
-CI matrices are the projection of those sets, not an aspiration. Adding an OS,
-window system, architecture, installer, package manager, network mode, tray,
-or native dialog requires the evidence unit that can falsify that capability.
-Absent capabilities create no empty jobs and no waivers.
-
-The common baseline for a native Rust application is source verification,
-dependency audit, and its declared installation lifecycle. GUI acceptance is
-required only on release-tested GUI coordinates. Crates.io packaging, binary
-archives, signing, update channels, and purge behavior acquire gates only when
-the product actually claims them.
-
-## Workflow Law
-
-The workflow may:
-
-- select a declared runner and install its host prerequisites;
-- install the declared Rust toolchain and verification tools;
-- cache rebuildable Cargo material;
-- invoke one evidence unit;
-- retain bounded failure artifacts.
-
-It may not duplicate Cargo command lists, seed product fixtures, encode UI
-gestures, invent timeouts, mutate release metadata, publish artifacts, or
-silently broaden the support envelope. Third-party actions are pinned to
-immutable commits and receive least privilege.
-
-Hosted runners are suitable for deterministic functional stories under
-software graphics. Production latency and cadence evidence requires a named,
-representative host-GPU coordinate; a hosted software renderer cannot pass or
-excuse those obligations.
-
-The X11 harness owns stronger host prerequisites than Xvfb alone. A runner
-must provide Bubblewrap, Xauth, a normalized read-only lavapipe root, and a
-canonical `systemd --user` manager with its D-Bus socket at
-`/run/user/$UID/bus`; its kernel must admit the unprivileged namespaces used by
-the systemd and Bubblewrap sandboxes. Workflow setup may enable those
-namespaces on a disposable runner, raise its user manager, and project a
-distribution's multiarch Mesa package into the harness's fixed
-software-Vulkan layout. The app-owned acceptance command must not grow a
-hosted-runner escape hatch or weaken containment when any prerequisite is
-absent.
+Hosted software graphics proves bounded functional progress, not production
+latency. The complete X11 suite remains a release gate on representative host
+graphics where its performance budgets apply.
 
 ## Lifecycle Law
 
-Installation evidence uses a disposable prefix and sterile XDG roots. It
-identifies the installed artifact through its public entrypoint, renders the
-installed GUI through an uninstrumented native smoke, invokes only
-side-effect-free shell probes, removes it through the documented
-package-manager path, and proves the executable is gone. Uninstall preserves
-projects and user state unless a separate, explicitly destructive purge
-contract exists.
+Cargo delivery is the Linux contract; no distribution package is claimed.
+Installation evidence uses a disposable prefix, invokes only the public
+entrypoint, removes it through Cargo, and proves the executable is gone.
 
-The lifecycle unit must evolve with the distribution claim. A future release
-archive, desktop entry, icon, MIME registration, updater, or crates.io package
-is not covered by the present Cargo source-install trial and must replace or
-extend it with artifact-native evidence.
+The DMG is universal for Apple Silicon and Intel. The NSIS installer is x86_64
+and current-user. Both artifacts are deliberately unsigned during incubation;
+their public installation notes must state the resulting Gatekeeper or
+SmartScreen friction. Uninstall preserves projects and application state.
 
-## Nucleation Gate
+## Release Law
 
-The native host has moved to `eternalist-apps`; CI machinery has not. HRRR and
-Booru Viewer should adopt these semantic units with app-owned commands before
-common CI code becomes admissible. The expected promotion targets remain:
-
-- toolchain and Cargo-gate orchestration;
-- sterile install-root and XDG containment;
-- pinned-action workflow framing and failure-artifact retention;
-- capability vocabulary for platform and GUI-test selection.
-
-Product commands, package-manager choices, fixtures, user stories, supported
-coordinates, and release policy remain app-owned inputs. A generated workflow
-template is not the goal; a small agent-readable doctrine plus turnkey
-porcelain earned from repeated implementations is.
+Every release commit and annotated tag uses the Eternalist identity and
+YubiKey-backed signing key. `scripts/release VERSION publish` publishes the
+five-crate Cargo graph in dependency order. A version tag lets Foundry rejudge
+the same support graph and publish the DMG, NSIS installer, checksums, and
+support manifest. The public project ledger must name only those coordinates
+and artifact URLs.

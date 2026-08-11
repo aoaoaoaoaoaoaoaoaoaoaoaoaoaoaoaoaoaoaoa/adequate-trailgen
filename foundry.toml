@@ -1,0 +1,80 @@
+schema = 1
+
+[product]
+name = "Trailgen"
+package = "trailgen"
+binary = "trailgen"
+identifier = "dev.adequate.trailgen"
+profile = "native-gui"
+
+[coordinates]
+release-tested = [
+  "linux-x86_64-x11-vulkan",
+  "linux-x86_64-wayland-vulkan",
+  "macos-aarch64-metal",
+  "macos-x86_64-metal",
+  "windows-x86_64-dx12",
+]
+
+[delivery]
+linux = "cargo"
+macos = "dmg"
+windows = "nsis-current-user"
+
+[trust]
+macos = "unsigned-incubation"
+windows = "unsigned-incubation"
+
+[[proofs]]
+name = "source"
+laws = ["source"]
+run = ["./scripts/check"]
+setup = "wayland"
+timeout-minutes = 60
+
+[[proofs]]
+name = "security"
+laws = ["security"]
+run = ["./scripts/audit"]
+timeout-minutes = 15
+
+[[proofs]]
+name = "source-package"
+laws = ["source-package"]
+run = ["./scripts/package"]
+setup = "wayland"
+timeout-minutes = 45
+
+[[proofs]]
+name = "runtime"
+laws = ["host", "first-present", "lifecycle"]
+run = ["bash", "scripts/prove-runtime"]
+coordinates = [
+  "linux-x86_64-x11-vulkan",
+  "linux-x86_64-wayland-vulkan",
+  "macos-aarch64-metal",
+  "macos-x86_64-metal",
+  "windows-x86_64-dx12",
+]
+timeout-minutes = 90
+
+[[proofs]]
+name = "native-acceptance"
+laws = ["native-acceptance"]
+run = ["bash", "scripts/test-gui", "refine", "manual", "prepare"]
+coordinates = ["linux-x86_64-x11-vulkan"]
+timeout-minutes = 90
+
+[[proofs]]
+name = "artifact-macos"
+laws = ["artifact"]
+run = ["bash", "scripts/package-macos"]
+coordinates = ["macos-aarch64-metal"]
+timeout-minutes = 90
+
+[[proofs]]
+name = "artifact-windows"
+laws = ["artifact"]
+run = ["pwsh", "-NoProfile", "-File", "scripts/package-windows.ps1"]
+coordinates = ["windows-x86_64-dx12"]
+timeout-minutes = 90
