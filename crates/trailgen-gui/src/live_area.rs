@@ -179,7 +179,9 @@ impl RegionScribe {
                 .input(|input| input.pointer.press_origin())
                 .map(|point| point.clamp(rect.min, rect.max));
         }
-        if response.dragged_by(egui::PointerButton::Primary) {
+        if response.dragged_by(egui::PointerButton::Primary)
+            || response.drag_stopped_by(egui::PointerButton::Primary)
+        {
             self.cursor = response
                 .interact_pointer_pos()
                 .map(|point| point.clamp(rect.min, rect.max));

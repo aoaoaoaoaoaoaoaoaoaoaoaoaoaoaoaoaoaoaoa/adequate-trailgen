@@ -3,6 +3,7 @@ use crate::{
     basemap::Source as BasemapSource,
     chrome,
     civic_area::{self, AddOutcome, CivicAreas, CivicKey, CivicRowState},
+    commands::{self, Context as CommandContext, Edict},
     export::{ExportEvent, ExportForge, ExportJob, suggested_filename},
     gallery::{self, TrailSort},
     lexicon::{ExplainedText, Glosses},
@@ -16,7 +17,6 @@ use crate::{
     readout,
     relief::Relief,
     search_boundary::{self, BoundaryEvent, BoundaryScribe},
-    shortcut_help::{Mode as ShortcutMode, ShortcutHelp},
     slate::{ManualDraft, Slate},
     trail_data::{
         Event as TrailDataEvent, Mutation as TrailDataMutation, TrailData, progress_status,
@@ -27,7 +27,12 @@ use anyhow::{Context as _, Result};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, unbounded};
 use dwemer_poolrooms::water::{Domain, Frame as WaterFrame, Surface, Wetness};
 use egui::{Color32, RichText, Stroke, vec2};
-use eternalist_apps::{Inspector, LivingWait};
+use eternalist_apps::{
+    Inspector, LivingWait,
+    command_guide::{CommandGuide, GuideSection},
+    commands::{CommandDispatch, CommandStatus},
+    panel_navigation::{PanelFrame, PanelNavigator},
+};
 use std::{
     collections::{BTreeMap, VecDeque},
     path::{Path, PathBuf},
@@ -102,7 +107,8 @@ pub struct TrailApp {
     corpus: Option<CorpusTask>,
     scribe: RegionScribe,
     area_handles: RegionHandles,
-    shortcuts: ShortcutHelp,
+    guide: CommandGuide,
+    panels: PanelNavigator,
     boundary_scribe: BoundaryScribe,
     offline: bool,
     shutters: BTreeMap<String, bool>,
@@ -1038,7 +1044,8 @@ impl TrailApp {
             corpus: Some(CorpusTask::Preparing(armament)),
             scribe: RegionScribe::default(),
             area_handles: RegionHandles::default(),
-            shortcuts: ShortcutHelp::default(),
+            guide: CommandGuide::default(),
+            panels: PanelNavigator::default(),
             boundary_scribe: BoundaryScribe::default(),
             offline,
             shutters: slate.shutters.clone(),
@@ -1058,9 +1065,13 @@ impl TrailApp {
             workspace_signal: None,
             post_armament: refresh.then_some(TrailDataMutation::Refresh),
         };
-        app.reconcile_saved_projections();
-        app.observed_slate = app.snapshot();
+        app.settle_raise();
         Ok(app)
+    }
+
+    fn settle_raise(&mut self) {
+        self.reconcile_saved_projections();
+        self.observed_slate = self.snapshot();
     }
 
     pub fn pulse(&mut self, ui: &mut egui::Ui) -> Option<Action> {
@@ -1077,7 +1088,15 @@ impl TrailApp {
             self.status = alarm;
         }
         product_phase!("pulse.input", {
-            if !self.shortcuts.capture(ui.ctx()) {
+            let guide_invoked = self.guide.take_shortcuts(ui.ctx());
+            if !guide_invoked && !self.guide.is_open() {
+                if let Some(dispatch) =
+                    commands::canon().route(ui.ctx(), self.command_contexts(), |edict| {
+                        self.edict_status(edict)
+                    })
+                {
+                    self.apply_edict(dispatch);
+                }
                 self.take_keys(ui.ctx());
             }
         });
@@ -1085,28 +1104,22 @@ impl TrailApp {
         self.profile_cursor.bind(profile_owner);
         self.hovered_saved = None;
         self.profile_cursor.marker = None;
+        let mut panels = std::mem::take(&mut self.panels);
         let inspector = product_phase!(
             "pulse.inspector",
             Inspector::new("trail-inspector")
                 .scroll_id("trail-inspector-scroll")
                 .scroll_offset(self.inspector_scroll)
-                .show(ui, |ui| self.inspector(ui))
+                .show(ui, |ui| self.inspector(ui, &mut panels))
         );
+        self.panels = panels;
         self.inspector_scroll = inspector.scroll_offset;
         self.water.heave(ui.ctx(), inspector.scroll_offset);
         let _center = product_phase!(
             "pulse.arena",
             egui::CentralPanel::default().show_inside(ui, |ui| self.arena(ui))
         );
-        let shortcut_mode = match self.view {
-            WorkbenchView::Browse => ShortcutMode::Browse,
-            WorkbenchView::Focus(_) => ShortcutMode::Focus,
-            WorkbenchView::Edit(_) => ShortcutMode::Editor,
-        };
-        product_phase!(
-            "pulse.shortcuts",
-            self.shortcuts.show(ui.ctx(), shortcut_mode)
-        );
+        product_phase!("pulse.command_guide", self.command_guide(ui));
         product_phase!("pulse.search_commit", self.tend_search(ui.ctx()));
         product_phase!("pulse.library_commit", self.tend_library(ui.ctx()));
         product_phase!("pulse.slate_commit", self.tend_slate(ui.ctx()));
@@ -1192,7 +1205,7 @@ impl TrailApp {
                     .view
                     .editor()
                     .is_some_and(|editor| editor.name_draft.is_some()),
-            shortcut_help: self.shortcuts.open(),
+            guide_open: self.guide.is_open(),
             text_edit_focused,
             saved_trails: self.library.trails().len(),
             last_exported: self
@@ -1330,40 +1343,253 @@ impl TrailApp {
         self.water.frame(ctx, pixels_per_point, tooltip_rects, None)
     }
 
-    fn inspector(&mut self, ui: &mut egui::Ui) {
+    const fn command_contexts(&self) -> &'static [CommandContext] {
+        match &self.view {
+            WorkbenchView::Browse => &[CommandContext::Finder],
+            WorkbenchView::Focus(Focus::Candidate { .. }) => {
+                &[CommandContext::Focus, CommandContext::Finder]
+            }
+            WorkbenchView::Focus(Focus::Saved(_)) => &[CommandContext::Focus],
+            WorkbenchView::Edit(_) => &[CommandContext::Editor],
+        }
+    }
+
+    const fn command_idioms(&self) -> &'static [GuideSection] {
+        match &self.view {
+            WorkbenchView::Browse => &commands::FINDER_IDIOMS,
+            WorkbenchView::Focus(Focus::Candidate { .. }) => &commands::CANDIDATE_IDIOMS,
+            WorkbenchView::Focus(Focus::Saved(_)) => &commands::SAVED_IDIOMS,
+            WorkbenchView::Edit(_) => &commands::EDITOR_IDIOMS,
+        }
+    }
+
+    fn edict_status(&self, edict: Edict) -> CommandStatus<'static> {
+        match edict {
+            Edict::OpenProjects if self.view.is_editing() => {
+                CommandStatus::Disabled("finish or cancel the trail edit first")
+            }
+            Edict::FindTrails if self.forge_phase.active() => CommandStatus::Hidden,
+            Edict::FindTrails | Edict::BeginManual if self.sinew.is_none() => {
+                CommandStatus::Disabled("the trail network is still preparing")
+            }
+            Edict::FindTrails if self.corpus.is_some() => {
+                CommandStatus::Disabled("the trail network is being updated")
+            }
+            Edict::FindTrails if self.search_validation().is_some() => {
+                CommandStatus::Disabled("complete a valid trail recipe first")
+            }
+            Edict::StopSearch
+                if matches!(
+                    self.forge_phase,
+                    ForgePhase::Striking { stopping: true, .. }
+                ) =>
+            {
+                CommandStatus::Disabled("the search is already stopping")
+            }
+            Edict::StopSearch if self.forge_phase.active() => CommandStatus::Enabled,
+            Edict::BeginManual if self.forge_phase.active() || self.corpus.is_some() => {
+                CommandStatus::Disabled("wait for the current operation to finish")
+            }
+            Edict::UndoSearchEdit if self.edict_history.can_undo() => CommandStatus::Enabled,
+            Edict::UndoSearchEdit => CommandStatus::Disabled("there is no segment edit to undo"),
+            Edict::RedoSearchEdit if self.edict_history.can_redo() => CommandStatus::Enabled,
+            Edict::RedoSearchEdit => CommandStatus::Disabled("there is no segment edit to redo"),
+            Edict::EditTrail if self.sinew.is_none() || self.corpus.is_some() => {
+                CommandStatus::Disabled("wait for the trail network to finish updating")
+            }
+            Edict::EditTrail if self.focus_design().is_none() => {
+                CommandStatus::Disabled("this legacy trail has no support-point design")
+            }
+            Edict::SaveCandidate if matches!(self.view.focus(), Some(Focus::Saved(_))) => {
+                CommandStatus::Hidden
+            }
+            Edict::SaveCandidate if self.sinew.is_none() || self.corpus.is_some() => {
+                CommandStatus::Disabled("wait for the trail network to finish updating")
+            }
+            Edict::RenameFocused if matches!(self.view.focus(), Some(Focus::Candidate { .. })) => {
+                CommandStatus::Hidden
+            }
+            Edict::UndoTrailEdit
+                if self
+                    .view
+                    .editor()
+                    .is_some_and(|editor| editor.history.can_undo()) =>
+            {
+                CommandStatus::Enabled
+            }
+            Edict::UndoTrailEdit => CommandStatus::Disabled("there is no trail edit to undo"),
+            Edict::RedoTrailEdit
+                if self
+                    .view
+                    .editor()
+                    .is_some_and(|editor| editor.history.can_redo()) =>
+            {
+                CommandStatus::Enabled
+            }
+            Edict::RedoTrailEdit => CommandStatus::Disabled("there is no trail edit to redo"),
+            Edict::SaveTrail if self.view.editor().is_some_and(TrailEditor::ready) => {
+                CommandStatus::Enabled
+            }
+            Edict::SaveTrail => CommandStatus::Disabled("the trail design is not ready to save"),
+            Edict::CreateProject
+            | Edict::OpenProject
+            | Edict::DrawMapArea
+            | Edict::RefreshMapAreas
+            | Edict::StopSearch => CommandStatus::Hidden,
+            Edict::OpenProjects
+            | Edict::FindTrails
+            | Edict::BeginManual
+            | Edict::EditTrail
+            | Edict::SaveCandidate
+            | Edict::RenameFocused
+            | Edict::SelectFinder
+            | Edict::RenameEditor => CommandStatus::Enabled,
+        }
+    }
+
+    fn apply_edict(&mut self, dispatch: CommandDispatch<'_, Edict>) {
+        let edict = match dispatch {
+            CommandDispatch::Invoke(edict) => edict,
+            CommandDispatch::Refused { reason, .. } => {
+                self.status = format!("Unavailable: {reason}.");
+                return;
+            }
+        };
+        match edict {
+            Edict::OpenProjects => self.workspace_signal = Some(Action::Projects),
+            Edict::FindTrails => {
+                if let Some(fault) = self.search_validation() {
+                    self.status = format!("Could not find trails: {fault}");
+                } else {
+                    self.strike();
+                }
+            }
+            Edict::StopSearch => self.stop_search(),
+            Edict::BeginManual => self.begin_editor(EditorOrigin::New, None),
+            Edict::UndoSearchEdit => self.undo_edict(),
+            Edict::RedoSearchEdit => self.redo_edict(),
+            Edict::EditTrail => self.edit_focus(),
+            Edict::SaveCandidate => self.save_focused_candidate(),
+            Edict::RenameFocused => {
+                if let Some(Focus::Saved(id)) = self.view.focus().cloned() {
+                    self.begin_rename(id);
+                }
+            }
+            Edict::SelectFinder => self.cancel_editor(),
+            Edict::UndoTrailEdit => self.undo_editor(),
+            Edict::RedoTrailEdit => self.redo_editor(),
+            Edict::SaveTrail => self.save_editor(),
+            Edict::RenameEditor => self.begin_editor_rename(),
+            Edict::CreateProject
+            | Edict::OpenProject
+            | Edict::DrawMapArea
+            | Edict::RefreshMapAreas => {
+                "That command belongs to another Trailgen workspace.".clone_into(&mut self.status);
+            }
+        }
+    }
+
+    fn search_validation(&self) -> Option<String> {
+        self.sinew
+            .as_ref()
+            .context("trail network is still preparing")
+            .and_then(|sinew| {
+                self.search_request(self.serial.saturating_add(1))
+                    .and_then(|request| request.validate(&sinew.graph))
+            })
+            .err()
+            .map(|error| error.to_string())
+    }
+
+    fn command_guide(&mut self, ui: &egui::Ui) {
+        let contexts = self.command_contexts();
+        let idioms = self.command_idioms();
+        let mut guide = std::mem::take(&mut self.guide);
+        guide.show(
+            ui.ctx(),
+            commands::canon(),
+            contexts,
+            commands::scope_name,
+            |edict| self.edict_status(edict),
+            idioms,
+        );
+        if let Some(rect) = guide.rect() {
+            crate::witness::rect(ui.ctx(), Target::CommandGuide, rect);
+        }
+        self.guide = guide;
+    }
+
+    fn inspector(&mut self, ui: &mut egui::Ui, navigator: &mut PanelNavigator) {
         let _name = ui.label(chrome::title(self.name.to_ascii_uppercase()));
         ui.add_space(3.0);
         let projects = ui
             .horizontal(|ui| {
                 let width = (ui.available_width() - 31.0).max(24.0);
+                let spec = commands::canon().spec(Edict::OpenProjects);
                 let projects = ui
                     .add_enabled(
                         !self.view.is_editing(),
-                        chrome::command_button("PROJECTS", false).min_size(vec2(width, 27.0)),
+                        chrome::command_spec_button(ui, spec, false).min_size(vec2(width, 27.0)),
                     )
-                    .on_hover_text("Open the project deck · Ctrl+O")
+                    .on_hover_text(format!(
+                        "{} · {}",
+                        spec.detail(),
+                        commands::canon().shortcuts(Edict::OpenProjects)[0].label(ui.ctx())
+                    ))
                     .on_disabled_hover_text("Finish or cancel the trail edit first.");
-                self.shortcuts.button(ui);
+                let help = self.guide.activator(ui);
+                crate::witness::response(ui, Target::Help, &help);
+                self.water.monoglyph(&help);
                 projects
             })
             .inner;
         chrome::tension(ui, &projects);
-        if projects.clicked() {
-            self.workspace_signal = Some(Action::Projects);
+        if chrome::exact_activation(ui, &projects) {
+            self.apply_edict(CommandDispatch::Invoke(Edict::OpenProjects));
             self.water.click(projects.rect);
         }
         ui.add_space(3.0);
-        self.section(ui, "library", "saved trails", true, Self::library_panel);
-        self.section(ui, "search", "trail creator", true, Self::search_panel);
+        let mut panels = navigator.frame(ui.ctx());
         self.section(
+            &mut panels,
+            ui,
+            "library",
+            "saved trails",
+            true,
+            Self::library_panel,
+        );
+        self.section(
+            &mut panels,
+            ui,
+            "search",
+            "trail creator",
+            true,
+            Self::search_panel,
+        );
+        self.section(
+            &mut panels,
             ui,
             "calibration",
             "calibration",
             true,
             Self::calibration_panel,
         );
-        self.section(ui, "areas", "map areas", true, Self::area_panel);
-        self.section(ui, "overlays", "overlays", true, Self::civic_panel);
+        self.section(
+            &mut panels,
+            ui,
+            "areas",
+            "map areas",
+            true,
+            Self::area_panel,
+        );
+        self.section(
+            &mut panels,
+            ui,
+            "overlays",
+            "overlays",
+            true,
+            Self::civic_panel,
+        );
     }
 
     fn calibration_panel(&mut self, ui: &mut egui::Ui) {
@@ -1566,6 +1792,7 @@ impl TrailApp {
 
     fn section(
         &mut self,
+        panels: &mut PanelFrame<'_>,
         ui: &mut egui::Ui,
         id: &'static str,
         title: &'static str,
@@ -1573,13 +1800,14 @@ impl TrailApp {
         body: fn(&mut Self, &mut egui::Ui),
     ) {
         let open = self.shutters.get(id).copied().unwrap_or(open);
-        let wake = chrome::section(ui, id, title, open, |ui| body(self, ui));
-        if let Some(wake) = wake.as_ref() {
+        let section = panels.section(ui, id, title, open, |ui| body(self, ui));
+        crate::witness::response(ui, Target::Panel(id), &section.header);
+        if let Some(wake) = section.wake.as_ref() {
             let _prior = self
                 .shutters
                 .insert(id.to_owned(), matches!(wake.flux, chrome::FoldFlux::Open));
         }
-        self.water.fold(wake);
+        self.water.fold(section.wake);
     }
 
     fn search_panel(&mut self, ui: &mut egui::Ui) {
@@ -1626,38 +1854,28 @@ impl TrailApp {
         if self.armament_retry(ui) {
             return;
         }
-        let validation = self
-            .sinew
-            .as_ref()
-            .context("trail network is still preparing")
-            .and_then(|sinew| {
-                self.search_request(self.serial.saturating_add(1))
-                    .and_then(|request| request.validate(&sinew.graph))
-            })
-            .err()
-            .map(|err| err.to_string());
+        let validation = self.search_validation();
         let stopping = matches!(
             self.forge_phase,
             ForgePhase::Striking { stopping: true, .. }
         );
+        let edict = if striking {
+            Edict::StopSearch
+        } else {
+            Edict::FindTrails
+        };
+        let spec = commands::canon().spec(edict);
         let find = ui.add_enabled(
             if striking {
                 !stopping
             } else {
                 validation.is_none()
             },
-            chrome::command_button(
-                if striking {
-                    if stopping {
-                        "STOPPING…"
-                    } else {
-                        "STOP SEARCH"
-                    }
-                } else {
-                    "FIND TRAILS"
-                },
-                striking || validation.is_none(),
-            )
+            if stopping {
+                chrome::command_button("STOPPING…", true)
+            } else {
+                chrome::command_spec_button(ui, spec, striking || validation.is_none())
+            }
             .min_size(vec2(ui.available_width(), 36.0)),
         );
         let find = match (striking, validation.as_deref()) {
@@ -1674,10 +1892,11 @@ impl TrailApp {
         if !striking && trailhead_missing {
             let _reason = chrome::note(ui, "PLACE A TRAILHEAD TO ENABLE SEARCH");
         }
-        if find.clicked() && striking {
+        let activated = chrome::exact_activation(ui, &find);
+        if activated && striking {
             self.stop_search();
             self.water.thwack(find.rect, 0.7);
-        } else if !striking && (find.clicked() || recipe_edit.submitted) {
+        } else if !striking && (activated || recipe_edit.submitted) {
             self.activate_search(validation.as_deref(), find.rect);
         }
     }
@@ -1686,33 +1905,51 @@ impl TrailApp {
         let editing = self.view.is_editing();
         let (finder, manual) = ui
             .horizontal(|ui| {
-                let finder = chrome::command(ui, "FINDER", !editing).on_hover_text(if editing {
+                let finder = ui.add(if editing {
+                    chrome::command_spec_button(
+                        ui,
+                        commands::canon().spec(Edict::SelectFinder),
+                        false,
+                    )
+                } else {
+                    chrome::command_button("FINDER", true)
+                });
+                chrome::tension(ui, &finder);
+                let finder = finder.on_hover_text(if editing {
                     "Discard this edit and return to the trail finder"
                 } else {
                     "Find trails from a trailhead"
                 });
-                let manual = chrome::command_enabled(
-                    ui,
+                let manual = ui.add_enabled(
                     editing
                         || (self.sinew.is_some()
                             && !self.forge_phase.active()
                             && self.corpus.is_none()),
-                    "MANUAL",
-                    editing,
-                )
-                .on_disabled_hover_text("Wait for the current operation to finish")
-                .on_hover_text("Draw a trail with support points");
+                    if editing {
+                        chrome::command_button("MANUAL", true)
+                    } else {
+                        chrome::command_spec_button(
+                            ui,
+                            commands::canon().spec(Edict::BeginManual),
+                            false,
+                        )
+                    },
+                );
+                chrome::tension(ui, &manual);
+                let manual = manual
+                    .on_disabled_hover_text("Wait for the current operation to finish")
+                    .on_hover_text("Draw a trail with support points");
                 (finder, manual)
             })
             .inner;
         crate::witness::anchor(ui, Target::Finder, finder.rect);
         crate::witness::anchor(ui, Target::Manual, manual.rect);
-        if finder.clicked() && editing {
+        if chrome::exact_activation(ui, &finder) && editing {
             self.cancel_editor();
             self.water.select(finder.rect);
             return true;
         }
-        if manual.clicked() && !editing {
+        if chrome::exact_activation(ui, &manual) && !editing {
             self.begin_editor(EditorOrigin::New, None);
             self.water.select(manual.rect);
             return true;
@@ -1977,38 +2214,7 @@ impl TrailApp {
         ui.add_space(5.0);
         self.editor_shape_controls(ui);
         ui.add_space(5.0);
-        let _undo_row = ui.horizontal(|ui| {
-            let can_undo = self
-                .view
-                .editor()
-                .is_some_and(|editor| editor.history.can_undo());
-            let can_redo = self
-                .view
-                .editor()
-                .is_some_and(|editor| editor.history.can_redo());
-            let undo = ui
-                .add_enabled(
-                    can_undo,
-                    chrome::command_button("UNDO", false).min_size(vec2(112.0, 27.0)),
-                )
-                .on_hover_text("Undo the last trail edit · Ctrl+Z");
-            crate::witness::anchor(ui, "editor.undo", undo.rect);
-            if undo.clicked() {
-                self.undo_editor();
-                self.water.click(undo.rect);
-            }
-            let redo = ui
-                .add_enabled(
-                    can_redo,
-                    chrome::command_button("REDO", false).min_size(vec2(112.0, 27.0)),
-                )
-                .on_hover_text("Redo the last trail edit · Ctrl+Y or Ctrl+Shift+Z");
-            crate::witness::anchor(ui, "editor.redo", redo.rect);
-            if redo.clicked() {
-                self.redo_editor();
-                self.water.click(redo.rect);
-            }
-        });
+        self.editor_history_controls(ui);
         let clear = ui.add_enabled(
             count > 0,
             chrome::command_button("CLEAR", false).min_size(vec2(ui.available_width(), 27.0)),
@@ -2026,13 +2232,13 @@ impl TrailApp {
         let save = ui
             .add_enabled(
                 ready,
-                chrome::command_button("SAVE TRAIL", ready)
+                chrome::command_spec_button(ui, commands::canon().spec(Edict::SaveTrail), ready)
                     .min_size(vec2(ui.available_width(), 34.0)),
             )
             .on_hover_text("Save this trail to the project · Ctrl+S");
         crate::witness::anchor(ui, Target::EditorSave, save.rect);
         chrome::tension(ui, &save);
-        if save.clicked() {
+        if chrome::exact_activation(ui, &save) {
             self.save_editor();
             ui.ctx().request_repaint();
             self.water.thwack(save.rect, 0.7);
@@ -2045,6 +2251,38 @@ impl TrailApp {
             self.cancel_editor();
             self.water.click(cancel.rect);
         }
+    }
+
+    fn editor_history_controls(&mut self, ui: &mut egui::Ui) {
+        let _row = ui.horizontal(|ui| {
+            for (edict, enabled, target) in [
+                (
+                    Edict::UndoTrailEdit,
+                    self.view
+                        .editor()
+                        .is_some_and(|editor| editor.history.can_undo()),
+                    "editor.undo",
+                ),
+                (
+                    Edict::RedoTrailEdit,
+                    self.view
+                        .editor()
+                        .is_some_and(|editor| editor.history.can_redo()),
+                    "editor.redo",
+                ),
+            ] {
+                let response = ui.add_enabled(
+                    enabled,
+                    chrome::command_spec_button(ui, commands::canon().spec(edict), false)
+                        .min_size(vec2(112.0, 27.0)),
+                );
+                crate::witness::anchor(ui, target, response.rect);
+                if chrome::exact_activation(ui, &response) {
+                    self.apply_edict(CommandDispatch::Invoke(edict));
+                    self.water.click(response.rect);
+                }
+            }
+        });
     }
 
     fn editor_shape_controls(&mut self, ui: &mut egui::Ui) {
@@ -2525,49 +2763,8 @@ impl TrailApp {
                     );
                 }
             }
-            match self.view.focus() {
-                Some(Focus::Candidate { .. }) => {
-                    let edit = chrome::command_enabled(
-                        ui,
-                        self.sinew.is_some() && self.corpus.is_none(),
-                        "EDIT TRAIL",
-                        false,
-                    );
-                    crate::witness::anchor(ui, Target::FocusEdit, edit.rect);
-                    if edit.clicked() {
-                        action = Some(FocusAction::Edit(edit.rect));
-                    }
-                    let save = chrome::command_enabled(
-                        ui,
-                        self.sinew.is_some() && self.corpus.is_none(),
-                        "SAVE TRAIL",
-                        true,
-                    );
-                    crate::witness::anchor(ui, Target::FocusSave, save.rect);
-                    if save.clicked() {
-                        action = Some(FocusAction::Save(save.rect));
-                    }
-                }
-                Some(Focus::Saved(_)) => {
-                    let edit = chrome::command_enabled(
-                        ui,
-                        self.sinew.is_some()
-                            && self.corpus.is_none()
-                            && self.focus_design().is_some(),
-                        "EDIT TRAIL",
-                        false,
-                    )
-                    .on_disabled_hover_text("This legacy trail has no support points");
-                    crate::witness::anchor(ui, Target::FocusEdit, edit.rect);
-                    if edit.clicked() {
-                        action = Some(FocusAction::Edit(edit.rect));
-                    }
-                    let delete = chrome::command(ui, "DELETE TRAIL", false);
-                    if delete.clicked() {
-                        action = Some(FocusAction::Delete(delete.rect));
-                    }
-                }
-                None => {}
+            if let Some(command) = self.focus_command_controls(ui) {
+                action = Some(command);
             }
         });
         let reconcile = rename_action.is_some() || action.is_some();
@@ -2576,6 +2773,41 @@ impl TrailApp {
         if reconcile {
             ui.ctx()
                 .request_discard("focus toolbar changed its structural state");
+        }
+    }
+
+    fn focus_command_controls(&self, ui: &mut egui::Ui) -> Option<FocusAction> {
+        let editing_ready = self.sinew.is_some() && self.corpus.is_none();
+        let edit = ui
+            .add_enabled(
+                editing_ready && self.focus_design().is_some(),
+                chrome::command_spec_button(ui, commands::canon().spec(Edict::EditTrail), false),
+            )
+            .on_disabled_hover_text("This trail is not currently editable");
+        chrome::tension(ui, &edit);
+        crate::witness::anchor(ui, Target::FocusEdit, edit.rect);
+        if chrome::exact_activation(ui, &edit) {
+            return Some(FocusAction::Edit(edit.rect));
+        }
+        match self.view.focus() {
+            Some(Focus::Candidate { .. }) => {
+                let save = ui.add_enabled(
+                    editing_ready,
+                    chrome::command_spec_button(
+                        ui,
+                        commands::canon().spec(Edict::SaveCandidate),
+                        true,
+                    ),
+                );
+                chrome::tension(ui, &save);
+                crate::witness::anchor(ui, Target::FocusSave, save.rect);
+                chrome::exact_activation(ui, &save).then_some(FocusAction::Save(save.rect))
+            }
+            Some(Focus::Saved(_)) => {
+                let delete = chrome::command(ui, "DELETE TRAIL", false);
+                delete.clicked().then_some(FocusAction::Delete(delete.rect))
+            }
+            None => None,
         }
     }
 
@@ -2592,7 +2824,10 @@ impl TrailApp {
                 let rename = chrome::Monoglyph::symbol(chrome::Symbol::Rename)
                     .size(chrome::MechanismSize::Medium)
                     .show(ui)
-                    .on_hover_text("Rename this saved trail · F2");
+                    .on_hover_text(format!(
+                        "Rename this saved trail · {}",
+                        commands::canon().shortcuts(Edict::RenameFocused)[0].label(ui.ctx())
+                    ));
                 self.water.monoglyph(&rename);
                 crate::witness::anchor(ui, Target::FocusRename, rename.rect);
                 rename
@@ -2695,7 +2930,10 @@ impl TrailApp {
                 let rename = chrome::Monoglyph::symbol(chrome::Symbol::Rename)
                     .size(chrome::MechanismSize::Medium)
                     .show(ui)
-                    .on_hover_text("Rename this trail · F2");
+                    .on_hover_text(format!(
+                        "Rename this trail · {}",
+                        commands::canon().shortcuts(Edict::RenameEditor)[0].label(ui.ctx())
+                    ));
                 self.water.monoglyph(&rename);
                 crate::witness::anchor(ui, Target::EditorRename, rename.rect);
                 if rename.clicked() {
@@ -4829,63 +5067,12 @@ impl TrailApp {
     }
 
     fn take_keys(&mut self, ctx: &egui::Context) {
-        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::O)) {
-            if self.view.is_editing() {
-                "Finish or cancel the trail before changing projects.".clone_into(&mut self.status);
-            } else {
-                self.workspace_signal = Some(Action::Projects);
-            }
-            return;
-        }
-        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::F2)) {
-            if self.view.is_editing() {
-                self.begin_editor_rename();
-                return;
-            }
-            if let Some(Focus::Saved(id)) = self.view.focus().cloned() {
-                self.begin_rename(id);
-                return;
-            }
-        }
-        if ctx.text_edit_focused() {
-            return;
-        }
-        let redo = ctx.input_mut(|input| {
-            input.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Z)
-                || input.consume_key(egui::Modifiers::CTRL, egui::Key::Y)
-        });
-        if redo {
-            if self.view.is_editing() {
-                self.redo_editor();
-                return;
-            }
-            if self.shows_search_context() && self.edict_history.can_redo() {
-                self.redo_edict();
-                return;
-            }
-        }
-        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Z)) {
-            if self.view.is_editing() {
-                self.undo_editor();
-                return;
-            }
-            if self.shows_search_context() && self.edict_history.can_undo() {
-                self.undo_edict();
-                return;
-            }
-        }
-        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::S))
-            && self.view.editor().is_some_and(TrailEditor::ready)
-        {
-            self.save_editor();
+        if ctx.text_edit_focused() || ctx.memory(|memory| memory.top_modal_layer().is_some()) {
             return;
         }
         let widget_focused = ctx.memory(|memory| memory.focused().is_some());
         let find = !widget_focused
-            && ctx.input_mut(|input| {
-                input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
-                    || input.consume_key(egui::Modifiers::CTRL, egui::Key::Enter)
-            });
+            && ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
         if find {
             let search_open = self.shutters.get("search").copied().unwrap_or(true);
             if search_open

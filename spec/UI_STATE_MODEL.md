@@ -21,6 +21,8 @@ Stored candidates never confer focus by their presence alone.
   behavior; it does not create separate rendering implementations.
 - `Browse` is the base workbench. The inspector always owns the saved-trail
   Library; the lower shelf always owns transient Results.
+- A `Command` is a typed application consequence with one stable declaration.
+  A map or widget `Gesture` is target-relative interaction, not a Command.
 
 “Find mode” therefore means `Browse` or `Focus(Candidate)`, optionally with a
 search worker running. `Edit(Candidate)` is an editor, not Find mode.
@@ -90,6 +92,33 @@ is a visible cancellation and restores the exact editor return frame. Map-area n
 content-derived identity of one region snapshot; renaming cannot invalidate or
 reacquire its corpus. Resizing replaces that identity transactionally while
 preserving the region's inspector slot and moving its name to the successor.
+
+## Keyboard Ownership
+
+Each workspace routes input through one command canon before rendering its
+controls. A command declaration owns its stable identity, scope, default
+accelerators, optional `Alt` mnemonic, text-focus policy, label, and consequence
+description. Buttons and the generated command guide read that declaration;
+they may not maintain parallel shortcut prose. The canon exposes effective
+bindings as the future custom-keymap seam, so persisted remapping can replace
+defaults without changing application consequences or help rendering.
+
+The command guide is the top modal layer. `F1` always toggles it; `?` defers to
+focused text entry. While open, it suspends command routing and target-relative
+keys, and `Escape` closes only the guide. No command may bleed through the
+opening or closing stroke. Rename fields and other editors retain ordinary text
+ownership according to each command's declared text-focus policy.
+
+The inspector has one active logical panel. Pointer engagement makes a panel
+active. `Tab` and `Shift+Tab` cycle only through that panel, including its
+disclosure header. Physical `Control+Tab` and `Control+Shift+Tab` move focus to
+the next or previous panel header on every platform; “physical” distinguishes
+this chord from the platform-primary modifier. Focus outside the inspector is
+never captured into its loop.
+
+Enter, Space, arrows, wheel input, map clicks, drags, and similar interactions
+remain target-relative gestures unless they name an application consequence.
+They appear in contextual guide sections but never enter global routing.
 
 ## Presentation
 

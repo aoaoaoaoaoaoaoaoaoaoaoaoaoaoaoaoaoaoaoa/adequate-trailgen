@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use egui_tester::{Button, Key, Modifiers, PixelRegion, Result, Stroke, Timed};
+use egui_tester::{Button, Key, Modifiers, PixelRegion, Result, Timed};
 
 use crate::{
     harness::{Target, TrailFrame, TrailStory, demand, map_pixel, screen_point, verdict},
@@ -127,17 +127,16 @@ pub fn lasso_boundary(story: &mut TrailStory<'_, '_>, inset: f32) -> Result<Time
         point(x0 + inset_x, y1 - inset_y)?,
         point(x0 + inset_x, y0 + inset_y)?,
     ];
-    story
-        .stroke(
-            &knots,
-            Stroke {
-                steps_per_leg: 6,
-                leg_duration: Duration::from_millis(120),
-                knot_dwell: Duration::from_millis(120),
-                ..Stroke::default()
-            },
-        )?
-        .until(shows::boundary())
+    let press = story
+        .session()
+        .button_down(knots[0].0, knots[0].1, Button::Primary)?;
+    let _acquired = story.reaction(press).next_frame()?;
+    for knot in &knots[1..] {
+        let motion = story.session().move_to(knot.0, knot.1)?;
+        let _sampled = story.reaction(motion).next_frame()?;
+    }
+    let release = story.session().button_up(Button::Primary)?;
+    story.reaction(release).until(shows::boundary())
 }
 
 pub fn exercise_profile(story: &mut TrailStory<'_, '_>) -> Result<()> {

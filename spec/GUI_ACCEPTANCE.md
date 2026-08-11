@@ -13,7 +13,8 @@ durable or rendered oracle before passing. Tests never call product internals.
    set and explain Base Pace, lasso a search boundary, set moving-time bounds
    and a lower-limb-load target,
    start with Enter, observe eager candidate promotion, and save. Open the
-   shortcut guide with `?` and prove its rendered presentation. Add Brooklyn
+   generated command guide with `F1`, prove its rendered presentation and modal
+   key isolation, then traverse inspector panels in both directions. Add Brooklyn
    from civic-area completion without moving the camera, observe its prepared
    boundary, explicitly fit it, and recover it offline. In a host-GPU
    continuation, draw a second map area with immediate feedback, retain the
@@ -134,7 +135,7 @@ No Trailgen test may reintroduce checked-in xdotool choreography or touch the
 live desktop. Missing kernel capabilities are recorded as design defects. The
 present frontier is:
 
-- `Ctrl+O` project-deck and native folder-picker cancellation;
+- native folder-picker cancellation;
 - roaming-vector cache fill, offline restart, and provider refresh;
 - contour disclosure and cross-scale label stability;
 - saved-library hover preview and destructive deletion;

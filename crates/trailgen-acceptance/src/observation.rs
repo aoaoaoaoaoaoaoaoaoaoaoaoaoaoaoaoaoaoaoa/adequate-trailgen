@@ -12,7 +12,7 @@ pub struct Observation {
     pub workspace: Workspace,
     pub view: View,
     pub rename_active: bool,
-    pub shortcut_help: bool,
+    pub guide_open: bool,
     pub text_edit_focused: bool,
     pub saved_trails: usize,
     pub last_exported: Option<String>,
@@ -376,8 +376,8 @@ pub mod shows {
         .eq(active)
     }
 
-    pub fn shortcut_help(active: bool) -> Condition<Observation> {
-        field("shortcut guide", |state: &Observation| state.shortcut_help).eq(active)
+    pub fn command_guide(active: bool) -> Condition<Observation> {
+        field("command guide", |state: &Observation| state.guide_open).eq(active)
     }
 
     pub fn editor_origin(expected: EditorOrigin) -> Condition<Observation> {

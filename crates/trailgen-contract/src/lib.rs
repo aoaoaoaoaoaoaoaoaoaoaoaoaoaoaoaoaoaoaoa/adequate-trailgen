@@ -7,7 +7,7 @@ use std::{borrow::Cow, fmt};
 
 use serde::{Deserialize, Serialize};
 
-pub const UI_FINGERPRINT: &str = "trailgen.ui/13";
+pub const UI_FINGERPRINT: &str = "trailgen.ui/14";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -170,8 +170,9 @@ pub enum Target {
     CloseLoop,
     Reverse,
     Profile,
-    ShortcutHelp,
-    ShortcutHelpCard,
+    Help,
+    CommandGuide,
+    Panel(&'static str),
     SavedExport(usize),
     Support(usize),
     AreaRename(usize),
@@ -221,8 +222,8 @@ impl Target {
         Self::CloseLoop,
         Self::Reverse,
         Self::Profile,
-        Self::ShortcutHelp,
-        Self::ShortcutHelpCard,
+        Self::Help,
+        Self::CommandGuide,
     ];
 
     #[must_use]
@@ -264,8 +265,9 @@ impl Target {
             Self::CloseLoop => "editor.close-loop",
             Self::Reverse => "editor.reverse",
             Self::Profile => "profile.canvas",
-            Self::ShortcutHelp => "shortcut-help",
-            Self::ShortcutHelpCard => "shortcut-help.card",
+            Self::Help => "application.help",
+            Self::CommandGuide => "application.command-guide",
+            Self::Panel(name) => return Cow::Owned(format!("panel/{name}")),
             Self::SavedExport(slot) => return Cow::Owned(format!("library.export/{slot}")),
             Self::Support(slot) => return Cow::Owned(format!("editor.support/{slot}")),
             Self::AreaRename(slot) => return Cow::Owned(format!("areas.rename/{slot}")),
@@ -334,6 +336,13 @@ mod tests {
     #[test]
     fn support_targets_are_indexed_without_raw_string_construction() {
         assert_eq!(Target::Support(17).wire(), "editor.support/17");
+    }
+
+    #[test]
+    fn command_chrome_and_panels_have_stable_identity() {
+        assert_eq!(Target::Help.wire(), "application.help");
+        assert_eq!(Target::CommandGuide.wire(), "application.command-guide");
+        assert_eq!(Target::Panel("library").wire(), "panel/library");
     }
 
     #[test]

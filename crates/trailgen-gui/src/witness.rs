@@ -3,6 +3,17 @@ use std::fmt::Display;
 use egui::{Rect, Ui};
 
 #[inline]
+pub fn response(ui: &Ui, name: impl Display, response: &egui::Response) {
+    #[cfg(feature = "egui-test")]
+    egui_tester_witness::egui::record_response(ui, name.to_string(), response);
+    #[cfg(not(feature = "egui-test"))]
+    {
+        let _ = (ui, response);
+        drop(name);
+    }
+}
+
+#[inline]
 pub fn anchor(ui: &Ui, name: impl Display, rect: Rect) {
     #[cfg(feature = "egui-test")]
     egui_tester_witness::egui::record(ui, name.to_string(), rect);
@@ -42,7 +53,7 @@ mod active {
         pub workspace: Workspace,
         pub view: View,
         pub rename_active: bool,
-        pub shortcut_help: bool,
+        pub guide_open: bool,
         pub text_edit_focused: bool,
         pub saved_trails: usize,
         pub last_exported: Option<String>,
@@ -64,7 +75,7 @@ mod active {
                 workspace,
                 view,
                 rename_active: false,
-                shortcut_help: false,
+                guide_open: false,
                 text_edit_focused,
                 saved_trails: 0,
                 last_exported: None,

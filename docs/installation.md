@@ -23,14 +23,16 @@ Uninstall removes application machinery, not projects or user state. Project
 directories and the `trailgen` subdirectories under XDG config, state, and
 cache remain user-governed and may be removed separately.
 
-Bare startup first honors a project in the current directory, then the last valid project explicitly chosen by the user. With neither, Trailgen opens its project deck. New projects are created beneath the XDG documents directory when available; Linux therefore honors `XDG_DOCUMENTS_DIR` exactly, including spelling and case. If the operating system provides no documents location, the deck asks for a parent folder. `trailgen gui PATH` remains the strict explicit form, and `Ctrl+O` returns to the deck.
+Bare startup first honors a project in the current directory, then the last valid project explicitly chosen by the user. With neither, Trailgen opens its project deck. New projects are created beneath the operating system's Documents directory when available; on Linux, Trailgen honors `XDG_DOCUMENTS_DIR` exactly, including spelling and case. If the operating system provides no documents location, the deck asks for a parent folder. `trailgen gui PATH` remains the strict explicit form. The Projects command returns to the deck with `Control+O` on Linux and Windows or `Command+O` on macOS.
 
 New projects open on a low-zoom US vector map. **Add Map Area** turns a drag gesture into a durable fetch rectangle; acquisition and union indexing begin without a CLI handoff. Once trail data is ready, the workbench exposes a project-owned trail library and one compact project search. The search recipe and saved trail geometry live in `library/index.json`. Candidate results are transient.
 
-The 1.0 workbench needs a functioning Vulkan graphics stack and an
-X11 session. X11 is the sole release-tested platform coordinate; Wayland and
-other operating systems are presently outside the support claim. Shared
-bootstrap and roaming vectors live beneath `$XDG_CACHE_HOME/trailgen`;
+The native workbench needs a functioning graphics stack. Releases test Linux
+under X11 and Wayland, macOS on Apple and Intel silicon, and 64-bit Windows.
+X11 owns the complete native interaction suite; the other targets prove their
+declared launch and packaging contracts without counterfeiting X11 evidence.
+Shared bootstrap and roaming vectors live in the platform cache directory;
+on Linux that is `$XDG_CACHE_HOME/trailgen`.
 content-addressed project cuts live under the project’s `cache/`. Viewport,
 inspector, gallery, and sorting state are atomically debounced beneath
 `$XDG_STATE_HOME/trailgen/projects/`. App-wide preferences live in

@@ -3,10 +3,10 @@ use crate::{
     app::{Action as TrailAction, ReloadFrame, TrailApp, forge_water},
     basemap::Source as BasemapSource,
     chrome,
+    commands::{self, Context as CommandContext, Edict},
     habitat::{Habitat, ProjectPlace, create_project},
     live_area::{self, RegionHandles, RegionScribe, ResizeEvent, ScribeEvent},
     map::{self, Viewport},
-    shortcut_help::{Mode as ShortcutMode, ShortcutHelp},
     slate::Slate,
     trail_data::{
         Event as TrailDataEvent, Mutation as TrailDataMutation, TrailData, progress_status,
@@ -16,7 +16,12 @@ use crate::{
 use anyhow::{Context as _, Result, ensure};
 use dwemer_poolrooms::water::{Frame as WaterFrame, Surface};
 use egui::{Color32, RichText, Stroke, vec2};
-use eternalist_apps::{Inspector, LivingWait};
+use eternalist_apps::{
+    Inspector, LivingWait,
+    command_guide::CommandGuide,
+    commands::{CommandDispatch, CommandStatus},
+    panel_navigation::PanelNavigator,
+};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -235,7 +240,7 @@ impl Workbench {
                     trailgen_contract::View::Projects,
                     text_edit_focused,
                 );
-                state.shortcut_help = deck.shortcuts.open();
+                state.guide_open = deck.guide.is_open();
                 state
             }
             WorkbenchMode::Limbo => unreachable!("workbench transition escaped its witness"),
@@ -320,7 +325,8 @@ struct SurveyWorkbench {
     fit_regions: bool,
     scribe: RegionScribe,
     area_handles: RegionHandles,
-    shortcuts: ShortcutHelp,
+    guide: CommandGuide,
+    panels: PanelNavigator,
     slate_path: PathBuf,
     committed_slate: Slate,
     observed_slate: Slate,
@@ -366,7 +372,8 @@ impl SurveyWorkbench {
             fit_regions,
             scribe: RegionScribe::default(),
             area_handles: RegionHandles::default(),
-            shortcuts: ShortcutHelp::default(),
+            guide: CommandGuide::default(),
+            panels: PanelNavigator::default(),
             slate_path,
             committed_slate: slate.clone(),
             observed_slate: slate,
@@ -383,13 +390,20 @@ impl SurveyWorkbench {
 
     fn pulse(&mut self, ui: &mut egui::Ui) -> Option<WorkspaceAction> {
         self.vector.absorb(ui.ctx());
-        let help_owns_keys = self.shortcuts.capture(ui.ctx());
-        let shortcut = !help_owns_keys
-            && ui
-                .ctx()
-                .input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::O));
-        let mut action = shortcut.then_some(WorkspaceAction::Projects);
-        if !help_owns_keys
+        let guide_invoked = self.guide.take_shortcuts(ui.ctx());
+        let mut action = None;
+        if !guide_invoked
+            && !self.guide.is_open()
+            && let Some(dispatch) =
+                commands::canon().route(ui.ctx(), &[CommandContext::Survey], |edict| {
+                    self.edict_status(edict)
+                })
+        {
+            self.apply_edict(ui.ctx(), dispatch, &mut action);
+        }
+        if !guide_invoked
+            && !self.guide.is_open()
+            && ui.ctx().memory(|memory| memory.top_modal_layer().is_none())
             && ui
                 .ctx()
                 .input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
@@ -398,46 +412,150 @@ impl SurveyWorkbench {
             self.area_handles.cancel();
         }
         self.absorb_corpus(&mut action);
-        let _left =
-            Inspector::new("survey-inspector").show(ui, |ui| self.inspector(ui, &mut action));
+        let mut panels = std::mem::take(&mut self.panels);
+        let _left = Inspector::new("survey-inspector")
+            .show(ui, |ui| self.inspector(ui, &mut panels, &mut action));
+        self.panels = panels;
         let _center = egui::CentralPanel::default().show_inside(ui, |ui| self.arena(ui));
-        self.shortcuts.show(ui.ctx(), ShortcutMode::Survey);
+        self.command_guide(ui);
         self.tend_slate(ui.ctx());
         action
     }
 
-    fn inspector(&mut self, ui: &mut egui::Ui, action: &mut Option<WorkspaceAction>) {
+    const fn edict_status(&self, edict: Edict) -> CommandStatus<'static> {
+        match edict {
+            Edict::DrawMapArea if self.scribe.active() => {
+                CommandStatus::Disabled("a map-area drawing gesture is already armed")
+            }
+            Edict::DrawMapArea if self.offline => {
+                CommandStatus::Disabled("map areas cannot be downloaded while offline")
+            }
+            Edict::RefreshMapAreas if self.regions.is_empty() => CommandStatus::Hidden,
+            Edict::RefreshMapAreas if self.offline => {
+                CommandStatus::Disabled("map areas cannot be refreshed while offline")
+            }
+            Edict::DrawMapArea | Edict::RefreshMapAreas if self.corpus.is_some() => {
+                CommandStatus::Disabled("wait for the current trail update to finish")
+            }
+            Edict::CreateProject
+            | Edict::OpenProject
+            | Edict::FindTrails
+            | Edict::StopSearch
+            | Edict::BeginManual
+            | Edict::UndoSearchEdit
+            | Edict::RedoSearchEdit
+            | Edict::EditTrail
+            | Edict::SaveCandidate
+            | Edict::RenameFocused
+            | Edict::SelectFinder
+            | Edict::UndoTrailEdit
+            | Edict::RedoTrailEdit
+            | Edict::SaveTrail
+            | Edict::RenameEditor => CommandStatus::Hidden,
+            Edict::OpenProjects | Edict::DrawMapArea | Edict::RefreshMapAreas => {
+                CommandStatus::Enabled
+            }
+        }
+    }
+
+    fn apply_edict(
+        &mut self,
+        ctx: &egui::Context,
+        dispatch: CommandDispatch<'_, Edict>,
+        action: &mut Option<WorkspaceAction>,
+    ) {
+        let edict = match dispatch {
+            CommandDispatch::Invoke(edict) => edict,
+            CommandDispatch::Refused { reason, .. } => {
+                self.fault = Some(format!("Unavailable: {reason}."));
+                return;
+            }
+        };
+        match edict {
+            Edict::OpenProjects => *action = Some(WorkspaceAction::Projects),
+            Edict::DrawMapArea => {
+                self.area_handles.cancel();
+                self.scribe.arm();
+            }
+            Edict::RefreshMapAreas => {
+                if let Err(error) = self.strike(ctx, TrailDataMutation::Refresh) {
+                    self.fault = Some(format!("{error:#}"));
+                }
+            }
+            _ => self.fault = Some("That command belongs to another Trailgen workspace.".into()),
+        }
+    }
+
+    fn command_guide(&mut self, ui: &egui::Ui) {
+        let mut guide = std::mem::take(&mut self.guide);
+        guide.show(
+            ui.ctx(),
+            commands::canon(),
+            &[CommandContext::Survey],
+            commands::scope_name,
+            |edict| self.edict_status(edict),
+            &commands::SURVEY_IDIOMS,
+        );
+        if let Some(rect) = guide.rect() {
+            crate::witness::rect(ui.ctx(), Target::CommandGuide, rect);
+        }
+        self.guide = guide;
+    }
+
+    fn inspector(
+        &mut self,
+        ui: &mut egui::Ui,
+        navigator: &mut PanelNavigator,
+        action: &mut Option<WorkspaceAction>,
+    ) {
         ui.add_space(ui.spacing().item_spacing.x);
         let _name = ui.label(chrome::title(self.name.to_ascii_uppercase()));
         ui.add_space(3.0);
         let projects = ui
             .horizontal(|ui| {
                 let width = (ui.available_width() - 31.0).max(24.0);
+                let spec = commands::canon().spec(Edict::OpenProjects);
                 let projects = ui
-                    .add(chrome::command_button("PROJECTS", false).min_size(vec2(width, 27.0)))
-                    .on_hover_text("Open the project deck · Ctrl+O");
-                self.shortcuts.button(ui);
+                    .add(chrome::command_spec_button(ui, spec, false).min_size(vec2(width, 27.0)))
+                    .on_hover_text(format!(
+                        "{} · {}",
+                        spec.detail(),
+                        commands::canon().shortcuts(Edict::OpenProjects)[0].label(ui.ctx())
+                    ));
+                let help = self.guide.activator(ui);
+                crate::witness::response(ui, Target::Help, &help);
+                self.water.monoglyph(&help);
                 projects
             })
             .inner;
         chrome::tension(ui, &projects);
-        if projects.clicked() {
-            *action = Some(WorkspaceAction::Projects);
+        if chrome::exact_activation(ui, &projects) {
+            self.apply_edict(
+                ui.ctx(),
+                CommandDispatch::Invoke(Edict::OpenProjects),
+                action,
+            );
             self.water.click(projects.rect);
         }
         ui.add_space(14.0);
-        let _label = ui.label(chrome::section_title("MAP AREAS"));
+        let mut panels = navigator.frame(ui.ctx());
+        let section = panels.section(ui, "areas", "map areas", true, |ui| {
+            self.area_panel(ui);
+        });
+        crate::witness::response(ui, Target::Panel("areas"), &section.header);
+        self.water.fold(section.wake);
+    }
+
+    fn area_panel(&mut self, ui: &mut egui::Ui) {
         let selecting = self.scribe.active();
+        let draw_spec = commands::canon().spec(Edict::DrawMapArea);
         let select = ui.add_enabled(
             !self.offline && self.corpus.is_none(),
-            chrome::command_button(
-                if selecting {
-                    "CANCEL DRAWING"
-                } else {
-                    "ADD MAP AREA"
-                },
-                selecting,
-            )
+            if selecting {
+                chrome::command_button("CANCEL DRAWING", true)
+            } else {
+                chrome::command_spec_button(ui, draw_spec, false)
+            }
             .min_size(vec2(ui.available_width(), 34.0)),
         );
         let select = if selecting {
@@ -447,11 +565,16 @@ impl SurveyWorkbench {
         };
         crate::witness::anchor(ui, Target::SurveyAddArea, select.rect);
         chrome::tension(ui, &select);
-        if select.clicked() {
+        if chrome::exact_activation(ui, &select) {
             if selecting {
                 self.scribe.disarm();
             } else {
-                self.scribe.arm();
+                let mut action = None;
+                self.apply_edict(
+                    ui.ctx(),
+                    CommandDispatch::Invoke(Edict::DrawMapArea),
+                    &mut action,
+                );
             }
             self.water.click(select.rect);
         }
@@ -486,16 +609,20 @@ impl SurveyWorkbench {
         }
         if !self.regions.is_empty() {
             ui.add_space(6.0);
+            let spec = commands::canon().spec(Edict::RefreshMapAreas);
             let refresh = ui.add_enabled(
                 !self.offline && self.corpus.is_none(),
-                chrome::command_button("REFRESH TRAILS", false)
+                chrome::command_spec_button(ui, spec, false)
                     .min_size(vec2(ui.available_width(), 27.0)),
             );
             chrome::tension(ui, &refresh);
-            if refresh.clicked()
-                && let Err(err) = self.strike(ui.ctx(), TrailDataMutation::Refresh)
-            {
-                self.fault = Some(format!("{err:#}"));
+            if chrome::exact_activation(ui, &refresh) {
+                let mut action = None;
+                self.apply_edict(
+                    ui.ctx(),
+                    CommandDispatch::Invoke(Edict::RefreshMapAreas),
+                    &mut action,
+                );
             }
         }
         if let Some(fault) = &self.fault {
@@ -538,11 +665,21 @@ impl SurveyWorkbench {
             if self.corpus.is_none() && !self.scribe.active() {
                 let select = ui.add_enabled(
                     !self.offline,
-                    chrome::command_button("ADD MAP AREA", true).min_size(vec2(164.0, 29.0)),
+                    chrome::command_spec_button(
+                        ui,
+                        commands::canon().spec(Edict::DrawMapArea),
+                        true,
+                    )
+                    .min_size(vec2(164.0, 29.0)),
                 );
                 chrome::tension(ui, &select);
-                if select.clicked() {
-                    self.scribe.arm();
+                if chrome::exact_activation(ui, &select) {
+                    let mut action = None;
+                    self.apply_edict(
+                        ui.ctx(),
+                        CommandDispatch::Invoke(Edict::DrawMapArea),
+                        &mut action,
+                    );
                     self.water.click(select.rect);
                 }
             }
@@ -710,7 +847,7 @@ impl SurveyWorkbench {
             trailgen_contract::View::Browse,
             text_edit_focused,
         );
-        state.shortcut_help = self.shortcuts.open();
+        state.guide_open = self.guide.is_open();
         state.map = self.map_rect.is_positive().then(|| {
             crate::witness::MapState::forge(
                 self.map_rect,
@@ -832,7 +969,7 @@ pub struct ProjectDeck {
     return_workspace: Option<ProjectWorkspace>,
     known: Vec<ProjectPlace>,
     water: Surface,
-    shortcuts: ShortcutHelp,
+    guide: CommandGuide,
 }
 
 impl ProjectDeck {
@@ -861,21 +998,29 @@ impl ProjectDeck {
             return_workspace,
             known,
             water: forge_water(),
-            shortcuts: ShortcutHelp::default(),
+            guide: CommandGuide::default(),
         }
     }
 
     fn pulse(&mut self, ui: &mut egui::Ui) -> Option<ProjectWorkspace> {
-        let help_owns_keys = self.shortcuts.capture(ui.ctx());
-        let mut action = if help_owns_keys {
-            None
+        let guide_invoked = self.guide.take_shortcuts(ui.ctx());
+        let mut action = if !guide_invoked
+            && !self.guide.is_open()
+            && let Some(dispatch) =
+                commands::canon().route(ui.ctx(), &[CommandContext::Projects], |edict| {
+                    self.edict_status(edict)
+                }) {
+            self.edict_action(dispatch)
         } else {
-            self.return_workspace.as_ref().and_then(|_| {
+            None
+        };
+        if action.is_none() && !guide_invoked && !self.guide.is_open() {
+            action = self.return_workspace.as_ref().and_then(|_| {
                 ui.ctx()
                     .input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
                     .then_some(ProjectAction::Back)
-            })
-        };
+            });
+        }
         let _center = egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.add_space(((ui.available_height() - 650.0) * 0.42).max(14.0));
             let _row = ui.horizontal(|ui| {
@@ -888,8 +1033,72 @@ impl ProjectDeck {
                     .show(ui, |ui| self.plate(ui, &mut action));
             });
         });
-        self.shortcuts.show(ui.ctx(), ShortcutMode::Projects);
+        self.command_guide(ui);
         action.and_then(|action| self.attempt(ui.ctx(), action))
+    }
+
+    fn edict_status(&self, edict: Edict) -> CommandStatus<'static> {
+        match edict {
+            Edict::CreateProject if self.new_project_root().is_some() => CommandStatus::Enabled,
+            Edict::CreateProject => {
+                CommandStatus::Disabled("enter a project name and choose a parent folder")
+            }
+            Edict::OpenProject if !self.open_root.trim().is_empty() => CommandStatus::Enabled,
+            Edict::OpenProject => CommandStatus::Disabled("choose a project folder first"),
+            Edict::OpenProjects
+            | Edict::DrawMapArea
+            | Edict::RefreshMapAreas
+            | Edict::FindTrails
+            | Edict::StopSearch
+            | Edict::BeginManual
+            | Edict::UndoSearchEdit
+            | Edict::RedoSearchEdit
+            | Edict::EditTrail
+            | Edict::SaveCandidate
+            | Edict::RenameFocused
+            | Edict::SelectFinder
+            | Edict::UndoTrailEdit
+            | Edict::RedoTrailEdit
+            | Edict::SaveTrail
+            | Edict::RenameEditor => CommandStatus::Hidden,
+        }
+    }
+
+    fn edict_action(&mut self, dispatch: CommandDispatch<'_, Edict>) -> Option<ProjectAction> {
+        let edict = match dispatch {
+            CommandDispatch::Invoke(edict) => edict,
+            CommandDispatch::Refused { reason, .. } => {
+                self.fault = Some(format!("Unavailable: {reason}."));
+                return None;
+            }
+        };
+        match edict {
+            Edict::CreateProject => self.new_project_root().map(|root| ProjectAction::Create {
+                root,
+                name: self.new_name.trim().to_owned(),
+            }),
+            Edict::OpenProject => Some(ProjectAction::Open(PathBuf::from(self.open_root.trim()))),
+            _ => {
+                self.fault = Some("That command belongs to another Trailgen workspace.".into());
+                None
+            }
+        }
+    }
+
+    fn command_guide(&mut self, ui: &egui::Ui) {
+        let mut guide = std::mem::take(&mut self.guide);
+        guide.show(
+            ui.ctx(),
+            commands::canon(),
+            &[CommandContext::Projects],
+            commands::scope_name,
+            |edict| self.edict_status(edict),
+            &commands::PROJECT_IDIOMS,
+        );
+        if let Some(rect) = guide.rect() {
+            crate::witness::rect(ui.ctx(), Target::CommandGuide, rect);
+        }
+        self.guide = guide;
     }
 
     fn plate(&mut self, ui: &mut egui::Ui, action: &mut Option<ProjectAction>) {
@@ -957,14 +1166,15 @@ impl ProjectDeck {
         let ready = target.is_some();
         let create = ui.add_enabled(
             ready,
-            chrome::command_button("CREATE PROJECT", true).min_size(vec2(245.0, 34.0)),
+            chrome::command_spec_button(ui, commands::canon().spec(Edict::CreateProject), true)
+                .min_size(vec2(245.0, 34.0)),
         );
         let create = create
             .on_hover_text("Create this project · Enter from the project name")
             .on_disabled_hover_text("Enter a project name and choose a parent folder.");
         crate::witness::anchor(ui, Target::ProjectCreate, create.rect);
         chrome::tension(ui, &create);
-        if create.clicked()
+        if chrome::exact_activation(ui, &create)
             || (ready && name.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)))
         {
             *action = Some(ProjectAction::Create {
@@ -1006,14 +1216,15 @@ impl ProjectDeck {
         let _actions = ui.horizontal(|ui| {
             let open = ui.add_enabled(
                 !self.open_root.trim().is_empty(),
-                chrome::command_button("OPEN PROJECT", true).min_size(vec2(210.0, 34.0)),
+                chrome::command_spec_button(ui, commands::canon().spec(Edict::OpenProject), true)
+                    .min_size(vec2(210.0, 34.0)),
             );
             let open = open
                 .on_hover_text("Open this project · Enter from the folder field")
                 .on_disabled_hover_text("Choose a project folder first.");
             crate::witness::anchor(ui, "projects.open", open.rect);
             chrome::tension(ui, &open);
-            if open.clicked() {
+            if chrome::exact_activation(ui, &open) {
                 *action = Some(ProjectAction::Open(PathBuf::from(self.open_root.trim())));
             }
             if self.return_workspace.is_some() {
@@ -1065,8 +1276,17 @@ impl ProjectDeck {
         );
         let _library = chrome::note(ui, library);
         let _row = ui.horizontal(|ui| {
-            let _shortcut = chrome::note(ui, "CTRL+O OPENS THIS DECK FROM A PROJECT");
-            self.shortcuts.button(ui);
+            let _shortcut = chrome::note(
+                ui,
+                format!(
+                    "{} OPENS THIS DECK FROM A PROJECT",
+                    commands::canon().shortcuts(Edict::OpenProjects)[0].label(ui.ctx())
+                )
+                .to_ascii_uppercase(),
+            );
+            let help = self.guide.activator(ui);
+            crate::witness::response(ui, Target::Help, &help);
+            self.water.monoglyph(&help);
         });
     }
 

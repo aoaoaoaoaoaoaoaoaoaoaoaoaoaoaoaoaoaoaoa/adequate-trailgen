@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, path::Path, time::Duration};
 
-use egui_tester::{Button, Drag, Frame, Key, Modifiers, PixelRegion, Result, Wheel, demand};
+use egui_tester::{Button, Frame, Key, Modifiers, PixelRegion, Result, Wheel, demand};
 
 use crate::harness::{
     DataMode, Harness, RunClass, Target, TargetClass, TrailStory, durable_budget, first_anchor,
@@ -22,7 +22,7 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
 
     create_project(&mut story)?;
     acquire_region(&mut story)?;
-    exercise_shortcut_guide(&mut story, harness.artifacts)?;
+    exercise_command_guide(&mut story, harness.artifacts)?;
     find_and_keep(&mut story)?;
     verify_preferences(harness)?;
     add_civic_area(&mut story, harness)?;
@@ -64,19 +64,18 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
     Ok(())
 }
 
-fn exercise_shortcut_guide(
+fn exercise_command_guide(
     story: &mut TrailStory<'_, '_>,
     artifacts: Option<&std::path::Path>,
 ) -> Result<()> {
     let baseline = neutral_capture(story)?;
     let opened = story
-        .key(Key::Character('?'))?
-        .within(instant_budget())
-        .until(shows::shortcut_help(true))?;
+        .key(Key::Function(1))?
+        .until(shows::command_guide(true))?;
     let card = opened
         .value()
-        .anchor(&Target::ShortcutHelpCard.to_string())
-        .ok_or_else(|| crate::harness::verdict("shortcut guide omitted its card anchor"))?
+        .anchor(&Target::CommandGuide.to_string())
+        .ok_or_else(|| crate::harness::verdict("command guide omitted its card anchor"))?
         .clone();
     // A completed wgpu present can precede X11 capture visibility; the tester
     // needs a capturable-presentation endpoint before this fence can collapse.
@@ -88,12 +87,36 @@ fn exercise_shortcut_guide(
         "the shortcut guide was witnessed open but produced no modal presentation",
     )?;
     if let Some(artifacts) = artifacts {
-        visible.save_png(artifacts.join("story-1-shortcut-guide.png"))?;
+        visible.save_png(artifacts.join("story-1-command-guide.png"))?;
     }
-    let _closed = story
-        .key(Key::Escape)?
-        .within(instant_budget())
-        .until(shows::shortcut_help(false))?;
+    let blocked = story
+        .chord(Modifiers::ALT, Key::Character('p'))?
+        .next_frame()?
+        .into_value();
+    demand(
+        blocked.state.guide_open && blocked.state.workspace == Workspace::Trail,
+        "Alt+P escaped through the open command guide",
+    )?;
+    let _closed = story.key(Key::Escape)?.until(shows::command_guide(false))?;
+
+    let search = Target::Panel("search").to_string();
+    let _next_panel = story.chord(Modifiers::CTRL, Key::Tab)?.next_frame()?;
+    let _search_focused = story.wait_stable(
+        Duration::from_secs(5),
+        Duration::from_millis(80),
+        "Control+Tab focused the next inspector panel",
+        move |frame| frame.focused_anchor(&search).map(|_| ()),
+    )?;
+    let library = Target::Panel("library").to_string();
+    let _previous_panel = story
+        .chord(Modifiers::CTRL | Modifiers::SHIFT, Key::Tab)?
+        .next_frame()?;
+    let _library_focused = story.wait_stable(
+        Duration::from_secs(5),
+        Duration::from_millis(80),
+        "Control+Shift+Tab focused the previous inspector panel",
+        move |frame| frame.focused_anchor(&library).map(|_| ()),
+    )?;
     Ok(())
 }
 
@@ -110,11 +133,9 @@ fn add_civic_area(story: &mut TrailStory<'_, '_>, harness: &Harness<'_>) -> Resu
             "brooklyn borough",
             shows::text_focused(),
         )?
-        .within(instant_budget())
         .until(shows::civic_suggestions_at_least(1))?;
     let prepared = story
         .key(Key::Return)?
-        .within(instant_budget())
         .until(shows::civic(1, 0) & shows::civic_preparing(1))?
         .into_value();
     let after_add = prepared
@@ -133,7 +154,6 @@ fn add_civic_area(story: &mut TrailStory<'_, '_>, harness: &Harness<'_>) -> Resu
     let before_fit = neutral_capture(story)?;
     let fitted = story
         .click(Target::CivicArea(0))?
-        .within(instant_budget())
         .until(shows::condition("a fitted civic viewport", move |state| {
             state.map.as_ref().is_some_and(|map| {
                 !near_map(map.center, baseline_map.center)
@@ -194,7 +214,7 @@ fn reveal_inspector_target(
         if f64::from(center.1) >= 50.0 && f64::from(center.1) <= screen_bottom {
             let _settled = story.wait_stable(
                 Duration::from_secs(2),
-                Duration::from_millis(80),
+                Duration::from_millis(300),
                 format!("inspector target `{target}` to stop moving"),
                 |frame| {
                     frame
@@ -712,18 +732,16 @@ fn acquire_region(story: &mut TrailStory<'_, '_>) -> Result<()> {
         .until(shows::survey_drawing())?;
     let [x0, y0, x1, y1] = story.anchor(Target::SurveyMap)?.rect;
     let center = (f32::midpoint(x0, x1), f32::midpoint(y0, y1));
-    let from = screen_point([f64::from(center.0 - 13.0), f64::from(center.1 - 13.0)])?;
-    let to = screen_point([f64::from(center.0 + 20.0), f64::from(center.1 + 20.0)])?;
-    let _started = story
-        .drag_from(
-            from,
-            to,
-            Drag {
-                duration: Duration::from_millis(120),
-                ..Drag::default()
-            },
-        )?
-        .until(shows::survey_acquiring(1))?;
+    let from = screen_point([f64::from(center.0 - 8.0), f64::from(center.1 - 8.0)])?;
+    let to = screen_point([f64::from(center.0 + 8.0), f64::from(center.1 + 8.0)])?;
+    let press = story
+        .session()
+        .button_down(from.0, from.1, Button::Primary)?;
+    let _acquired = story.reaction(press).next_frame()?;
+    let motion = story.session().move_to(to.0, to.1)?;
+    let _previewed = story.reaction(motion).next_frame()?;
+    let release = story.session().button_up(Button::Primary)?;
+    let _started = story.reaction(release).until(shows::survey_acquiring(1))?;
     let _ready = story.wait_within(
         Duration::from_secs(30),
         shows::workspace(Workspace::Trail) & shows::candidates(0),

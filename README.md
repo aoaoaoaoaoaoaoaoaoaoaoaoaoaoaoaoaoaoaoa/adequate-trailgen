@@ -36,6 +36,20 @@ The GPX carries one contiguous hiking track, the Library name, elevations where 
 
 The default US corpus combines OpenStreetMap/Overpass, USGS National Digital Trails, spatially applicable state-park authorities, and cached Mapzen terrain tiles. New York and Texas are the first admitted state providers. Provider responses are independently sequestered beneath `sources/`, fingerprinted, and rebuilt through one graph path before `cache/graph.bin` becomes ready. Informal standing, wayfinding, terrain, and legal access remain distinct facts. See [data sources](docs/data-sources.md).
 
+## Keyboard
+
+`F1` or `?` opens the generated command guide for the current workspace. An
+underlined letter is an `Alt` mnemonic. `Tab` and `Shift+Tab` traverse controls
+inside the active inspector panel; physical `Control+Tab` and
+`Control+Shift+Tab` move between panels on every platform. Primary shortcuts
+use `Command` on macOS and `Control` elsewhere.
+
+Trailgen declares typed commands once. The same declaration routes their
+accelerators, supplies button labels and mnemonic underlines, and populates the
+guide with current availability and refusal reasons. Map gestures and other
+target-relative interactions remain in the guide without pretending to be
+global commands.
+
 ## Debug Shell
 
 The shell is deliberately incomplete. It exposes only operations already owned by the GUI application service:
@@ -63,7 +77,8 @@ uninstall. `scripts/test-gui` is the hermetic X11 acceptance gate. Its
 complete user stories cover GUI project creation and provider acquisition,
 saved-trail refinement and restart, twelve-candidate comparison under cadence
 budgets, manual trail design, saved GPX export, and productive work while graph
-armament is deliberately stalled. `scripts/test-wayland` owns the narrower
+armament is deliberately stalled. It also proves generated-help presentation,
+modal key isolation, and inspector-panel traversal. `scripts/test-wayland` owns the narrower
 isolated Wayland contract: native launch, first presentation, semantic witness,
 and nonblack compositor capture.
 
