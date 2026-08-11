@@ -1,10 +1,10 @@
+use crate::persistence;
 use anyhow::{Context as _, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::{
     collections::HashSet,
     fs,
-    io::Write as _,
     path::{Path, PathBuf},
 };
 use trailgen_core::{
@@ -560,19 +560,8 @@ impl Library {
     pub fn save(&self, project: &Path) -> Result<()> {
         self.validate()?;
         let path = index_path(project);
-        let parent = path.parent().context("library index has no parent")?;
-        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-        let temporary = path.with_extension("json.tmp");
-        {
-            let mut file = fs::File::create(&temporary)
-                .with_context(|| format!("create {}", temporary.display()))?;
-            file.write_all(&serde_json::to_vec_pretty(self)?)
-                .with_context(|| format!("write {}", temporary.display()))?;
-            file.sync_all()
-                .with_context(|| format!("sync {}", temporary.display()))?;
-        }
-        fs::rename(&temporary, &path)
-            .with_context(|| format!("replace {} with {}", temporary.display(), path.display()))
+        persistence::replace(&path, &serde_json::to_vec_pretty(self)?)
+            .with_context(|| format!("replace library index {}", path.display()))
     }
 
     pub fn trails(&self) -> &[SavedTrail] {

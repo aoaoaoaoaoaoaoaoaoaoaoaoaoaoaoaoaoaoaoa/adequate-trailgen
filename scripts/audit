@@ -8,4 +8,7 @@ if ! command -v cargo-audit >/dev/null 2>&1; then
   printf '%s\n' 'cargo-audit is required: cargo install cargo-audit --version 0.22.2 --locked' >&2
   exit 1
 fi
-cargo audit --deny warnings
+# osmpbfreader 0.19.1 still exposes smartstring 1.0.1. RUSTSEC-2026-0249 is
+# maintenance status, not a vulnerability; no maintained osmpbfreader release
+# removes it. Keep the exact exception visible until that parser moves.
+cargo audit --deny warnings --ignore RUSTSEC-2026-0249

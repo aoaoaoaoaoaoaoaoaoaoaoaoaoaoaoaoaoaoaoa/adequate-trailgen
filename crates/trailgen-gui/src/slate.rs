@@ -2,12 +2,12 @@ use crate::{
     gallery::TrailSort,
     library::validate_trail_name,
     map::{TrailColoring, Viewport},
+    persistence,
 };
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    io::Write as _,
     path::{Path, PathBuf},
 };
 use trailgen_core::{RouteShape, SupportPoint};
@@ -97,26 +97,9 @@ impl Slate {
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
-        let parent = path.parent().context("slate path has no parent")?;
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("create state directory {}", parent.display()))?;
         let body = toml::to_string_pretty(self).context("serialize workbench slate")?;
-        let temporary = path.with_extension("toml.tmp");
-        {
-            let mut file = std::fs::File::create(&temporary)
-                .with_context(|| format!("create state staging file {}", temporary.display()))?;
-            file.write_all(body.as_bytes())
-                .with_context(|| format!("write state staging file {}", temporary.display()))?;
-            file.sync_all()
-                .with_context(|| format!("sync state staging file {}", temporary.display()))?;
-        }
-        std::fs::rename(&temporary, path).with_context(|| {
-            format!(
-                "replace workbench slate {} with {}",
-                temporary.display(),
-                path.display()
-            )
-        })
+        persistence::replace(path, body.as_bytes())
+            .with_context(|| format!("replace workbench slate {}", path.display()))
     }
 }
 

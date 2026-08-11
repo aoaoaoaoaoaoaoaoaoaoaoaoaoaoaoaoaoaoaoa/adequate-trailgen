@@ -1,6 +1,7 @@
 use crate::{
     habitat::platform_dirs,
     map::{self, MapFramePlan},
+    persistence,
 };
 use anyhow::{Context as _, Result, ensure};
 use bytemuck::{Pod, Zeroable};
@@ -23,7 +24,7 @@ use std::{
     cmp::Reverse,
     collections::HashSet,
     fmt::Write as _,
-    fs::{self, File, OpenOptions},
+    fs,
     io::Write as _,
     path::{Path as FsPath, PathBuf},
     sync::{Arc, OnceLock},
@@ -797,7 +798,7 @@ fn forge_archive(
     let requested_zoom = remote.max_zoom.min(zoom).min(MAX_SOURCE_ZOOM);
     let bounds = region_hull(regions).context("basemap cut has no regions")?;
     let (max_zoom, tiles) = bounded_extraction(regions, requested_zoom, MAX_FORGE_TILES)?;
-    let mut staging = Staging::raise(target)?;
+    let mut staging = persistence::AtomicReplacement::raise(target)?;
     let center = [
         (bounds.west + bounds.east) * 0.5,
         (bounds.south + bounds.north) * 0.5,
@@ -822,7 +823,7 @@ fn forge_archive(
         }
     }
     writer.finalize().context("seal project basemap")?;
-    staging.commit(target)
+    staging.commit()
 }
 
 fn region_hull(regions: &[GeoBounds]) -> Option<GeoBounds> {
@@ -1108,12 +1109,12 @@ fn cache_roaming_tile(root: &FsPath, key: TileKey, bytes: &[u8]) -> Result<()> {
     let parent = target.parent().context("roaming tile has no parent")?;
     fs::create_dir_all(parent)
         .with_context(|| format!("create roaming tile cache {}", parent.display()))?;
-    let mut staging = Staging::raise(&target)?;
+    let mut staging = persistence::AtomicReplacement::raise(&target)?;
     let mut file = staging.take_file()?;
     file.write_all(bytes)
         .with_context(|| format!("write roaming tile {}", target.display()))?;
     drop(file);
-    staging.commit(&target)
+    staging.commit()
 }
 
 struct CacheFile {
@@ -2172,58 +2173,6 @@ fn mercator_y(latitude: f64) -> f64 {
     (1.0 - latitude.to_radians().tan().asinh() / std::f64::consts::PI) * 0.5
 }
 
-struct Staging {
-    path: PathBuf,
-    file: Option<File>,
-}
-
-impl Staging {
-    fn raise(target: &FsPath) -> Result<Self> {
-        for nonce in 0..64 {
-            let path =
-                target.with_extension(format!("pmtiles.{}.{nonce}.partial", std::process::id()));
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(file) => {
-                    return Ok(Self {
-                        path,
-                        file: Some(file),
-                    });
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(err) => {
-                    return Err(err)
-                        .with_context(|| format!("raise basemap staging file {}", path.display()));
-                }
-            }
-        }
-        anyhow::bail!(
-            "basemap staging namespace exhausted beside {}",
-            target.display()
-        )
-    }
-
-    fn take_file(&mut self) -> Result<File> {
-        self.file
-            .take()
-            .context("basemap staging file already taken")
-    }
-
-    fn commit(mut self, target: &FsPath) -> Result<()> {
-        fs::rename(&self.path, target)
-            .with_context(|| format!("install project basemap {}", target.display()))?;
-        self.path.clear();
-        Ok(())
-    }
-}
-
-impl Drop for Staging {
-    fn drop(&mut self) {
-        if !self.path.as_os_str().is_empty() {
-            let _ = fs::remove_file(&self.path);
-        }
-    }
-}
-
 fn purge_partials(target: &FsPath) -> Result<()> {
     let Some(directory) = target.parent() else {
         return Ok(());
@@ -2242,7 +2191,7 @@ fn purge_partials(target: &FsPath) -> Result<()> {
             .ok()
             .and_then(|modified| SystemTime::now().duration_since(modified).ok())
             .is_some_and(|age| age >= Duration::from_hours(24));
-        if staging_path(target, &path) && stale {
+        if persistence::owns_staging_path(target, &path) && stale {
             std::fs::remove_file(&path)
                 .with_context(|| format!("remove stale basemap {}", path.display()))?;
         }
@@ -2280,30 +2229,6 @@ fn region_archive_path(path: &FsPath) -> bool {
         return false;
     };
     identity.len() == 16 && identity.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
-fn staging_path(target: &FsPath, candidate: &FsPath) -> bool {
-    let Some(target) = target.file_name().and_then(|name| name.to_str()) else {
-        return false;
-    };
-    let Some(candidate) = candidate.file_name().and_then(|name| name.to_str()) else {
-        return false;
-    };
-    let Some(identity) = candidate
-        .strip_prefix(target)
-        .and_then(|suffix| suffix.strip_prefix('.'))
-        .and_then(|suffix| suffix.strip_suffix(".partial"))
-    else {
-        return false;
-    };
-    let mut fields = identity.split('.');
-    fields
-        .next()
-        .is_some_and(|pid| !pid.is_empty() && pid.bytes().all(|byte| byte.is_ascii_digit()))
-        && fields.next().is_some_and(|nonce| {
-            !nonce.is_empty() && nonce.bytes().all(|byte| byte.is_ascii_digit())
-        })
-        && fields.next().is_none()
 }
 
 #[cfg(test)]
@@ -2843,12 +2768,15 @@ mod tests {
     #[test]
     fn partial_reaper_is_bound_to_its_archive() {
         let target = FsPath::new("basemap.pmtiles");
-        assert!(staging_path(
+        assert!(persistence::owns_staging_path(
             target,
-            FsPath::new("basemap.pmtiles.421.7.partial")
+            FsPath::new("basemap.pmtiles.atomic-a71B.partial")
         ));
-        assert!(!staging_path(target, FsPath::new("dem.421.7.partial")));
-        assert!(!staging_path(
+        assert!(!persistence::owns_staging_path(
+            target,
+            FsPath::new("dem.pmtiles.atomic-a71B.partial")
+        ));
+        assert!(!persistence::owns_staging_path(
             target,
             FsPath::new("basemap.pmtiles.backup.partial")
         ));

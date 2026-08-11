@@ -18,7 +18,7 @@ lists, fixtures, gestures, or release policy.
 | Unit | Owner | Proves |
 | --- | --- | --- |
 | source | `scripts/check` | formatting, lints, unit and integration behavior, and documentation construction |
-| security | `scripts/audit` | the locked dependency graph has no admitted RustSec defect |
+| security | `scripts/audit` | the locked dependency graph has no unadjudicated RustSec finding |
 | source package | `scripts/package` | every publishable crate resolves and verifies together through Cargo's workspace packaging transaction |
 | runtime | `scripts/prove-runtime` | host compilation, public Cargo install/uninstall, CLI identity, and first presentation on every declared coordinate |
 | X11 acceptance | `scripts/test-gui` | full optimized user stories through private X11 input, capture, persistence, and external oracles |

@@ -1,9 +1,9 @@
+use crate::persistence;
 use anyhow::{Context as _, Result, ensure};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use serde::{Deserialize, Serialize};
 use std::{
-    fs,
-    io::{self, Write as _},
+    fs, io,
     path::{Path, PathBuf},
     thread,
     time::{Duration, Instant},
@@ -254,26 +254,8 @@ fn save(path: &Path, values: &Values) -> Result<()> {
     let parent = path.parent().context("preferences path has no parent")?;
     crate::habitat::create_private_dir(parent)?;
     let body = toml::to_string_pretty(values).context("serialize preferences")?;
-    let temporary = path.with_extension(format!("toml.{}.partial", std::process::id()));
-    {
-        let mut file = fs::File::create(&temporary)
-            .with_context(|| format!("create preference staging file {}", temporary.display()))?;
-        file.write_all(body.as_bytes())
-            .with_context(|| format!("write preference staging file {}", temporary.display()))?;
-        file.sync_all()
-            .with_context(|| format!("sync preference staging file {}", temporary.display()))?;
-    }
-    fs::rename(&temporary, path).with_context(|| {
-        format!(
-            "replace preferences {} with {}",
-            temporary.display(),
-            path.display()
-        )
-    })?;
-    fs::File::open(parent)
-        .with_context(|| format!("open preference directory {}", parent.display()))?
-        .sync_all()
-        .with_context(|| format!("sync preference directory {}", parent.display()))
+    persistence::replace(path, body.as_bytes())
+        .with_context(|| format!("replace preferences {}", path.display()))
 }
 
 #[cfg(test)]

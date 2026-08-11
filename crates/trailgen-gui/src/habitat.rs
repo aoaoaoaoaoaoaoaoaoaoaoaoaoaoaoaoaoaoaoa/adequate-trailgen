@@ -1,3 +1,4 @@
+use crate::persistence;
 use anyhow::{Context as _, Result, ensure};
 use directories::{ProjectDirs, UserDirs};
 use serde::{Deserialize, Serialize};
@@ -5,8 +6,7 @@ use sha2::{Digest as _, Sha256};
 use std::{
     env,
     fmt::Write as _,
-    fs,
-    io::{self, Write as _},
+    fs, io,
     path::{Path, PathBuf},
 };
 
@@ -44,12 +44,13 @@ pub struct ProjectPlace {
 }
 
 impl ProjectPlace {
-    pub(crate) fn read(root: PathBuf) -> Result<Self> {
+    pub(crate) fn read(root: &Path) -> Result<Self> {
         #[derive(Deserialize)]
         struct Mark {
             name: String,
         }
 
+        let root = canonical_project(root)?;
         let path = root.join(PROJECT_MARK);
         let text = fs::read_to_string(&path)
             .with_context(|| format!("read project mark {}", path.display()))?;
@@ -152,7 +153,7 @@ impl Habitat {
             && session.chosen
             && is_project(&session.last_project)
         {
-            projects.push(ProjectPlace::read(session.last_project)?);
+            projects.push(ProjectPlace::read(&session.last_project)?);
         }
         let Some(library) = &self.library else {
             return Ok(projects);
@@ -167,8 +168,11 @@ impl Habitat {
         };
         for entry in entries {
             let path = entry?.path();
-            if is_project(&path) && !projects.iter().any(|project| project.root == path) {
-                projects.push(ProjectPlace::read(path)?);
+            if is_project(&path) {
+                let project = ProjectPlace::read(&path)?;
+                if !projects.iter().any(|known| known.root == project.root) {
+                    projects.push(project);
+                }
             }
         }
         projects.sort_unstable_by(|left, right| left.name.cmp(&right.name));
@@ -177,13 +181,13 @@ impl Habitat {
 
     fn resume_from(&self, current: &Path) -> Result<Option<PathBuf>> {
         if is_project(current) {
-            return Ok(Some(current.to_owned()));
+            return canonical_project(current).map(Some);
         }
         if let Some(session) = self.recall()?
             && session.chosen
             && is_project(&session.last_project)
         {
-            return Ok(Some(session.last_project));
+            return canonical_project(&session.last_project).map(Some);
         }
         Ok(None)
     }
@@ -201,16 +205,8 @@ impl Habitat {
 }
 
 fn write_state(path: &Path, bytes: &[u8]) -> Result<()> {
-    let staging = path.with_extension(format!("json.{}.partial", std::process::id()));
-    {
-        let mut file = fs::File::create(&staging)
-            .with_context(|| format!("create state staging file {}", staging.display()))?;
-        file.write_all(bytes)
-            .with_context(|| format!("write state staging file {}", staging.display()))?;
-        file.sync_all()
-            .with_context(|| format!("sync state staging file {}", staging.display()))?;
-    }
-    fs::rename(&staging, path).with_context(|| format!("commit state file {}", path.display()))
+    persistence::replace(path, bytes)
+        .with_context(|| format!("commit state file {}", path.display()))
 }
 
 pub fn platform_dirs() -> Result<ProjectDirs> {
@@ -220,6 +216,11 @@ pub fn platform_dirs() -> Result<ProjectDirs> {
 
 fn is_project(root: &Path) -> bool {
     root.join(PROJECT_MARK).is_file()
+}
+
+fn canonical_project(root: &Path) -> Result<PathBuf> {
+    root.canonicalize()
+        .with_context(|| format!("resolve project {}", root.display()))
 }
 
 pub fn create_project(root: &Path, name: &str) -> Result<PathBuf> {
@@ -338,7 +339,10 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let current = temp.path().join("current");
         marked_project(&current, "current")?;
-        assert_eq!(habitat(temp.path()).resume_from(&current)?, Some(current));
+        assert_eq!(
+            habitat(temp.path()).resume_from(&current)?,
+            Some(current.canonicalize()?)
+        );
         Ok(())
     }
 
@@ -391,8 +395,13 @@ mod tests {
             &habitat.library_root().context("library")?.join("harriman"),
             "Harriman",
         )?;
-        assert_eq!(root, temp.path().join("documents/trailgen/harriman"));
-        assert_eq!(ProjectPlace::read(root.clone())?.name, "Harriman");
+        assert_eq!(
+            root,
+            temp.path()
+                .join("documents/trailgen/harriman")
+                .canonicalize()?
+        );
+        assert_eq!(ProjectPlace::read(&root)?.name, "Harriman");
         assert!(PROJECT_DIRS.iter().all(|dir| root.join(dir).is_dir()));
         assert_eq!(habitat.resume_from(&root)?, Some(root));
         Ok(())

@@ -2,6 +2,7 @@ use crate::{
     annotation,
     basemap::{self, Mesh, StrokePoint, TileKey, VectorTile},
     map::{self, CartographicPlan, MapFramePlan},
+    persistence,
     vector_map::{GeometryPass, VectorCorpus, VectorGap, VectorLayer, VectorPaint, VectorPatch},
 };
 use anyhow::{Context as _, Result, ensure};
@@ -11,8 +12,8 @@ use egui::Rect;
 use egui::{Color32, Painter};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    fs::{self, OpenOptions},
-    io::{Cursor, Read as _, Write as _},
+    fs,
+    io::{Cursor, Read as _},
     path::Path,
     sync::Arc,
     thread,
@@ -1118,21 +1119,7 @@ fn decode(bytes: &[u8], identity: &str) -> Result<Field> {
 }
 
 fn write_cache(path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = path.parent().context("isohypse cache has no parent")?;
-    fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-    let staging = path.with_extension(format!("bin.{}.partial", std::process::id()));
-    let mut file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&staging)
-        .with_context(|| format!("create {}", staging.display()))?;
-    file.write_all(bytes)
-        .with_context(|| format!("write {}", staging.display()))?;
-    file.sync_all()
-        .with_context(|| format!("sync {}", staging.display()))?;
-    drop(file);
-    fs::rename(&staging, path).with_context(|| format!("commit {}", path.display()))
+    persistence::replace(path, bytes).with_context(|| format!("commit {}", path.display()))
 }
 
 fn read_u16(reader: &mut Cursor<&[u8]>) -> Result<u16> {

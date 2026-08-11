@@ -1137,7 +1137,7 @@ fn open_project(
     let root = root
         .canonicalize()
         .with_context(|| format!("open project {}", root.display()))?;
-    let place = ProjectPlace::read(root.clone())?;
+    let place = ProjectPlace::read(&root)?;
     let has_graph = root.join("routes/generated.graph.json").is_file()
         || root.join(trailgen_core::GRAPH_CACHE).is_file();
     let config = trailgen_data::project_config(&root)?;

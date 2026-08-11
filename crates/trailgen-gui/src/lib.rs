@@ -28,6 +28,7 @@ mod library;
 mod live_area;
 mod map;
 mod palette;
+mod persistence;
 mod portfolio;
 mod preferences;
 mod profile;

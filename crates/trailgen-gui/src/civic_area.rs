@@ -1,6 +1,7 @@
 use crate::{
     map,
     palette::{CARTOGRAPHIC_HUES, ColorCycle, CycleLaw, Span},
+    persistence,
 };
 use anyhow::{Context as _, Result, bail, ensure};
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -11,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
     fs,
-    io::{Cursor, Write as _},
+    io::Cursor,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock},
     thread,
@@ -982,19 +983,7 @@ fn decode_snapshot(bytes: &[u8]) -> Result<CivicSnapshot> {
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = path.parent().context("civic path has no parent")?;
-    fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-    let temporary = path.with_extension("tmp");
-    {
-        let mut file = fs::File::create(&temporary)
-            .with_context(|| format!("create {}", temporary.display()))?;
-        file.write_all(bytes)
-            .with_context(|| format!("write {}", temporary.display()))?;
-        file.sync_all()
-            .with_context(|| format!("sync {}", temporary.display()))?;
-    }
-    fs::rename(&temporary, path)
-        .with_context(|| format!("replace {} with {}", temporary.display(), path.display()))
+    persistence::replace(path, bytes).with_context(|| format!("replace {}", path.display()))
 }
 
 impl CivicArea {
