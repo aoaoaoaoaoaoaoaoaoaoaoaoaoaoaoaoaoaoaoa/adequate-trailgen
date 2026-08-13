@@ -1,6 +1,6 @@
 [package]
 name = "trailgen-core"
-version = "0.3.3"
+version = "0.3.4"
 description = "Typed trail graph, route scoring, loop search, and geospatial route I/O for adequate-trailgen."
 edition.workspace = true
 license.workspace = true
