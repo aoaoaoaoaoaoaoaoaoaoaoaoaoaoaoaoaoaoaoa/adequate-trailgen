@@ -1,6 +1,6 @@
 [package]
 name = "trailgen-data"
-version = "0.3.2"
+version = "0.3.3"
 description = "Shared spatial acquisition and indexing engine for trailgen frontends."
 edition.workspace = true
 license.workspace = true

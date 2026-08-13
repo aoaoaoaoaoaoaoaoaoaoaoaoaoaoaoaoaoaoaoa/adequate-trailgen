@@ -1,6 +1,6 @@
 [package]
 name = "trailgen-gui"
-version = "0.3.2"
+version = "0.3.3"
 description = "Native Brass Poolrooms workbench for constrained trail-loop generation."
 edition.workspace = true
 license.workspace = true
