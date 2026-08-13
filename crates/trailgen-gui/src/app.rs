@@ -1177,7 +1177,7 @@ impl TrailApp {
         self.water.heave(ui.ctx(), inspector.scroll_offset);
         let _center = product_phase!(
             "pulse.arena",
-            egui::CentralPanel::default().show_inside(ui, |ui| self.arena(ui))
+            egui::CentralPanel::default().show(ui, |ui| self.arena(ui))
         );
         product_phase!("pulse.command_guide", self.command_guide(ui));
         self.observe_persistence();
@@ -2700,28 +2700,28 @@ impl TrailApp {
     fn arena(&mut self, ui: &mut egui::Ui) {
         let _toolbar = egui::Panel::top("trail-toolbar")
             .exact_size(TOOLBAR_HEIGHT)
-            .show_inside(ui, |ui| self.toolbar(ui));
+            .show(ui, |ui| self.toolbar(ui));
         let _counsel = egui::Panel::bottom("trail-counsel")
             .exact_size(42.0)
-            .show_inside(ui, |ui| self.counsel(ui));
+            .show(ui, |ui| self.counsel(ui));
         if let Some(editor) = self.view.editor() {
             if editor.profile.is_some() {
                 let _profile = egui::Panel::bottom("trail-profile")
                     .exact_size(PROFILE_HEIGHT)
-                    .show_inside(ui, |ui| self.profile(ui));
+                    .show(ui, |ui| self.profile(ui));
             }
         } else if self.view.focus().is_some() {
             if self.has_profile() {
                 let _profile = egui::Panel::bottom("trail-profile")
                     .exact_size(PROFILE_HEIGHT)
-                    .show_inside(ui, |ui| self.profile(ui));
+                    .show(ui, |ui| self.profile(ui));
             }
         } else if self.results_open {
             let _results = egui::Panel::bottom("trail-results")
                 .exact_size(RESULTS_HEIGHT)
-                .show_inside(ui, |ui| self.results_gallery(ui));
+                .show(ui, |ui| self.results_gallery(ui));
         }
-        let _map = egui::CentralPanel::default().show_inside(ui, |ui| self.map(ui));
+        let _map = egui::CentralPanel::default().show(ui, |ui| self.map(ui));
     }
 
     fn counsel(&mut self, ui: &mut egui::Ui) {

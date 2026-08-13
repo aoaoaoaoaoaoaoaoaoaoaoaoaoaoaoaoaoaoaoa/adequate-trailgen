@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::{
     collections::HashSet,
+    fmt::Write as _,
     fs,
     path::{Path, PathBuf},
 };
@@ -819,7 +820,14 @@ fn trail_id(legs: &[TrailLeg]) -> TrailId {
             hash.update(point.ele.map_or(u64::MAX, f64::to_bits).to_le_bytes());
         }
     }
-    TrailId(format!("{:x}", hash.finalize())[..24].to_owned())
+    TrailId(
+        hash.finalize()[..12]
+            .iter()
+            .fold(String::with_capacity(24), |mut identity, byte| {
+                write!(identity, "{byte:02x}").expect("write trail identity");
+                identity
+            }),
+    )
 }
 
 fn read_optional<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Option<T>> {

@@ -872,7 +872,7 @@ pub fn apply_context_overlays(graph: &mut WalkGraph, overlays: &[ContextOverlay]
     );
     for edge in &mut graph.edges {
         let mut touched = false;
-        for candidate in index.locate_in_envelope_intersecting(&line_envelope(&edge.geometry)) {
+        for candidate in index.locate_in_envelope_intersecting(line_envelope(&edge.geometry)) {
             let overlay = &overlays[candidate.index];
             if same_osm_way(edge, overlay) {
                 continue;

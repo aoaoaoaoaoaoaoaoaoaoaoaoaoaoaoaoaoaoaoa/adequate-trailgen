@@ -177,7 +177,7 @@ fn nearest_parallel(
         ],
     );
     index
-        .locate_in_envelope_intersecting(&envelope)
+        .locate_in_envelope_intersecting(envelope)
         .filter_map(|candidate| {
             if !same_facility(draft, &canonical[candidate.draft]) {
                 return None;

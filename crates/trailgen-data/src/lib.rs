@@ -223,7 +223,16 @@ fn topographic_identity(index: &TrailIndex) -> String {
         identity.update(receipt.tile.y.to_le_bytes());
         identity.update(receipt.raw.sha256.as_bytes());
     }
-    format!("{:x}", identity.finalize())
+    hex(&identity.finalize())
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut text, byte| {
+            write!(text, "{byte:02x}").expect("write hexadecimal digest");
+            text
+        })
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1762,12 +1771,7 @@ fn region_key(bounds: GeoBounds) -> String {
         )
         .as_bytes(),
     );
-    digest[..12]
-        .iter()
-        .fold(String::with_capacity(24), |mut key, byte| {
-            write!(key, "{byte:02x}").expect("write to string");
-            key
-        })
+    hex(&digest[..12])
 }
 
 #[must_use]
@@ -2202,7 +2206,7 @@ pub fn provider_client(task: &str, timeout: Duration) -> Result<reqwest::blockin
 fn fingerprint(bytes: &[u8]) -> SourceFingerprint {
     SourceFingerprint {
         bytes: bytes.len() as u64,
-        sha256: format!("{:x}", Sha256::digest(bytes)),
+        sha256: hex(&Sha256::digest(bytes)),
     }
 }
 

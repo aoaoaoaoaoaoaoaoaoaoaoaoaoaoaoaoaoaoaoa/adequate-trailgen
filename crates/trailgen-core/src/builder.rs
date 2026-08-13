@@ -233,7 +233,7 @@ impl GraphBuilder {
         let index = primitive_index(&primitives);
         let snap_index = snap_primitive_index(&snap_primitives);
         for (i, primitive) in primitives.iter().copied().enumerate() {
-            for candidate in index.locate_in_envelope_intersecting(&primitive_envelope(primitive)) {
+            for candidate in index.locate_in_envelope_intersecting(primitive_envelope(primitive)) {
                 let j = candidate.index;
                 if j <= i {
                     continue;
@@ -836,7 +836,7 @@ fn near_miss_candidates(
                     endpoint.lat + latitude_radius,
                 ],
             );
-            for candidate in index.locate_in_envelope_intersecting(&neighborhood) {
+            for candidate in index.locate_in_envelope_intersecting(neighborhood) {
                 let target_segment = snap_primitives[candidate.index];
                 let target_idx = target_segment.primitive;
                 let target = primitives[target_idx];

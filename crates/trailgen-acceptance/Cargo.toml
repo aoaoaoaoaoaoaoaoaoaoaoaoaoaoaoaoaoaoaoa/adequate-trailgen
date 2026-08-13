@@ -1,6 +1,6 @@
 [package]
 name = "trailgen-acceptance"
-version = "0.2.1"
+version = "0.3.0"
 description = "Hermetic native acceptance test for the Trailgen workbench."
 edition.workspace = true
 license.workspace = true

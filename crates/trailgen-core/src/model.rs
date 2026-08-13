@@ -750,7 +750,7 @@ impl EdgeIndex {
         );
         let mut candidates = self
             .tree
-            .locate_in_envelope_intersecting(&neighborhood)
+            .locate_in_envelope_intersecting(neighborhood)
             .filter_map(|candidate| {
                 let (distance_m, progress_m, anchor) =
                     line_projection(&graph.edges[candidate.edge.0].geometry, coord)?;
@@ -1453,7 +1453,7 @@ fn indexed_nearest_edge(
             [coord.lon + longitude_radius, coord.lat + latitude_radius],
         );
         let nearest = index
-            .locate_in_envelope_intersecting(&neighborhood)
+            .locate_in_envelope_intersecting(neighborhood)
             .map(|candidate| {
                 let distance_m = edge_distance_m(&edges[candidate.edge.0], coord);
                 (candidate.edge, distance_m)

@@ -452,7 +452,7 @@ impl SurveyWorkbench {
         let _left = Inspector::new("survey-inspector")
             .show(ui, |ui| self.inspector(ui, &mut panels, &mut action));
         self.panels = panels;
-        let _center = egui::CentralPanel::default().show_inside(ui, |ui| self.arena(ui));
+        let _center = egui::CentralPanel::default().show(ui, |ui| self.arena(ui));
         self.command_guide(ui);
         self.observe_persistence();
         action
@@ -669,8 +669,8 @@ impl SurveyWorkbench {
     fn arena(&mut self, ui: &mut egui::Ui) {
         let _counsel = egui::Panel::bottom("survey-counsel")
             .exact_size(52.0)
-            .show_inside(ui, |ui| self.counsel(ui));
-        let _map = egui::CentralPanel::default().show_inside(ui, |ui| self.map(ui));
+            .show(ui, |ui| self.counsel(ui));
+        let _map = egui::CentralPanel::default().show(ui, |ui| self.map(ui));
     }
 
     fn counsel(&mut self, ui: &mut egui::Ui) {
@@ -1075,7 +1075,7 @@ impl ProjectDeck {
                     .then_some(ProjectAction::Back)
             });
         }
-        let _center = egui::CentralPanel::default().show_inside(ui, |ui| {
+        let _center = egui::CentralPanel::default().show(ui, |ui| {
             ui.add_space(((ui.available_height() - 650.0) * 0.42).max(14.0));
             let _row = ui.horizontal(|ui| {
                 ui.add_space(((ui.available_width() - 760.0) * 0.5).max(12.0));
