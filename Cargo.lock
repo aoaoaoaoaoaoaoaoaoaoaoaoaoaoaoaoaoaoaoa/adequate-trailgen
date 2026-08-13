@@ -917,9 +917,9 @@ dependencies = [
 
 [[package]]
 name = "eternalist-apps"
-version = "0.6.1"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0986ddc4dfdd49d9680ad6dd113d1c7e4844b033f128ad4db4f3391efda40bc"
+checksum = "5a596415a0e138a827d65fd9bed1a970e970fb9f46d37e3cee6314508b1cb736"
 dependencies = [
  "anyhow",
  "brass_poolrooms",
@@ -3760,7 +3760,7 @@ dependencies = [
 
 [[package]]
 name = "trailgen"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -3769,7 +3769,7 @@ dependencies = [
 
 [[package]]
 name = "trailgen-acceptance"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "egui-tester",
  "fast-mvt",
@@ -3786,14 +3786,14 @@ dependencies = [
 
 [[package]]
 name = "trailgen-contract"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "trailgen-core"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "num-traits",
  "osmpbfreader",
@@ -3813,7 +3813,7 @@ dependencies = [
 
 [[package]]
 name = "trailgen-data"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "png",
@@ -3829,7 +3829,7 @@ dependencies = [
 
 [[package]]
 name = "trailgen-gui"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "brass_poolrooms",
