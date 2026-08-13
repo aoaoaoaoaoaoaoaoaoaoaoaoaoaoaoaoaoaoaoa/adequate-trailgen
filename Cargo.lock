@@ -688,7 +688,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -767,9 +767,9 @@ dependencies = [
 
 [[package]]
 name = "dwemer_poolrooms"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "217390668982d3b56ca9087e2f787484a3d20d24d313fb554faff3a521598f2b"
+checksum = "675280fdf26997f8035687d43d61d1c049298b4e50d5b60a3247fc00dbcbb4d8"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -808,9 +808,9 @@ dependencies = [
 
 [[package]]
 name = "egui-tester"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73d0ee1fa088038856cfcf040921ed3291f9e32987d941a9b3893acfa6929ebf"
+checksum = "697da5961e29b1dfda7eb09a9d8ace71dfdc9695ce525fb3e0e277e77edd7bcf"
 dependencies = [
  "bitflags 2.13.1",
  "egui-tester-witness",
@@ -826,9 +826,9 @@ dependencies = [
 
 [[package]]
 name = "egui-tester-witness"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3372d84a09625191caecc3f8d601ca68d80b44125b29a558dfad9ba42cee656"
+checksum = "1cd5ff230f462f7cbe9458312117df419b94f80bcc4807b2d47ac4d2583e9af8"
 dependencies = [
  "egui",
  "rustix 1.1.4",
@@ -942,16 +942,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
 name = "eternalist-apps"
-version = "0.4.4"
+version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09159850ac48b30652ff07062cfbb43f0719ecb396fb6518232e958343797f6a"
+checksum = "94090541e54de06c0da597fb3b32000f36961ee9993fbf40fe2ac44b11214f1d"
 dependencies = [
  "anyhow",
+ "crossbeam-channel",
  "dwemer_poolrooms",
  "egui",
  "egui-tester-witness",
@@ -1954,7 +1955,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2712,7 +2713,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3027,7 +3028,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3084,7 +3085,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3498,7 +3499,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3818,7 +3819,7 @@ dependencies = [
 
 [[package]]
 name = "trailgen"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -3827,7 +3828,7 @@ dependencies = [
 
 [[package]]
 name = "trailgen-acceptance"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "egui-tester",
  "fast-mvt",
@@ -3844,14 +3845,14 @@ dependencies = [
 
 [[package]]
 name = "trailgen-contract"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "trailgen-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "num-traits",
  "osmpbfreader",
@@ -3871,7 +3872,7 @@ dependencies = [
 
 [[package]]
 name = "trailgen-data"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "png",
@@ -3887,7 +3888,7 @@ dependencies = [
 
 [[package]]
 name = "trailgen-gui"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -4456,7 +4457,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

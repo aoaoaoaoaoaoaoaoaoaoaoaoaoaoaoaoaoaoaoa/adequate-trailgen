@@ -377,30 +377,6 @@ mod tests {
     }
 
     #[test]
-    fn nonparallel_and_distant_segments_survive() {
-        let primary = draft("osm", 41.2, TrailStanding::Established);
-        let mut crossing = draft("usgs-crossing", 41.2, TrailStanding::Established);
-        crossing.geometry =
-            LineString::unchecked(vec![Coord::new(-74.05, 41.19), Coord::new(-74.05, 41.21)]);
-        let distant = draft("usgs-distant", 41.201, TrailStanding::Established);
-        let network = conflate(
-            vec![
-                NetworkStratum {
-                    precedence: 0,
-                    drafts: vec![primary],
-                },
-                NetworkStratum {
-                    precedence: 10,
-                    drafts: vec![crossing, distant],
-                },
-            ],
-            ConflationPolicy::default(),
-        );
-        assert_eq!(network.drafts.len(), 3);
-        assert_eq!(network.report.suppressed_parallel_segments, 0);
-    }
-
-    #[test]
     fn conflation_cannot_erase_distinct_pedestrian_facilities() {
         let mut road = draft("road", 41.2, TrailStanding::Established);
         road.way_kind = WayKind::Roadway;

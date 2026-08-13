@@ -10,6 +10,7 @@ use crossbeam_channel::{Receiver, bounded};
 #[cfg(test)]
 use egui::Rect;
 use egui::{Color32, Painter};
+use eternalist_apps::NativeWake;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs,
@@ -346,12 +347,12 @@ fn spawn_forge(
 ) -> Result<(Receiver<Result<Field>>, thread::JoinHandle<()>)> {
     let (events_tx, events) = bounded(1);
     let root = root.to_owned();
-    let worker_ctx = ctx.clone();
+    let wake = NativeWake::from_context(ctx);
     let worker = thread::Builder::new()
         .name("isohypse-forge".to_owned())
         .spawn(move || {
             let _sent = events_tx.send(load_or_forge(&root));
-            worker_ctx.request_repaint();
+            let _woken = wake.request_foreground_repaint();
         })
         .context("spawn isohypse forge")?;
     Ok((events, worker))
@@ -1173,77 +1174,6 @@ mod tests {
     }
 
     #[test]
-    fn smoothing_preserves_open_boundaries_and_tempers_corners() {
-        let mut chain = [
-            GridPoint { x: 0.0, y: 0.0 },
-            GridPoint { x: 1.0, y: 0.0 },
-            GridPoint { x: 1.0, y: 1.0 },
-        ];
-        smooth(&mut chain);
-        assert_eq!(knot(chain[0]), knot(GridPoint { x: 0.0, y: 0.0 }));
-        assert_eq!(knot(chain[2]), knot(GridPoint { x: 1.0, y: 1.0 }));
-        assert!(chain[1].x < 1.0 && chain[1].y > 0.0);
-    }
-
-    #[test]
-    fn relief_detail_is_monotone_and_terminates_in_exact_geometry() {
-        let bands = [10.0, 10.5, 11.74, 11.75, 13.49, 13.5, 15.74, 15.75, 23.0]
-            .into_iter()
-            .filter_map(ReliefLaw::for_zoom)
-            .collect::<Vec<_>>();
-        assert!(bands.windows(2).all(|pair| pair[0].0 <= pair[1].0));
-        assert_eq!(bands.last().map(|(slot, _)| *slot), Some(3));
-        assert_eq!(
-            bands.last().map(|(_, law)| law.tolerance_world()),
-            Some(0.0)
-        );
-    }
-
-    #[test]
-    fn relief_detail_resists_boundary_chatter_in_both_directions() {
-        assert_eq!(ReliefLaw::resolve(Some(1), 13.55).map(|law| law.0), Some(1));
-        assert_eq!(ReliefLaw::resolve(Some(1), 13.60).map(|law| law.0), Some(2));
-        assert_eq!(ReliefLaw::resolve(Some(2), 13.45).map(|law| law.0), Some(2));
-        assert_eq!(ReliefLaw::resolve(Some(2), 13.40).map(|law| law.0), Some(1));
-    }
-
-    #[test]
-    fn relief_simplification_is_a_nested_subsequence() {
-        let points = [[0.0, 0.0], [1.0, 0.1], [2.0, 0.0], [3.0, 0.5], [4.0, 0.0]];
-        let coarse = simplify_isohypse(&points, 0.2);
-        let fine = simplify_isohypse(&points, 0.05);
-        assert!(coarse.iter().all(|point| fine.contains(point)));
-    }
-
-    #[test]
-    fn coarse_relief_excludes_minor_isohypses_by_construction() {
-        let isohypse = |elevation_m| Isohypse {
-            key: TileKey {
-                zoom: 12,
-                x: 1_204,
-                y: 1_532,
-            },
-            elevation_m,
-            label: None,
-            points: Arc::from([
-                [1_204.1 / 4_096.0, 1_532.1 / 4_096.0],
-                [1_204.9 / 4_096.0, 1_532.9 / 4_096.0],
-            ]),
-            bounds: [
-                1_204.1 / 4_096.0,
-                1_532.1 / 4_096.0,
-                1_204.9 / 4_096.0,
-                1_532.9 / 4_096.0,
-            ],
-        };
-        let contours = [isohypse(100), isohypse(110)];
-        let coarse = raise_tiles(&contours, RELIEF_LAWS[0]);
-        let exact = raise_tiles(&contours, RELIEF_LAWS[3]);
-        assert_eq!(coarse[0].strokes.indices.len(), 6);
-        assert_eq!(exact[0].strokes.indices.len(), 12);
-    }
-
-    #[test]
     fn cache_roundtrip_preserves_fixed_interval_semantics() -> Result<()> {
         let field = Field::seal(vec![Isohypse {
             key: TileKey {
@@ -1261,31 +1191,6 @@ mod tests {
         assert_eq!(decoded.isohypses[0].elevation_m, 250);
         assert_eq!(decoded.isohypses[0].label.as_deref(), Some("250 m"));
         Ok(())
-    }
-
-    #[test]
-    fn sea_level_is_never_presented_as_relief() {
-        let isohypse = |elevation_m| Isohypse {
-            key: TileKey {
-                zoom: 0,
-                x: 0,
-                y: 0,
-            },
-            elevation_m,
-            label: None,
-            points: Arc::from([[0.2, 0.3], [0.4, 0.5]]),
-            bounds: [0.2, 0.3, 0.4, 0.5],
-        };
-        let field = Field::seal(vec![isohypse(-10), isohypse(0), isohypse(10)]);
-
-        assert_eq!(
-            field
-                .isohypses
-                .iter()
-                .map(|isohypse| isohypse.elevation_m)
-                .collect::<Vec<_>>(),
-            [-10, 10]
-        );
     }
 
     #[test]

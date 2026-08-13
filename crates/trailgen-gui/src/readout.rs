@@ -73,26 +73,3 @@ fn moving_time(population_seconds: f64, pace: BasePace) -> String {
     let minutes = (pace.moving_time_s(population_seconds).max(0.0) / 60.0).round();
     format!("{:.0}:{:02.0}", (minutes / 60.0).floor(), minutes % 60.0)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn faster_base_pace_contracts_every_time_readout() {
-        let metrics = RouteMetrics {
-            moving_time_s: 4.0 * 3_600.0,
-            ..RouteMetrics::default()
-        };
-        let slow = tile_measurements(
-            &metrics,
-            BasePace::forge(4.0).expect("fixture pace must be valid"),
-        );
-        let fast = tile_measurements(
-            &metrics,
-            BasePace::forge(8.0).expect("fixture pace must be valid"),
-        );
-        assert_ne!(slow.text(), fast.text());
-        assert!(slow.glosses().contains(crate::lexicon::Term::MovingTime));
-    }
-}

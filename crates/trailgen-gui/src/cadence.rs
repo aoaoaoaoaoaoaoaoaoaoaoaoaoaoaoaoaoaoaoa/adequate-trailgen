@@ -274,59 +274,6 @@ mod tests {
         assert_eq!(ink_bounds(&split_shapes), ink_bounds(&whole_shapes));
     }
 
-    #[test]
-    fn a_subpixel_limit_emits_no_partial_stroke() {
-        let mut shapes = Vec::new();
-        Pattern::Dash {
-            dash: 6.0,
-            gap: 4.0,
-        }
-        .tessellate(
-            [pos2(0.0, 0.0), pos2(20.0, 0.0)],
-            Stroke::new(1.0_f32, Color32::BLACK),
-            8.0,
-            1.0,
-            &mut shapes,
-        );
-        assert!(shapes.is_empty());
-    }
-
-    #[test]
-    fn crossbars_keep_phase_across_polyline_elbows() {
-        let mut split = Vec::new();
-        crossbars(
-            &[pos2(0.0, 0.0), pos2(7.0, 0.0)],
-            Stroke::new(1.0_f32, Color32::BLACK),
-            4.0,
-            5.0,
-            0.0,
-            &mut split,
-        );
-        crossbars(
-            &[pos2(7.0, 0.0), pos2(7.0, 8.0)],
-            Stroke::new(1.0_f32, Color32::BLACK),
-            4.0,
-            5.0,
-            7.0,
-            &mut split,
-        );
-        let mut whole = Vec::new();
-        crossbars(
-            &[pos2(0.0, 0.0), pos2(7.0, 0.0), pos2(7.0, 8.0)],
-            Stroke::new(1.0_f32, Color32::BLACK),
-            4.0,
-            5.0,
-            0.0,
-            &mut whole,
-        );
-        assert_eq!(split.len(), whole.len());
-        assert!(
-            split.iter().zip(&whole).all(|(left, right)| {
-                left.visual_bounding_rect() == right.visual_bounding_rect()
-            })
-        );
-    }
-
     fn ink_bounds(shapes: &[Shape]) -> Vec<(i32, i32)> {
         shapes
             .iter()

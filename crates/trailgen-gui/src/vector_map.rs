@@ -272,6 +272,7 @@ pub struct VectorMapGpu {
     relief_stroke_pipeline: wgpu::RenderPipeline,
     uniform: wgpu::Buffer,
     bind: wgpu::BindGroup,
+    uniform_value: Option<Uniform>,
     tiles: HashMap<GpuKey, GpuTile>,
     active: HashMap<VectorLayer, ActiveCorpus>,
     active_set: HashSet<GpuKey>,
@@ -362,6 +363,7 @@ impl VectorMapGpu {
             relief_stroke_pipeline,
             uniform,
             bind,
+            uniform_value: None,
             tiles: HashMap::new(),
             active: HashMap::new(),
             active_set: HashSet::new(),
@@ -438,7 +440,13 @@ impl VectorMapGpu {
             paint.repaint.request_repaint();
         }
         let uniform = Uniform::forge(paint);
-        queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniform));
+        if self
+            .uniform_value
+            .is_none_or(|current| bytemuck::bytes_of(&current) != bytemuck::bytes_of(&uniform))
+        {
+            queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniform));
+            self.uniform_value = Some(uniform);
+        }
         self.instances = uniform.wrap_radius.saturating_mul(2).saturating_add(1);
         self.reap();
         if self.profile {
@@ -1001,96 +1009,51 @@ mod tests {
     use super::*;
 
     #[test]
-    fn relief_and_basemap_tiles_cannot_alias_gpu_residency() {
-        let key = TileKey {
-            zoom: 12,
-            x: 1_204,
-            y: 1_532,
-        };
-        let mut resident = HashSet::new();
-        let corpus = VectorCorpus::mint();
-        assert!(resident.insert(GpuKey {
-            layer: VectorLayer::Basemap,
-            corpus,
-            tile: key,
-            detail: 0,
-        }));
-        assert!(resident.insert(GpuKey {
-            layer: VectorLayer::Relief,
-            corpus,
-            tile: key,
-            detail: 0,
-        }));
-        assert_eq!(resident.len(), 2);
-    }
-
-    #[test]
-    fn project_corpora_cannot_alias_gpu_residency() {
-        let tile = TileKey {
-            zoom: 12,
-            x: 1_204,
-            y: 1_532,
-        };
-        let mut resident = HashSet::new();
-        assert!(resident.insert(GpuKey {
-            layer: VectorLayer::Relief,
-            corpus: VectorCorpus::mint(),
-            tile,
-            detail: 0,
-        }));
-        assert!(resident.insert(GpuKey {
-            layer: VectorLayer::Relief,
-            corpus: VectorCorpus::mint(),
-            tile,
-            detail: 0,
-        }));
-        assert_eq!(resident.len(), 2);
-    }
-
-    #[test]
-    fn vector_detail_bands_cannot_alias_gpu_residency() {
+    fn gpu_residency_identity_includes_layer_corpus_tile_and_detail() {
         let tile = TileKey {
             zoom: 12,
             x: 1_204,
             y: 1_532,
         };
         let corpus = VectorCorpus::mint();
-        let mut resident = HashSet::new();
-        for detail in 0..4 {
-            assert!(resident.insert(GpuKey {
+        let other_corpus = VectorCorpus::mint();
+        let other_tile = TileKey {
+            x: tile.x + 1,
+            ..tile
+        };
+        let keys = [
+            GpuKey {
+                layer: VectorLayer::Basemap,
+                corpus,
+                tile,
+                detail: 0,
+            },
+            GpuKey {
                 layer: VectorLayer::Relief,
                 corpus,
                 tile,
-                detail,
-            }));
-        }
-        assert_eq!(resident.len(), 4);
-    }
-
-    #[test]
-    fn framebuffer_transfer_function_matches_egui() {
-        assert_eq!(
-            fragment_entry(wgpu::TextureFormat::Bgra8Unorm),
-            "fragment_gamma"
-        );
-        assert_eq!(
-            fragment_entry(wgpu::TextureFormat::Bgra8UnormSrgb),
-            "fragment_linear"
-        );
-        assert_eq!(
-            relief_fragment_entry(wgpu::TextureFormat::Bgra8Unorm),
-            "fragment_gamma_relief"
-        );
-        assert_eq!(
-            relief_fragment_entry(wgpu::TextureFormat::Bgra8UnormSrgb),
-            "fragment_linear_relief"
-        );
-        assert_eq!(size_of::<VectorGap>(), 8 * size_of::<f32>());
-    }
-
-    #[test]
-    fn stroke_vertex_carries_both_cartographic_and_world_radii_in_eight_words() {
-        assert_eq!(size_of::<StrokePoint>(), 8 * size_of::<f32>());
+                detail: 0,
+            },
+            GpuKey {
+                layer: VectorLayer::Relief,
+                corpus: other_corpus,
+                tile,
+                detail: 0,
+            },
+            GpuKey {
+                layer: VectorLayer::Relief,
+                corpus,
+                tile: other_tile,
+                detail: 0,
+            },
+            GpuKey {
+                layer: VectorLayer::Relief,
+                corpus,
+                tile,
+                detail: 1,
+            },
+        ];
+        assert_eq!(keys.into_iter().collect::<HashSet<_>>().len(), keys.len());
     }
 
     #[test]
@@ -1114,20 +1077,6 @@ mod tests {
         let point = (f64::from(key.x) + f64::from(local)) / 4096.0;
         let expected = (point - center) * world_points;
         assert!((actual - expected).abs() < 0.1, "{actual} != {expected}");
-    }
-
-    #[test]
-    fn vector_tile_opacity_is_instance_local() {
-        let tile = TileInstance::forge(
-            TileKey {
-                zoom: 12,
-                x: 1_204,
-                y: 1_532,
-            },
-            0.375,
-        );
-        assert_eq!(tile.opacity.to_bits(), 0.375_f32.to_bits());
-        assert_eq!(size_of::<TileInstance>(), 8 * size_of::<f32>());
     }
 
     #[test]

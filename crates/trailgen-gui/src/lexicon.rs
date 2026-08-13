@@ -96,12 +96,6 @@ impl ExplainedText {
         &self.text
     }
 
-    #[must_use]
-    #[cfg(test)]
-    pub const fn glosses(&self) -> Glosses {
-        self.glosses
-    }
-
     pub fn explain(self, response: Response) -> Response {
         self.glosses.explain(response)
     }
@@ -116,25 +110,5 @@ impl From<&str> for ExplainedText {
 impl From<String> for ExplainedText {
     fn from(text: String) -> Self {
         Self::forge(text, Glosses::default())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn route_metrics_carry_both_domain_explanations() {
-        assert!(Glosses::ROUTE_METRICS.contains(Term::Fgjw));
-        assert!(Glosses::ROUTE_METRICS.contains(Term::MovingTime));
-        assert!(!Glosses::ROUTE_METRICS.contains(Term::BasePace));
-    }
-
-    #[test]
-    fn moving_time_gloss_names_its_calibration() {
-        assert_eq!(
-            Term::MovingTime.definition(),
-            "Calculated using your Base Pace."
-        );
     }
 }

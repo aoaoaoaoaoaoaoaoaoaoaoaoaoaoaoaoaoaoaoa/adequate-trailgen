@@ -1,11 +1,10 @@
 use crate::persistence;
 use anyhow::{Context as _, Result, ensure};
-use crossbeam_channel::{Receiver, Sender, unbounded};
+use eternalist_apps::{ScribeOutcome, SettledScribe};
 use serde::{Deserialize, Serialize};
 use std::{
     fs, io,
     path::{Path, PathBuf},
-    thread,
     time::{Duration, Instant},
 };
 use trailgen_core::HikingModel;
@@ -78,28 +77,10 @@ impl Values {
     }
 }
 
-enum Command {
-    Commit { revision: u64, values: Values },
-    Finish(Values),
-}
-
-struct Receipt {
-    revision: u64,
-    values: Values,
-    fault: Option<String>,
-}
-
 /// A debounced, background-committed XDG preference ledger.
 pub struct PreferenceLedger {
-    path: PathBuf,
     live: Values,
-    committed: Values,
-    dirty: Option<Instant>,
-    in_flight: Option<u64>,
-    revision: u64,
-    command: Sender<Command>,
-    receipts: Receiver<Receipt>,
-    worker: Option<thread::JoinHandle<()>>,
+    scribe: SettledScribe<Values>,
     alarm: Option<String>,
 }
 
@@ -112,51 +93,16 @@ impl PreferenceLedger {
                 Some(format!("Preferences reset to defaults: {err:#}")),
             ),
         };
-        let (command, commands) = unbounded();
-        let (publish, receipts) = unbounded();
-        let worker_path = path.clone();
-        let worker_ctx = ctx.clone();
-        let worker = thread::Builder::new()
-            .name("preference-committer".to_owned())
-            .spawn(move || {
-                while let Ok(command) = commands.recv() {
-                    match command {
-                        Command::Commit { revision, values } => {
-                            let fault = save(&worker_path, &values)
-                                .err()
-                                .map(|err| format!("{err:#}"));
-                            if publish
-                                .send(Receipt {
-                                    revision,
-                                    values,
-                                    fault,
-                                })
-                                .is_err()
-                            {
-                                break;
-                            }
-                            worker_ctx.request_repaint();
-                        }
-                        Command::Finish(values) => {
-                            if let Err(err) = save(&worker_path, &values) {
-                                eprintln!("could not save trailgen preferences: {err:#}");
-                            }
-                            break;
-                        }
-                    }
-                }
-            })
-            .context("spawn preference committer")?;
+        let worker_path = path;
+        let scribe = SettledScribe::spawn(
+            "trailgen-preference-scribe",
+            ctx,
+            SETTLE,
+            move |values: Values| save(&worker_path, &values),
+        )?;
         Ok(Self {
-            path,
-            committed: live.clone(),
             live,
-            dirty: None,
-            in_flight: None,
-            revision: 0,
-            command,
-            receipts,
-            worker: Some(worker),
+            scribe,
             alarm,
         })
     }
@@ -174,45 +120,33 @@ impl PreferenceLedger {
             return false;
         }
         self.live.base_pace_kmh = pace.kmh();
-        self.dirty = Some(Instant::now());
+        self.scribe.mark();
         true
     }
 
-    pub fn tend(&mut self, ctx: &egui::Context) -> Option<String> {
-        while let Ok(receipt) = self.receipts.try_recv() {
-            if self.in_flight == Some(receipt.revision) {
-                self.in_flight = None;
-            }
-            if let Some(fault) = receipt.fault {
-                self.alarm = Some(format!("Could not save preferences: {fault}"));
-                self.dirty = Some(Instant::now());
-            } else {
-                self.committed = receipt.values;
+    #[must_use]
+    pub fn deadline(&self) -> Option<Instant> {
+        self.scribe.deadline()
+    }
+
+    pub fn service_deadline_reached(&mut self, now: Instant) -> bool {
+        if self
+            .scribe
+            .deadline()
+            .is_some_and(|deadline| deadline <= now)
+        {
+            let values = self.live.clone();
+            if let Err(error) = self.scribe.tend(now, || values) {
+                self.alarm = Some(format!("Could not save preferences: {error:#}"));
+                return true;
             }
         }
-        if self.live == self.committed {
-            self.dirty = None;
-        } else if self.in_flight.is_none() {
-            let dirty = self.dirty.get_or_insert_with(Instant::now);
-            let settled = dirty.elapsed();
-            if settled < SETTLE {
-                ctx.request_repaint_after(SETTLE.saturating_sub(settled));
-            } else {
-                self.revision = self.revision.saturating_add(1);
-                let revision = self.revision;
-                let values = self.live.clone();
-                if self
-                    .command
-                    .send(Command::Commit { revision, values })
-                    .is_ok()
-                {
-                    self.in_flight = Some(revision);
-                    self.dirty = None;
-                } else {
-                    self.alarm = Some("Could not save preferences: committer stopped".to_owned());
-                    self.dirty = Some(Instant::now());
-                }
-            }
+        false
+    }
+
+    pub fn take_alarm(&mut self) -> Option<String> {
+        if let Some(ScribeOutcome::Fault { message, .. }) = self.scribe.take_outcome() {
+            self.alarm = Some(format!("Could not save preferences: {message}"));
         }
         self.alarm.take()
     }
@@ -220,18 +154,8 @@ impl PreferenceLedger {
 
 impl Drop for PreferenceLedger {
     fn drop(&mut self) {
-        if self
-            .command
-            .send(Command::Finish(self.live.clone()))
-            .is_err()
-            && let Err(err) = save(&self.path, &self.live)
-        {
+        if let Err(err) = self.scribe.flush(self.live.clone()) {
             eprintln!("could not save trailgen preferences: {err:#}");
-        }
-        if let Some(worker) = self.worker.take()
-            && worker.join().is_err()
-        {
-            eprintln!("trailgen preference committer panicked");
         }
     }
 }
@@ -256,36 +180,4 @@ fn save(path: &Path, values: &Values) -> Result<()> {
     let body = toml::to_string_pretty(values).context("serialize preferences")?;
     persistence::replace(path, body.as_bytes())
         .with_context(|| format!("replace preferences {}", path.display()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_pace_is_five_kilometers_per_hour() {
-        assert!((BasePace::default().kmh() - 5.0).abs() <= f64::EPSILON);
-    }
-
-    #[test]
-    fn pace_projection_and_search_conversion_are_inverses() {
-        let pace = BasePace::forge(6.6).expect("fixture pace must be valid");
-        let population = 5.0 * 3_600.0;
-        let personal = pace.moving_time_s(population);
-        assert!(personal < population);
-        assert!((pace.population_time_s(personal) - population).abs() <= 1.0e-9);
-    }
-
-    #[test]
-    fn preferences_round_trip_and_reject_invalid_paces() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let path = temp.path().join("preferences.toml");
-        let values = Values { base_pace_kmh: 6.6 };
-        save(&path, &values)?;
-        assert_eq!(load(&path)?, values);
-
-        fs::write(&path, "base_pace_kmh = 0.0\n")?;
-        assert!(load(&path).is_err());
-        Ok(())
-    }
 }

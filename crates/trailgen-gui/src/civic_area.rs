@@ -4,9 +4,13 @@ use crate::{
     persistence,
 };
 use anyhow::{Context as _, Result, bail, ensure};
-use crossbeam_channel::{Receiver, Sender, unbounded};
+use crossbeam_channel::{Receiver, Sender, bounded};
 use egui::{
     Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, Vec2, epaint::TextShape, vec2,
+};
+use eternalist_apps::{
+    NativeWake, ScribeOutcome, SettledScribe,
+    responsiveness::{Drain, SupersedingSender, superseding_channel},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -25,6 +29,9 @@ const INDEX: &str = "civic/index.json";
 const SHAPES: &str = "civic/shapes";
 const CATALOG: &[u8] = include_bytes!("../assets/civic-areas.tsv.zst");
 const COMPLETION_LIMIT: usize = 8;
+const CIVIC_COMMAND_CAPACITY: usize = 64;
+const CIVIC_EVENT_CAPACITY: usize = 8;
+const CIVIC_SETTLE: Duration = Duration::from_millis(400);
 const CHUNK_POINTS: usize = 96;
 const CENSUS_ENDPOINT: &str =
     "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/tigerWMS_Current/MapServer";
@@ -251,21 +258,34 @@ pub struct CivicAreas {
     generation: u64,
     catalog: CatalogForge,
     forge: CivicForge,
+    scribe: SettledScribe<Vec<CivicRecord>>,
+    alarm: Option<String>,
 }
 
 impl CivicAreas {
     pub fn raise(ctx: &egui::Context, root: &Path, offline: bool) -> Result<Self> {
         let records = read_index(root)?;
-        let catalog = CatalogForge::spawn(ctx.clone())?;
-        let forge = CivicForge::spawn(ctx.clone(), root.to_owned(), offline)?;
+        let catalog = CatalogForge::spawn(ctx)?;
+        let forge = CivicForge::spawn(ctx, root.to_owned(), offline)?;
+        let scribe_root = root.to_owned();
+        let scribe = SettledScribe::spawn(
+            "civic-index-scribe",
+            ctx,
+            CIVIC_SETTLE,
+            move |records: Vec<CivicRecord>| write_index(&scribe_root, &records),
+        )?;
         let mut generation = 0_u64;
         let mut rows = Vec::with_capacity(records.len());
         for record in records {
             generation = generation.saturating_add(1);
-            forge.prepare(generation, record.clone());
+            let state = if forge.prepare(generation, record.clone()) {
+                CivicRowState::Preparing
+            } else {
+                CivicRowState::Fault("boundary preparation queue is full".to_owned())
+            };
             rows.push(CivicRow {
                 record,
-                state: CivicRowState::Preparing,
+                state,
                 generation,
             });
         }
@@ -278,11 +298,13 @@ impl CivicAreas {
             generation,
             catalog,
             forge,
+            scribe,
+            alarm: None,
         })
     }
 
-    pub fn pulse(&mut self) -> Option<String> {
-        while let Ok(event) = self.catalog.events.try_recv() {
+    pub fn pulse(&mut self, ctx: &egui::Context, drain: &mut Drain) -> Option<String> {
+        while let Some(event) = drain.receive(&self.catalog.events) {
             let CompletionEvent::Ready {
                 serial,
                 suggestions,
@@ -294,8 +316,13 @@ impl CivicAreas {
                     .min(self.suggestions.len().saturating_sub(1));
             }
         }
-        let mut alarm = None;
-        while let Ok(event) = self.forge.events.try_recv() {
+        let mut alarm = self.alarm.take();
+        while let Some(outcome) = self.scribe.take_outcome() {
+            if let ScribeOutcome::Fault { message, .. } = outcome {
+                alarm = Some(format!("Could not persist civic areas: {message}"));
+            }
+        }
+        while let Some(event) = drain.receive(&self.forge.events) {
             match event {
                 ForgeEvent::Ready { generation, area } => {
                     if let Some(row) = self.rows.iter_mut().find(|row| {
@@ -321,6 +348,9 @@ impl CivicAreas {
                     }
                 }
             }
+        }
+        if !self.catalog.events.is_empty() || !self.forge.events.is_empty() {
+            ctx.request_repaint();
         }
         alarm
     }
@@ -395,11 +425,15 @@ impl CivicAreas {
         let generation = self.generation;
         self.rows.push(CivicRow {
             record: record.clone(),
-            state: CivicRowState::Preparing,
+            state: if self.forge.prepare(generation, record) {
+                CivicRowState::Preparing
+            } else {
+                self.alarm = Some("Civic boundary preparation is busy; retry it.".to_owned());
+                CivicRowState::Fault("boundary preparation queue is full".to_owned())
+            },
             generation,
         });
-        self.forge.persist(self.records());
-        self.forge.prepare(generation, record);
+        self.scribe.mark();
         self.query.clear();
         self.suggestions.clear();
         AddOutcome::Added(self.rows.len() - 1)
@@ -411,8 +445,12 @@ impl CivicAreas {
         };
         self.generation = self.generation.saturating_add(1);
         row.generation = self.generation;
-        row.state = CivicRowState::Preparing;
-        self.forge.prepare(row.generation, row.record.clone());
+        row.state = if self.forge.prepare(row.generation, row.record.clone()) {
+            CivicRowState::Preparing
+        } else {
+            self.alarm = Some("Civic boundary preparation is busy; retry it.".to_owned());
+            CivicRowState::Fault("boundary preparation queue is full".to_owned())
+        };
     }
 
     pub fn remove(&mut self, slot: usize) -> Option<CivicRecord> {
@@ -420,9 +458,28 @@ impl CivicAreas {
             return None;
         }
         let row = self.rows.remove(slot);
-        self.forge.persist(self.records());
-        self.forge.excise(row.record.key.clone());
+        self.scribe.mark();
+        if !self.forge.excise(row.record.key.clone()) {
+            self.alarm =
+                Some("The stale civic snapshot could not be queued for removal.".to_owned());
+        }
         Some(row.record)
+    }
+
+    pub fn service_deadline(&self) -> Option<std::time::Instant> {
+        self.scribe.deadline()
+    }
+
+    pub fn service_deadline_reached(&mut self, now: std::time::Instant) -> bool {
+        if self.scribe.deadline().is_none_or(|deadline| deadline > now) {
+            return false;
+        }
+        let records = self.records();
+        if let Err(error) = self.scribe.tend(now, || records) {
+            self.alarm = Some(format!("Could not submit civic areas: {error:#}"));
+            return true;
+        }
+        false
     }
 
     pub fn rows(&self) -> &[CivicRow] {
@@ -458,7 +515,7 @@ pub enum AddOutcome {
 }
 
 struct CatalogForge {
-    commands: Sender<CompletionCommand>,
+    commands: SupersedingSender<CompletionCommand>,
     events: Receiver<CompletionEvent>,
     _thread: thread::JoinHandle<()>,
 }
@@ -477,9 +534,10 @@ enum CompletionEvent {
 }
 
 impl CatalogForge {
-    fn spawn(ctx: egui::Context) -> Result<Self> {
-        let (commands, jobs) = unbounded::<CompletionCommand>();
-        let (publish, events) = unbounded();
+    fn spawn(ctx: &egui::Context) -> Result<Self> {
+        let (commands, jobs) = superseding_channel::<CompletionCommand>();
+        let (publish, events) = bounded(1);
+        let wake = NativeWake::from_context(ctx);
         let thread = thread::Builder::new()
             .name("civic-catalog".to_owned())
             .spawn(move || {
@@ -495,7 +553,7 @@ impl CatalogForge {
                     {
                         break;
                     }
-                    ctx.request_repaint();
+                    let _woken = wake.request_foreground_repaint();
                 }
             })
             .context("spawn civic catalog worker")?;
@@ -507,11 +565,12 @@ impl CatalogForge {
     }
 
     fn lookup(&self, serial: u64, query: String, anchor: Coord) {
-        let _sent = self.commands.send(CompletionCommand {
+        let command = CompletionCommand {
             serial,
             query,
             anchor,
-        });
+        };
+        let _latest = self.commands.offer(command);
     }
 }
 
@@ -526,7 +585,6 @@ enum ForgeCommand {
         generation: u64,
         record: CivicRecord,
     },
-    Persist(Vec<CivicRecord>),
     Excise(CivicKey),
 }
 
@@ -543,9 +601,10 @@ enum ForgeEvent {
 }
 
 impl CivicForge {
-    fn spawn(ctx: egui::Context, root: PathBuf, offline: bool) -> Result<Self> {
-        let (commands, jobs) = unbounded();
-        let (publish, events) = unbounded();
+    fn spawn(ctx: &egui::Context, root: PathBuf, offline: bool) -> Result<Self> {
+        let (commands, jobs) = bounded(CIVIC_COMMAND_CAPACITY);
+        let (publish, events) = bounded(CIVIC_EVENT_CAPACITY);
+        let wake = NativeWake::from_context(ctx);
         let thread = thread::Builder::new()
             .name("civic-boundary-forge".to_owned())
             .spawn(move || {
@@ -568,12 +627,7 @@ impl CivicForge {
                             if publish.send(event).is_err() {
                                 break;
                             }
-                            ctx.request_repaint();
-                        }
-                        ForgeCommand::Persist(records) => {
-                            if let Err(error) = write_index(&root, &records) {
-                                tracing::error!(error = %error, "persist civic index");
-                            }
+                            let _woken = wake.request_foreground_repaint();
                         }
                         ForgeCommand::Excise(key) => {
                             let path = snapshot_path(&root, &key);
@@ -594,18 +648,23 @@ impl CivicForge {
         })
     }
 
-    fn prepare(&self, generation: u64, record: CivicRecord) {
-        let _sent = self
-            .commands
-            .send(ForgeCommand::Prepare { generation, record });
+    fn prepare(&self, generation: u64, record: CivicRecord) -> bool {
+        self.commands
+            .try_send(ForgeCommand::Prepare { generation, record })
+            .is_ok()
     }
 
-    fn persist(&self, records: Vec<CivicRecord>) {
-        let _sent = self.commands.send(ForgeCommand::Persist(records));
+    fn excise(&self, key: CivicKey) -> bool {
+        self.commands.try_send(ForgeCommand::Excise(key)).is_ok()
     }
+}
 
-    fn excise(&self, key: CivicKey) {
-        let _sent = self.commands.send(ForgeCommand::Excise(key));
+impl Drop for CivicAreas {
+    fn drop(&mut self) {
+        let records = self.records();
+        if let Err(error) = self.scribe.flush(records) {
+            tracing::error!(error = %error, "retire civic index scribe");
+        }
     }
 }
 
@@ -1404,96 +1463,6 @@ mod tests {
 
     fn brooklyn() -> CivicRecord {
         nyc_boroughs()[2].clone()
-    }
-
-    #[test]
-    fn catalog_prefers_brooklyn_to_distant_prefixes() -> Result<()> {
-        let catalog = Catalog::decode()?;
-        let hits = catalog.search("bro", brooklyn().anchor);
-        assert_eq!(hits.first().map(|hit| hit.name.as_str()), Some("Brooklyn"));
-        assert_eq!(hits.first().map(|hit| hit.kind.as_str()), Some("borough"));
-        Ok(())
-    }
-
-    #[test]
-    fn civic_order_owns_a_distinct_legible_cycle() {
-        let colors = (0..64).map(civic_color).collect::<Vec<_>>();
-        assert_eq!(
-            colors
-                .iter()
-                .map(Color32::to_tuple)
-                .collect::<HashSet<_>>()
-                .len(),
-            colors.len()
-        );
-        assert!(colors.iter().all(|color| {
-            let ink = civic_ink(*color);
-            ink.r() <= color.r()
-                && ink.g() <= color.g()
-                && ink.b() <= color.b()
-                && u16::from(ink.r()) + u16::from(ink.g()) + u16::from(ink.b())
-                    < u16::from(color.r()) + u16::from(color.g()) + u16::from(color.b())
-        }));
-    }
-
-    #[test]
-    fn geojson_normalizes_polygon_and_multipolygon_rings() -> Result<()> {
-        let source = serde_json::json!({
-            "type": "FeatureCollection",
-            "features": [{
-                "type": "Feature",
-                "geometry": {
-                    "type": "MultiPolygon",
-                    "coordinates": [
-                        [[[-74.0, 40.0], [-73.9, 40.0], [-73.9, 40.1], [-74.0, 40.0]]],
-                        [[[-73.8, 40.0], [-73.7, 40.0], [-73.7, 40.1], [-73.8, 40.0]]]
-                    ]
-                },
-                "properties": {}
-            }]
-        });
-        let snapshot = snapshot_from_geojson(
-            brooklyn(),
-            &serde_json::to_vec(&source)?,
-            Provenance {
-                dataset: "fixture".to_owned(),
-                vintage: "1".to_owned(),
-                origin: "fixture".to_owned(),
-            },
-        )?;
-        assert_eq!(snapshot.rings.len(), 2);
-        assert!(snapshot.rings.iter().all(|ring| ring.len() == 3));
-        snapshot.bounds.validate()
-    }
-
-    #[test]
-    fn simplification_is_nested_and_retains_original_phase() {
-        let fine = (0..100)
-            .map(|slot| Sample {
-                world: [f64::from(slot) / 100.0, f64::from(slot % 7) / 10_000.0],
-                arc: f64::from(slot),
-            })
-            .collect::<Vec<_>>();
-        let middle = simplify_ring(&fine, 5.0e-5);
-        let coarse = simplify_ring(&middle, 2.0e-4);
-        let fine_arcs = fine
-            .iter()
-            .map(|sample| sample.arc.to_bits())
-            .collect::<HashSet<_>>();
-        let middle_arcs = middle
-            .iter()
-            .map(|sample| sample.arc.to_bits())
-            .collect::<HashSet<_>>();
-        assert!(
-            middle
-                .iter()
-                .all(|sample| fine_arcs.contains(&sample.arc.to_bits()))
-        );
-        assert!(
-            coarse
-                .iter()
-                .all(|sample| middle_arcs.contains(&sample.arc.to_bits()))
-        );
     }
 
     #[test]

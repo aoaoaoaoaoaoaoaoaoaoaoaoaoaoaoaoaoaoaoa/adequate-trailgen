@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use egui_tester::{Button, Key, Modifiers, PixelRegion, Result, Timed};
+use egui_tester::{Button, Key, Modifiers, Motion, PixelRegion, Result, Timed};
 
 use crate::{
     harness::{Target, TrailFrame, TrailStory, demand, map_pixel, screen_point, verdict},
@@ -59,9 +59,8 @@ pub fn drag_support(
     let _acquired = story
         .reaction(press)
         .until(shows::dragging_support(Some(slot)))?;
-    let motion = story.session().move_to(destination.0, destination.1)?;
     let previewed = story
-        .reaction(motion)
+        .motion_to(destination, Motion::default())?
         .until(shows::signature(before_signature) & shows::support(slot, target))?;
     let release = story.session().button_up(Button::Primary)?;
     let reforged = story.reaction(release).until(
@@ -132,8 +131,15 @@ pub fn lasso_boundary(story: &mut TrailStory<'_, '_>, inset: f32) -> Result<Time
         .button_down(knots[0].0, knots[0].1, Button::Primary)?;
     let _acquired = story.reaction(press).next_frame()?;
     for knot in &knots[1..] {
-        let motion = story.session().move_to(knot.0, knot.1)?;
-        let _sampled = story.reaction(motion).next_frame()?;
+        let _sampled = story
+            .motion_to(
+                *knot,
+                Motion {
+                    steps: 8,
+                    duration: Duration::from_millis(160),
+                },
+            )?
+            .next_frame()?;
     }
     let release = story.session().button_up(Button::Primary)?;
     story.reaction(release).until(shows::boundary())
@@ -148,8 +154,9 @@ pub fn exercise_profile(story: &mut TrailStory<'_, '_>) -> Result<()> {
         f64::from((x1 - x0).mul_add(0.62, x0)),
         f64::from(f32::midpoint(y0, y1)),
     ])?;
-    let hover = story.session().move_to(target.0, target.1)?;
-    let _hovered = story.reaction(hover).until(shows::profile_hovering())?;
+    let _hovered = story
+        .motion_to(target, Motion::default())?
+        .until(shows::profile_hovering())?;
     let hovered = story.session().wait_changed_region(
         &baseline,
         region,

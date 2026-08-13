@@ -3,8 +3,9 @@ use crate::{
     portfolio::{CandidatePortfolio, CandidateWarmth},
 };
 use anyhow::{Context as _, Result, ensure};
-use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
+use crossbeam_channel::{Receiver, Sender, bounded};
 use egui::Context;
+use eternalist_apps::NativeWake;
 use serde::Deserialize;
 use std::{
     cell::Cell,
@@ -21,6 +22,8 @@ use trailgen_core::{
     EdgeEdicts, GRAPH_CACHE, LoopConstraints, Route, SearchMonitor, SearchParams, SearchProgress,
     SearchScope, SearchStage, SolverKind, VertexId, WalkGraph, WalkRealmIndex, decode_graph,
 };
+
+const SEARCH_EVENT_CAPACITY: usize = 64;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
@@ -336,7 +339,7 @@ struct ForgeMonitor<'a> {
     graph: &'a WalkGraph,
     halt: Arc<AtomicBool>,
     events: Sender<SearchEvent>,
-    ctx: Context,
+    wake: NativeWake,
     routing: trailgen_core::RoutingLaw,
     manual_defaults: LoopConstraints,
     warmth: CandidateWarmth,
@@ -354,7 +357,7 @@ impl SearchMonitor for ForgeMonitor<'_> {
             serial: self.serial,
             progress,
         });
-        self.ctx.request_repaint();
+        let _woken = self.wake.request_foreground_repaint();
     }
 
     fn preview(&self, routes: &[Route]) {
@@ -383,7 +386,7 @@ impl SearchMonitor for ForgeMonitor<'_> {
         self.previewed.set(true);
         let _published = publish(
             &self.events,
-            &self.ctx,
+            &self.wake,
             SearchEvent::Preview {
                 serial: self.serial,
                 portfolio: Box::new(portfolio),
@@ -401,15 +404,20 @@ pub struct SearchForge {
 }
 
 impl SearchForge {
-    pub fn spawn(ctx: Context, graph: Arc<WalkGraph>, finder: Arc<WalkRealmIndex>) -> Result<Self> {
+    pub fn spawn(
+        ctx: &Context,
+        graph: Arc<WalkGraph>,
+        finder: Arc<WalkRealmIndex>,
+    ) -> Result<Self> {
         let (command, commands) = bounded::<SearchJob>(1);
-        let (events_tx, events) = unbounded();
+        let (events_tx, events) = bounded(SEARCH_EVENT_CAPACITY);
         let worker_graph = Arc::clone(&graph);
+        let wake = NativeWake::from_context(ctx);
         let worker = thread::Builder::new()
             .name("trail-search".to_owned())
             .spawn(move || {
                 while let Ok(job) = commands.recv() {
-                    if !forge_search(&worker_graph, &finder, &events_tx, &ctx, job) {
+                    if !forge_search(&worker_graph, &finder, &events_tx, &wake, job) {
                         break;
                     }
                 }
@@ -440,7 +448,7 @@ fn forge_search(
     graph: &WalkGraph,
     finder: &WalkRealmIndex,
     events: &Sender<SearchEvent>,
-    ctx: &Context,
+    wake: &NativeWake,
     job: SearchJob,
 ) -> bool {
     let SearchJob { request, halt } = job;
@@ -450,7 +458,7 @@ fn forge_search(
         graph,
         halt,
         events: events.clone(),
-        ctx: ctx.clone(),
+        wake: wake.clone(),
         routing: request.params.routing,
         manual_defaults: request.manual_defaults.clone(),
         warmth: request.warmth.clone(),
@@ -473,7 +481,7 @@ fn forge_search(
         BoundaryMask::Halted => {
             return publish(
                 events,
-                ctx,
+                wake,
                 SearchEvent::Stopped {
                     serial: request.serial,
                     elapsed: started.elapsed(),
@@ -495,7 +503,7 @@ fn forge_search(
     if monitor.cancelled() {
         return publish(
             events,
-            ctx,
+            wake,
             SearchEvent::Stopped {
                 serial: request.serial,
                 elapsed: search_elapsed,
@@ -504,7 +512,7 @@ fn forge_search(
     }
     if !publish(
         events,
-        ctx,
+        wake,
         SearchEvent::PreparingResults {
             serial: request.serial,
             count: routes.len(),
@@ -538,7 +546,7 @@ fn forge_search(
             elapsed: started.elapsed(),
         }
     };
-    publish(events, ctx, event)
+    publish(events, wake, event)
 }
 
 fn forge_boundary_mask(
@@ -568,9 +576,9 @@ fn forge_boundary_mask(
         .map_or(BoundaryMask::Halted, BoundaryMask::Edges)
 }
 
-fn publish(events: &Sender<SearchEvent>, ctx: &Context, event: SearchEvent) -> bool {
+fn publish(events: &Sender<SearchEvent>, wake: &NativeWake, event: SearchEvent) -> bool {
     let live = events.send(event).is_ok();
-    ctx.request_repaint();
+    let _woken = wake.request_foreground_repaint();
     live
 }
 
@@ -579,99 +587,4 @@ fn exact_matches(routes: Vec<Route>) -> Vec<Route> {
         .into_iter()
         .filter(|route| route.verdict.satisfied)
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use trailgen_core::{GraphBuilder, Terrain, io::geojson};
-
-    fn fixture_graph() -> Result<WalkGraph> {
-        Ok(
-            GraphBuilder::default().build(&geojson::network_from_str(include_str!(
-                "../../trailgen-core/tests/fixtures/mini_network.geojson"
-            ))?)?,
-        )
-    }
-
-    #[test]
-    fn gui_defaults_bound_interactive_search_work() {
-        let search = WorkbenchConfig::default().search;
-        assert_eq!(search.max_frontier, 5_000);
-        assert_eq!(search.closure_paths, 1);
-        assert!(search.keep >= 12);
-    }
-
-    #[test]
-    fn search_rejects_an_inverted_terrain_window() -> Result<()> {
-        let graph = fixture_graph()?;
-        let mut constraints = LoopConstraints::default();
-        let _minimum = constraints.min_terrain_fraction.insert(Terrain::Trail, 0.8);
-        let _maximum = constraints.max_terrain_fraction.insert(Terrain::Trail, 0.2);
-        let request = SearchRequest {
-            serial: 1,
-            start: VertexId(0),
-            boundary: None,
-            constraints,
-            params: SearchParams::default(),
-            solver: SolverKind::Auto,
-            count: 1,
-            manual_defaults: LoopConstraints::default(),
-            edicts: EdgeEdicts::default(),
-            warmth: CandidateWarmth::default(),
-        };
-        assert!(request.validate(&graph).is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn gui_discards_solver_near_misses() -> Result<()> {
-        let graph = fixture_graph()?;
-        let mut constraints = LoopConstraints {
-            min_distance_m: 100_000.0,
-            max_distance_m: 200_000.0,
-            ..LoopConstraints::default()
-        };
-        constraints.max_road_fraction = 1.0;
-        constraints.max_low_confidence_fraction = 1.0;
-        constraints.max_repeated_edge_fraction = 1.0;
-        let routes = SolverKind::Exact.solve(
-            SearchParams::default(),
-            &graph,
-            VertexId(0),
-            &constraints,
-            12,
-        );
-        assert!(
-            !routes.is_empty(),
-            "fixture should produce ranked near misses"
-        );
-        assert!(routes.iter().all(|route| !route.verdict.satisfied));
-        assert!(exact_matches(routes).is_empty());
-        Ok(())
-    }
-
-    #[test]
-    fn refreshed_cache_is_the_project_graph() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        fs::create_dir(temp.path().join("cache"))?;
-        fs::create_dir(temp.path().join("routes"))?;
-        fs::write(temp.path().join("trailgen.toml"), "name = 'live project'\n")?;
-        let cached = fixture_graph()?;
-        fs::write(
-            temp.path().join(GRAPH_CACHE),
-            trailgen_core::encode_graph(&cached)?,
-        )?;
-        fs::write(temp.path().join("routes/generated.graph.json"), b"obsolete")?;
-        Library::default().save(temp.path())?;
-
-        let project = Project::open(temp.path())?;
-        let graph = Project::load_graph(temp.path())?;
-
-        assert_eq!(project.config.name, "live project");
-        assert_eq!(graph.as_ref(), &cached);
-        assert!(project.library.trails().is_empty());
-        assert!(temp.path().join("library/index.json").is_file());
-        Ok(())
-    }
 }

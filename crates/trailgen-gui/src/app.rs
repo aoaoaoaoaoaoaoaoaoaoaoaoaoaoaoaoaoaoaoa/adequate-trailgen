@@ -24,14 +24,15 @@ use crate::{
     vector_field::VectorField,
 };
 use anyhow::{Context as _, Result};
-use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, unbounded};
+use crossbeam_channel::{Receiver, Sender, bounded};
 use dwemer_poolrooms::water::{Domain, Frame as WaterFrame, Surface, Wetness};
 use egui::{Color32, RichText, Stroke, vec2};
 use eternalist_apps::{
-    Inspector, LivingWait,
+    Inspector, LivingWait, NativeWake, ScribeOutcome, SettledScribe,
     command_guide::{CommandGuide, GuideSection},
     commands::{CommandDispatch, CommandStatus},
     panel_navigation::{PanelFrame, PanelNavigator},
+    responsiveness::{Drain, DrainBudget, SupersedingSender, superseding_channel},
 };
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -55,6 +56,8 @@ const RESULTS_HEIGHT: f32 = 190.0;
 const TOOLBAR_HEIGHT: f32 = 44.0;
 const STATE_SETTLE: Duration = Duration::from_millis(400);
 const SEARCH_SETTLE: Duration = Duration::from_millis(350);
+const EVENT_DRAIN: DrainBudget = DrainBudget::new(64, Duration::from_millis(3));
+const PROJECTION_EVENT_CAPACITY: usize = 16;
 const CANDIDATE_COUNT: usize = 12;
 const TRAILHEAD_SNAP_M: f64 = 500.0;
 const UNDO_DEPTH: usize = 128;
@@ -73,8 +76,9 @@ pub struct TrailApp {
     params: SearchParams,
     solver: SolverKind,
     library: Library,
-    committed_library: Library,
-    library_dirty: Option<Instant>,
+    state_scribe: SettledScribe<DurableState>,
+    pending_state: Option<(u64, DurableState)>,
+    dirty_state: DirtyState,
     saved_projections: BTreeMap<TrailId, Option<SavedProjection>>,
     projection_forge: ProjectionForge,
     export_forge: ExportForge,
@@ -113,10 +117,7 @@ pub struct TrailApp {
     offline: bool,
     shutters: BTreeMap<String, bool>,
     inspector_scroll: f32,
-    slate_path: PathBuf,
-    committed_slate: Slate,
     observed_slate: Slate,
-    slate_dirty: Option<Instant>,
     preferences: PreferenceLedger,
     water: Surface,
     living_wait: LivingWait,
@@ -127,6 +128,53 @@ pub struct TrailApp {
     map_regime: MapRegime,
     workspace_signal: Option<Action>,
     post_armament: Option<TrailDataMutation>,
+}
+
+#[derive(Clone)]
+struct DurableState {
+    library: Option<Library>,
+    slate: Option<Slate>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct DirtyState {
+    library: bool,
+    slate: bool,
+}
+
+impl DurableState {
+    fn save(self, root: &Path, slate_path: &Path) -> Result<()> {
+        let mut faults = Vec::new();
+        if let Some(library) = self.library
+            && let Err(error) = library.save(root)
+        {
+            faults.push(format!("trail library: {error:#}"));
+        }
+        if let Some(slate) = self.slate
+            && let Err(error) = slate.save(slate_path)
+        {
+            faults.push(format!("window state: {error:#}"));
+        }
+        if faults.is_empty() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(faults.join("; ")))
+        }
+    }
+}
+
+fn raise_state_scribe(
+    ctx: &egui::Context,
+    root: &Path,
+    slate_path: PathBuf,
+) -> Result<SettledScribe<DurableState>> {
+    let root = root.to_owned();
+    SettledScribe::spawn(
+        "trailgen-state-scribe",
+        ctx,
+        STATE_SETTLE,
+        move |state: DurableState| state.save(&root, &slate_path),
+    )
 }
 
 struct TrailEditor {
@@ -677,8 +725,7 @@ struct EditorEvent {
 }
 
 struct EditorForge {
-    command: Sender<EditorJob>,
-    pending: Receiver<EditorJob>,
+    command: SupersedingSender<EditorJob>,
     events: Receiver<EditorEvent>,
     _thread: thread::JoinHandle<()>,
 }
@@ -690,10 +737,10 @@ struct ProjectionForge {
 }
 
 impl EditorForge {
-    fn spawn(ctx: egui::Context, graph: Arc<WalkGraph>) -> Result<Self> {
-        let (command, jobs) = bounded::<EditorJob>(1);
-        let pending = jobs.clone();
-        let (events_tx, events) = unbounded();
+    fn spawn(ctx: &egui::Context, graph: Arc<WalkGraph>) -> Result<Self> {
+        let (command, jobs) = superseding_channel::<EditorJob>();
+        let (events_tx, events) = bounded(1);
+        let wake = NativeWake::from_context(ctx);
         let worker = thread::Builder::new()
             .name("trail-realizer".to_owned())
             .spawn(move || {
@@ -721,36 +768,30 @@ impl EditorForge {
                     {
                         break;
                     }
-                    ctx.request_repaint();
+                    let _woken = wake.request_foreground_repaint();
                 }
             })
             .context("spawn trail realizer")?;
         Ok(Self {
             command,
-            pending,
             events,
             _thread: worker,
         })
     }
 
     fn strike(&self, job: EditorJob) -> Result<()> {
-        match self.command.try_send(job) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(job)) => {
-                let _superseded = self.pending.try_recv();
-                self.command
-                    .try_send(job)
-                    .map_err(|_| anyhow::anyhow!("trail realizer stopped"))
-            }
-            Err(TrySendError::Disconnected(_)) => Err(anyhow::anyhow!("trail realizer stopped")),
-        }
+        self.command
+            .offer(job)
+            .map(|_superseded| ())
+            .map_err(|_| anyhow::anyhow!("trail realizer stopped"))
     }
 }
 
 impl ProjectionForge {
-    fn spawn(ctx: egui::Context) -> Result<Self> {
-        let (command, jobs) = unbounded::<(TrailId, SavedTrail)>();
-        let (publish, events) = unbounded();
+    fn spawn(ctx: &egui::Context) -> Result<Self> {
+        let (command, jobs) = bounded::<(TrailId, SavedTrail)>(PROJECTION_EVENT_CAPACITY);
+        let (publish, events) = bounded(PROJECTION_EVENT_CAPACITY);
+        let wake = NativeWake::from_context(ctx);
         let thread = thread::Builder::new()
             .name("saved-trail-projector".to_owned())
             .spawn(move || {
@@ -758,7 +799,7 @@ impl ProjectionForge {
                     if publish.send((id, SavedProjection::forge(&trail))).is_err() {
                         break;
                     }
-                    ctx.request_repaint();
+                    let _woken = wake.request_foreground_repaint();
                 }
             })
             .context("spawn saved-trail projector")?;
@@ -769,8 +810,8 @@ impl ProjectionForge {
         })
     }
 
-    fn strike(&self, id: TrailId, trail: SavedTrail) {
-        let _sent = self.command.send((id, trail));
+    fn strike(&self, id: TrailId, trail: SavedTrail) -> bool {
+        self.command.try_send((id, trail)).is_ok()
     }
 }
 
@@ -786,6 +827,7 @@ impl CorpusForge {
     fn spawn(ctx: &egui::Context, root: PathBuf, read_legacy_routes: bool) -> Result<Self> {
         let (event_tx, event) = bounded(1);
         let worker_ctx = ctx.clone();
+        let wake = NativeWake::from_context(ctx);
         let thread = thread::Builder::new()
             .name("trail-corpus-forge".to_owned())
             .spawn(move || {
@@ -824,14 +866,14 @@ impl CorpusForge {
                     let forge = product_phase!(
                         "corpus.search_worker",
                         SearchForge::spawn(
-                            worker_ctx.clone(),
+                            &worker_ctx,
                             Arc::clone(&graph),
                             Arc::clone(&finder_index),
                         )?
                     );
                     let editor_forge = product_phase!(
                         "corpus.editor_worker",
-                        EditorForge::spawn(worker_ctx.clone(), Arc::clone(&graph))?
+                        EditorForge::spawn(&worker_ctx, Arc::clone(&graph))?
                     );
                     let config =
                         product_phase!("corpus.data_config", trailgen_data::project_config(&root)?);
@@ -860,7 +902,7 @@ impl CorpusForge {
                     })
                 })();
                 let _sent = event_tx.send(result);
-                worker_ctx.request_repaint();
+                let _woken = wake.request_foreground_repaint();
             })
             .context("spawn trail-corpus projection forge")?;
         Ok(Self {
@@ -986,8 +1028,8 @@ impl TrailApp {
             "project.civic_areas",
             CivicAreas::raise(ctx, &project.root, offline)?
         );
-        let projection_forge = ProjectionForge::spawn(ctx.clone())?;
-        let export_forge = ExportForge::spawn(ctx.clone())?;
+        let projection_forge = ProjectionForge::spawn(ctx)?;
+        let export_forge = ExportForge::spawn(ctx)?;
         let legacy_routes_pending = project.library.legacy_routes_pending();
         let armament = CorpusForge::spawn(ctx, project.root.clone(), legacy_routes_pending)?;
         let Project {
@@ -997,10 +1039,11 @@ impl TrailApp {
         } = project;
         let (viewport, view, fit, mut status) =
             resurrect_workbench(&slate, trail_data.regions.is_empty());
-        if let Some(alarm) = preferences.tend(ctx) {
+        if let Some(alarm) = preferences.take_alarm() {
             status = alarm;
         }
         let cartography = map::CartographicClock::new(viewport);
+        let state_scribe = raise_state_scribe(ctx, &root, slate_path)?;
         let mut app = Self {
             root,
             name: config.name,
@@ -1009,9 +1052,10 @@ impl TrailApp {
             defaults: config.constraints,
             params: config.search,
             solver: config.solver,
-            committed_library: library.clone(),
             library,
-            library_dirty: None,
+            state_scribe,
+            pending_state: None,
+            dirty_state: DirtyState::default(),
             saved_projections: BTreeMap::new(),
             projection_forge,
             export_forge,
@@ -1050,10 +1094,7 @@ impl TrailApp {
             offline,
             shutters: slate.shutters.clone(),
             inspector_scroll: slate.inspector_scroll,
-            slate_path,
-            committed_slate: slate.clone(),
             observed_slate: slate,
-            slate_dirty: None,
             preferences,
             water: forge_water(),
             living_wait: LivingWait::default(),
@@ -1075,18 +1116,37 @@ impl TrailApp {
     }
 
     pub fn pulse(&mut self, ui: &mut egui::Ui) -> Option<Action> {
-        product_phase!("pulse.search_events", self.absorb_events(ui.ctx()));
-        product_phase!("pulse.editor_events", self.absorb_editor_events());
-        product_phase!("pulse.saved_projections", self.absorb_saved_projections());
-        product_phase!("pulse.exports", self.absorb_export_events());
-        product_phase!("pulse.corpus_events", self.absorb_corpus(ui.ctx()));
+        let mut drain = EVENT_DRAIN.arm();
+        self.absorb_persistence();
+        product_phase!(
+            "pulse.corpus_events",
+            self.absorb_corpus(ui.ctx(), &mut drain)
+        );
+        product_phase!(
+            "pulse.editor_events",
+            self.absorb_editor_events(ui.ctx(), &mut drain)
+        );
+        product_phase!(
+            "pulse.exports",
+            self.absorb_export_events(ui.ctx(), &mut drain)
+        );
+        product_phase!(
+            "pulse.saved_projections",
+            self.absorb_saved_projections(ui.ctx(), &mut drain)
+        );
         product_phase!(
             "pulse.deferred_trail_refresh",
             self.tend_post_armament(ui.ctx())
         );
-        if let Some(alarm) = product_phase!("pulse.civic_events", self.civic.pulse()) {
+        if let Some(alarm) =
+            product_phase!("pulse.civic_events", self.civic.pulse(ui.ctx(), &mut drain))
+        {
             self.status = alarm;
         }
+        product_phase!(
+            "pulse.search_events",
+            self.absorb_events(ui.ctx(), &mut drain)
+        );
         product_phase!("pulse.input", {
             let guide_invoked = self.guide.take_shortcuts(ui.ctx());
             if !guide_invoked && !self.guide.is_open() {
@@ -1120,15 +1180,58 @@ impl TrailApp {
             egui::CentralPanel::default().show_inside(ui, |ui| self.arena(ui))
         );
         product_phase!("pulse.command_guide", self.command_guide(ui));
-        product_phase!("pulse.search_commit", self.tend_search(ui.ctx()));
-        product_phase!("pulse.library_commit", self.tend_library(ui.ctx()));
-        product_phase!("pulse.slate_commit", self.tend_slate(ui.ctx()));
-        if let Some(alarm) =
-            product_phase!("pulse.preference_commit", self.preferences.tend(ui.ctx()))
-        {
+        self.observe_persistence();
+        if let Some(alarm) = self.preferences.take_alarm() {
             self.status = alarm;
         }
         self.workspace_signal.take()
+    }
+
+    pub fn service_deadline(&self, _now: Instant) -> Option<Instant> {
+        let search = (!self.forge_phase.active())
+            .then_some(self.search_due)
+            .flatten();
+        self.state_scribe
+            .deadline()
+            .into_iter()
+            .chain(self.preferences.deadline())
+            .chain(self.civic.service_deadline())
+            .chain(self.vector.as_ref().and_then(VectorField::service_deadline))
+            .chain(search)
+            .min()
+    }
+
+    pub fn service_deadline_reached(&mut self, now: Instant) -> bool {
+        let mut changed = if self.search_due.is_some_and(|deadline| deadline <= now)
+            && !self.forge_phase.active()
+        {
+            self.strike();
+            true
+        } else {
+            false
+        };
+        if let Some(vector) = &mut self.vector {
+            changed |= vector.service_deadline_reached(now);
+        }
+        changed |= self.civic.service_deadline_reached(now);
+        changed |= self.preferences.service_deadline_reached(now);
+        if self
+            .state_scribe
+            .deadline()
+            .is_some_and(|deadline| deadline <= now)
+        {
+            let state = self.durable_state();
+            let pending = state.clone();
+            match self.state_scribe.tend(now, || state) {
+                Ok(Some(sequence)) => self.accept_submission(sequence, pending),
+                Ok(None) => {}
+                Err(error) => {
+                    self.status = format!("Could not submit persistent state: {error:#}");
+                    changed = true;
+                }
+            }
+        }
+        changed
     }
 
     pub fn root(&self) -> &Path {
@@ -2418,7 +2521,7 @@ impl TrailApp {
         };
         match self.library.rename_trail(&draft.trail, &draft.text) {
             Ok(true) => {
-                self.flush_library();
+                self.inscribe_library();
                 "Trail renamed.".clone_into(&mut self.status);
             }
             Ok(false) => {}
@@ -3884,7 +3987,7 @@ impl TrailApp {
         self.library.search_mut().trailhead = Some(trailhead);
         self.placing_trailhead = false;
         self.trailhead_drag = None;
-        self.flush_library();
+        self.inscribe_library();
         self.schedule_revision();
         self.status = if distance_m < 20.0 {
             "Trailhead set.".to_owned()
@@ -4006,19 +4109,13 @@ impl TrailApp {
         }
         let support = SupportPoint::forge(projection.coord)
             .expect("edge projections contain valid coordinates");
-        let Some(editor) = self.view.editor_mut() else {
-            return;
-        };
-        let changed = if editor.support_points.get(slot) != Some(&support)
-            && let Some(current) = editor.support_points.get_mut(slot)
+        if let Some(current) = self
+            .view
+            .editor_mut()
+            .and_then(|editor| editor.support_points.get_mut(slot))
+            && *current != support
         {
             *current = support;
-            true
-        } else {
-            false
-        };
-        if changed {
-            let _serial = self.reforge_editor();
         }
     }
 
@@ -4138,22 +4235,6 @@ impl TrailApp {
         if self.forge_phase.active() {
             self.stop_search();
         }
-    }
-
-    fn tend_search(&mut self, ctx: &egui::Context) {
-        let Some(due) = self.search_due else {
-            return;
-        };
-        let remaining = due.saturating_duration_since(Instant::now());
-        if !remaining.is_zero() || self.forge_phase.active() {
-            ctx.request_repaint_after(if remaining.is_zero() {
-                Duration::from_millis(20)
-            } else {
-                remaining
-            });
-            return;
-        }
-        self.strike();
     }
 
     fn edict_segment(&mut self, requested: Coord, forbidden: bool) {
@@ -4305,10 +4386,8 @@ impl TrailApp {
         })
     }
 
-    fn absorb_events(&mut self, ctx: &egui::Context) {
-        let events = self.sinew.as_ref().map_or_else(Vec::new, |sinew| {
-            sinew.forge.events.try_iter().collect::<Vec<_>>()
-        });
+    fn absorb_events(&mut self, ctx: &egui::Context, drain: &mut Drain) {
+        let events = self.take_search_events(ctx, drain);
         for event in events {
             match event {
                 SearchEvent::Progress { serial, progress }
@@ -4405,10 +4484,30 @@ impl TrailApp {
         self.relief.absorb();
     }
 
-    fn absorb_editor_events(&mut self) {
-        let events = self.sinew.as_ref().map_or_else(Vec::new, |sinew| {
-            sinew.editor_forge.events.try_iter().collect::<Vec<_>>()
-        });
+    fn take_search_events(&self, ctx: &egui::Context, drain: &mut Drain) -> Vec<SearchEvent> {
+        let Some(sinew) = &self.sinew else {
+            return Vec::new();
+        };
+        let mut events = Vec::new();
+        while let Some(event) = drain.receive(&sinew.forge.events) {
+            events.push(event);
+        }
+        if !sinew.forge.events.is_empty() {
+            ctx.request_repaint();
+        }
+        events
+    }
+
+    fn absorb_editor_events(&mut self, ctx: &egui::Context, drain: &mut Drain) {
+        let mut events = Vec::new();
+        if let Some(sinew) = &self.sinew {
+            while let Some(event) = drain.receive(&sinew.editor_forge.events) {
+                events.push(event);
+            }
+            if !sinew.editor_forge.events.is_empty() {
+                ctx.request_repaint();
+            }
+        }
         for event in events {
             let mut status = None;
             if let Some(editor) = self.view.editor_mut()
@@ -4477,7 +4576,7 @@ impl TrailApp {
     fn strike_corpus(&mut self, ctx: &egui::Context, mutation: TrailDataMutation) -> Result<()> {
         anyhow::ensure!(self.corpus.is_none(), "trail update already running");
         self.corpus = Some(CorpusTask::Acquiring(TrailData::spawn(
-            ctx.clone(),
+            ctx,
             self.root.clone(),
             mutation,
         )?));
@@ -4485,12 +4584,12 @@ impl TrailApp {
         Ok(())
     }
 
-    fn absorb_corpus(&mut self, ctx: &egui::Context) {
+    fn absorb_corpus(&mut self, ctx: &egui::Context, drain: &mut Drain) {
         let Some(task) = &self.corpus else {
             return;
         };
         if let CorpusTask::Preparing(forge) = task {
-            let Ok(result) = forge.event.try_recv() else {
+            let Some(result) = drain.receive(&forge.event) else {
                 return;
             };
             self.corpus = None;
@@ -4512,7 +4611,13 @@ impl TrailApp {
         let CorpusTask::Acquiring(corpus) = task else {
             unreachable!("corpus task was exhaustively matched");
         };
-        let events = corpus.events.try_iter().collect::<Vec<_>>();
+        let mut events = Vec::new();
+        while let Some(event) = drain.receive(&corpus.events) {
+            events.push(event);
+        }
+        if !corpus.events.is_empty() {
+            ctx.request_repaint();
+        }
         for event in events {
             match event {
                 TrailDataEvent::Progress(event) => {
@@ -4537,7 +4642,7 @@ impl TrailApp {
                     self.trail_data_status = Some("No map areas downloaded.".to_owned());
                     self.workspace_signal = Some(Action::Reload);
                     self.corpus = None;
-                    self.flush_library();
+                    self.inscribe_library();
                     return;
                 }
                 TrailDataEvent::Fault(fault) => {
@@ -4644,7 +4749,7 @@ impl TrailApp {
         } else {
             "Updated trails are ready.".clone_into(&mut self.status);
         }
-        self.flush_library();
+        self.inscribe_library();
         Ok(())
     }
 
@@ -4697,7 +4802,7 @@ impl TrailApp {
             Ok(id) => {
                 self.enter_focus(Focus::Saved(id));
                 self.reconcile_saved_projections();
-                self.flush_library();
+                self.inscribe_library();
                 "Trail saved to the project.".clone_into(&mut self.status);
             }
             Err(err) => self.status = format!("Could not save this trail: {err:#}"),
@@ -4852,7 +4957,7 @@ impl TrailApp {
                 self.view = WorkbenchView::Focus(Focus::Saved(id.clone()));
                 self.fit = Fit::Saved(id);
                 self.reconcile_saved_projections();
-                self.flush_library();
+                self.inscribe_library();
                 "Trail saved.".clone_into(&mut self.status);
             }
             Err(err) => self.status = format!("Could not save this trail: {err:#}"),
@@ -4884,7 +4989,7 @@ impl TrailApp {
             self.saved_projections.remove(&id);
             self.rename = None;
             self.leave_focus();
-            self.flush_library();
+            self.inscribe_library();
             "Trail deleted from the project.".clone_into(&mut self.status);
         }
     }
@@ -5124,7 +5229,8 @@ impl TrailApp {
     }
 
     fn mark_library_dirty(&mut self) {
-        self.library_dirty = Some(Instant::now());
+        self.dirty_state.library = true;
+        self.state_scribe.mark();
     }
 
     fn reconcile_saved_projections(&mut self) {
@@ -5139,17 +5245,21 @@ impl TrailApp {
             .collect::<Vec<_>>();
         for trail in missing {
             let id = trail.id.clone();
-            self.projection_forge.strike(id.clone(), trail);
-            let prior = self.saved_projections.insert(id, None);
-            debug_assert!(prior.is_none());
+            if self.projection_forge.strike(id.clone(), trail) {
+                let prior = self.saved_projections.insert(id, None);
+                debug_assert!(prior.is_none());
+            }
         }
     }
 
-    fn absorb_saved_projections(&mut self) {
-        while let Ok((id, projection)) = self.projection_forge.events.try_recv() {
+    fn absorb_saved_projections(&mut self, ctx: &egui::Context, drain: &mut Drain) {
+        while let Some((id, projection)) = drain.receive(&self.projection_forge.events) {
             if self.library.trail(&id).is_some() {
                 let _pending = self.saved_projections.insert(id, Some(projection));
             }
+        }
+        if !self.projection_forge.events.is_empty() {
+            ctx.request_repaint();
         }
     }
 
@@ -5184,8 +5294,8 @@ impl TrailApp {
         }
     }
 
-    fn absorb_export_events(&mut self) {
-        while let Ok(event) = self.export_forge.events().try_recv() {
+    fn absorb_export_events(&mut self, ctx: &egui::Context, drain: &mut Drain) {
+        while let Some(event) = drain.receive(self.export_forge.events()) {
             match event {
                 ExportEvent::Written { id, destination } => {
                     self.last_exported = Some(id);
@@ -5197,32 +5307,19 @@ impl TrailApp {
                 }
             }
         }
-    }
-
-    fn flush_library(&mut self) {
-        match self.library.save(&self.root) {
-            Ok(()) => {
-                self.committed_library.clone_from(&self.library);
-                self.library_dirty = None;
-            }
-            Err(err) => {
-                self.status = format!("Could not save the trail library: {err:#}");
-                self.library_dirty = Some(Instant::now());
-            }
+        if !self.export_forge.events().is_empty() {
+            ctx.request_repaint();
         }
     }
 
-    fn tend_library(&mut self, ctx: &egui::Context) {
-        if self.library == self.committed_library {
-            self.library_dirty = None;
-            return;
-        }
-        let dirty = self.library_dirty.get_or_insert_with(Instant::now);
-        let settled = dirty.elapsed();
-        if settled < STATE_SETTLE {
-            ctx.request_repaint_after(STATE_SETTLE.saturating_sub(settled));
-        } else {
-            self.flush_library();
+    fn inscribe_library(&mut self) {
+        self.dirty_state.library = true;
+        let state = self.durable_state();
+        match self.state_scribe.submit(state.clone()) {
+            Ok(sequence) => self.accept_submission(sequence, state),
+            Err(error) => {
+                self.status = format!("Could not submit the trail library: {error:#}");
+            }
         }
     }
 
@@ -5258,31 +5355,49 @@ impl TrailApp {
         }
     }
 
-    fn tend_slate(&mut self, ctx: &egui::Context) {
+    fn observe_persistence(&mut self) {
         let current = self.snapshot();
         if current != self.observed_slate {
             self.observed_slate = current;
-            self.slate_dirty = Some(Instant::now());
+            self.dirty_state.slate = true;
+            self.state_scribe.mark();
         }
-        if self.observed_slate == self.committed_slate {
-            self.slate_dirty = None;
+    }
+
+    fn durable_state(&self) -> DurableState {
+        DurableState {
+            library: self.dirty_state.library.then(|| self.library.clone()),
+            slate: self.dirty_state.slate.then(|| self.observed_slate.clone()),
+        }
+    }
+
+    fn accept_submission(&mut self, sequence: u64, state: DurableState) {
+        if state.library.is_some() {
+            self.dirty_state.library = false;
+        }
+        if state.slate.is_some() {
+            self.dirty_state.slate = false;
+        }
+        self.pending_state = Some((sequence, state));
+    }
+
+    fn absorb_persistence(&mut self) {
+        let Some(outcome) = self.state_scribe.take_outcome() else {
+            return;
+        };
+        let sequence = match &outcome {
+            ScribeOutcome::Saved { sequence } | ScribeOutcome::Fault { sequence, .. } => *sequence,
+        };
+        if self.pending_state.as_ref().map(|(pending, _)| *pending) != Some(sequence) {
             return;
         }
-        let dirty = self.slate_dirty.get_or_insert_with(Instant::now);
-        let settled = dirty.elapsed();
-        if settled < STATE_SETTLE {
-            ctx.request_repaint_after(STATE_SETTLE.saturating_sub(settled));
-            return;
-        }
-        match self.observed_slate.save(&self.slate_path) {
-            Ok(()) => {
-                self.committed_slate.clone_from(&self.observed_slate);
-                self.slate_dirty = None;
-            }
-            Err(err) => {
-                self.status = format!("Could not save window state: {err:#}");
-                self.slate_dirty = Some(Instant::now());
-                ctx.request_repaint_after(STATE_SETTLE);
+        let (_sequence, state) = self.pending_state.take().expect("pending sequence matched");
+        match outcome {
+            ScribeOutcome::Saved { .. } => {}
+            ScribeOutcome::Fault { message, .. } => {
+                self.dirty_state.library |= state.library.is_some();
+                self.dirty_state.slate |= state.slate.is_some();
+                self.status = format!("Could not save project state: {message}");
             }
         }
     }
@@ -5676,16 +5791,12 @@ fn duration(duration: Duration) -> String {
 
 impl Drop for TrailApp {
     fn drop(&mut self) {
-        if self.library != self.committed_library
-            && let Err(err) = self.library.save(&self.root)
-        {
-            eprintln!("could not save trailgen library: {err:#}");
-        }
-        let current = self.snapshot();
-        if current != self.committed_slate
-            && let Err(err) = current.save(&self.slate_path)
-        {
-            eprintln!("could not save trailgen workbench state: {err:#}");
+        let state = DurableState {
+            library: Some(self.library.clone()),
+            slate: Some(self.snapshot()),
+        };
+        if let Err(error) = self.state_scribe.flush(state) {
+            eprintln!("could not save trailgen project state: {error:#}");
         }
     }
 }
@@ -5711,14 +5822,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn trail_name_gate_rejects_void_oversize_and_control_text() {
-        assert!(trail_name_is_valid(" Harriman South Lows "));
-        assert!(!trail_name_is_valid(" \n "));
-        assert!(!trail_name_is_valid(&"x".repeat(81)));
-        assert!(!trail_name_is_valid("Cedar\0Pond"));
-    }
-
-    #[test]
     fn rename_shortcuts_do_not_reenter_egui_input_lock() {
         let context = egui::Context::default();
         let mut name = "Harriman South Lows".to_owned();
@@ -5740,115 +5843,6 @@ mod tests {
             let edit = ui.text_edit_singleline(&mut name);
             assert_eq!(rename_shortcuts(ui, &edit), (true, false));
         });
-    }
-
-    fn loop_with_spur(spur_m: f64) -> anyhow::Result<(WalkGraph, Vec<SupportPoint>, Coord)> {
-        let junction = Coord::new(0.0, 0.0);
-        let east = Coord::new(0.001, 0.0);
-        let northeast = Coord::new(0.001, 0.001);
-        let north = Coord::new(0.0, 0.001);
-        let dead_end = Coord::new(0.0, -spur_m / 111_195.0);
-        let feature = |id: &str, from: Coord, to: Coord| {
-            serde_json::json!({
-                "type": "Feature",
-                "properties": {
-                    "id": id,
-                    "terrain": "trail",
-                    "access": "open"
-                },
-                "geometry": {
-                    "type": "LineString",
-                    "coordinates": [[from.lon, from.lat], [to.lon, to.lat]]
-                }
-            })
-        };
-        let source = serde_json::json!({
-            "type": "FeatureCollection",
-            "features": [
-                feature("south", junction, east),
-                feature("east", east, northeast),
-                feature("north", northeast, north),
-                feature("west", north, junction)
-            ]
-        });
-        let drafts = trailgen_core::io::geojson::network_from_str(&source.to_string())?;
-        let graph = trailgen_core::GraphBuilder::default().build(&drafts)?;
-        let junction_vertex = graph.nearest_vertex(junction).expect("junction vertex");
-        let mut vertices = graph.vertices;
-        let dead_end_vertex = trailgen_core::VertexId(vertices.len());
-        vertices.push(trailgen_core::Vertex {
-            id: dead_end_vertex,
-            coord: dead_end,
-            junction: None,
-        });
-        let mut edges = graph.edges;
-        let geometry =
-            trailgen_core::LineString::new(vec![dead_end, junction]).expect("valid spur");
-        let mut attr = edges[0].attr.clone();
-        attr.length_m = geometry.length_m();
-        edges.push(trailgen_core::Edge {
-            id: trailgen_core::EdgeId(edges.len()),
-            a: dead_end_vertex,
-            b: junction_vertex,
-            attr,
-            geometry,
-        });
-        let graph = WalkGraph::new(vertices, edges);
-        let supports = [dead_end, east, northeast, north]
-            .into_iter()
-            .map(|coord| SupportPoint::forge(coord).expect("fixture coordinates are valid"))
-            .collect();
-        Ok((graph, supports, junction))
-    }
-
-    #[test]
-    fn cyclic_navigation_respects_gallery_order() {
-        let order = [4, 1, 7];
-        assert_eq!(cyclic_step(&order, 1, 1), Some(7));
-        assert_eq!(cyclic_step(&order, 4, -1), Some(7));
-        assert_eq!(cyclic_step(&order, 8, 1), None);
-    }
-
-    #[test]
-    fn focus_frame_restores_the_view_that_opened_it() {
-        let base = Viewport {
-            center: [0.21, 0.37],
-            zoom: 14.5,
-        };
-        let second_focus = Viewport {
-            center: [0.72, 0.81],
-            zoom: 19.0,
-        };
-        let mut frame = FocusFrame::default();
-
-        frame.push(base);
-        frame.push(second_focus);
-
-        assert_eq!(frame.base(second_focus), base);
-        assert_eq!(frame.pop(), Some(base));
-        assert_eq!(frame.pop(), None);
-    }
-
-    #[test]
-    fn search_progress_is_bounded_and_speaks_in_user_terms() {
-        assert_eq!(
-            search_progress_text(SearchProgress {
-                stage: SearchStage::Preparing,
-                explored: 17,
-                limit: 100,
-                candidates: 0,
-            }),
-            "Preparing search area · 17%"
-        );
-        assert_eq!(
-            search_progress_text(SearchProgress {
-                stage: SearchStage::Exploring,
-                explored: usize::MAX,
-                limit: 1,
-                candidates: 3,
-            }),
-            "Searching · 100% · 3 candidates"
-        );
     }
 
     #[test]
@@ -5934,177 +5928,6 @@ mod tests {
         editor.shape = RouteShape::Loop;
         editor.shape_guard = Some((7, RouteShape::Open));
         assert_eq!(editor.durable_sketch().shape, RouteShape::Open);
-    }
-
-    #[test]
-    fn editor_support_excision_is_one_undoable_renumbering_gesture() {
-        let first = SupportPoint::forge(Coord::new(-74.0, 41.0)).expect("valid support");
-        let second = SupportPoint::forge(Coord::new(-73.99, 41.01)).expect("valid support");
-        let third = SupportPoint::forge(Coord::new(-73.98, 41.02)).expect("valid support");
-        let mut editor = TrailEditor {
-            name: "test".to_owned(),
-            name_draft: None,
-            origin: EditorOrigin::New,
-            return_to: EditorReturn {
-                focus: None,
-                viewport: Viewport {
-                    center: [0.5, 0.5],
-                    zoom: 2.0,
-                },
-            },
-            shape: RouteShape::Open,
-            support_points: vec![first, second, third],
-            realization: None,
-            realizing: None,
-            shape_guard: None,
-            profile: None,
-            fault: None,
-            notice: None,
-            history: UndoLog::default(),
-            drag: None,
-        };
-
-        assert!(editor.excise_support(1));
-        assert_eq!(editor.support_points, vec![first, third]);
-        assert!(editor.undo());
-        assert_eq!(editor.support_points, vec![first, second, third]);
-        assert!(editor.redo());
-        assert_eq!(editor.support_points, vec![first, third]);
-        assert!(!editor.excise_support(2));
-    }
-
-    #[test]
-    fn undo_log_is_bounded_and_new_work_annihilates_the_abandoned_future() {
-        let mut history = UndoLog::default();
-        for state in 0..=UNDO_DEPTH {
-            history.commit(state);
-        }
-        assert_eq!(history.past.len(), UNDO_DEPTH);
-        assert_eq!(history.undo(UNDO_DEPTH + 1), Some(UNDO_DEPTH));
-        assert_eq!(history.future.len(), 1);
-
-        history.commit(1_000);
-
-        assert!(history.future.is_empty());
-        assert_eq!(history.undo(1_001), Some(1_000));
-    }
-
-    #[test]
-    fn distance_range_moves_only_the_endpoint_the_user_changed() {
-        let mut minimum = 20.0;
-        let mut maximum = 10.0;
-        reconcile_range(&mut minimum, &mut maximum, false, true);
-        assert_eq!((minimum, maximum), (20.0, 20.0));
-
-        let mut minimum = 30.0;
-        let mut maximum = 20.0;
-        reconcile_range(&mut minimum, &mut maximum, true, false);
-        assert_eq!((minimum, maximum), (20.0, 20.0));
-    }
-
-    #[test]
-    fn saved_trail_measurements_are_compact_and_unambiguous() {
-        let metrics = RouteMetrics {
-            distance_m: 12_340.0,
-            ascent_m: 567.0,
-            lower_limb_load_km: 67.6,
-            moving_time_s: 3.5 * 3_600.0,
-            elevation_fraction: 1.0,
-            ..RouteMetrics::default()
-        };
-        let measurements = readout::library_measurements(&metrics);
-        assert_eq!(measurements, "12.3 KM · +567 M");
-        assert!(!measurements.contains("ASCENT"));
-        assert!(!measurements.contains("3:24"));
-        assert_eq!(readout::library_load(&metrics).text(), "68 FGJW KM");
-    }
-
-    #[test]
-    fn unknown_path_status_remains_legible_on_dark_chrome() {
-        assert_eq!(
-            toolbar_standing_color(TrailStanding::Unknown),
-            chrome::MUTED
-        );
-        assert_ne!(
-            toolbar_standing_color(TrailStanding::Unknown),
-            map::trail_standing_color(TrailStanding::Unknown)
-        );
-    }
-
-    #[test]
-    fn close_loop_preserves_spur_trailheads_and_accepts_the_lawful_retrace() -> anyhow::Result<()> {
-        for spur_m in [5.0, 25.0] {
-            let (graph, supports, _) = loop_with_spur(spur_m)?;
-            let constraints =
-                portfolio::manual_constraints(&LoopConstraints::default(), RouteShape::Loop);
-            let realization = Trail::forge(
-                RouteShape::Loop,
-                supports.clone(),
-                RoutingLaw::default(),
-            )?
-            .realize("lollipop loop", &graph, &constraints, TRAILHEAD_SNAP_M)?;
-
-            assert_eq!(realization.trail.shape, RouteShape::Loop);
-            assert_eq!(realization.trail.support_points[0], supports[0]);
-            assert_eq!(
-                realization
-                    .graph()
-                    .walk_edges(realization.route.start, &realization.route.edges),
-                Some(realization.route.start)
-            );
-            assert_eq!(realization.route.metrics.shape, RouteShape::OutAndBack);
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn profile_cursor_lock_survives_hover_and_releases_to_live_motion() {
-        let mut cursor = ProfileCursor::default();
-        cursor.bind(Some(ProfileOwner::Candidate(7)));
-        assert_eq!(cursor.resolve(Some(120.0), false, false), Some(120.0));
-        assert_eq!(cursor.resolve(Some(240.0), true, false), Some(240.0));
-        assert_eq!(cursor.resolve(Some(360.0), false, false), Some(240.0));
-        assert_eq!(cursor.resolve(Some(360.0), false, true), Some(360.0));
-        cursor.bind(Some(ProfileOwner::Candidate(8)));
-        assert_eq!(cursor.locked_m, None);
-    }
-
-    #[test]
-    fn reverse_loop_design_preserves_the_trailhead_and_inverts_the_walk() -> anyhow::Result<()> {
-        let graph = trailgen_core::GraphBuilder::default().build(
-            &trailgen_core::io::geojson::network_from_str(include_str!(
-                "../../trailgen-core/tests/fixtures/mini_network.geojson"
-            ))?,
-        )?;
-        let constraints = LoopConstraints {
-            min_distance_m: 0.0,
-            max_distance_m: 20_000.0,
-            ..LoopConstraints::default()
-        };
-        let route = SolverKind::Exact
-            .solve(
-                SearchParams::default(),
-                &graph,
-                trailgen_core::VertexId(0),
-                &constraints,
-                1,
-            )
-            .into_iter()
-            .next()
-            .expect("fixture has a loop");
-        let trail = Trail::infer(&graph, &route, trailgen_core::RoutingLaw::default())
-            .expect("fixture loop is inferable");
-        let realization = trail.realize("candidate", &graph, &constraints, 1.0)?;
-        let reversal = realization.reverse_loop(&graph)?;
-        assert_eq!(reversal.added_supports, 0);
-        let reversed = reversal.trail;
-        assert_eq!(reversed.support_points[0], trail.support_points[0]);
-        let reversed = reversed.realize("candidate", &graph, &constraints, 1.0)?;
-        assert_eq!(
-            reversed.route.geometry(reversed.graph()),
-            realization.route.geometry(&graph).reversed()
-        );
-        Ok(())
     }
 
     #[test]

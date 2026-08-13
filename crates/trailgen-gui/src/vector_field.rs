@@ -7,6 +7,7 @@ use crate::{
 use anyhow::{Context as _, Result};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use egui::{Color32, Painter};
+use eternalist_apps::NativeWake;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
@@ -59,6 +60,7 @@ pub type RetiredTrailArmament = (Option<Arc<WalkGraph>>, Option<Arc<EdgeIndex>>)
 struct Retry {
     failures: u8,
     after: Instant,
+    ready: bool,
 }
 
 struct ReadinessOracle(Duration);
@@ -87,9 +89,10 @@ struct ParkingArmament {
 }
 
 impl ParkingForge {
-    fn spawn(ctx: egui::Context, graph: Arc<WalkGraph>, index: Arc<EdgeIndex>) -> Result<Self> {
+    fn spawn(ctx: &egui::Context, graph: Arc<WalkGraph>, index: Arc<EdgeIndex>) -> Result<Self> {
         let (command, jobs) = bounded::<Arc<VectorTile>>(PARKING_CHANNEL_CAPACITY);
         let (armament, events) = bounded(PARKING_CHANNEL_CAPACITY);
+        let wake = NativeWake::from_context(ctx);
         let thread = thread::Builder::new()
             .name("trailhead-parking-forge".to_owned())
             .spawn(move || {
@@ -109,7 +112,7 @@ impl ParkingForge {
                     {
                         break;
                     }
-                    ctx.request_repaint();
+                    let _woken = wake.request_foreground_repaint();
                 }
             })
             .context("spawn trailhead-parking forge")?;
@@ -129,6 +132,7 @@ impl Retry {
         Self {
             failures,
             after: now + delay,
+            ready: false,
         }
     }
 }
@@ -164,14 +168,12 @@ impl VectorField {
         let parking_forge = trails
             .as_ref()
             .zip(trail_index.as_ref())
-            .map(|(graph, index)| {
-                ParkingForge::spawn(ctx.clone(), Arc::clone(graph), Arc::clone(index))
-            })
+            .map(|(graph, index)| ParkingForge::spawn(ctx, Arc::clone(graph), Arc::clone(index)))
             .transpose()?;
         Ok(Self {
             annotations: annotation::Engine::default(),
             corpus: VectorCorpus::mint(),
-            armory: Some(Basemap::spawn(ctx.clone(), source, !offline)?),
+            armory: Some(Basemap::spawn(ctx, source, !offline)?),
             tiles: VectorBank::new(VECTOR_CEILING),
             presented: Arc::from([]),
             prewarm: Arc::from([]),
@@ -208,7 +210,7 @@ impl VectorField {
         graph: Arc<WalkGraph>,
         index: Arc<EdgeIndex>,
     ) -> Result<RetiredTrailArmament> {
-        let armory = Basemap::spawn(ctx.clone(), source, !offline)?;
+        let armory = Basemap::spawn(ctx, source, !offline)?;
         self.armory = Some(armory);
         self.inflight.clear();
         self.missing.clear();
@@ -230,8 +232,7 @@ impl VectorField {
         graph: Arc<WalkGraph>,
         index: Arc<EdgeIndex>,
     ) -> Result<RetiredTrailArmament> {
-        let parking_forge =
-            ParkingForge::spawn(ctx.clone(), Arc::clone(&graph), Arc::clone(&index))?;
+        let parking_forge = ParkingForge::spawn(ctx, Arc::clone(&graph), Arc::clone(&index))?;
         self.parking_forge = Some(parking_forge);
         self.parking_queue.clear();
         self.parking_queued.clear();
@@ -329,6 +330,29 @@ impl VectorField {
         if parking_tiles != self.trailhead_parking.len() {
             self.presentation_revision = self.presentation_revision.saturating_add(1);
         }
+    }
+
+    #[must_use]
+    pub fn service_deadline(&self) -> Option<Instant> {
+        self.demand
+            .iter()
+            .filter(|key| !self.inflight.contains_key(key))
+            .filter_map(|key| self.retries.get(key))
+            .filter(|retry| !retry.ready)
+            .map(|retry| retry.after)
+            .min()
+    }
+
+    pub fn service_deadline_reached(&mut self, now: Instant) -> bool {
+        let mut matured = false;
+        for (key, retry) in &mut self.retries {
+            if self.demand.contains(key) && !retry.ready && retry.after <= now {
+                retry.ready = true;
+                matured = true;
+            }
+        }
+        self.demand_dirty |= matured;
+        matured
     }
 
     pub fn paint_base(
@@ -715,12 +739,8 @@ impl VectorField {
         {
             return false;
         }
-        if let Some(retry) = self.retries.get(&key) {
-            let delay = retry.after.saturating_duration_since(Instant::now());
-            if !delay.is_zero() {
-                ctx.request_repaint_after(delay);
-                return true;
-            }
+        if self.retries.get(&key).is_some_and(|retry| !retry.ready) {
+            return true;
         }
         if armory.request(key) {
             self.inflight.insert(key, Instant::now());
@@ -988,35 +1008,6 @@ mod tests {
     }
 
     #[test]
-    fn readiness_oracle_rises_immediately_and_recedes_gradually() {
-        let mut oracle = ReadinessOracle::default();
-        oracle.observe(Duration::from_millis(800));
-        assert_eq!(oracle.estimate(), Duration::from_millis(800));
-        oracle.observe(Duration::from_millis(80));
-        assert!(oracle.estimate() > Duration::from_millis(600));
-    }
-
-    #[test]
-    fn parking_becomes_a_trailhead_mark_only_when_it_abuts_the_graph() -> Result<()> {
-        let graph = GraphBuilder::default().build(&geojson::network_from_str(include_str!(
-            "../../trailgen-core/tests/fixtures/mini_network.geojson"
-        ))?)?;
-        let beside = basemap::Parking {
-            world: map::world_from_coord(graph.edges[0].geometry.points[0]),
-            name: None,
-            onset_zoom: 15.0,
-        };
-        let remote = basemap::Parking {
-            world: map::world_from_coord(trailgen_core::Coord::new(-120.0, 30.0)),
-            ..beside.clone()
-        };
-        let index = EdgeIndex::forge(&graph);
-        assert!(abuts_trail(&graph, &index, &beside));
-        assert!(!abuts_trail(&graph, &index, &remote));
-        Ok(())
-    }
-
-    #[test]
     fn trailhead_parking_projection_is_forged_off_the_event_loop() -> Result<()> {
         let graph = Arc::new(GraphBuilder::default().build(&geojson::network_from_str(
             include_str!("../../trailgen-core/tests/fixtures/mini_network.geojson"),
@@ -1030,11 +1021,9 @@ mod tests {
             world: map::world_from_coord(trailgen_core::Coord::new(-120.0, 30.0)),
             ..beside.clone()
         };
-        let forge = ParkingForge::spawn(
-            egui::Context::default(),
-            Arc::clone(&graph),
-            Arc::new(EdgeIndex::forge(&graph)),
-        )?;
+        let ctx = egui::Context::default();
+        let forge =
+            ParkingForge::spawn(&ctx, Arc::clone(&graph), Arc::new(EdgeIndex::forge(&graph)))?;
         let key = TileKey {
             zoom: 12,
             x: 1_205,

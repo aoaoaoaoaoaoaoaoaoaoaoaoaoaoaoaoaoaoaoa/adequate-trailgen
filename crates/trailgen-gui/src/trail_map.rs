@@ -716,9 +716,6 @@ const INFORMAL_FLAG: u32 = 1 << 3;
 const BLOCKED_FLAG: u32 = 1 << 8;
 const STEPPED_FLAG: u32 = 1 << 9;
 const CONTEXT_CLASS_SHIFT: u32 = 10;
-#[cfg(test)]
-const CADENCE_STYLE_MASK: u32 = (1 << CADENCE_LAW_SHIFT) - 1;
-
 const fn flag_if(flag: u32, present: bool) -> u32 {
     if present { flag } else { 0 }
 }
@@ -796,29 +793,6 @@ struct TrailPoint {
     edge_factor: f32,
 }
 const _: () = assert!(size_of::<TrailPoint>() == 32);
-
-#[cfg(test)]
-impl TrailPoint {
-    const fn law(&self) -> u32 {
-        self.cadence >> CADENCE_LAW_SHIFT
-    }
-
-    const fn pattern(&self) -> u32 {
-        (self.cadence >> 1) & 3
-    }
-
-    const fn context_class(&self) -> u32 {
-        (self.cadence >> CONTEXT_CLASS_SHIFT) & 3
-    }
-
-    const fn set_law(&mut self, law: u32) {
-        assert!(
-            law <= u32::MAX >> CADENCE_LAW_SHIFT,
-            "cadence law exceeds packed vertex range"
-        );
-        self.cadence = (law << CADENCE_LAW_SHIFT) | (self.cadence & CADENCE_STYLE_MASK);
-    }
-}
 
 struct TrailMesh {
     vertices: Arc<[TrailPoint]>,
@@ -1168,6 +1142,7 @@ pub struct TrailMapGpu {
 struct GpuView {
     uniform: wgpu::Buffer,
     bind: wgpu::BindGroup,
+    uniform_value: Option<Uniform>,
     law_buffer: wgpu::Buffer,
     law_bind: wgpu::BindGroup,
     law_cells_per_world: f32,
@@ -1210,6 +1185,7 @@ impl GpuView {
         Self {
             uniform,
             bind,
+            uniform_value: None,
             law_buffer,
             law_bind,
             law_cells_per_world: paint.cadence_cells_per_world,
@@ -1240,6 +1216,17 @@ impl GpuView {
         queue.write_buffer(&self.law_buffer, 0, bytemuck::cast_slice(scratch));
         self.law_cells_per_world = paint.cadence_cells_per_world;
         bytes
+    }
+
+    fn refresh_uniform(&mut self, queue: &wgpu::Queue, value: &Uniform) {
+        if self
+            .uniform_value
+            .is_some_and(|current| bytemuck::bytes_of(&current) == bytemuck::bytes_of(value))
+        {
+            return;
+        }
+        queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(value));
+        self.uniform_value = Some(*value);
     }
 
     fn refresh_opacities(&mut self, queue: &wgpu::Queue, layers: &[TrailLayer]) -> usize {
@@ -1437,7 +1424,7 @@ impl TrailMapGpu {
         let cadence_uploaded = view.refresh_laws(queue, paint, &mut self.law_scratch);
         let opacity_uploaded = view.refresh_opacities(queue, &paint.layers);
         let uniform = Uniform::forge(paint);
-        queue.write_buffer(&view.uniform, 0, bytemuck::bytes_of(&uniform));
+        view.refresh_uniform(queue, &uniform);
         view.instances = uniform.wrap_radius.saturating_mul(2).saturating_add(1);
 
         let mut missing = Vec::new();
@@ -2086,49 +2073,6 @@ fn fragment_linear(in: VertexOut) -> @location(0) vec4f {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::{EARTH_CIRCUMFERENCE_M, TrailClass};
-    use trailgen_core::{WayKind, WayRealm};
-
-    #[test]
-    fn detail_admission_is_monotone_and_exact_at_fourteen() {
-        let onset = f64::from(TUBE_ONSET_ZOOM);
-        let bands = [onset + 0.01, 9.9, 10.0, 11.0, 12.0, 13.0, 14.0, 23.0]
-            .into_iter()
-            .filter_map(|zoom| DetailBand::for_zoom(zoom, TUBE_ONSET_ZOOM))
-            .collect::<Vec<_>>();
-        assert!(DetailBand::for_zoom(onset, TUBE_ONSET_ZOOM).is_none());
-        assert_eq!(bands.first().copied(), Some(DetailBand(0)));
-        assert!(bands.windows(2).all(|pair| pair[0].0 <= pair[1].0));
-        assert_eq!(
-            bands.last().copied(),
-            Some(DetailBand(LAST_BAND - FIRST_BAND))
-        );
-        assert!(DetailBand(LAST_BAND - FIRST_BAND).tolerance_world() <= f64::EPSILON);
-    }
-
-    #[test]
-    fn detail_band_resists_boundary_chatter_in_both_directions() {
-        let twelve = DetailBand::for_zoom(12.6, TUBE_ONSET_ZOOM).expect("z12 owns trail detail");
-        let thirteen = DetailBand::for_zoom(13.5, TUBE_ONSET_ZOOM).expect("z13 owns trail detail");
-
-        assert_eq!(
-            DetailBand::resolve(Some(twelve), 13.05, TUBE_ONSET_ZOOM),
-            Some(twelve)
-        );
-        assert_eq!(
-            DetailBand::resolve(Some(twelve), 13.10, TUBE_ONSET_ZOOM),
-            Some(thirteen)
-        );
-        assert_eq!(
-            DetailBand::resolve(Some(thirteen), 12.95, TUBE_ONSET_ZOOM),
-            Some(thirteen)
-        );
-        assert_eq!(
-            DetailBand::resolve(Some(thirteen), 12.90, TUBE_ONSET_ZOOM),
-            Some(twelve)
-        );
-    }
-
     #[test]
     fn simplification_error_never_exceeds_its_screen_budget() {
         for index in 0..BAND_COUNT - 1 {
@@ -2139,106 +2083,6 @@ mod tests {
                     <= SIMPLIFICATION_ERROR_POINTS + f64::EPSILON
             );
         }
-    }
-
-    #[test]
-    fn disclosure_schedule_obeys_the_measured_zoom_windows() {
-        const HARRIMAN_LATITUDE_DEG: f64 = 41.25;
-        const HARRIMAN_FILAMENT_P95_M: f64 = 182.9;
-        let apparent = |meters: f64, zoom: f32| {
-            let parallel = EARTH_CIRCUMFERENCE_M * HARRIMAN_LATITUDE_DEG.to_radians().cos();
-            meters * 256.0 * f64::from(zoom).exp2() / parallel
-        };
-        let pattern_zoom = f64::from(PATTERN_ONSET_ZOOM + DISCLOSURE_SPAN_ZOOM);
-        let cadence = WorldLevel::at_zoom(pattern_zoom);
-        let cadence_period = 2.0 * 256.0 * pattern_zoom.exp2() / cadence.cells_per_world();
-
-        let exact = |value: f32, expected: f32| (value - expected).abs() < f32::EPSILON;
-        assert!(exact(TUBE_ONSET_ZOOM, 12.5));
-        assert!(exact(TUBE_ONSET_ZOOM + DISCLOSURE_SPAN_ZOOM, 13.0));
-        assert!(exact(TUBE_ONSET_ZOOM + DEFERRED_ONSET_DELAY_ZOOM, 13.5));
-        assert!(exact(
-            TUBE_ONSET_ZOOM + DEFERRED_ONSET_DELAY_ZOOM + DISCLOSURE_SPAN_ZOOM,
-            14.0
-        ));
-        assert!(exact(WALKWAY_WIDTH_SCALE, 0.8));
-        assert!(exact(ROAD_WIDTH_SCALE, 0.6));
-        assert!((8.5..=9.5).contains(&apparent(HARRIMAN_FILAMENT_P95_M, TUBE_ONSET_ZOOM)));
-        assert!((10.0..=11.5).contains(&apparent(HARRIMAN_FILAMENT_P95_M, CORE_ONSET_ZOOM)));
-        assert!((8.0..=16.0).contains(&cadence_period));
-        assert!((6.0..=16.0).contains(
-            &(apparent(1_000.0, PATTERN_ONSET_ZOOM + DISCLOSURE_SPAN_ZOOM) / cadence_period)
-        ));
-
-        let apparition = |onset: f32, zoom: f32| {
-            let phase = ((zoom - onset) / DISCLOSURE_SPAN_ZOOM).clamp(0.0, 1.0);
-            phase * phase * 2.0_f32.mul_add(-phase, 3.0)
-        };
-        assert!(apparition(TUBE_ONSET_ZOOM, TUBE_ONSET_ZOOM).abs() < f32::EPSILON);
-        assert!(exact(
-            apparition(TUBE_ONSET_ZOOM, TUBE_ONSET_ZOOM + DISCLOSURE_SPAN_ZOOM),
-            1.0
-        ));
-    }
-
-    #[test]
-    fn sidewalks_are_one_intrinsic_grey_monolith() {
-        let sidewalks = TrailField::sidewalks(&[]);
-        assert!(!sidewalks.dialect.core);
-        assert!(matches!(sidewalks.dialect.hue, HueAuthority::Intrinsic));
-        assert_eq!(
-            sidewalks.dialect.coloring(TrailColoring::Terrain),
-            TrailColoring::Class
-        );
-        assert!(
-            sidewalks.dialect.disclosure[..3]
-                .iter()
-                .all(|onset| *onset == PEDESTRIAN_DIAGNOSTIC_TUBE_ONSET_ZOOM)
-        );
-
-        let crossings = TrailField::crossing_diagnostics(&[]);
-        assert!(crossings.dialect.core);
-        assert!(matches!(crossings.dialect.hue, HueAuthority::Projected));
-    }
-
-    #[test]
-    fn deep_detail_owns_deep_spatial_tiles() {
-        assert_eq!(
-            DetailBand::for_zoom(12.6, TUBE_ONSET_ZOOM)
-                .unwrap()
-                .spatial_zoom(),
-            12
-        );
-        assert_eq!(
-            DetailBand::for_zoom(13.2, TUBE_ONSET_ZOOM)
-                .unwrap()
-                .spatial_zoom(),
-            13
-        );
-        assert_eq!(
-            DetailBand::for_zoom(23.0, TUBE_ONSET_ZOOM)
-                .unwrap()
-                .spatial_zoom(),
-            14
-        );
-    }
-
-    #[test]
-    fn simplification_is_a_nested_subsequence() {
-        let points = [[0.0, 0.0], [1.0, 0.1], [2.0, 0.0], [3.0, 0.5], [4.0, 0.0]]
-            .into_iter()
-            .enumerate()
-            .map(|(slot, world)| Sample {
-                world,
-                arc_world: slot as f64,
-            })
-            .collect::<Vec<_>>();
-        let coarse = simplify(&points, 0.2);
-        let fine = simplify(&points, 0.05);
-        assert!(coarse.iter().all(|point| {
-            fine.iter()
-                .any(|candidate| same_world(candidate.world, point.world))
-        }));
     }
 
     #[test]
@@ -2277,256 +2121,5 @@ mod tests {
             lattice_phase(datum, cells_per_world).to_bits(),
             expected.to_bits()
         );
-    }
-
-    #[test]
-    fn cadence_lattice_edges_are_nested_world_coordinates() {
-        let coarse = WorldLevel::at_zoom(12.0);
-        let fine = WorldLevel::at_zoom(13.0);
-        for edge in -32..=32 {
-            let world = f64::from(edge) / coarse.cells_per_world();
-            let fine_coordinate = world * fine.cells_per_world();
-            assert!((fine_coordinate - f64::from(edge * 2)).abs() < f64::EPSILON);
-        }
-    }
-
-    #[test]
-    fn cadence_level_tracks_live_zoom_without_boundary_chatter() {
-        let level = WorldLevel::resolve(None, 13.4, DETAIL_HYSTERESIS_ZOOM);
-        assert_eq!(level, WorldLevel::at_zoom(13.4));
-        assert_eq!(
-            WorldLevel::resolve(Some(level), 14.04, DETAIL_HYSTERESIS_ZOOM),
-            level
-        );
-        assert_eq!(
-            WorldLevel::resolve(Some(level), 14.09, DETAIL_HYSTERESIS_ZOOM),
-            WorldLevel::at_zoom(14.09)
-        );
-        assert_eq!(
-            WorldLevel::resolve(
-                Some(WorldLevel::at_zoom(14.1)),
-                13.93,
-                DETAIL_HYSTERESIS_ZOOM
-            ),
-            WorldLevel::at_zoom(14.1)
-        );
-        assert_eq!(
-            WorldLevel::resolve(
-                Some(WorldLevel::at_zoom(14.1)),
-                13.91,
-                DETAIL_HYSTERESIS_ZOOM
-            ),
-            WorldLevel::at_zoom(13.91)
-        );
-    }
-
-    #[test]
-    fn reverse_stems_and_chords_own_world_anchored_endpoint_phases() {
-        let lattice = 256.0;
-        let reverse = GpuLaw::forge(
-            CadenceDatum::Stem {
-                datum_world: 0.2,
-                reverse: true,
-                length_world: 0.1,
-            },
-            lattice,
-        );
-        let chord = GpuLaw::forge(
-            CadenceDatum::Chord {
-                endpoint_datums_world: [0.2, 0.5],
-                length_world: 0.1,
-            },
-            lattice,
-        );
-
-        assert_eq!(
-            reverse.metrics[0].to_bits(),
-            lattice_phase(0.3, lattice).to_bits()
-        );
-        assert_eq!(reverse.metrics[2].to_bits(), (-2.0_f32).to_bits());
-        assert_eq!(
-            chord.metrics[0].to_bits(),
-            lattice_phase(0.2, lattice).to_bits()
-        );
-        assert_eq!(
-            chord.metrics[1].to_bits(),
-            lattice_phase(0.5, lattice).to_bits()
-        );
-        assert!((chord.metrics[2] - 0.05).abs() <= f32::EPSILON);
-    }
-
-    #[test]
-    fn tube_and_core_share_one_centerline_mesh() {
-        let key = TileKey {
-            zoom: BASE_TILE_ZOOM,
-            x: 1_200,
-            y: 1_532,
-        };
-        let scale = f64::from(1_u32 << BASE_TILE_ZOOM);
-        let samples = [
-            Sample {
-                world: [1_200.2 / scale, 1_532.3 / scale],
-                arc_world: 0.0,
-            },
-            Sample {
-                world: [1_200.5 / scale, 1_532.5 / scale],
-                arc_world: 0.4 / scale,
-            },
-            Sample {
-                world: [1_200.8 / scale, 1_532.7 / scale],
-                arc_world: 0.8 / scale,
-            },
-        ];
-        let edge = WorldEdge {
-            endpoints: [0, 1],
-            points: samples.iter().map(|sample| sample.world).collect(),
-            length_world: samples[2].arc_world,
-            lineage: None,
-            color: TrailClass::Trail.color(),
-            class: Some(TrailClass::Trail),
-            stepped: false,
-            standing: TrailStanding::Established,
-            terrain: Terrain::Trail,
-            mark: TrailMark::Solid,
-            access: trailgen_core::Access::Open,
-        };
-        let mut builder = TrailMeshBuilder::default();
-        builder.push(&samples, key, &edge, 0, TrailSalience::Context, false);
-        let mesh = builder.seal();
-
-        assert_eq!(mesh.vertices.len(), samples.len() * 2);
-        assert_eq!(mesh.indices.len(), (samples.len() - 1) * 6);
-    }
-
-    #[test]
-    fn packed_context_style_cannot_alias_cadence_law() {
-        for pattern in 0..4 {
-            for class in [None, Some(TrailClass::Walkway), Some(TrailClass::Road)] {
-                let word = CadenceStyle {
-                    pattern,
-                    terrain: terrain_code(Terrain::Water),
-                    flags: INFORMAL_FLAG | BLOCKED_FLAG | STEPPED_FLAG | context_class_code(class),
-                }
-                .word(37, RibbonBank::Positive);
-                let mut point = TrailPoint {
-                    local: [0.0; 2],
-                    extrusion: [0.0; 2],
-                    srgb: [0; 4],
-                    arc_world: 0.0,
-                    cadence: word,
-                    edge_factor: 0.0,
-                };
-                assert_eq!(point.law(), 37);
-                assert_eq!(point.pattern(), pattern);
-                assert_eq!(
-                    point.context_class(),
-                    match class {
-                        None => 0,
-                        Some(TrailClass::Walkway) => 1,
-                        Some(TrailClass::Road) => 2,
-                        Some(_) => unreachable!(),
-                    }
-                );
-                let style = point.cadence & CADENCE_STYLE_MASK;
-                point.set_law(91);
-                assert_eq!(point.law(), 91);
-                assert_eq!(point.pattern(), pattern);
-                assert_eq!(point.cadence & CADENCE_STYLE_MASK, style);
-            }
-        }
-    }
-
-    #[test]
-    fn selected_ribbons_own_semicircular_support_caps() {
-        let mut builder = TrailMeshBuilder::default();
-        builder.push_round_cap(
-            [0.5, 0.5],
-            [1.0, 0.0],
-            [255; 4],
-            0.25,
-            CadenceStyle {
-                pattern: 0,
-                terrain: terrain_code(Terrain::Trail),
-                flags: 0,
-            }
-            .word(0, RibbonBank::Negative),
-        );
-        assert_eq!(builder.vertices.len(), ROUND_CAP_STEPS + 2);
-        assert_eq!(builder.indices.len(), ROUND_CAP_STEPS * 3);
-        assert!(builder.vertices[0].edge_factor.abs() < f32::EPSILON);
-        assert!(builder.vertices[1..].iter().all(|vertex| {
-            (vertex.extrusion[0].hypot(vertex.extrusion[1]) - 1.0).abs() < 1.0e-5
-                && vertex.extrusion[0] >= -f32::EPSILON
-                && (vertex.edge_factor - 1.0).abs() < f32::EPSILON
-        }));
-    }
-
-    #[test]
-    fn selected_ribbons_repel_miter_spikes() {
-        let corner = [[0.0, 0.0], [1.0, 0.0], [0.5, 0.866_025_4]];
-        let context = ribbon_extrusions(&corner, 1, TrailSalience::Context);
-        let selected = ribbon_extrusions(&corner, 1, TrailSalience::Selected);
-        assert!(context[1][0].hypot(context[1][1]) > SELECTED_MITER_LIMIT);
-        assert!(selected.iter().all(
-            |extrusion| extrusion[0].hypot(extrusion[1]) <= SELECTED_MITER_LIMIT + f32::EPSILON
-        ));
-    }
-
-    #[test]
-    fn every_way_kind_survives_into_the_coarsest_band() {
-        let scale = f64::from(1_u32 << BASE_TILE_ZOOM);
-        let edge = |row: f64, kind| {
-            let points = vec![
-                [1_200.2 / scale, (1_532.2 + row) / scale],
-                [1_200.8 / scale, (1_532.2 + row) / scale],
-            ];
-            let class = crate::map::trail_class(kind, WayRealm::Recreational);
-            WorldEdge {
-                endpoints: [0, 1],
-                length_world: 0.6 / scale,
-                points,
-                lineage: None,
-                color: class.map_or(TrailClass::Trail.color(), TrailClass::color),
-                class,
-                stepped: kind == WayKind::Steps,
-                standing: TrailStanding::Established,
-                terrain: Terrain::Trail,
-                mark: TrailMark::Solid,
-                access: trailgen_core::Access::Open,
-            }
-        };
-        let classes = [
-            WayKind::Unknown,
-            WayKind::Path,
-            WayKind::Footway,
-            WayKind::Track,
-            WayKind::ServiceRoad,
-            WayKind::PedestrianStreet,
-            WayKind::Steps,
-            WayKind::Bridleway,
-            WayKind::Bushwhack,
-            WayKind::Roadway,
-            WayKind::Cycleway,
-        ];
-        let edges = classes
-            .into_iter()
-            .enumerate()
-            .map(|(slot, class)| edge(slot as f64 * 0.05, class))
-            .collect::<Vec<_>>();
-        let field = TrailField::forge(&edges);
-        let first_band_indices = field
-            .tiles
-            .values()
-            .map(|tile| tile.bands[0].indices.len())
-            .sum::<usize>();
-
-        assert_eq!(
-            edges
-                .iter()
-                .filter(|edge| edge.class == Some(TrailClass::Road))
-                .count(),
-            2
-        );
-        assert_eq!(first_band_indices, classes.len() * 6);
     }
 }

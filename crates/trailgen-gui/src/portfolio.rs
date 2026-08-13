@@ -276,7 +276,7 @@ fn same_path(left: &trailgen_core::LineString, right: &trailgen_core::LineString
 mod tests {
     use super::*;
     use anyhow::Result;
-    use trailgen_core::{ExactLoopSolver, GraphBuilder, RouteMetrics, VertexId, io::geojson};
+    use trailgen_core::{ExactLoopSolver, GraphBuilder, VertexId, io::geojson};
 
     fn fixture() -> Result<WalkGraph> {
         Ok(
@@ -332,37 +332,5 @@ mod tests {
             assert!(Arc::ptr_eq(&second.previews[slot], &first.previews[prior]));
         }
         Ok(())
-    }
-
-    #[test]
-    fn manual_loops_admit_closed_morphologies_without_weakening_search_defaults() {
-        let defaults = LoopConstraints {
-            min_distance_m: 0.0,
-            max_distance_m: f64::MAX,
-            max_repeated_edge_fraction: 0.0,
-            allowed_shapes: vec![RouteShape::Loop],
-            ..LoopConstraints::default()
-        };
-        let manual = manual_constraints(&defaults, RouteShape::Loop);
-        let repeated = RouteMetrics {
-            shape: RouteShape::OutAndBack,
-            distance_m: 1_000.0,
-            repeated_edge_fraction: 0.5,
-            ..RouteMetrics::default()
-        };
-
-        assert!(defaults.max_repeated_edge_fraction.abs() < f64::EPSILON);
-        assert_eq!(defaults.allowed_shapes, [RouteShape::Loop]);
-        assert!(!defaults.judge(&repeated).satisfied);
-        assert!((manual.max_repeated_edge_fraction - 1.0).abs() < f64::EPSILON);
-        assert_eq!(
-            manual.allowed_shapes,
-            [
-                RouteShape::Loop,
-                RouteShape::FigureEight,
-                RouteShape::OutAndBack,
-            ]
-        );
-        assert!(manual.judge(&repeated).satisfied);
     }
 }

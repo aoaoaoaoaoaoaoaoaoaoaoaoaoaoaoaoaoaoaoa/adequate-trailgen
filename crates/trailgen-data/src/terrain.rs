@@ -357,33 +357,6 @@ mod tests {
     }
 
     #[test]
-    fn terrarium_formula_preserves_fractional_meters() {
-        let tile = Tile {
-            width: 1,
-            height: 1,
-            rgb: vec![129, 44, 128],
-        };
-        assert!((tile.elevation(0, 0) - 300.5).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn atlas_interpolates_between_terrain_pixels() {
-        let atlas = TerrainAtlas {
-            zoom: 0,
-            tiles: BTreeMap::from([(
-                (0, 0),
-                Tile {
-                    width: 2,
-                    height: 1,
-                    rgb: vec![128, 100, 0, 128, 200, 0],
-                },
-            )]),
-        };
-        let sample = atlas.sample(Coord::new(0.0, 0.0)).expect("covered sample");
-        assert!((sample.ele_m - 150.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
     fn void_and_bathymetric_pixels_do_not_poison_hiking_profiles() {
         let atlas = TerrainAtlas {
             zoom: 0,

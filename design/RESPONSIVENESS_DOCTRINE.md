@@ -62,6 +62,21 @@ similar immutable projection.
    intrinsically long. It must acknowledge immediately, remain cancellable when
    cancellation is meaningful, publish monotone progress, and preserve the last
    useful state.
+8. Semantic clocks and visual clocks are disjoint. Search debounce, retry
+   backoff, and persistence settlement use the Eternalist host's service
+   deadline; cartographic, focus, and profile transitions alone use repaint
+   timing. Service deadlines remain live while presentation is quiescent or
+   concealed and may request a frame only when the visible projection changed.
+9. UI-to-worker submission never waits for capacity. Latest-demand-wins work
+   uses the shared superseding mailbox. Trail libraries, workbench slates, and
+   preferences use the shared sequenced background scribe; orderly retirement
+   waits for one final durable receipt.
+10. Result streams that can induce fresh demand use foreground-only native
+    wakes. While unfocused, their bounded channels exert backpressure and focus
+    restoration supplies one catch-up frame. Unconditional cross-thread
+    repaints are reserved for finite control results that warrant publication
+    even in the background. A result → frame → fresh-demand cycle is animation,
+    whatever the names of its functions.
 
 ## Trace Spine
 
@@ -69,6 +84,7 @@ The shell defines canonical spans; applications may only refine them.
 
 ```text
 window.event
+app.service_deadline
 frame
   frame.input
   frame.ui
@@ -204,3 +220,30 @@ variation belongs to X11 surface-presentation cadence: final product UI work
 peaked at 6.6 ms, while `frame.render` including presentation return reached
 65.0 ms. This is the pattern the doctrine intends: repair publication and
 ownership boundaries before tuning instructions.
+
+An August 2026 idle-residency inquest found an overnight process at 44.9 GiB
+RSS, of which 44.5 GiB was private dirty memory. The dominant owner was 350
+128 MiB mappings through `/dev/nvidiactl`; the Rust heap was about 182 MiB and
+device-local memory reported by `nvidia-smi` was below 500 MiB. A 7,200-frame
+offscreen run of the fully armed workbench, including egui tessellation,
+application GPU callbacks, water, submission, and post-submit maintenance,
+settled at 2.52 GiB RSS and remained bitwise flat after frame 900. The absent
+operation was surface acquisition and presentation. The OOM kill destroyed
+the allocation labels needed to name a deeper NVIDIA subowner, so the proved
+causal envelope is perpetual surface presentation plus driver host mappings,
+not a claimed application-heap leak.
+
+The enabling repaint loop was independent and exact: stable Poolrooms tension
+renewed an eight-second wake on every frame, so a resting pointer or focused
+control kept the shared host presenting indefinitely. The host also lacked
+focus, occlusion, minimization, and hidden-window presentation authority. The
+repair makes tension wakes finite, denies frame-originated continuation while
+unfocused, stops known concealed presentation, gives streaming workers
+foreground-only wake authority, bounds worker-result drains, suppresses
+unchanged uniform uploads, selects wgpu's memory-usage allocator
+policy, requests one frame in flight, and performs nonblocking device
+maintenance after present. A genuine external event may publish one bounded
+background frame on platforms that do not expose concealment; it cannot mint a
+cadence. Future release evidence must include settled focused, unfocused, and
+concealed rests plus an RSS soak; interaction-only cadence cannot certify idle
+resource conduct.

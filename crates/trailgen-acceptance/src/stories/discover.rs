@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, path::Path, time::Duration};
 
-use egui_tester::{Button, Frame, Key, Modifiers, PixelRegion, Result, Wheel, demand};
+use egui_tester::{Button, Frame, Key, Modifiers, Motion, PixelRegion, Result, Wheel, demand};
 
 use crate::harness::{
     DataMode, Harness, RunClass, Target, TargetClass, TrailStory, durable_budget, first_anchor,
@@ -148,7 +148,7 @@ fn add_civic_area(story: &mut TrailStory<'_, '_>, harness: &Harness<'_>) -> Resu
         format!("adding a civic area moved the viewport from {baseline_map:?} to {after_add:?}"),
     )?;
     let _ready = story.wait_within(Duration::from_secs(10), shows::civic(1, 1))?;
-    verify_civic_persistence(harness)?;
+    verify_civic_persistence(story, harness)?;
 
     reveal_civic_target(story, Target::CivicArea(0))?;
     let before_fit = neutral_capture(story)?;
@@ -268,7 +268,17 @@ fn civic_ink(frame: &Frame, region: PixelRegion) -> Result<usize> {
         .count())
 }
 
-fn verify_civic_persistence(harness: &Harness<'_>) -> Result<()> {
+fn verify_civic_persistence(story: &TrailStory<'_, '_>, harness: &Harness<'_>) -> Result<()> {
+    story.session().application().wait_until(
+        Duration::from_secs(3),
+        "Brooklyn to reach the durable civic-area index",
+        || {
+            Ok(harness
+                .testbed
+                .read_private("discover-loop/civic/index.json")
+                .is_ok())
+        },
+    )?;
     let index = read_json(harness.testbed, "discover-loop/civic/index.json")?;
     demand(
         index["areas"]
@@ -326,9 +336,8 @@ fn exercise_map_area_lifecycle(harness: &Harness<'_>) -> Result<()> {
         .reaction(press)
         .within(instant_budget())
         .next_frame()?;
-    let motion = story.session().move_to(selection.to.0, selection.to.1)?;
     let _previewed = story
-        .reaction(motion)
+        .motion_to(selection.to, Motion::default())?
         .within(instant_budget())
         .until(shows::area_drawing(true))?;
     let preview = story.capture()?;
@@ -502,9 +511,8 @@ fn resize_second_area(story: &mut TrailStory<'_, '_>, baseline_water: usize) -> 
         .reaction(press)
         .within(instant_budget())
         .until(shows::area_resizing(Some((1, AreaCorner::Southeast))))?;
-    let motion = story.session().move_to(destination.0, destination.1)?;
     let _previewed = story
-        .reaction(motion)
+        .motion_to(destination, Motion::default())?
         .within(instant_budget())
         .until(shows::area_resizing(Some((1, AreaCorner::Southeast))))?;
     let preview = story.capture()?;
@@ -738,8 +746,7 @@ fn acquire_region(story: &mut TrailStory<'_, '_>) -> Result<()> {
         .session()
         .button_down(from.0, from.1, Button::Primary)?;
     let _acquired = story.reaction(press).next_frame()?;
-    let motion = story.session().move_to(to.0, to.1)?;
-    let _previewed = story.reaction(motion).next_frame()?;
+    let _previewed = story.motion_to(to, Motion::default())?.next_frame()?;
     let release = story.session().button_up(Button::Primary)?;
     let _started = story.reaction(release).until(shows::survey_acquiring(1))?;
     let _ready = story.wait_within(
@@ -845,8 +852,7 @@ fn exercise_calibration(story: &mut TrailStory<'_, '_>) -> Result<()> {
 
     let baseline = neutral_capture(story)?;
     let pace = story.anchor(Target::BasePace)?.center();
-    let motion = story.session().move_to(pace.0, pace.1)?;
-    let _hovered = story.reaction(motion).next_frame()?;
+    let _hovered = story.motion_to(pace, Motion::default())?.next_frame()?;
     let card = story.anchor(Target::GlossCard)?;
     let region = PixelRegion::anchor(&card);
     let visible =

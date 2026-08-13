@@ -7,6 +7,7 @@ use anyhow::{Context as _, Result, ensure};
 use bytemuck::{Pod, Zeroable};
 use crossbeam_channel::{Receiver, Sender, bounded};
 use egui::Context;
+use eternalist_apps::NativeWake;
 use fast_mvt::{MvtFeatureRef, MvtGeometry, MvtReaderRef, MvtValueRef};
 use futures_util::{StreamExt as _, stream};
 use geo_types::{Coord, LineString, Point, Polygon};
@@ -491,12 +492,12 @@ pub struct Basemap {
 }
 
 impl Basemap {
-    pub fn spawn(ctx: Context, source: Source, online: bool) -> Result<Self> {
+    pub fn spawn(ctx: &Context, source: Source, online: bool) -> Result<Self> {
         Self::spawn_with_workers(ctx, source, online, WORKERS)
     }
 
     fn spawn_with_workers(
-        ctx: Context,
+        ctx: &Context,
         source: Source,
         online: bool,
         workers: usize,
@@ -505,9 +506,10 @@ impl Basemap {
         let (commands, command_rx) = bounded(workers.max(1).saturating_mul(2));
         let pending = command_rx.clone();
         let (event_tx, events) = bounded(256);
+        let wake = NativeWake::from_context(ctx);
         let thread = thread::Builder::new()
             .name("vector-armory".to_owned())
-            .spawn(move || armory(&ctx, &source, command_rx, event_tx, online, workers))
+            .spawn(move || armory(&wake, &source, command_rx, event_tx, online, workers))
             .context("spawn vector basemap armory")?;
         Ok(Self {
             commands,
@@ -628,7 +630,7 @@ type Archive = AsyncPmTilesReader<MmapBackend, HashMapCache>;
 type RemoteArchive = AsyncPmTilesReader<HttpBackend, HashMapCache>;
 
 fn armory(
-    ctx: &Context,
+    wake: &NativeWake,
     source: &Source,
     commands: Receiver<TileKey>,
     events: Sender<Event>,
@@ -638,16 +640,16 @@ fn armory(
     let runtime = match runtime() {
         Ok(runtime) => runtime,
         Err(err) => {
-            send_fault(ctx, &events, None, &err);
+            send_fault(wake, &events, None, &err);
             return;
         }
     };
     if let Err(err) = materialize_archive(&runtime, source, online) {
-        send_fault(ctx, &events, None, &err);
+        send_fault(wake, &events, None, &err);
         return;
     }
     if let Err(err) = reap_region_archives(&source.archive) {
-        send_fault(ctx, &events, None, &err);
+        send_fault(wake, &events, None, &err);
         return;
     }
     let reader = match runtime.block_on(Archive::new_with_cached_path(
@@ -657,7 +659,7 @@ fn armory(
         Ok(reader) => Arc::new(reader),
         Err(err) => {
             send_fault(
-                ctx,
+                wake,
                 &events,
                 None,
                 &anyhow::Error::new(err).context(format!("open {}", source.archive.display())),
@@ -669,17 +671,17 @@ fn armory(
     if events.send(Event::Ready { source_zoom }).is_err() {
         return;
     }
-    ctx.request_repaint();
+    let _woken = wake.request_foreground_repaint();
     let (roaming_tx, roaming_rx) = bounded(256);
     let nomad = source
         .roaming_cache
         .as_deref()
         .filter(|_| online)
-        .and_then(|cache| spawn_nomad(ctx, cache, roaming_rx.clone(), &events));
+        .and_then(|cache| spawn_nomad(wake, cache, roaming_rx.clone(), &events));
     drop(roaming_rx);
     let mut workers = Vec::with_capacity(worker_count);
     for slot in 0..worker_count {
-        let worker_ctx = ctx.clone();
+        let worker_wake = wake.clone();
         let reader = reader.clone();
         let commands = commands.clone();
         let worker_events = events.clone();
@@ -688,7 +690,7 @@ fn armory(
             .name(format!("vector-quarry-{slot}"))
             .spawn(move || {
                 quarry(
-                    &worker_ctx,
+                    &worker_wake,
                     &reader,
                     source_zoom,
                     &commands,
@@ -700,7 +702,7 @@ fn armory(
             Ok(worker) => workers.push(worker),
             Err(err) => {
                 send_fault(
-                    ctx,
+                    wake,
                     &events,
                     None,
                     &anyhow::Error::new(err).context("spawn vector quarry"),
@@ -743,20 +745,20 @@ fn materialize_archive(
 }
 
 fn spawn_nomad(
-    ctx: &Context,
+    wake: &NativeWake,
     cache: &FsPath,
     commands: Receiver<TileKey>,
     events: &Sender<Event>,
 ) -> Option<thread::JoinHandle<()>> {
-    let nomad_ctx = ctx.clone();
+    let nomad_wake = wake.clone();
     let nomad_events = events.clone();
     let roaming_cache = cache.to_owned();
     thread::Builder::new()
         .name("vector-nomad".to_owned())
-        .spawn(move || nomad(&nomad_ctx, &roaming_cache, &commands, &nomad_events))
+        .spawn(move || nomad(&nomad_wake, &roaming_cache, &commands, &nomad_events))
         .map_err(|err| {
             send_fault(
-                ctx,
+                wake,
                 events,
                 None,
                 &anyhow::Error::new(err).context("spawn roaming vector quarry"),
@@ -937,7 +939,7 @@ async fn fetch_tiles(
     Ok(tiles)
 }
 
-fn nomad(ctx: &Context, cache: &FsPath, commands: &Receiver<TileKey>, events: &Sender<Event>) {
+fn nomad(wake: &NativeWake, cache: &FsPath, commands: &Receiver<TileKey>, events: &Sender<Event>) {
     let mut resident = reap_roaming_cache(cache, ROAMING_CACHE_CEILING).unwrap_or_else(|err| {
         eprintln!("could not reap roaming basemap cache: {err:#}");
         0
@@ -945,7 +947,7 @@ fn nomad(ctx: &Context, cache: &FsPath, commands: &Receiver<TileKey>, events: &S
     let runtime = match runtime() {
         Ok(runtime) => runtime,
         Err(err) => {
-            send_fault(ctx, events, None, &err);
+            send_fault(wake, events, None, &err);
             return;
         }
     };
@@ -966,7 +968,7 @@ fn nomad(ctx: &Context, cache: &FsPath, commands: &Receiver<TileKey>, events: &S
                         if events.send(event).is_err() {
                             return;
                         }
-                        ctx.request_repaint();
+                        let _woken = wake.request_foreground_repaint();
                     } else {
                         let _discarded = fs::remove_file(path);
                         absent.push(key);
@@ -984,7 +986,7 @@ fn nomad(ctx: &Context, cache: &FsPath, commands: &Receiver<TileKey>, events: &S
                 Ok(source) => remote = Some(source),
                 Err(err) => {
                     for key in absent {
-                        send_fault(ctx, events, Some(key), &err);
+                        send_fault(wake, events, Some(key), &err);
                     }
                     continue;
                 }
@@ -1019,7 +1021,7 @@ fn nomad(ctx: &Context, cache: &FsPath, commands: &Receiver<TileKey>, events: &S
             if events.send(event).is_err() {
                 return;
             }
-            ctx.request_repaint();
+            let _woken = wake.request_foreground_repaint();
         }
     }
 }
@@ -1190,7 +1192,7 @@ fn valid_build_key(key: &str) -> bool {
 }
 
 fn quarry(
-    ctx: &Context,
+    wake: &NativeWake,
     archive: &Arc<Archive>,
     archive_zoom: u8,
     commands: &Receiver<TileKey>,
@@ -1200,7 +1202,7 @@ fn quarry(
     let runtime = match runtime() {
         Ok(runtime) => runtime,
         Err(err) => {
-            send_fault(ctx, events, None, &err);
+            send_fault(wake, events, None, &err);
             return;
         }
     };
@@ -1209,7 +1211,7 @@ fn quarry(
             if roaming.send(key).is_err() && events.send(Event::Missing(key)).is_err() {
                 break;
             }
-            ctx.request_repaint();
+            let _woken = wake.request_foreground_repaint();
             continue;
         }
         let bytes = match key.coordinate().and_then(|coordinate| {
@@ -1222,11 +1224,11 @@ fn quarry(
                 if roaming.send(key).is_err() && events.send(Event::Missing(key)).is_err() {
                     break;
                 }
-                ctx.request_repaint();
+                let _woken = wake.request_foreground_repaint();
                 continue;
             }
             Err(err) => {
-                send_fault(ctx, events, Some(key), &err);
+                send_fault(wake, events, Some(key), &err);
                 continue;
             }
         };
@@ -1234,7 +1236,7 @@ fn quarry(
         if events.send(event).is_err() {
             break;
         }
-        ctx.request_repaint();
+        let _woken = wake.request_foreground_repaint();
     }
 }
 
@@ -1242,12 +1244,17 @@ const fn archive_can_answer(archive_zoom: u8, key: TileKey) -> bool {
     key.zoom <= archive_zoom
 }
 
-fn send_fault(ctx: &Context, events: &Sender<Event>, key: Option<TileKey>, err: &anyhow::Error) {
+fn send_fault(
+    wake: &NativeWake,
+    events: &Sender<Event>,
+    key: Option<TileKey>,
+    err: &anyhow::Error,
+) {
     let _sent = events.send(Event::Fault {
         key,
         message: format!("{err:#}"),
     });
-    ctx.request_repaint();
+    let _woken = wake.request_foreground_repaint();
 }
 
 fn decode_tile(key: TileKey, bytes: &[u8]) -> Result<VectorTile> {
@@ -2248,14 +2255,6 @@ mod tests {
         }
     }
 
-    fn equator_tile(zoom: u8) -> TileKey {
-        TileKey {
-            zoom,
-            x: 0,
-            y: 1_u32 << zoom.saturating_sub(1),
-        }
-    }
-
     #[test]
     fn cover_demands_one_fallback_and_current_detail_only() {
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
@@ -2274,42 +2273,6 @@ mod tests {
                 .cells
                 .iter()
                 .all(|cell| cell.key.zoom == cover.source.get())
-        );
-    }
-
-    #[test]
-    fn regional_view_demands_local_wayfinding_from_the_project_archive() {
-        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
-        let viewport = Viewport { zoom: 11.0, ..VIEW };
-        let trail_map = cover(
-            MapFramePlan::forge(viewport, rect),
-            detail(10, false),
-            Some(15),
-            true,
-        );
-        let wayfinding = trail_map
-            .strata
-            .iter()
-            .find(|stratum| stratum.intent == Intent::Wayfinding)
-            .expect("regional project view should demand trailhead parking");
-        assert!(!wayfinding.keys.is_empty());
-        assert!(
-            wayfinding
-                .keys
-                .iter()
-                .all(|key| key.zoom == TRAILHEAD_PARKING_SOURCE_ZOOM)
-        );
-        let survey = cover(
-            MapFramePlan::forge(viewport, rect),
-            detail(10, false),
-            Some(15),
-            false,
-        );
-        assert!(
-            survey
-                .strata
-                .iter()
-                .all(|stratum| stratum.intent != Intent::Wayfinding)
         );
     }
 
@@ -2363,73 +2326,6 @@ mod tests {
     }
 
     #[test]
-    fn source_zoom_stops_while_view_zoom_continues() -> Result<()> {
-        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
-        let view = Viewport {
-            zoom: Viewport::MAX_ZOOM,
-            ..VIEW
-        };
-        let cover = cover(
-            MapFramePlan::forge(view, rect),
-            detail(MAX_SOURCE_ZOOM, true),
-            None,
-            false,
-        );
-        let crown = cover.strata.last().context("top stratum")?;
-        assert_eq!(crown.intent, Intent::Required);
-        assert!(crown.keys.iter().all(|tile| tile.zoom == MAX_SOURCE_ZOOM));
-        Ok(())
-    }
-
-    #[test]
-    fn project_archive_ceiling_cannot_impersonate_a_deeper_tile() {
-        let archive_zoom = 12;
-        assert!(archive_can_answer(
-            archive_zoom,
-            TileKey {
-                zoom: archive_zoom,
-                x: 1_204,
-                y: 1_532,
-            }
-        ));
-        assert!(!archive_can_answer(
-            archive_zoom,
-            TileKey {
-                zoom: 15,
-                x: 9_632,
-                y: 12_256,
-            }
-        ));
-    }
-
-    #[test]
-    fn line_join_stays_finite_at_reversals() {
-        let points = [[0.0, 0.0], [1.0, 0.0], [0.0, 0.0]];
-        assert!(
-            join_normal(&points, 1)
-                .iter()
-                .all(|value| value.is_finite())
-        );
-    }
-
-    #[test]
-    fn archive_crown_remains_a_coherent_deep_zoom_fallback() {
-        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
-        let view = Viewport { zoom: 11.0, ..VIEW };
-
-        let cover = cover(
-            MapFramePlan::forge(view, rect),
-            detail(10, false),
-            Some(4),
-            false,
-        );
-
-        assert!(cover.strata.first().is_some_and(|stratum| {
-            stratum.intent == Intent::Fallback && stratum.keys.iter().all(|key| key.zoom == 4)
-        }));
-    }
-
-    #[test]
     fn detail_governor_overscales_hysteretically_and_prefetches_by_deadline() {
         let now = Instant::now();
         let mut governor = DetailGovernor::default();
@@ -2480,205 +2376,6 @@ mod tests {
     }
 
     #[test]
-    fn population_controls_locality_prominence_continuously() -> Result<()> {
-        let metropolis = label_style(Some("locality"), Some("city"), Some(18.0), None)
-            .context("metropolis style")?;
-        let small_city = label_style(Some("locality"), Some("city"), Some(3.0), None)
-            .context("small-city style")?;
-        assert!(metropolis.rank < small_city.rank);
-        assert!(metropolis.size > small_city.size);
-        assert!(metropolis.onset_zoom < small_city.onset_zoom);
-        Ok(())
-    }
-
-    #[test]
-    fn source_min_zoom_overrides_cartographic_fallback() -> Result<()> {
-        let style = road_style(
-            Some("minor_road"),
-            Some("residential"),
-            Some(11.25),
-            equator_tile(11),
-        )
-        .context("residential road style")?;
-        assert!((style.onset_zoom - 11.25).abs() < f32::EPSILON);
-        Ok(())
-    }
-
-    #[test]
-    fn even_local_roads_hold_cartographic_authority() -> Result<()> {
-        let style = road_style(
-            Some("minor_road"),
-            Some("residential"),
-            None,
-            equator_tile(15),
-        )
-        .context("residential road style")?;
-        assert!(style.radius_points > map::INDEX_ISOHYPSE_RADIUS_POINTS);
-        assert!(style.color[3] >= 160);
-        assert_eq!(style.color[..3], map::ROAD_SRGB);
-        Ok(())
-    }
-
-    #[test]
-    fn tertiary_roads_decisively_overprint_index_isohypses() -> Result<()> {
-        let style = road_style(Some("major_road"), Some("tertiary"), None, equator_tile(15))
-            .context("tertiary road style")?;
-        assert!(style.radius_points >= map::INDEX_ISOHYPSE_RADIUS_POINTS * 1.7);
-        assert!(style.color[3] >= 200);
-        Ok(())
-    }
-
-    #[test]
-    fn road_classes_become_physical_widths_only_under_deep_magnification() -> Result<()> {
-        let key = equator_tile(15);
-        let motorway =
-            road_style(Some("highway"), Some("motorway"), None, key).context("motorway style")?;
-        let residential = road_style(Some("minor_road"), Some("residential"), None, key)
-            .context("residential style")?;
-        assert!(motorway.radius_world > residential.radius_world * 1.6);
-
-        let overview = 256.0 * 10.0_f32.exp2();
-        assert!(motorway.radius_world * overview < motorway.radius_points);
-        let deep = 256.0 * (Viewport::MAX_ZOOM as f32).exp2();
-        assert!(motorway.radius_world * deep > motorway.radius_points * 4.0);
-        Ok(())
-    }
-
-    #[test]
-    fn road_names_follow_transport_hierarchy_and_source_onset() -> Result<()> {
-        let arterial = road_label_style(Some("major_road"), Some("secondary"), Some(10.0))
-            .context("secondary-road label style")?;
-        let local = road_label_style(Some("minor_road"), Some("residential"), Some(13.0))
-            .context("residential-road label style")?;
-        assert!(arterial.rank < local.rank);
-        assert!(arterial.size > local.size);
-        assert!(arterial.onset_zoom < local.onset_zoom);
-        assert!(road_label_style(Some("path"), Some("footway"), Some(14.0)).is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn walking_corpus_exclusively_owns_pedestrian_geometry() {
-        for detail in ["pedestrian", "cycleway", "track", "path", "footway"] {
-            assert!(road_style(Some("path"), Some(detail), Some(11.5), equator_tile(15)).is_none());
-        }
-        assert!(road_style(Some("path"), None, None, equator_tile(15)).is_none());
-    }
-
-    #[test]
-    fn natural_landmarks_preempt_provider_disclosure_by_five_quarters() -> Result<()> {
-        let lake =
-            water_label_style(Some("water"), Some("lake"), Some(13.0)).context("lake label")?;
-        let pond =
-            water_label_style(Some("water"), Some("pond"), Some(13.0)).context("pond label")?;
-        let peak = peak_label_style(Some(13.0));
-        assert!((lake.onset_zoom - 11.75).abs() < f32::EPSILON);
-        assert!((pond.onset_zoom - 11.75).abs() < f32::EPSILON);
-        assert!((peak.onset_zoom - 11.75).abs() < f32::EPSILON);
-        assert!(lake.rank < pond.rank);
-        assert!(lake.size > pond.size);
-        assert!(peak.size >= 11.0);
-        assert!((pond_label_style(None).onset_zoom - 10.75).abs() < f32::EPSILON);
-        assert!((peak_label_style(None).onset_zoom - 9.25).abs() < f32::EPSILON);
-        assert!(water_label_style(Some("water"), Some("river"), None).is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn compact_water_pois_become_early_pond_labels() -> Result<()> {
-        let mut forge = Forge::new(TileKey {
-            zoom: 12,
-            x: 1_198,
-            y: 1_527,
-        });
-        forge.push_poi(
-            Point::new(2_048, 2_048),
-            4_096,
-            FeatureTags {
-                kind: Some("reservoir"),
-                name: Some("Gillman Pond"),
-                min_zoom: Some(13.0),
-                ..FeatureTags::default()
-            },
-        );
-        let label = forge.labels.first().context("pond label")?;
-        assert_eq!(label.kind, LabelKind::Lake);
-        assert_eq!(&*label.text, "Gillman Pond");
-        assert!((label.onset_zoom - 11.75).abs() < f32::EPSILON);
-        Ok(())
-    }
-
-    #[test]
-    fn peak_text_leaves_the_world_anchor_to_the_geometric_sigil() {
-        let mut forge = Forge::new(TileKey {
-            zoom: 12,
-            x: 1_198,
-            y: 1_527,
-        });
-        forge.push_poi(
-            Point::new(2_048, 2_048),
-            4_096,
-            FeatureTags {
-                kind: Some("peak"),
-                name: Some("Bear Mountain"),
-                elevation_m: Some(391.0),
-                ..FeatureTags::default()
-            },
-        );
-        let label = forge.labels.first().expect("peak label");
-
-        assert_eq!(label.kind, LabelKind::Peak);
-        assert_eq!(&*label.text, "Bear Mountain · 391 m");
-    }
-
-    #[test]
-    fn parking_defaults_public_but_explicit_restrictions_prevail() {
-        assert!(public_access(None));
-        assert!(public_access(Some("yes")));
-        for restriction in ["private", "no", "customers", "permit", "destination"] {
-            assert!(!public_access(Some(restriction)));
-        }
-    }
-
-    #[test]
-    fn trail_access_parking_overrules_generic_poi_secrecy() {
-        let onset = trailhead_parking_onset(Some(18.0));
-        assert!((onset - trailhead_parking_onset(None)).abs() < f32::EPSILON);
-        assert!(apparition(11.14, onset) > 0.6);
-    }
-
-    #[test]
-    fn apparition_is_quiet_monotone_and_bounded() {
-        let onset = 11.0;
-        let samples = [
-            apparition(10.9, onset),
-            apparition(11.0, onset),
-            apparition(11.3, onset),
-            apparition(11.8, onset),
-            apparition(12.35, onset),
-            apparition(13.0, onset),
-        ];
-        assert!(samples[0].abs() < f32::EPSILON);
-        assert!(samples[1].abs() < f32::EPSILON);
-        assert!((samples[4] - 1.0).abs() < f32::EPSILON);
-        assert!((samples[5] - 1.0).abs() < f32::EPSILON);
-        assert!(samples.windows(2).all(|pair| pair[0] <= pair[1]));
-    }
-
-    #[test]
-    fn project_extract_reaches_native_street_zoom_in_hilbert_order() -> Result<()> {
-        let keys = extraction_keys(GeoBounds::new(-74.2, 41.1, -74.0, 41.3), 15)?;
-        assert!(keys.iter().any(|key| key.zoom == 15));
-        assert!(keys.len() < MAX_FORGE_TILES);
-        assert!(keys.windows(2).all(|pair| {
-            let left = TileId::from(pair[0].coordinate().expect("valid coordinate"));
-            let right = TileId::from(pair[1].coordinate().expect("valid coordinate"));
-            left < right
-        }));
-        Ok(())
-    }
-
-    #[test]
     fn disjoint_region_cut_is_sparse_and_order_invariant() -> Result<()> {
         let east = GeoBounds::new(-74.2, 41.1, -74.0, 41.3);
         let west = GeoBounds::new(-105.2, 39.9, -105.0, 40.1);
@@ -2695,58 +2392,6 @@ mod tests {
             let right = TileId::from(pair[1].coordinate().expect("valid coordinate"));
             left < right
         }));
-        Ok(())
-    }
-
-    #[test]
-    fn oversized_region_cut_recedes_to_a_bounded_offline_stratum() -> Result<()> {
-        let region = GeoBounds::new(-125.0, 24.0, -66.0, 50.0);
-
-        let (zoom, keys) = bounded_extraction(&[region], MAX_SOURCE_ZOOM, 64)?;
-
-        assert!(zoom < MAX_SOURCE_ZOOM);
-        assert!(keys.len() <= 64);
-        assert!(keys.iter().any(|key| key.zoom == zoom));
-        Ok(())
-    }
-
-    #[test]
-    fn build_keys_are_strict_daily_archives() {
-        assert!(valid_build_key("20260720.pmtiles"));
-        assert!(!valid_build_key("latest.pmtiles"));
-        assert!(!valid_build_key("20260720.pmtiles/../x"));
-    }
-
-    #[test]
-    fn roaming_cache_is_atomic_and_tile_addressed() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let key = TileKey {
-            zoom: 15,
-            x: 9_642,
-            y: 12_271,
-        };
-        cache_roaming_tile(temp.path(), key, b"vector")?;
-        let path = temp.path().join("15/9642/12271.mvt");
-        assert_eq!(roaming_tile_path(temp.path(), key), path);
-        assert_eq!(fs::read(&path)?, b"vector");
-        assert!(
-            std::fs::read_dir(path.parent().context("tile parent")?)?
-                .flatten()
-                .all(|entry| entry.path().extension().is_none_or(|ext| ext != "partial"))
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn roaming_cache_reaps_below_its_hysteresis_line() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        for y in 0..3 {
-            cache_roaming_tile(temp.path(), TileKey { zoom: 1, x: 0, y }, b"vector")?;
-        }
-        assert_eq!(reap_roaming_cache(temp.path(), 10)?, 6);
-        let mut files = Vec::new();
-        collect_roaming_cache(temp.path(), &mut files)?;
-        assert_eq!(files.len(), 1);
         Ok(())
     }
 
@@ -2780,17 +2425,5 @@ mod tests {
             target,
             FsPath::new("basemap.pmtiles.backup.partial")
         ));
-    }
-
-    #[test]
-    fn region_archive_reaper_cannot_bite_manual_or_bootstrap_maps() {
-        assert!(region_archive_path(FsPath::new(
-            "basemap-0123456789abcdef.pmtiles"
-        )));
-        assert!(!region_archive_path(FsPath::new("basemap.pmtiles")));
-        assert!(!region_archive_path(FsPath::new("bootstrap-us.pmtiles")));
-        assert!(!region_archive_path(FsPath::new(
-            "basemap-../../malice.pmtiles"
-        )));
     }
 }

@@ -1,6 +1,7 @@
 use crate::{projects::Workbench, trail_map::TrailMapGpu, vector_map::VectorMapGpu};
 use anyhow::Result;
 use eternalist_apps::{NativeApp, WindowSpec};
+use std::time::Instant;
 
 pub fn run(ctx: egui::Context, app: Workbench) -> Result<()> {
     eternalist_apps::run(ctx, app)
@@ -15,6 +16,14 @@ impl NativeApp for Workbench {
 
     fn draw(&mut self, ui: &mut egui::Ui) {
         self.pulse(ui);
+    }
+
+    fn service_deadline(&self, now: Instant) -> Option<Instant> {
+        self.next_service_deadline(now)
+    }
+
+    fn service_deadline_reached(&mut self, now: Instant) -> bool {
+        self.service_reached(now)
     }
 
     fn after_present(&mut self) -> bool {

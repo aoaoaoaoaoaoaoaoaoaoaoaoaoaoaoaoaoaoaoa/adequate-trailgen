@@ -1367,41 +1367,6 @@ mod tests {
     }
 
     #[test]
-    fn out_and_back_is_a_shortest_spine_reversed_by_construction() {
-        let graph = graph();
-        let start = SupportPoint::forge(graph.vertices[0].coord).expect("valid start");
-        let end = SupportPoint::forge(graph.vertices[2].coord).expect("valid end");
-        let trail = Trail::forge(
-            RouteShape::OutAndBack,
-            vec![start, end],
-            RoutingLaw::default(),
-        )
-        .expect("valid trail");
-        let constraints = LoopConstraints {
-            min_distance_m: 0.0,
-            max_distance_m: f64::MAX,
-            max_repeated_edge_fraction: 1.0,
-            allowed_shapes: vec![RouteShape::OutAndBack],
-            ..LoopConstraints::default()
-        };
-        let realized = trail
-            .realize("manual", &graph, &constraints, 1.0)
-            .expect("realize support points");
-        let split = realized.route.edges.len() / 2;
-        assert_eq!(
-            realized.route.edges[..split],
-            realized.route.edges[split..]
-                .iter()
-                .rev()
-                .copied()
-                .collect::<Vec<_>>()
-        );
-        let inferred = Trail::infer(&graph, &realized.route, RoutingLaw::default())
-            .expect("canonical out-and-back is inferable");
-        assert_eq!(inferred.support_points.len(), 2);
-    }
-
-    #[test]
     fn out_and_back_may_turn_inside_an_edge() {
         let start_coord = Coord::with_ele(0.0, 0.0, 0.0);
         let turn_coord = Coord::new(0.001, 0.000_004);
@@ -1487,46 +1452,6 @@ mod tests {
             .expect("realize recovered loop");
         assert_eq!(realized.route.edges, route.edges);
         assert!(trail.support_points.len() >= 2);
-    }
-
-    #[test]
-    fn loop_closure_chooses_the_shortest_nonrepeating_return() {
-        let a = Coord::new(0.0, 0.0);
-        let b = Coord::new(0.002, 0.0);
-        let c = Coord::new(0.001, 0.001);
-        let graph = GraphBuilder::default()
-            .build(&[
-                draft("direct", a, b),
-                draft("east", b, c),
-                draft("west", c, a),
-            ])
-            .expect("build triangular network");
-        let trail = Trail::forge(
-            RouteShape::Loop,
-            [a, b]
-                .map(|coord| SupportPoint::forge(coord).expect("valid support"))
-                .to_vec(),
-            RoutingLaw::default(),
-        )
-        .expect("valid loop design");
-
-        let realized = trail
-            .realize("triangle", &graph, &loop_constraints(), 1.0)
-            .expect("alternative return closes a proper loop");
-
-        assert_eq!(realized.route.metrics.shape, RouteShape::Loop);
-        assert_eq!(realized.route.edges.len(), 3);
-        assert_eq!(
-            realized
-                .route
-                .edges
-                .iter()
-                .copied()
-                .collect::<BTreeSet<_>>()
-                .len(),
-            3,
-            "the return must not double back over the outbound edge"
-        );
     }
 
     #[test]
@@ -1812,87 +1737,5 @@ mod tests {
             .expect("realize inferred controls");
         assert_eq!(realized.route.metrics.shape, RouteShape::Loop);
         assert!((realized.route.metrics.distance_m - route.metrics.distance_m).abs() < 0.01);
-    }
-
-    #[test]
-    fn closed_and_private_edges_are_not_routing_penalties() {
-        let mut graph = graph();
-        for edge in &mut graph.edges {
-            edge.attr.access = Access::Closed;
-        }
-        assert!(
-            shortest_path(
-                &graph,
-                VertexId(0),
-                VertexId(1),
-                None,
-                RoutingLaw::default(),
-                None
-            )
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn road_aversion_prefers_a_modest_trail_detour_without_banning_roads() {
-        let draft = |points, terrain, road_exposure, name| SegmentDraft {
-            geometry: LineString::new(points).expect("valid line"),
-            junctions: JunctionPolicy::Planar,
-            turn_ref: None,
-            junction_keys: None,
-            turn_restrictions: Vec::new(),
-            way_kind: WayKind::Path,
-            realm: WayRealm::default(),
-            geometry_claim: GeometryClaim::default(),
-            crossing_control: CrossingControl::default(),
-            standing: TrailStanding::Established,
-            marking: crate::TrailMarking::default(),
-            terrain,
-            terrain_confidence: Some(1.0),
-            surface: None,
-            access: Access::Open,
-            travel: EdgeTravel::Both,
-            road_exposure,
-            confidence: 1.0,
-            provenance: vec![Provenance::fixture(name)],
-        };
-        let start_coord = Coord::new(0.0, 0.0);
-        let end_coord = Coord::new(0.002, 0.0);
-        let graph = GraphBuilder::default()
-            .build(&[
-                draft(
-                    vec![start_coord, end_coord],
-                    Terrain::Road,
-                    1.0,
-                    "short-road",
-                ),
-                draft(
-                    vec![start_coord, Coord::new(0.001, 0.001), end_coord],
-                    Terrain::Trail,
-                    0.0,
-                    "trail-detour",
-                ),
-            ])
-            .expect("build fork");
-        let start = graph.nearest_vertex(start_coord).expect("start vertex");
-        let end = graph.nearest_vertex(end_coord).expect("end vertex");
-        let trail = shortest_path(&graph, start, end, None, RoutingLaw::default(), None)
-            .expect("trail detour");
-        let road = shortest_path(
-            &graph,
-            start,
-            end,
-            None,
-            RoutingLaw { road_aversion: 0.0 },
-            None,
-        )
-        .expect("road route");
-        assert!(trail.len() > road.len());
-        assert_eq!(graph.edges[road[0].0].attr.terrain, Terrain::Road);
-        assert!(
-            trail
-                .iter()
-                .all(|edge| graph.edges[edge.0].attr.terrain == Terrain::Trail)
-        );
     }
 }

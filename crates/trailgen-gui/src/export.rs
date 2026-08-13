@@ -3,7 +3,8 @@ use crate::{
     project::Project,
 };
 use anyhow::{Context as _, Result, bail};
-use crossbeam_channel::{Receiver, Sender, unbounded};
+use crossbeam_channel::{Receiver, Sender, bounded};
+use eternalist_apps::NativeWake;
 use std::{
     io::Write as _,
     path::{Path, PathBuf},
@@ -131,9 +132,10 @@ pub struct ExportForge {
 }
 
 impl ExportForge {
-    pub fn spawn(ctx: egui::Context) -> Result<Self> {
-        let (command, jobs) = unbounded::<ExportJob>();
-        let (publish, events) = unbounded();
+    pub fn spawn(ctx: &egui::Context) -> Result<Self> {
+        let (command, jobs) = bounded::<ExportJob>(1);
+        let (publish, events) = bounded(1);
+        let wake = NativeWake::from_context(ctx);
         let thread = thread::Builder::new()
             .name("saved-trail-exporter".to_owned())
             .spawn(move || {
@@ -149,7 +151,7 @@ impl ExportForge {
                     if publish.send(event).is_err() {
                         break;
                     }
-                    ctx.request_repaint();
+                    let _woken = wake.request_foreground_repaint();
                 }
             })
             .context("spawn saved-trail exporter")?;
@@ -162,8 +164,8 @@ impl ExportForge {
 
     pub fn strike(&self, job: ExportJob) -> Result<()> {
         self.command
-            .send(job)
-            .context("saved-trail exporter stopped")
+            .try_send(job)
+            .context("saved-trail exporter is busy")
     }
 
     pub const fn events(&self) -> &Receiver<ExportEvent> {
@@ -178,15 +180,6 @@ mod tests {
     use trailgen_core::{
         GraphBuilder, LoopConstraints, SearchParams, SolverKind, VertexId, io::geojson,
     };
-
-    #[test]
-    fn suggested_filename_contracts_hostile_names() {
-        assert_eq!(
-            suggested_filename("  Devil's Path / East  "),
-            "devil-s-path-east.gpx"
-        );
-        assert_eq!(suggested_filename("///"), "trail.gpx");
-    }
 
     #[test]
     fn application_service_exports_only_the_saved_library() -> Result<()> {

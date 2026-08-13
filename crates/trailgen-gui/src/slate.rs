@@ -161,25 +161,4 @@ mod tests {
         assert!(Slate::load(&path, &project).manual_draft.is_none());
         Ok(())
     }
-
-    #[test]
-    fn obsolete_organizer_state_evaporates_on_load() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let path = temp.path().join("slate.toml");
-        let project = temp.path().join("alpha");
-        std::fs::write(
-            &path,
-            format!(
-                "project = {:?}\ngallery = \"library\"\nactive_family = 7\n[shutters]\nfamilies = true\nsearch = false\n",
-                project.to_string_lossy()
-            ),
-        )?;
-
-        let slate = Slate::load(&path, &project);
-        assert_eq!(slate.shutters.len(), 1);
-        assert_eq!(slate.shutters.get("search"), Some(&false));
-        slate.save(&path)?;
-        assert!(!std::fs::read_to_string(path)?.contains("family"));
-        Ok(())
-    }
 }

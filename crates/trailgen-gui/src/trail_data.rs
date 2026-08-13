@@ -1,6 +1,7 @@
 use anyhow::{Context as _, Result};
 use crossbeam_channel::{Receiver, bounded};
 use egui::Context;
+use eternalist_apps::NativeWake;
 use std::{path::PathBuf, thread};
 use trailgen_core::source::GeoBounds;
 use trailgen_data::{Event as EngineEvent, Summary, Surveyor};
@@ -40,8 +41,9 @@ pub struct TrailData {
 }
 
 impl TrailData {
-    pub fn spawn(ctx: Context, project: PathBuf, mutation: Mutation) -> Result<Self> {
+    pub fn spawn(ctx: &Context, project: PathBuf, mutation: Mutation) -> Result<Self> {
         let (events_tx, events) = bounded(32);
+        let wake = NativeWake::from_context(ctx);
         let thread = thread::Builder::new()
             .name("trail-corpus-mutation".to_owned())
             .spawn(move || {
@@ -50,8 +52,9 @@ impl TrailData {
                     if matches!(&event, trailgen_data::Event::Ready(_)) {
                         return;
                     }
-                    let _sent = events_tx.try_send(Event::Progress(event));
-                    ctx.request_repaint();
+                    if events_tx.try_send(Event::Progress(event)).is_ok() {
+                        let _woken = wake.request_foreground_repaint();
+                    }
                 };
                 let result = match mutation {
                     Mutation::Add(bounds) => surveyor
@@ -68,7 +71,7 @@ impl TrailData {
                     Err(err) => Event::Fault(format!("{err:#}")),
                 };
                 let _sent = events_tx.send(event);
-                ctx.request_repaint();
+                let _woken = wake.request_foreground_repaint();
             })
             .context("spawn trail-data surveyor")?;
         Ok(Self {

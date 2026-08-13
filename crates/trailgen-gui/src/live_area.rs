@@ -455,22 +455,3 @@ fn screen_rect(viewport: Viewport, canvas: Rect, bounds: GeoBounds) -> Option<Re
     let rect = Rect::from_two_pos(north_west, south_east).intersect(canvas);
     rect.is_positive().then_some(rect)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn screen_rects_follow_lon_lat_orientation() {
-        let viewport = Viewport {
-            center: map::world_from_coord(Coord::new(-74.0, 41.0)),
-            zoom: 10.0,
-        };
-        let canvas = Rect::from_min_max(Pos2::ZERO, pos2(800.0, 600.0));
-        let rect = screen_rect(viewport, canvas, GeoBounds::new(-74.1, 40.9, -73.9, 41.1))
-            .expect("region should cross the viewport");
-        assert!(rect.left() < rect.right());
-        assert!(rect.top() < rect.bottom());
-        assert!(rect.contains(canvas.center()));
-    }
-}

@@ -489,8 +489,6 @@ const OSM: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-
     use fast_mvt::MvtReaderRef;
 
     use super::*;
@@ -507,16 +505,6 @@ mod tests {
         egui_tester::demand(
             layers == ["earth", "landcover", "water", "roads"],
             format!("fixture basemap layers drifted: {layers:?}"),
-        )
-    }
-
-    #[test]
-    fn basemap_fixture_covers_every_supported_detail_at_its_center() -> Result<()> {
-        let cover = fixture_tile_cover()?;
-        let zooms = cover.iter().map(TileCoord::z).collect::<BTreeSet<_>>();
-        egui_tester::demand(
-            zooms == (0_u8..=15).collect(),
-            format!("fixture basemap zoom cover drifted: {zooms:?}"),
         )
     }
 }

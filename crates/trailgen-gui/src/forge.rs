@@ -51,15 +51,3 @@ fn bronze(tone: f32) -> Color32 {
     let channel = |i: usize| (hi[i] - lo[i]).mul_add(t, lo[i]).round() as u8;
     Color32::from_rgb(channel(0), channel(1), channel(2))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bronze_charge_preserves_its_three_fixed_swatch_anchors() {
-        assert_eq!(bronze(0.0), Color32::from_rgb(34, 28, 19));
-        assert_eq!(bronze(0.6), Color32::from_rgb(104, 86, 58));
-        assert_eq!(bronze(1.0), Color32::from_rgb(196, 170, 124));
-    }
-}

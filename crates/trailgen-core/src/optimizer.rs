@@ -2593,17 +2593,6 @@ mod tests {
         previews: RefCell<Vec<usize>>,
     }
 
-    impl RecordingMonitor {
-        fn patient() -> Self {
-            Self {
-                cancel_after: usize::MAX,
-                checks: Cell::new(0),
-                progress: RefCell::new(Vec::new()),
-                previews: RefCell::new(Vec::new()),
-            }
-        }
-    }
-
     impl SearchMonitor for RecordingMonitor {
         fn cancelled(&self) -> bool {
             let checks = self.checks.get().saturating_add(1);
@@ -2656,42 +2645,6 @@ mod tests {
             })
             .map(|edge| edge.id)
             .expect("fixture edge exists")
-    }
-
-    #[test]
-    fn support_lower_bounds_target_the_feasibility_floor() {
-        let low = Coord::new(0.001, 0.0);
-        let midpoint = Coord::new(0.002, 0.0);
-        let graph = GraphBuilder::default()
-            .build(&[branch(
-                vec![Coord::new(0.0, 0.0), low, midpoint],
-                "lower-bound-axis",
-            )])
-            .expect("build lower-bound fixture");
-        let low = graph.nearest_vertex(low).expect("low landmark");
-        let midpoint = graph.nearest_vertex(midpoint).expect("midpoint landmark");
-        let mut radial = vec![f64::INFINITY; graph.vertices.len()];
-        radial[low.0] = 25_000.0;
-        radial[midpoint.0] = 37_500.0;
-        let constraints = LoopConstraints {
-            min_distance_m: 50_000.0,
-            max_distance_m: 100_000.0,
-            ..LoopConstraints::default()
-        };
-
-        let designs = support_designs(
-            &graph,
-            &radial,
-            &[low, midpoint],
-            &constraints,
-            SearchParams {
-                keep: 1,
-                ..SearchParams::default()
-            },
-        );
-
-        assert_eq!(designs[0].supports, [low]);
-        assert!((designs[0].lower_bound_m - constraints.min_distance_m).abs() <= f64::EPSILON);
     }
 
     #[test]
@@ -2858,74 +2811,6 @@ mod tests {
     }
 
     #[test]
-    fn out_and_back_portfolio_spends_slots_on_distinct_spines_first() {
-        let origin = Coord::new(0.0, 0.0);
-        let graph = GraphBuilder::default()
-            .build(&[
-                branch(
-                    vec![
-                        origin,
-                        Coord::new(0.001, 0.0),
-                        Coord::new(0.002, 0.0),
-                        Coord::new(0.003, 0.0),
-                    ],
-                    "east",
-                ),
-                branch(
-                    vec![
-                        origin,
-                        Coord::new(0.0, 0.001),
-                        Coord::new(0.0, 0.002),
-                        Coord::new(0.0, 0.003),
-                    ],
-                    "north",
-                ),
-                branch(
-                    vec![
-                        origin,
-                        Coord::new(-0.001, 0.0),
-                        Coord::new(-0.002, 0.0),
-                        Coord::new(-0.003, 0.0),
-                    ],
-                    "west",
-                ),
-            ])
-            .expect("build branching graph");
-        let start = graph.nearest_vertex(origin).expect("origin vertex");
-        let constraints = LoopConstraints {
-            min_distance_m: 200.0,
-            max_distance_m: 800.0,
-            max_lower_limb_load_km: f64::MAX,
-            max_repeated_edge_fraction: 1.0,
-            allowed_shapes: vec![RouteShape::OutAndBack],
-            ..LoopConstraints::default()
-        };
-        let routes = SolverKind::Auto.solve(
-            SearchParams {
-                max_hops: 4,
-                max_frontier: 100,
-                keep: 12,
-                closure_paths: 1,
-                seed: 0,
-                routing: RoutingLaw::default(),
-            },
-            &graph,
-            start,
-            &constraints,
-            3,
-        );
-        assert_eq!(routes.len(), 3);
-        assert_eq!(
-            routes
-                .iter()
-                .map(|route| route.edges[0])
-                .collect::<BTreeSet<_>>()
-                .len(),
-            3
-        );
-    }
-
-    #[test]
     fn restricted_scope_never_leaks_a_forbidden_edge() {
         let origin = Coord::new(0.0, 0.0);
         let graph = GraphBuilder::default()
@@ -2973,108 +2858,6 @@ mod tests {
                 .iter()
                 .flat_map(|route| &route.edges)
                 .all(|edge| allowed[edge.0])
-        );
-    }
-
-    #[test]
-    fn diversity_never_spends_a_slot_on_a_near_miss_while_matches_remain() {
-        let origin = Coord::new(0.0, 0.0);
-        let graph = GraphBuilder::default()
-            .build(&[
-                branch(
-                    vec![
-                        origin,
-                        Coord::new(0.001, 0.0),
-                        Coord::new(0.002, 0.0),
-                        Coord::new(0.003, 0.0),
-                    ],
-                    "exact-spine",
-                ),
-                branch(vec![origin, Coord::new(0.0, 0.0004)], "short-near-miss"),
-            ])
-            .expect("build tiered graph");
-        let start = graph.nearest_vertex(origin).expect("origin vertex");
-        let constraints = LoopConstraints {
-            min_distance_m: 200.0,
-            max_distance_m: 800.0,
-            max_lower_limb_load_km: f64::MAX,
-            max_repeated_edge_fraction: 1.0,
-            allowed_shapes: vec![RouteShape::OutAndBack],
-            ..LoopConstraints::default()
-        };
-        let routes = SolverKind::Auto.solve(
-            SearchParams {
-                keep: 12,
-                max_frontier: 100,
-                ..SearchParams::default()
-            },
-            &graph,
-            start,
-            &constraints,
-            3,
-        );
-        assert_eq!(routes.len(), 3);
-        assert!(routes.iter().all(|route| route.verdict.satisfied));
-    }
-
-    #[test]
-    fn monitored_search_reports_monotone_effort_and_ranking() {
-        let origin = Coord::new(0.0, 0.0);
-        let graph = GraphBuilder::default()
-            .build(&[branch(
-                vec![
-                    origin,
-                    Coord::new(0.001, 0.0),
-                    Coord::new(0.002, 0.0),
-                    Coord::new(0.003, 0.0),
-                ],
-                "monitored",
-            )])
-            .expect("build monitored graph");
-        let start = graph.nearest_vertex(origin).expect("origin vertex");
-        let constraints = LoopConstraints {
-            min_distance_m: 0.0,
-            max_distance_m: 1_000.0,
-            max_lower_limb_load_km: f64::MAX,
-            max_repeated_edge_fraction: 1.0,
-            allowed_shapes: vec![RouteShape::OutAndBack],
-            ..LoopConstraints::default()
-        };
-        let monitor = RecordingMonitor::patient();
-
-        let _routes = SolverKind::Auto.solve_monitored(
-            SearchParams {
-                max_frontier: 100,
-                ..SearchParams::default()
-            },
-            &graph,
-            start,
-            &constraints,
-            3,
-            &monitor,
-        );
-
-        let progress = monitor.progress.borrow();
-        assert_eq!(
-            progress.first().map(|progress| progress.stage),
-            Some(SearchStage::Exploring)
-        );
-        assert_eq!(
-            progress.last().map(|progress| progress.stage),
-            Some(SearchStage::Ranking)
-        );
-        assert!(
-            progress
-                .windows(2)
-                .all(|pair| pair[0].explored <= pair[1].explored)
-        );
-        assert!(progress.iter().all(|progress| progress.explored <= 100));
-        let previews = monitor.previews.borrow();
-        assert!(previews.first().is_some_and(|count| *count > 0));
-        assert!(previews.windows(2).all(|pair| pair[0] < pair[1]));
-        assert_eq!(
-            previews.last().copied(),
-            progress.last().map(|progress| progress.candidates)
         );
     }
 

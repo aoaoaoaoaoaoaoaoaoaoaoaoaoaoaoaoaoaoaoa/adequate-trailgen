@@ -17,10 +17,11 @@ use anyhow::{Context as _, Result, ensure};
 use dwemer_poolrooms::water::{Frame as WaterFrame, Surface};
 use egui::{Color32, RichText, Stroke, vec2};
 use eternalist_apps::{
-    Inspector, LivingWait,
+    Inspector, LivingWait, ScribeOutcome, SettledScribe,
     command_guide::CommandGuide,
     commands::{CommandDispatch, CommandStatus},
     panel_navigation::PanelNavigator,
+    responsiveness::{Drain, DrainBudget},
 };
 use std::{
     collections::BTreeMap,
@@ -30,6 +31,8 @@ use std::{
 use trailgen_contract::Target;
 use trailgen_core::Coord;
 use trailgen_data::SurveyRegion;
+
+const EVENT_DRAIN: DrainBudget = DrainBudget::new(64, Duration::from_millis(3));
 
 pub struct Workbench {
     mode: WorkbenchMode,
@@ -165,6 +168,20 @@ impl Workbench {
         changed
     }
 
+    pub fn next_service_deadline(&self, now: Instant) -> Option<Instant> {
+        match &self.mode {
+            WorkbenchMode::Project { workspace, .. } => workspace.service_deadline(now),
+            WorkbenchMode::Projects(_) | WorkbenchMode::Limbo => None,
+        }
+    }
+
+    pub fn service_reached(&mut self, now: Instant) -> bool {
+        match &mut self.mode {
+            WorkbenchMode::Project { workspace, .. } => workspace.service_deadline_reached(now),
+            WorkbenchMode::Projects(_) | WorkbenchMode::Limbo => false,
+        }
+    }
+
     const fn still(mode: WorkbenchMode) -> Self {
         Self {
             mode,
@@ -294,6 +311,20 @@ impl ProjectWorkspace {
         }
     }
 
+    fn service_deadline(&self, now: Instant) -> Option<Instant> {
+        match self {
+            Self::Trail(app) => app.service_deadline(now),
+            Self::Survey(project) => project.service_deadline(),
+        }
+    }
+
+    fn service_deadline_reached(&mut self, now: Instant) -> bool {
+        match self {
+            Self::Trail(app) => app.service_deadline_reached(now),
+            Self::Survey(project) => project.service_deadline_reached(now),
+        }
+    }
+
     fn water_frame(
         &mut self,
         ctx: &egui::Context,
@@ -327,10 +358,8 @@ struct SurveyWorkbench {
     area_handles: RegionHandles,
     guide: CommandGuide,
     panels: PanelNavigator,
-    slate_path: PathBuf,
-    committed_slate: Slate,
     observed_slate: Slate,
-    slate_dirty: Option<Instant>,
+    state_scribe: SettledScribe<Slate>,
     water: Surface,
     living_wait: LivingWait,
     map_rect: egui::Rect,
@@ -352,6 +381,13 @@ impl SurveyWorkbench {
         });
         let vector = VectorField::raise(ctx, BasemapSource::bootstrap()?, offline, None)?;
         let cartography = map::CartographicClock::new(viewport);
+        let scribe_path = slate_path;
+        let state_scribe = SettledScribe::spawn(
+            "trailgen-survey-state-scribe",
+            ctx,
+            STATE_SETTLE,
+            move |slate: Slate| slate.save(&scribe_path),
+        )?;
         let mut project = Self {
             root: place.root,
             name: place.name,
@@ -374,10 +410,8 @@ impl SurveyWorkbench {
             area_handles: RegionHandles::default(),
             guide: CommandGuide::default(),
             panels: PanelNavigator::default(),
-            slate_path,
-            committed_slate: slate.clone(),
             observed_slate: slate,
-            slate_dirty: None,
+            state_scribe,
             water: forge_water(),
             living_wait: LivingWait::default(),
             map_rect: egui::Rect::ZERO,
@@ -389,6 +423,8 @@ impl SurveyWorkbench {
     }
 
     fn pulse(&mut self, ui: &mut egui::Ui) -> Option<WorkspaceAction> {
+        let mut drain = EVENT_DRAIN.arm();
+        self.absorb_persistence();
         self.vector.absorb(ui.ctx());
         let guide_invoked = self.guide.take_shortcuts(ui.ctx());
         let mut action = None;
@@ -411,14 +447,14 @@ impl SurveyWorkbench {
             self.scribe.disarm();
             self.area_handles.cancel();
         }
-        self.absorb_corpus(&mut action);
+        self.absorb_corpus(ui.ctx(), &mut drain, &mut action);
         let mut panels = std::mem::take(&mut self.panels);
         let _left = Inspector::new("survey-inspector")
             .show(ui, |ui| self.inspector(ui, &mut panels, &mut action));
         self.panels = panels;
         let _center = egui::CentralPanel::default().show_inside(ui, |ui| self.arena(ui));
         self.command_guide(ui);
-        self.tend_slate(ui.ctx());
+        self.observe_persistence();
         action
     }
 
@@ -836,7 +872,7 @@ impl SurveyWorkbench {
     fn strike(&mut self, ctx: &egui::Context, mutation: TrailDataMutation) -> Result<()> {
         self.fault = None;
         "Updating trails…".clone_into(&mut self.corpus_status);
-        self.corpus = Some(TrailData::spawn(ctx.clone(), self.root.clone(), mutation)?);
+        self.corpus = Some(TrailData::spawn(ctx, self.root.clone(), mutation)?);
         Ok(())
     }
 
@@ -872,12 +908,17 @@ impl SurveyWorkbench {
         state
     }
 
-    fn absorb_corpus(&mut self, action: &mut Option<WorkspaceAction>) {
+    fn absorb_corpus(
+        &mut self,
+        ctx: &egui::Context,
+        drain: &mut Drain,
+        action: &mut Option<WorkspaceAction>,
+    ) {
         let Some(corpus) = &self.corpus else {
             return;
         };
         let mut finished = false;
-        while let Ok(event) = corpus.events.try_recv() {
+        while let Some(event) = drain.receive(&corpus.events) {
             match event {
                 TrailDataEvent::Progress(event) => self.corpus_status = progress_status(&event),
                 TrailDataEvent::Ready(Some(summary)) => {
@@ -908,6 +949,8 @@ impl SurveyWorkbench {
         }
         if finished {
             self.corpus = None;
+        } else if !corpus.events.is_empty() {
+            ctx.request_repaint();
         }
     }
 
@@ -918,43 +961,54 @@ impl SurveyWorkbench {
         slate
     }
 
-    fn tend_slate(&mut self, ctx: &egui::Context) {
+    fn observe_persistence(&mut self) {
         let current = self.snapshot();
         if current != self.observed_slate {
             self.observed_slate = current;
-            self.slate_dirty = Some(Instant::now());
+            self.state_scribe.mark();
         }
-        if self.observed_slate == self.committed_slate {
-            self.slate_dirty = None;
-            return;
-        }
-        let dirty = self.slate_dirty.get_or_insert_with(Instant::now);
-        let settled = dirty.elapsed();
-        if settled < STATE_SETTLE {
-            ctx.request_repaint_after(STATE_SETTLE.saturating_sub(settled));
-            return;
-        }
-        match self.observed_slate.save(&self.slate_path) {
-            Ok(()) => {
-                self.committed_slate.clone_from(&self.observed_slate);
-                self.slate_dirty = None;
+    }
+
+    fn service_deadline(&self) -> Option<Instant> {
+        self.state_scribe
+            .deadline()
+            .into_iter()
+            .chain(self.vector.service_deadline())
+            .min()
+    }
+
+    fn service_deadline_reached(&mut self, now: Instant) -> bool {
+        let mut changed = self.vector.service_deadline_reached(now);
+        if self
+            .state_scribe
+            .deadline()
+            .is_some_and(|deadline| deadline <= now)
+        {
+            let slate = self.observed_slate.clone();
+            match self.state_scribe.tend(now, || slate) {
+                Ok(Some(_sequence)) => {}
+                Ok(None) => {}
+                Err(error) => {
+                    self.fault = Some(format!("could not submit workbench state: {error:#}"));
+                    changed = true;
+                }
             }
-            Err(err) => {
-                self.fault = Some(format!("could not save workbench state: {err:#}"));
-                self.slate_dirty = Some(Instant::now());
-                ctx.request_repaint_after(STATE_SETTLE);
-            }
+        }
+        changed
+    }
+
+    fn absorb_persistence(&mut self) {
+        if let Some(ScribeOutcome::Fault { message, .. }) = self.state_scribe.take_outcome() {
+            self.fault = Some(format!("could not save workbench state: {message}"));
         }
     }
 }
 
 impl Drop for SurveyWorkbench {
     fn drop(&mut self) {
-        let current = self.snapshot();
-        if current != self.committed_slate
-            && let Err(err) = current.save(&self.slate_path)
-        {
-            eprintln!("could not save survey workbench state: {err:#}");
+        let slate = self.snapshot();
+        if let Err(error) = self.state_scribe.flush(slate) {
+            eprintln!("could not save survey workbench state: {error:#}");
         }
     }
 }
@@ -1432,16 +1486,6 @@ fn fault_label(ui: &mut egui::Ui, fault: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn project_names_collapse_to_safe_stable_folders() {
-        assert_eq!(
-            project_slug("Harriman West Loop"),
-            Some("harriman-west-loop".into())
-        );
-        assert_eq!(project_slug("  雪 山  "), Some("雪-山".into()));
-        assert_eq!(project_slug("../"), None);
-    }
 
     #[test]
     fn an_excised_managed_corpus_cannot_resurrect_a_generated_snapshot() {

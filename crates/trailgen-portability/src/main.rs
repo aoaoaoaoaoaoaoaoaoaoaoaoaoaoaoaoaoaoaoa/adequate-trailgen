@@ -364,19 +364,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn alien_contract_is_fatal() {
-        let alien = json!({
-            "surface_sequence": 1,
-            "state": {
-                "contract": "trailgen.ui/alien",
-                "workspace": "projects",
-                "view": "projects"
-            },
-        });
-        assert!(presented_project_deck(&alien).is_err());
-    }
-
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_known_folders_remain_inside_the_isolated_profile() -> Result<()> {

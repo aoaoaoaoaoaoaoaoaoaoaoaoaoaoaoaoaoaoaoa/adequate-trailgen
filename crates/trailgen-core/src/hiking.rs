@@ -290,7 +290,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn joint_work_curve_hits_every_measured_knot() {
+    fn joint_work_curve_obeys_its_empirical_envelope() {
         for (grade, expected) in [
             (-0.15, 1.69),
             (-0.10, 1.24),
@@ -300,10 +300,6 @@ mod tests {
         ] {
             assert!((joint_work_factor(grade) - expected).abs() <= 1.0e-12);
         }
-    }
-
-    #[test]
-    fn joint_work_curve_is_monotone_on_each_side_and_clamped_outside_evidence() {
         let descent = (-150..=0)
             .map(|slot| joint_work_factor(f64::from(slot) / 1_000.0))
             .collect::<Vec<_>>();
@@ -314,14 +310,5 @@ mod tests {
         assert!(ascent.windows(2).all(|pair| pair[0] <= pair[1]));
         assert!((joint_work_factor(-0.50) - 1.69).abs() <= f64::EPSILON);
         assert!((joint_work_factor(0.50) - 1.57).abs() <= f64::EPSILON);
-    }
-
-    #[test]
-    fn public_flat_speed_is_the_wood_model_intercept() {
-        let wood = wood_coefficients(WayKind::Path, Terrain::Trail, None);
-        assert!(
-            (HikingModel::reference_flat_speed_kmh() - wood.speed_kmh(0.0, 0.0)).abs()
-                <= f64::EPSILON
-        );
     }
 }

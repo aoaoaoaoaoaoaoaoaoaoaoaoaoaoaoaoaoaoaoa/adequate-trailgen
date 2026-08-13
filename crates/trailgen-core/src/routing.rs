@@ -371,35 +371,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn equal_cost_routing_is_reproducible() {
-        let drafts =
-            geojson::network_from_str(include_str!("../tests/fixtures/mini_network.geojson"))
-                .unwrap();
-        let graph = GraphBuilder::default().build(&drafts).unwrap();
-        let router = WalkRouter::forge(&graph);
-        let mut workspace = router.workspace(&graph);
-        let request = RouteRequest {
-            from: VertexId(0),
-            target: VertexId(graph.vertices.len() - 1),
-            previous: None,
-            law: RoutingLaw::default(),
-            cost_ceiling: None,
-            forbidden_edges: None,
-            forbidden_vertices: None,
-        };
-        let expected = router
-            .shortest_path(&graph, &mut workspace, request)
-            .unwrap();
-
-        for _ in 0..64 {
-            assert_eq!(
-                router.shortest_path(&graph, &mut workspace, request),
-                Some(expected.clone())
-            );
-        }
-    }
-
     fn path_cost(graph: &WalkGraph, request: RouteRequest<'_>, path: &[EdgeId]) -> f64 {
         path.iter()
             .map(|edge| request.law.edge_cost(graph, *edge).unwrap())

@@ -124,23 +124,19 @@ mod tests {
 
         assert_eq!(fs::read(&target)?, b"second");
         assert_eq!(fs::read_dir(temp.path())?.count(), 1);
-        Ok(())
-    }
-
-    #[test]
-    fn staging_identity_cannot_claim_an_unrelated_or_named_backup() {
-        let target = Path::new("basemap.pmtiles");
+        let archive = Path::new("basemap.pmtiles");
         assert!(owns_staging_path(
-            target,
+            archive,
             Path::new("basemap.pmtiles.atomic-a71B.partial")
         ));
         assert!(!owns_staging_path(
-            target,
+            archive,
             Path::new("dem.pmtiles.atomic-a71B.partial")
         ));
         assert!(!owns_staging_path(
-            target,
+            archive,
             Path::new("basemap.pmtiles.backup.partial")
         ));
+        Ok(())
     }
 }
