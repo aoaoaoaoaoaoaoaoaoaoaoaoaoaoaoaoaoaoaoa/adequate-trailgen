@@ -1,4 +1,4 @@
-pub use dwemer_poolrooms::chrome::*;
+pub use brass_poolrooms::chrome::*;
 use egui::{RichText, Stroke, Vec2};
 
 pub fn command_button(text: impl Into<String>, selected: bool) -> egui::Button<'static> {

@@ -1329,7 +1329,7 @@ impl TrailMapGpu {
             label: Some("trail-map"),
             source: wgpu::ShaderSource::Wgsl(WGSL.into()),
         });
-        let buffers = [trail_layout(), tile_layout()];
+        let buffers = [Some(trail_layout()), Some(tile_layout())];
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("trail-map"),
             layout: Some(&pipeline_layout),

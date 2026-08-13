@@ -24,8 +24,8 @@ use crate::{
     vector_field::VectorField,
 };
 use anyhow::{Context as _, Result};
+use brass_poolrooms::water::{Domain, Frame as WaterFrame, Surface, Wetness};
 use crossbeam_channel::{Receiver, Sender, bounded};
-use dwemer_poolrooms::water::{Domain, Frame as WaterFrame, Surface, Wetness};
 use egui::{Color32, RichText, Stroke, vec2};
 use eternalist_apps::{
     Inspector, LivingWait, NativeWake, ScribeOutcome, SettledScribe,
@@ -5825,11 +5825,13 @@ mod tests {
     fn rename_shortcuts_do_not_reenter_egui_input_lock() {
         let context = egui::Context::default();
         let mut name = "Harriman South Lows".to_owned();
-        let _output = context.run_ui(egui::RawInput::default(), |ui| {
-            let edit = ui.text_edit_singleline(&mut name);
-            edit.request_focus();
-            assert_eq!(rename_shortcuts(ui, &edit), (false, false));
-        });
+        context
+            .run_ui(egui::RawInput::default(), |ui| {
+                let edit = ui.text_edit_singleline(&mut name);
+                edit.request_focus();
+                assert_eq!(rename_shortcuts(ui, &edit), (false, false));
+            })
+            .drop_without_applying_deltas();
 
         let mut enter = egui::RawInput::default();
         enter.events.push(egui::Event::Key {
@@ -5839,10 +5841,12 @@ mod tests {
             repeat: false,
             modifiers: egui::Modifiers::NONE,
         });
-        let _output = context.run_ui(enter, |ui| {
-            let edit = ui.text_edit_singleline(&mut name);
-            assert_eq!(rename_shortcuts(ui, &edit), (true, false));
-        });
+        context
+            .run_ui(enter, |ui| {
+                let edit = ui.text_edit_singleline(&mut name);
+                assert_eq!(rename_shortcuts(ui, &edit), (true, false));
+            })
+            .drop_without_applying_deltas();
     }
 
     #[test]

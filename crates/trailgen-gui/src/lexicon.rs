@@ -1,6 +1,9 @@
 use crate::{chrome, witness};
 use egui::{CursorIcon, Response, RichText, Ui};
 
+const GLOSS_TITLE_SIZE: f32 = 12.0;
+const GLOSS_BODY_SIZE: f32 = 12.0;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum Term {
@@ -60,12 +63,12 @@ impl Glosses {
     pub fn card(self, ui: &mut Ui) {
         let _column = ui.vertical(|ui| {
             for term in Term::ALL.into_iter().filter(|term| self.contains(*term)) {
-                let _title = ui.label(chrome::eyebrow(term.title()));
+                let _title = ui.label(chrome::eyebrow(term.title()).size(GLOSS_TITLE_SIZE));
                 let _definition = ui.add(
                     egui::Label::new(
                         RichText::new(term.definition())
                             .monospace()
-                            .size(11.0)
+                            .size(GLOSS_BODY_SIZE)
                             .color(chrome::TEXT),
                     )
                     .wrap(),

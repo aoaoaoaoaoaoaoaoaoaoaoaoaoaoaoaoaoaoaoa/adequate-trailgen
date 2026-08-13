@@ -31,7 +31,7 @@ thin scheduler over app-owned, independently runnable evidence units.
 
 Before extracting lifecycle, application primitives, physical controls, or
 tester machinery, load the `$eternalist-apps` skill and inspect the current
-Eternalist Apps, Dwemer Poolrooms, and egui-tester contracts. Do not manufacture
+Eternalist Apps, Brass Poolrooms, and egui-tester contracts. Do not manufacture
 shared machinery before its common law has been proved.
 
 The native host and optional inspector live in the pinned `eternalist-apps`

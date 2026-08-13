@@ -547,7 +547,7 @@ fn pipeline(
     shader: &wgpu::ShaderModule,
     law: PipelineLaw,
 ) -> wgpu::RenderPipeline {
-    let buffers = [law.vertex, tile_layout()];
+    let buffers = [Some(law.vertex), Some(tile_layout())];
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(law.label),
         layout: Some(layout),

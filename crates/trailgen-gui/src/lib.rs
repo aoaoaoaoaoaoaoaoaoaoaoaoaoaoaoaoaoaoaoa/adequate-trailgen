@@ -63,7 +63,7 @@ pub fn run(intent: ProjectIntent, offline: bool) -> Result<()> {
         tracing::info_span!(target: "eternalist::startup", "application.bootstrap").entered();
     let habitat = habitat::Habitat::discover()?;
     let ctx = egui::Context::default();
-    dwemer_poolrooms::chrome::install(&ctx);
+    brass_poolrooms::chrome::install(&ctx);
     let app = projects::Workbench::launch(&ctx, habitat, intent, offline);
     drop(bootstrap);
     let result = host::run(ctx, app);

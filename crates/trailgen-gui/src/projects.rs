@@ -14,7 +14,7 @@ use crate::{
     vector_field::VectorField,
 };
 use anyhow::{Context as _, Result, ensure};
-use dwemer_poolrooms::water::{Frame as WaterFrame, Surface};
+use brass_poolrooms::water::{Frame as WaterFrame, Surface};
 use egui::{Color32, RichText, Stroke, vec2};
 use eternalist_apps::{
     Inspector, LivingWait, ScribeOutcome, SettledScribe,
@@ -751,7 +751,7 @@ impl SurveyWorkbench {
             self.fit_regions = false;
         }
         self.water
-            .begin(dwemer_poolrooms::water::Domain::shelf(rect));
+            .begin(brass_poolrooms::water::Domain::shelf(rect));
         let handles_enabled = self.corpus.is_none() && !self.scribe.active();
         let resize_event =
             self.area_handles

@@ -89,6 +89,22 @@ fn exercise_command_guide(
     if let Some(artifacts) = artifacts {
         visible.save_png(artifacts.join("story-1-command-guide.png"))?;
     }
+    let map_before_scroll = opened
+        .value()
+        .state
+        .map
+        .ok_or_else(|| crate::harness::verdict("command guide obscured the map witness"))?;
+    let blocked_scroll = story
+        .wheel(card.center(), -4, Wheel::default())?
+        .next_frame()?
+        .into_value();
+    demand(
+        blocked_scroll.state.guide_open && blocked_scroll.state.map == Some(map_before_scroll),
+        format!(
+            "guide scroll escaped into the map: before {map_before_scroll:?}, after {:?}",
+            blocked_scroll.state.map
+        ),
+    )?;
     let blocked = story
         .chord(Modifiers::ALT, Key::Character('p'))?
         .next_frame()?

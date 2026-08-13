@@ -1070,140 +1070,144 @@ mod tests {
     #[test]
     fn navigation_history_cannot_alter_a_composition() {
         let context = egui::Context::default();
-        let _output = context.run_ui(egui::RawInput::default(), |ui| {
-            let painter = ui.painter().clone();
-            let home = map::Viewport {
-                center: [0.5, 0.5],
-                zoom: 11.0,
-            };
-            let first = compose(
-                &painter,
-                home,
-                VIEW,
-                [PointLabel {
-                    world: home.center,
-                    text: "FIXED",
-                    kind: basemap::LabelKind::Place,
-                    rank: 500,
-                    size: 12.0,
-                    onset_zoom: 0.0,
-                }],
-                std::iter::empty(),
-                std::iter::empty(),
-            );
-            assert_eq!(first.labels.len(), 1);
+        context
+            .run_ui(egui::RawInput::default(), |ui| {
+                let painter = ui.painter().clone();
+                let home = map::Viewport {
+                    center: [0.5, 0.5],
+                    zoom: 11.0,
+                };
+                let first = compose(
+                    &painter,
+                    home,
+                    VIEW,
+                    [PointLabel {
+                        world: home.center,
+                        text: "FIXED",
+                        kind: basemap::LabelKind::Place,
+                        rank: 500,
+                        size: 12.0,
+                        onset_zoom: 0.0,
+                    }],
+                    std::iter::empty(),
+                    std::iter::empty(),
+                );
+                assert_eq!(first.labels.len(), 1);
 
-            let away = map::Viewport {
-                center: [home.center[0] + 0.05, home.center[1]],
-                ..home
-            };
-            let _interlude = compose(
-                &painter,
-                away,
-                VIEW,
-                [PointLabel {
-                    world: away.center,
-                    text: "FIXED",
-                    kind: basemap::LabelKind::Place,
-                    rank: 500,
-                    size: 12.0,
-                    onset_zoom: 0.0,
-                }],
-                std::iter::empty(),
-                std::iter::empty(),
-            );
+                let away = map::Viewport {
+                    center: [home.center[0] + 0.05, home.center[1]],
+                    ..home
+                };
+                let _interlude = compose(
+                    &painter,
+                    away,
+                    VIEW,
+                    [PointLabel {
+                        world: away.center,
+                        text: "FIXED",
+                        kind: basemap::LabelKind::Place,
+                        rank: 500,
+                        size: 12.0,
+                        onset_zoom: 0.0,
+                    }],
+                    std::iter::empty(),
+                    std::iter::empty(),
+                );
 
-            let restored = compose(
-                &painter,
-                home,
-                VIEW,
-                [PointLabel {
-                    world: home.center,
-                    text: "FIXED",
-                    kind: basemap::LabelKind::Place,
-                    rank: 500,
-                    size: 12.0,
-                    onset_zoom: 0.0,
-                }],
-                std::iter::empty(),
-                std::iter::empty(),
-            );
-            assert_eq!(restored.labels.len(), 1);
-            assert_eq!(restored.labels[0].anchor, first.labels[0].anchor);
-        });
+                let restored = compose(
+                    &painter,
+                    home,
+                    VIEW,
+                    [PointLabel {
+                        world: home.center,
+                        text: "FIXED",
+                        kind: basemap::LabelKind::Place,
+                        rank: 500,
+                        size: 12.0,
+                        onset_zoom: 0.0,
+                    }],
+                    std::iter::empty(),
+                    std::iter::empty(),
+                );
+                assert_eq!(restored.labels.len(), 1);
+                assert_eq!(restored.labels[0].anchor, first.labels[0].anchor);
+            })
+            .drop_without_applying_deltas();
     }
 
     #[test]
     fn temporal_ledger_retains_an_established_label_against_new_priority() {
         let context = egui::Context::default();
-        let _output = context.run_ui(egui::RawInput::default(), |ui| {
-            let painter = ui.painter().clone();
-            let camera = map::Viewport {
-                center: [0.5, 0.5],
-                zoom: 11.0,
-            };
-            let path = [
-                map::world_at(camera, VIEW, egui::pos2(100.0, 300.0)),
-                map::world_at(camera, VIEW, egui::pos2(700.0, 300.0)),
-            ];
-            let old = LineLabel {
-                path: &path,
-                text: "OLD",
-                rank: 900,
-                size: 12.0,
-                onset_zoom: 0.0,
-                ink: Color32::BLACK,
-                halo: None,
-                repeatable: true,
-                break_line: true,
-            };
-            let mut engine = Engine::default();
-            let frame = map::MapFramePlan::forge(camera, VIEW);
-            let scene = |epoch| Reconciliation {
-                frame,
-                cartography: map::CartographicPlan {
-                    zoom: frame.zoom,
-                    epoch,
-                    moving: false,
-                },
-                stamp: Stamp {
-                    epoch,
-                    presentation: 0,
-                    relief: 0,
-                },
-            };
-            let _first = engine.reconcile(
-                &painter,
-                scene(0),
-                std::iter::empty(),
-                [old],
-                std::iter::empty(),
-            );
-            assert_eq!(engine.labels.len(), 1);
-            assert_eq!(engine.labels[0].label.text, "OLD");
-            let _second = engine.reconcile(
-                &painter,
-                scene(1),
-                [PointLabel {
-                    world: camera.center,
-                    text: "NEW BUT STRONGER",
-                    kind: basemap::LabelKind::Place,
-                    rank: 1,
+        context
+            .run_ui(egui::RawInput::default(), |ui| {
+                let painter = ui.painter().clone();
+                let camera = map::Viewport {
+                    center: [0.5, 0.5],
+                    zoom: 11.0,
+                };
+                let path = [
+                    map::world_at(camera, VIEW, egui::pos2(100.0, 300.0)),
+                    map::world_at(camera, VIEW, egui::pos2(700.0, 300.0)),
+                ];
+                let old = LineLabel {
+                    path: &path,
+                    text: "OLD",
+                    rank: 900,
                     size: 12.0,
                     onset_zoom: 0.0,
-                }],
-                [old],
-                std::iter::empty(),
-            );
-            assert_eq!(
-                engine
-                    .labels
-                    .iter()
-                    .filter(|resident| resident.leaving.is_none())
-                    .map(|resident| resident.label.text.as_str())
-                    .collect::<Vec<_>>(),
-                ["OLD"]
-            );
-        });
+                    ink: Color32::BLACK,
+                    halo: None,
+                    repeatable: true,
+                    break_line: true,
+                };
+                let mut engine = Engine::default();
+                let frame = map::MapFramePlan::forge(camera, VIEW);
+                let scene = |epoch| Reconciliation {
+                    frame,
+                    cartography: map::CartographicPlan {
+                        zoom: frame.zoom,
+                        epoch,
+                        moving: false,
+                    },
+                    stamp: Stamp {
+                        epoch,
+                        presentation: 0,
+                        relief: 0,
+                    },
+                };
+                let _first = engine.reconcile(
+                    &painter,
+                    scene(0),
+                    std::iter::empty(),
+                    [old],
+                    std::iter::empty(),
+                );
+                assert_eq!(engine.labels.len(), 1);
+                assert_eq!(engine.labels[0].label.text, "OLD");
+                let _second = engine.reconcile(
+                    &painter,
+                    scene(1),
+                    [PointLabel {
+                        world: camera.center,
+                        text: "NEW BUT STRONGER",
+                        kind: basemap::LabelKind::Place,
+                        rank: 1,
+                        size: 12.0,
+                        onset_zoom: 0.0,
+                    }],
+                    [old],
+                    std::iter::empty(),
+                );
+                assert_eq!(
+                    engine
+                        .labels
+                        .iter()
+                        .filter(|resident| resident.leaving.is_none())
+                        .map(|resident| resident.label.text.as_str())
+                        .collect::<Vec<_>>(),
+                    ["OLD"]
+                );
+            })
+            .drop_without_applying_deltas();
     }
 }

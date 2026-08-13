@@ -35,7 +35,7 @@ impl NativeApp for Workbench {
         ctx: &egui::Context,
         pixels_per_point: f32,
         tooltip_rects: &[egui::Rect],
-    ) -> dwemer_poolrooms::water::Frame {
+    ) -> brass_poolrooms::water::Frame {
         self.water_frame(ctx, pixels_per_point, tooltip_rects)
     }
 
