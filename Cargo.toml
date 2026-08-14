@@ -53,18 +53,18 @@ toml = "1.1.4"
 tracing = "0.1.44"
 tracing-chrome = "0.7.2"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry"] }
-trailgen-core = { path = "crates/trailgen-core", version = "0.3.4" }
-trailgen-contract = { path = "crates/trailgen-contract", version = "0.3.4" }
-trailgen-data = { path = "crates/trailgen-data", version = "0.3.4" }
-trailgen-gui = { path = "crates/trailgen-gui", version = "0.3.4" }
+trailgen-core = { path = "crates/trailgen-core", version = "0.3.5" }
+trailgen-contract = { path = "crates/trailgen-contract", version = "0.3.5" }
+trailgen-data = { path = "crates/trailgen-data", version = "0.3.5" }
+trailgen-gui = { path = "crates/trailgen-gui", version = "0.3.5" }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 zstd = "0.13.3"
 
 [workspace.dependencies.egui-tester]
-version = "0.9.4"
+version = "0.9.5"
 
 [workspace.dependencies.egui-tester-witness]
-version = "0.9.4"
+version = "0.9.5"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

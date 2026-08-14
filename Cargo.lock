@@ -787,9 +787,9 @@ dependencies = [
 
 [[package]]
 name = "egui-tester"
-version = "0.9.4"
+version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6205e1a05a02ebfc4ebb681decb7bea12e3f5456b8f56fe37c7287353616b1ae"
+checksum = "d70091e4f95d4b523c0aa04a1866a756e34872464bbe148129a3f3102b0edefd"
 dependencies = [
  "bitflags 2.13.1",
  "egui-tester-witness",
@@ -805,9 +805,9 @@ dependencies = [
 
 [[package]]
 name = "egui-tester-witness"
-version = "0.9.4"
+version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "697f43a121da0d9558dab5e288a35ac3e0977546f269b76b85a58726ec5cac98"
+checksum = "3294d25a12f30e5f8183b01e6813662f27fd796794ba9b426c08edd302e76ab3"
 dependencies = [
  "egui",
  "rustix 1.1.4",
@@ -3760,7 +3760,7 @@ dependencies = [
 
 [[package]]
 name = "trailgen"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "anyhow",
  "clap",
@@ -3769,7 +3769,7 @@ dependencies = [
 
 [[package]]
 name = "trailgen-acceptance"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "egui-tester",
  "fast-mvt",
@@ -3786,14 +3786,14 @@ dependencies = [
 
 [[package]]
 name = "trailgen-contract"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "trailgen-core"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "num-traits",
  "osmpbfreader",
@@ -3813,7 +3813,7 @@ dependencies = [
 
 [[package]]
 name = "trailgen-data"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "anyhow",
  "png",
@@ -3829,7 +3829,7 @@ dependencies = [
 
 [[package]]
 name = "trailgen-gui"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "anyhow",
  "brass_poolrooms",
