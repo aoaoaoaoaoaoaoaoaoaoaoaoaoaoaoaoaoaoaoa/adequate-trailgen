@@ -1,14 +1,34 @@
-use crate::{projects::Workbench, trail_map::TrailMapGpu, vector_map::VectorMapGpu};
+use crate::{
+    ProjectIntent, habitat::Habitat, projects::Workbench, trail_map::TrailMapGpu,
+    vector_map::VectorMapGpu,
+};
 use anyhow::Result;
-use eternalist_apps::{NativeApp, WindowSpec};
+use eternalist_apps::{CrashProduct, CrashReportSpec, NativeApp, WindowSpec};
 use std::time::Instant;
 
-pub fn run(ctx: egui::Context, app: Workbench) -> Result<()> {
-    eternalist_apps::run(ctx, app)
+pub fn run(ctx: egui::Context, intent: ProjectIntent, offline: bool) -> Result<()> {
+    eternalist_apps::run_with(ctx, |ctx| {
+        let bootstrap =
+            tracing::info_span!(target: "eternalist::startup", "application.bootstrap").entered();
+        let habitat = Habitat::discover()?;
+        let app = Workbench::launch(ctx, habitat, intent, offline);
+        drop(bootstrap);
+        Ok(app)
+    })
 }
 
 impl NativeApp for Workbench {
     const WINDOW: WindowSpec = WindowSpec::new("trailgen · trail workbench", [1_440.0, 920.0]);
+
+    fn crash_reports() -> Option<CrashReportSpec> {
+        Habitat::discover().ok().map(|habitat| {
+            CrashReportSpec::new(
+                CrashProduct::Trailgen,
+                env!("CARGO_PKG_VERSION"),
+                habitat.state_dir(),
+            )
+        })
+    }
 
     fn window_title(&self) -> String {
         Self::window_title(self)

@@ -107,6 +107,10 @@ impl Habitat {
         self.config.join(PREFERENCES)
     }
 
+    pub fn state_dir(&self) -> &Path {
+        &self.state
+    }
+
     pub fn slate_path(&self, root: &Path) -> PathBuf {
         let root = root.canonicalize().unwrap_or_else(|_| root.to_owned());
         let digest = Sha256::digest(root.to_string_lossy().as_bytes());

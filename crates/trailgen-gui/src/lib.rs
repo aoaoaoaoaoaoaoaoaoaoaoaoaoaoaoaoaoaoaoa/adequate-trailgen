@@ -59,14 +59,9 @@ pub enum ProjectIntent {
 /// Resume or explicitly open a trailgen project in the native workbench.
 pub fn run(intent: ProjectIntent, offline: bool) -> Result<()> {
     let trace = eternalist_apps::TraceGuard::arm()?;
-    let bootstrap =
-        tracing::info_span!(target: "eternalist::startup", "application.bootstrap").entered();
-    let habitat = habitat::Habitat::discover()?;
     let ctx = egui::Context::default();
     brass_poolrooms::chrome::install(&ctx);
-    let app = projects::Workbench::launch(&ctx, habitat, intent, offline);
-    drop(bootstrap);
-    let result = host::run(ctx, app);
+    let result = host::run(ctx, intent, offline);
     trace.flush();
     result
 }
