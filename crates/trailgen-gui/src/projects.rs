@@ -449,9 +449,10 @@ impl SurveyWorkbench {
         }
         self.absorb_corpus(ui.ctx(), &mut drain, &mut action);
         let mut panels = std::mem::take(&mut self.panels);
-        let _left = Inspector::new("survey-inspector")
+        let inspector = Inspector::new("survey-inspector")
             .show(ui, |ui| self.inspector(ui, &mut panels, &mut action));
         self.panels = panels;
+        inspector.agitate(&mut self.water);
         let _center = egui::CentralPanel::default().show(ui, |ui| self.arena(ui));
         self.command_guide(ui);
         self.observe_persistence();

@@ -1174,7 +1174,7 @@ impl TrailApp {
         );
         self.panels = panels;
         self.inspector_scroll = inspector.scroll_offset;
-        self.water.heave(ui.ctx(), inspector.scroll_offset);
+        inspector.agitate(&mut self.water);
         let _center = product_phase!(
             "pulse.arena",
             egui::CentralPanel::default().show(ui, |ui| self.arena(ui))
@@ -4032,7 +4032,7 @@ impl TrailApp {
             let hardware = chrome::ForgePin::new(anchor).size(chrome::MechanismSize::Medium);
             let hot = hover_pointer.is_some_and(|pointer| hardware.grip().contains(pointer));
             let hardware = hardware.inscription(if excising {
-                "×".to_owned()
+                chrome::Symbol::Remove.glyph().to_string()
             } else {
                 slot.to_string()
             });

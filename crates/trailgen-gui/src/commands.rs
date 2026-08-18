@@ -1,7 +1,7 @@
 use std::sync::OnceLock;
 
 use eternalist_apps::{
-    command_guide::{GuideGesture, GuideSection, PANEL_IDIOMS},
+    command_guide::{GuideGesture, GuideSection},
     commands::{
         CommandCanon, CommandScope, CommandSpec, Shortcut, ShortcutKey, ShortcutModifiers,
         TextFocusPolicy,
@@ -218,7 +218,34 @@ const FOCUS_ARROWS: [Shortcut; 2] = [
     Shortcut::new(ShortcutModifiers::NONE, ShortcutKey::ArrowLeft),
     Shortcut::new(ShortcutModifiers::NONE, ShortcutKey::ArrowRight),
 ];
+const TOGGLE_SIDEBAR: [Shortcut; 1] = [Shortcut::new(
+    ShortcutModifiers::NONE,
+    ShortcutKey::Function(9),
+)];
+const NEXT_SIDEBAR_SECTION: [Shortcut; 1] =
+    [Shortcut::new(ShortcutModifiers::CONTROL, ShortcutKey::Tab)];
+const PREVIOUS_SIDEBAR_SECTION: [Shortcut; 1] = [Shortcut::new(
+    ShortcutModifiers::CONTROL.plus(ShortcutModifiers::SHIFT),
+    ShortcutKey::Tab,
+)];
 
+const SIDEBAR_GESTURES: [GuideGesture; 3] = [
+    GuideGesture::new(
+        "Show or hide sidebar",
+        "Conceals or reveals the project controls.",
+        &TOGGLE_SIDEBAR,
+    ),
+    GuideGesture::new(
+        "Next sidebar section",
+        "Moves focus to the next control section.",
+        &NEXT_SIDEBAR_SECTION,
+    ),
+    GuideGesture::new(
+        "Previous sidebar section",
+        "Moves focus to the previous control section.",
+        &PREVIOUS_SIDEBAR_SECTION,
+    ),
+];
 const PROJECT_GESTURES: [GuideGesture; 2] = [
     GuideGesture::new(
         "Submit focused field",
@@ -330,6 +357,7 @@ const PROFILE_GESTURES: [GuideGesture; 2] = [
 ];
 
 const PROJECT_IDIOM: GuideSection = GuideSection::new("PROJECT DECK", &PROJECT_GESTURES);
+const SIDEBAR_IDIOM: GuideSection = GuideSection::new("SIDEBAR", &SIDEBAR_GESTURES);
 const MAP_IDIOM: GuideSection = GuideSection::new("MAP", &MAP_GESTURES);
 const SURVEY_IDIOM: GuideSection = GuideSection::new("MAP AREAS", &SURVEY_GESTURES);
 const FINDER_IDIOM: GuideSection = GuideSection::new("FINDER", &FINDER_GESTURES);
@@ -338,17 +366,18 @@ const EDITOR_IDIOM: GuideSection = GuideSection::new("TRAIL EDITOR", &EDITOR_GES
 const PROFILE_IDIOM: GuideSection = GuideSection::new("ELEVATION PROFILE", &PROFILE_GESTURES);
 
 pub const PROJECT_IDIOMS: [GuideSection; 1] = [PROJECT_IDIOM];
-pub const SURVEY_IDIOMS: [GuideSection; 3] = [PANEL_IDIOMS, MAP_IDIOM, SURVEY_IDIOM];
-pub const FINDER_IDIOMS: [GuideSection; 3] = [PANEL_IDIOMS, MAP_IDIOM, FINDER_IDIOM];
+pub const SURVEY_IDIOMS: [GuideSection; 3] = [SIDEBAR_IDIOM, MAP_IDIOM, SURVEY_IDIOM];
+pub const FINDER_IDIOMS: [GuideSection; 3] = [SIDEBAR_IDIOM, MAP_IDIOM, FINDER_IDIOM];
 pub const CANDIDATE_IDIOMS: [GuideSection; 5] = [
-    PANEL_IDIOMS,
+    SIDEBAR_IDIOM,
     MAP_IDIOM,
     FINDER_IDIOM,
     FOCUS_IDIOM,
     PROFILE_IDIOM,
 ];
-pub const SAVED_IDIOMS: [GuideSection; 4] = [PANEL_IDIOMS, MAP_IDIOM, FOCUS_IDIOM, PROFILE_IDIOM];
-pub const EDITOR_IDIOMS: [GuideSection; 4] = [PANEL_IDIOMS, MAP_IDIOM, EDITOR_IDIOM, PROFILE_IDIOM];
+pub const SAVED_IDIOMS: [GuideSection; 4] = [SIDEBAR_IDIOM, MAP_IDIOM, FOCUS_IDIOM, PROFILE_IDIOM];
+pub const EDITOR_IDIOMS: [GuideSection; 4] =
+    [SIDEBAR_IDIOM, MAP_IDIOM, EDITOR_IDIOM, PROFILE_IDIOM];
 
 pub const fn scope_name(context: Context) -> &'static str {
     match context {
