@@ -46,7 +46,7 @@ const FIND_TRAILS: [Shortcut; 1] = [Shortcut::new(
 )];
 const RENAME: [Shortcut; 1] = [Shortcut::new(
     ShortcutModifiers::NONE,
-    ShortcutKey::Function(2),
+    ShortcutKey::Function(3),
 )];
 const UNDO: [Shortcut; 1] = [Shortcut::primary('Z')];
 const REDO: [Shortcut; 2] = [

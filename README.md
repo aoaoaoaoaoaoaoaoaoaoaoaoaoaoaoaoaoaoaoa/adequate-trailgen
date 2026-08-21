@@ -44,6 +44,12 @@ inside the active inspector panel; physical `Control+Tab` and
 `Control+Shift+Tab` move between panels on every platform. Primary shortcuts
 use `Command` on macOS and `Control` elsewhere.
 
+`F2` or the platform primary modifier plus comma opens the app-wide Settings
+sheet from every workspace. Base Pace appears there and beside the finder work
+it governs. Trailgen rejects unknown configuration keys, leaves an invalid
+file untouched, and requires an explicit reload after repair. `F3` begins the
+focused trail's inline rename.
+
 Trailgen declares typed commands once. The same declaration routes their
 accelerators, supplies button labels and mnemonic underlines, and populates the
 guide with current availability and refusal reasons. Map gestures and other

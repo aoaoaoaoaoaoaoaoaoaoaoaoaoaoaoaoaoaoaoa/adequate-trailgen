@@ -76,7 +76,7 @@ The Library is one projection of the project’s canonical saved-trail store, no
 a second collection. Hovering a Library row exposes its prepared miniature and
 temporarily previews that trail on the map. Clicking enters `Focus(Saved)`.
 The Library’s Rename action and the pencil beside a focused trail’s name open
-the same inline rename transaction; `F2` is its keyboard entrance. Renaming
+the same inline rename transaction; `F3` is its keyboard entrance. Renaming
 changes metadata in place; deleting removes the canonical trail. Neither
 operation changes route identity or transient Results.
 The `↥` control beside a Library name exports that exact durable trail as GPX.
@@ -103,11 +103,13 @@ they may not maintain parallel shortcut prose. The canon exposes effective
 bindings as the future custom-keymap seam, so persisted remapping can replace
 defaults without changing application consequences or help rendering.
 
-The command guide is the top modal layer. `F1` always toggles it; `?` defers to
-focused text entry. While open, it suspends command routing and target-relative
-keys, and `Escape` closes only the guide. No command may bleed through the
-opening or closing stroke. Rename fields and other editors retain ordinary text
-ownership according to each command's declared text-focus policy.
+The command guide and Settings sheet are top modal layers. `F1` always toggles
+the guide; `?` defers to focused text entry. `F2` or the platform primary
+modifier plus comma toggles Settings from every workspace. While either is
+open, it suspends command routing and target-relative keys, and `Escape` closes
+only the top layer. No command may bleed through an opening or closing stroke.
+Rename fields and other editors retain ordinary text ownership according to
+each command's declared text-focus policy.
 
 The inspector has one active logical panel. Pointer engagement makes a panel
 active. `Tab` and `Shift+Tab` cycle only through that panel, including its
@@ -262,9 +264,11 @@ Search intent is geographic and graph-independent: trailhead, boundary,
 distance and moving-time windows, climb window, lower-limb-load target, shape,
 and segment edicts. Graph vertex IDs and solver frontier controls never enter
 durable UI state.
-XDG configuration owns app-wide Base Pace. Stored route metrics remain the
-population Wood estimate; GUI moving-time readouts and time-window constraints
-are projections through Base Pace. XDG state owns the base Browse viewport,
+XDG configuration owns app-wide Base Pace through one strict typed ledger.
+Unknown keys and invalid values block mutation without rewriting the file;
+Settings names the fault and offers explicit reload after repair. Stored route
+metrics remain the population Wood estimate; GUI moving-time readouts and
+time-window constraints are projections through Base Pace. XDG state owns the base Browse viewport,
 result sorting, inspector position,
 section shutters, trail-color projection, and an unfinished `Edit(New)` design
 once it has at least one pin. The manual draft contains only its committed

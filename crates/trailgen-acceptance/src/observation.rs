@@ -18,6 +18,7 @@ pub struct Observation {
     pub last_exported: Option<String>,
     pub candidates: usize,
     pub base_pace_kmh: Option<f64>,
+    pub settings: Settings,
     pub map: Option<MapState>,
     pub areas: Option<AreaState>,
     pub civic: Option<CivicState>,
@@ -25,6 +26,13 @@ pub struct Observation {
     pub search: Option<SearchState>,
     pub survey: Option<SurveyState>,
     pub profile: Option<ProfileState>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Settings {
+    pub open: bool,
+    pub fault: bool,
+    pub settled: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
@@ -378,6 +386,24 @@ pub mod shows {
 
     pub fn command_guide(active: bool) -> Condition<Observation> {
         field("command guide", |state: &Observation| state.guide_open).eq(active)
+    }
+
+    pub fn settings(active: bool) -> Condition<Observation> {
+        Condition::new(
+            if active {
+                "valid settings sheet open"
+            } else {
+                "settings sheet closed"
+            },
+            move |state: &Observation| state.settings.open == active && !state.settings.fault,
+        )
+    }
+
+    pub fn configuration_settled() -> Condition<Observation> {
+        field("configuration settlement", |state: &Observation| {
+            state.settings.settled
+        })
+        .eq(true)
     }
 
     pub fn editor_origin(expected: EditorOrigin) -> Condition<Observation> {
