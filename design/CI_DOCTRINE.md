@@ -59,6 +59,7 @@ SmartScreen friction. Uninstall preserves projects and application state.
 Every release commit and annotated tag uses the Eternalist identity and
 YubiKey-backed signing key. `scripts/release VERSION publish` publishes the
 five-crate Cargo graph in dependency order. A version tag lets Foundry rejudge
-the same support graph and publish the DMG, NSIS installer, checksums, and
-support manifest. The public project ledger must name only those coordinates
-and artifact URLs.
+the same support graph, but Foundry cannot publish the DMG, NSIS installer,
+checksums, and support manifest until the exact `trailgen` version is visible
+on crates.io. The public project ledger must name only those coordinates and
+artifact URLs.
