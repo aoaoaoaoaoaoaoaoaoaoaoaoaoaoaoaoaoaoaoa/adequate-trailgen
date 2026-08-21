@@ -863,23 +863,18 @@ fn configure_search(story: &mut TrailStory<'_, '_>) -> Result<()> {
 fn exercise_calibration(story: &mut TrailStory<'_, '_>) -> Result<()> {
     let _opened = story.key(Key::Function(2))?.until(shows::settings(true))?;
     let _aimed = story
-        .point(
-            "eternalist.settings.base_pace_kmh",
-            Motion::default(),
-        )?
+        .point("eternalist.settings.base_pace_kmh", Motion::default())?
         .next_frame()?;
     for _ in 0..12 {
         let control = story.anchor("eternalist.settings.base_pace_kmh")?;
-        let wheel = (control.rect[2] as i16 - 16, control.center().1);
-        let _focused = story
-            .click_at(wheel, Button::Primary)?
-            .next_frame()?;
+        let wheel = screen_point([
+            f64::from(control.rect[2]) - 16.0,
+            f64::from(control.center().1),
+        ])?;
+        let _focused = story.click_at(wheel, Button::Primary)?.next_frame()?;
         let _step = story.key(Key::Up)?.next_frame()?;
     }
-    let _pace = story.wait_within(
-        Duration::from_secs(4),
-        shows::base_pace(BASE_PACE_KMH),
-    )?;
+    let _pace = story.wait_within(Duration::from_secs(4), shows::base_pace(BASE_PACE_KMH))?;
     let _closed = story
         .chord(Modifiers::CTRL, Key::Character(','))?
         .until(shows::settings(false) & shows::configuration_settled())?;
