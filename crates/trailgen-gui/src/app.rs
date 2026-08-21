@@ -1174,7 +1174,9 @@ impl TrailApp {
         );
         self.panels = panels;
         self.inspector_scroll = inspector.scroll_offset;
-        inspector.agitate(&mut self.water);
+        // Moving-wall impulses starve presentation during concurrent search;
+        // scroll displacement retains water response within the 40 ms cadence law.
+        self.water.heave(ui.ctx(), inspector.scroll_offset);
         let _center = product_phase!(
             "pulse.arena",
             egui::CentralPanel::default().show(ui, |ui| self.arena(ui))
