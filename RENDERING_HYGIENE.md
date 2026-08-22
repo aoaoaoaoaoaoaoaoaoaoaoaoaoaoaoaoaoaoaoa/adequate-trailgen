@@ -130,6 +130,8 @@ feature-local RGB arithmetic. A use site declares an OKLCH volume and lawful
 hue arcs; the cycler supplies a deterministic sparse prefix and then maximizes
 nearest ΔE in OKLab. Cartographic cycles exclude hues that alias dominant map
 ground. Ordinals come from stable semantic order, never frame arrival order.
+Trail comparison cycles also exclude hydrological blue, which remains context
+rather than candidate identity.
 
 Trail hue is a user-selected semantic projection: class, formal/informal, or
 terrain. Switching it is a uniform-only operation over retained geometry.

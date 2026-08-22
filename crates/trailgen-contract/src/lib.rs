@@ -7,7 +7,7 @@ use std::{borrow::Cow, fmt};
 
 use serde::{Deserialize, Serialize};
 
-pub const UI_FINGERPRINT: &str = "trailgen.ui/15";
+pub const UI_FINGERPRINT: &str = "trailgen.ui/17";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -140,6 +140,7 @@ pub enum Target {
     SurveyAddArea,
     SurveyMap,
     Map,
+    TrailheadPin,
     TrailDataWait,
     SearchWait,
     LegendClass,
@@ -162,17 +163,24 @@ pub enum Target {
     FocusBack,
     FocusEdit,
     FocusSave,
+    FocusDelete,
+    FocusDeleteConfirm,
+    FocusDeleteCancel,
     FocusRename,
     RenameField,
     EditorRename,
     EditorRenameField,
+    EditorDiscard,
     EditorSave,
+    EditorUndo,
+    EditorRedo,
     CloseLoop,
     Reverse,
     Profile,
     Help,
     CommandGuide,
     Panel(&'static str),
+    SavedVisibility(usize),
     SavedExport(usize),
     Support(usize),
     SupportCallout(usize),
@@ -186,13 +194,14 @@ pub enum Target {
 }
 
 impl Target {
-    pub const STATIC: [Self; 38] = [
+    pub const STATIC: [Self; 45] = [
         Self::ProjectName,
         Self::ProjectParent,
         Self::ProjectCreate,
         Self::SurveyAddArea,
         Self::SurveyMap,
         Self::Map,
+        Self::TrailheadPin,
         Self::TrailDataWait,
         Self::SearchWait,
         Self::LegendClass,
@@ -215,11 +224,17 @@ impl Target {
         Self::FocusBack,
         Self::FocusEdit,
         Self::FocusSave,
+        Self::FocusDelete,
+        Self::FocusDeleteConfirm,
+        Self::FocusDeleteCancel,
         Self::FocusRename,
         Self::RenameField,
         Self::EditorRename,
         Self::EditorRenameField,
+        Self::EditorDiscard,
         Self::EditorSave,
+        Self::EditorUndo,
+        Self::EditorRedo,
         Self::CloseLoop,
         Self::Reverse,
         Self::Profile,
@@ -236,6 +251,7 @@ impl Target {
             Self::SurveyAddArea => "survey.add-area",
             Self::SurveyMap => "survey.map",
             Self::Map => "map.canvas",
+            Self::TrailheadPin => "map.trailhead-pin",
             Self::TrailDataWait => "status.trail-data.waiting",
             Self::SearchWait => "results.waiting",
             Self::LegendClass => "map.legend/class",
@@ -258,17 +274,26 @@ impl Target {
             Self::FocusBack => "focus.back",
             Self::FocusEdit => "focus.edit",
             Self::FocusSave => "focus.save",
+            Self::FocusDelete => "focus.delete",
+            Self::FocusDeleteConfirm => "focus.delete.confirm",
+            Self::FocusDeleteCancel => "focus.delete.cancel",
             Self::FocusRename => "focus.rename",
             Self::RenameField => "focus.rename.field",
             Self::EditorRename => "editor.rename",
             Self::EditorRenameField => "editor.rename.field",
+            Self::EditorDiscard => "editor.discard",
             Self::EditorSave => "editor.save",
+            Self::EditorUndo => "editor.undo",
+            Self::EditorRedo => "editor.redo",
             Self::CloseLoop => "editor.close-loop",
             Self::Reverse => "editor.reverse",
             Self::Profile => "profile.canvas",
             Self::Help => "application.help",
             Self::CommandGuide => "application.command-guide",
             Self::Panel(name) => return Cow::Owned(format!("panel/{name}")),
+            Self::SavedVisibility(slot) => {
+                return Cow::Owned(format!("library.visibility/{slot}"));
+            }
             Self::SavedExport(slot) => return Cow::Owned(format!("library.export/{slot}")),
             Self::Support(slot) => return Cow::Owned(format!("editor.support/{slot}")),
             Self::SupportCallout(slot) => {

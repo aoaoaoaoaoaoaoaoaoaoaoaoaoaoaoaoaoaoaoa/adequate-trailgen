@@ -30,6 +30,7 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
     )?;
     prove_wait_is_alive(&story, &preparing, harness.artifacts)?;
 
+    let _finder = story.click(Target::Finder)?.next_frame()?;
     let _distance = story
         .replace_text(Target::DistanceMax, "12.3", shows::text_focused())?
         .next_frame()?;

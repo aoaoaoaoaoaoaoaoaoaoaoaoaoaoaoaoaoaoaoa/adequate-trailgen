@@ -15,6 +15,7 @@ pub struct Observation {
     pub guide_open: bool,
     pub text_edit_focused: bool,
     pub saved_trails: usize,
+    pub visible_saved: usize,
     pub last_exported: Option<String>,
     pub candidates: usize,
     pub base_pace_kmh: Option<f64>,
@@ -132,6 +133,13 @@ pub mod shows {
     pub fn library(expected: usize) -> Condition<Observation> {
         field("saved Library size", |state: &Observation| {
             state.saved_trails
+        })
+        .eq(expected)
+    }
+
+    pub fn visible_saved(expected: usize) -> Condition<Observation> {
+        field("visible saved-trail overlays", |state: &Observation| {
+            state.visible_saved
         })
         .eq(expected)
     }

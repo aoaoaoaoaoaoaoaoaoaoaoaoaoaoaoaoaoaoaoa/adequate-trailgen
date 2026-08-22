@@ -17,8 +17,12 @@ pub const DEFAULT_SNAP_TOLERANCE_M: f64 = 15.0;
 pub struct JunctionKey(pub String);
 
 impl JunctionKey {
-    fn is_inferable_seam(&self) -> bool {
+    pub(crate) fn is_inferable_seam(&self) -> bool {
         self.0.starts_with("seam:")
+    }
+
+    pub(crate) fn is_source_owned(&self) -> bool {
+        !self.is_inferable_seam() && !self.0.starts_with("clip:")
     }
 }
 
@@ -169,6 +173,8 @@ struct Primitive {
     a: Coord,
     b: Coord,
     src: usize,
+    draft_start: bool,
+    draft_end: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -334,13 +340,13 @@ fn assemble_edges(
             let draft = &drafts[primitive.src];
             let va = vertex_id(
                 a,
-                endpoint_key(draft, pair[0].t),
+                endpoint_key(draft, primitive, pair[0].t),
                 &mut vertices,
                 &mut vertex_by_key,
             );
             let vb = vertex_id(
                 b,
-                endpoint_key(draft, pair[1].t),
+                endpoint_key(draft, primitive, pair[1].t),
                 &mut vertices,
                 &mut vertex_by_key,
             );
@@ -419,16 +425,24 @@ fn support_key(edge: &Edge) -> (VertexId, VertexId, Vec<(u64, u64)>, WayKind, Ge
     }
 }
 
-fn endpoint_key(draft: &SegmentDraft, progress: f64) -> Option<JunctionKey> {
-    let keys = draft.junction_keys.as_ref()?;
-    let key = if progress <= 1.0e-12 {
-        &keys[0]
-    } else if progress >= 1.0 - 1.0e-12 {
-        &keys[1]
-    } else {
-        return None;
-    };
+fn endpoint_key(draft: &SegmentDraft, primitive: Primitive, progress: f64) -> Option<JunctionKey> {
+    let key = primitive_endpoint_key(draft, primitive, progress)?;
     (!key.is_inferable_seam()).then(|| key.clone())
+}
+
+fn primitive_endpoint_key(
+    draft: &SegmentDraft,
+    primitive: Primitive,
+    progress: f64,
+) -> Option<&JunctionKey> {
+    let keys = draft.junction_keys.as_ref()?;
+    if primitive.draft_start && progress <= 1.0e-12 {
+        Some(&keys[0])
+    } else if primitive.draft_end && progress >= 1.0 - 1.0e-12 {
+        Some(&keys[1])
+    } else {
+        None
+    }
 }
 
 fn corroborate_edge(preferred: &mut Edge, suppressed: &Edge) {
@@ -473,16 +487,22 @@ fn draft_primitives(drafts: &[SegmentDraft]) -> Vec<Primitive> {
                     a: points[0],
                     b: points[points.len() - 1],
                     src,
+                    draft_start: true,
+                    draft_end: true,
                 }]
             } else {
+                let last = draft.geometry.points.len() - 2;
                 draft
                     .geometry
                     .points
                     .windows(2)
-                    .map(|points| Primitive {
+                    .enumerate()
+                    .map(|(segment, points)| Primitive {
                         a: points[0],
                         b: points[1],
                         src,
+                        draft_start: segment == 0,
+                        draft_end: segment == last,
                     })
                     .collect()
             }
@@ -578,25 +598,14 @@ fn snaps_may_be_inferred(
     b: Primitive,
     b_t: f64,
 ) -> bool {
-    let inferable = |policy| {
+    let endpoint_is_inferable = |draft: &SegmentDraft, primitive, progress| {
         matches!(
-            policy,
+            draft.junctions,
             JunctionPolicy::Planar | JunctionPolicy::ExplicitEndpoints
-        )
+        ) && primitive_endpoint_key(draft, primitive, progress)
+            .is_none_or(JunctionKey::is_inferable_seam)
     };
-    let endpoint_is_inferable = |draft: &SegmentDraft, t| {
-        inferable(draft.junctions)
-            && draft.junction_keys.as_ref().is_none_or(|keys| {
-                if t <= 1.0e-12 {
-                    keys[0].is_inferable_seam()
-                } else if t >= 1.0 - 1.0e-12 {
-                    keys[1].is_inferable_seam()
-                } else {
-                    false
-                }
-            })
-    };
-    endpoint_is_inferable(&drafts[a.src], a_t) && endpoint_is_inferable(&drafts[b.src], b_t)
+    endpoint_is_inferable(&drafts[a.src], a, a_t) && endpoint_is_inferable(&drafts[b.src], b, b_t)
 }
 
 fn primitive_index(primitives: &[Primitive]) -> RTree<PrimitiveEnvelope> {

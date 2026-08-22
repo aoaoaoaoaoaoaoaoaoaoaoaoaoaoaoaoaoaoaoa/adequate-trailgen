@@ -37,6 +37,10 @@ impl Span {
 /// The map-safe hue domain. Green is absent because it aliases park ground.
 pub const CARTOGRAPHIC_HUES: [Span; 2] = [Span::new(18.0, 82.0), Span::new(220.0, 355.0)];
 
+/// The trail-comparison hue domain. Green aliases park ground; blue aliases
+/// hydrology and other geographic context that must remain subordinate.
+pub const TRAIL_HIGHLIGHT_HUES: [Span; 2] = [Span::new(18.0, 82.0), Span::new(300.0, 355.0)];
+
 /// One perceptual color-cycle law.
 #[derive(Clone, Copy)]
 pub struct CycleLaw {

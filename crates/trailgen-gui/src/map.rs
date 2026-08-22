@@ -1,7 +1,7 @@
 use crate::{
     cadence, chrome, forge,
     library::SavedTrail,
-    palette::{CARTOGRAPHIC_HUES, ColorCycle, CycleLaw, Span},
+    palette::{ColorCycle, CycleLaw, Span, TRAIL_HIGHLIGHT_HUES},
     trail_map::TrailField,
 };
 use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, Vec2, pos2, vec2};
@@ -84,7 +84,7 @@ pub fn candidate_color(ordinal: usize, selected: bool) -> Color32 {
         const LAW: CycleLaw = CycleLaw::new(
             Span::new(0.64, 0.805),
             Span::new(0.17, 0.206),
-            &CARTOGRAPHIC_HUES,
+            &TRAIL_HIGHLIGHT_HUES,
             0.0,
             0.72,
             0.17,
@@ -766,6 +766,16 @@ impl RouteOverlay {
 
     pub fn paint(&mut self, painter: &Painter, frame: MapFramePlan, coloring: TrailColoring) {
         self.field.paint_colored(painter, frame, coloring);
+    }
+
+    pub fn paint_hued(
+        &mut self,
+        painter: &Painter,
+        frame: MapFramePlan,
+        hue: Color32,
+        opacity: f32,
+    ) {
+        self.field.paint_hued(painter, frame, hue, opacity);
     }
 }
 

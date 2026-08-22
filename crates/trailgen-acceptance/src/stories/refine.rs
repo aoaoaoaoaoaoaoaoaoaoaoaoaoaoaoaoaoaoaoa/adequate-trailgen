@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{path::Path, time::Duration};
 
 use egui_tester::{Key, Modifiers, Result, Testbed, Timed, WindowQuery, demand};
 use serde_json::Value;
@@ -27,8 +27,9 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
     open_saved(&mut story)?;
     rename(&mut story, harness.testbed)?;
     let baseline = harness.testbed.read_private(INDEX)?;
-    cancel_refinement(&mut story, harness.testbed, &baseline)?;
+    discard_refinement(&mut story, harness.testbed, &baseline)?;
     save_refinement(&mut story, harness.testbed, &baseline)?;
+    reject_unconfirmed_delete(&mut story, harness.artifacts)?;
 
     if let Some(artifacts) = harness.artifacts {
         story
@@ -41,7 +42,7 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
     verify_restart(harness)
 }
 
-fn cancel_refinement(
+fn discard_refinement(
     story: &mut TrailStory<'_, '_>,
     testbed: &Testbed,
     baseline: &[u8],
@@ -83,14 +84,51 @@ fn cancel_refinement(
             .is_some_and(|profile| profile.visible),
         "redo discarded the editor elevation profile",
     )?;
-    let _cancelled = story
-        .key(Key::Escape)?
+    let escaped = story.key(Key::Escape)?.next_frame()?.into_value();
+    demand(
+        escaped.state.view == View::Edit,
+        "Escape discarded an unfinished saved-trail refinement",
+    )?;
+    let _discarded = story
+        .chord(Modifiers::ALT, Key::Delete)?
         .until(shows::view(View::FocusSaved))?;
     demand(
         testbed
             .read_private(INDEX)
             .is_ok_and(|bytes| bytes == baseline),
-        "Cancel persisted an unsaved refinement",
+        "Discard persisted an unsaved refinement",
+    )
+}
+
+fn reject_unconfirmed_delete(
+    story: &mut TrailStory<'_, '_>,
+    artifacts: Option<&Path>,
+) -> Result<()> {
+    let armed = story.click(Target::FocusDelete)?.next_frame()?.into_value();
+    demand(
+        armed.state.view == View::FocusSaved
+            && armed.state.saved_trails == 1
+            && armed
+                .anchor(&Target::FocusDeleteConfirm.to_string())
+                .is_some(),
+        "one delete click removed a saved trail without confirmation",
+    )?;
+    if let Some(artifacts) = artifacts {
+        story
+            .capture()?
+            .save_png(artifacts.join("story-2-delete-confirmation.png"))?;
+    }
+    let cancelled = story
+        .click(Target::FocusDeleteCancel)?
+        .next_frame()?
+        .into_value();
+    demand(
+        cancelled.state.view == View::FocusSaved
+            && cancelled.state.saved_trails == 1
+            && cancelled
+                .anchor(&Target::FocusDeleteConfirm.to_string())
+                .is_none(),
+        "cancelling saved-trail deletion did not restore its focused controls",
     )
 }
 
@@ -209,7 +247,7 @@ fn rename(story: &mut TrailStory<'_, '_>, testbed: &Testbed) -> Result<()> {
 }
 
 fn enter_editor(story: &mut TrailStory<'_, '_>) -> Result<Timed<TrailFrame>> {
-    story.click(Target::FocusEdit)?.until(
+    story.key(Key::Character('e'))?.until(
         shows::view(View::Edit)
             & shows::editor_ready()
             & shows::supports_at_least(2)

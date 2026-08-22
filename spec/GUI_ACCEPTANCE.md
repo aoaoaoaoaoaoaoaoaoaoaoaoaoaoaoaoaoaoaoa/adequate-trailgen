@@ -22,11 +22,13 @@ durable or rendered oracle before passing. Tests never call product internals.
    typed corner handle, refresh without unloading the saved trail or focused
    view, then recover both areas, the trail, and the color projection after
    restart. Base Pace must reach strict XDG configuration and survive restart. No
-   intervening witness may report zero presented basemap tiles.
+   intervening witness may report zero presented basemap tiles. The neutral
+   restart must not paint the retained Finder trailhead pin.
 2. **Refine deliberately.** Open and rename a saved trail, drag a support onto
    another branch, prove recomputation occurs after release, verify the native
-   window title, undo, redo, cancel without disk mutation, repeat, save, and
-   recover the changed geometry after restart.
+   window title, undo, redo, prove Escape cannot discard, explicitly discard
+   with `Alt+Delete` without disk mutation, repeat, save, reject unconfirmed
+   deletion, and recover the changed geometry after restart.
 3. **Compare without lag.** Generate twelve alternatives on a dense graph, pan
    during search and after promotion, zoom across detail, enforce host cadence
    distributions, focus and return to the settled viewport, warm-revise
@@ -34,13 +36,15 @@ durable or rendered oracle before passing. Tests never call product internals.
    segments with undo and redo, stop without discarding promoted results, then
    save a candidate.
 4. **Draw from nothing.** Enter the manual editor without search, place a
-   partial-edge support, undo and redo, toggle a pin's coordinate callout,
+   partial-edge support, prove the creator starts neutral, prove Escape cannot
+   discard while `Alt+Delete` can, undo and redo, toggle a pin's coordinate callout,
    Shift-delete a middle support and prove
    successor renumbering, restore it, restart before saving and recover the
    exact unfinished design, close and reverse a loop, exercise the elevation
    reticle, reject torn editor/focus presentation during save, export through
    the saved-row `➚` target, parse the resulting GPX through the production
-   route reader, and recover the loop after restart.
+   route reader, latch its saved-row eye onto the map without entering Focus,
+   retain that overlay beneath Edit, and recover the loop after restart.
 5. **Work while preparing.** Open the real workbench while graph armament is
    deliberately stalled, edit and durably persist the search recipe, reject a
    graph-dependent search, focus and rename a saved trail, pan the map, then
@@ -67,7 +71,7 @@ durable-geometry assertion; it cannot satisfy that assertion.
 Before the first injected input, each story verifies
 `trailgen-contract::UI_FINGERPRINT`. GUI and acceptance consume the same Target
 and wire-state enums. Dynamic Targets such as `Support(1)` and
-`SavedExport(0)` are values, not raw
+`SavedVisibility(0)` and `SavedExport(0)` are values, not raw
 string construction.
 
 The standard witness is one launch-sealed, length-framed semantic journal.

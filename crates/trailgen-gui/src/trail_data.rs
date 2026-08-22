@@ -13,7 +13,7 @@ pub fn progress_status(event: &EngineEvent) -> String {
         EngineEvent::Ranging { .. } => "Downloading trails…".to_owned(),
         EngineEvent::Downloaded { .. } => "Trail download complete.".to_owned(),
         EngineEvent::Elevating { complete, total } => {
-            format!("Downloading topography… {complete}/{total}")
+            format!("Preparing topography… {complete}/{total}")
         }
         EngineEvent::Indexing => "Preparing trails…".to_owned(),
         EngineEvent::Ready(summary) => {

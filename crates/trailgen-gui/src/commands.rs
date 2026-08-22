@@ -17,13 +17,14 @@ pub enum Edict {
     RefreshMapAreas,
     FindTrails,
     StopSearch,
+    ToggleFinder,
     BeginManual,
     UndoSearchEdit,
     RedoSearchEdit,
     EditTrail,
     SaveCandidate,
     RenameFocused,
-    SelectFinder,
+    DiscardTrailEdit,
     UndoTrailEdit,
     RedoTrailEdit,
     SaveTrail,
@@ -34,6 +35,7 @@ pub enum Edict {
 pub enum Context {
     Projects,
     Survey,
+    Creator,
     Finder,
     Focus,
     Editor,
@@ -57,8 +59,13 @@ const REDO: [Shortcut; 2] = [
     Shortcut::primary('Y'),
 ];
 const SAVE: [Shortcut; 1] = [Shortcut::primary('S')];
+const EDIT: [Shortcut; 1] = [Shortcut::new(
+    ShortcutModifiers::NONE,
+    ShortcutKey::Character('E'),
+)];
+const DISCARD: [Shortcut; 1] = [Shortcut::new(ShortcutModifiers::ALT, ShortcutKey::Delete)];
 
-const EDICTS: [CommandSpec<Edict, Context>; 18] = [
+const EDICTS: [CommandSpec<Edict, Context>; 19] = [
     CommandSpec::new(
         Edict::OpenProjects,
         "application.open_projects",
@@ -120,10 +127,17 @@ const EDICTS: [CommandSpec<Edict, Context>; 18] = [
     )
     .with_detail("Stops the running search while retaining candidates already found."),
     CommandSpec::new(
+        Edict::ToggleFinder,
+        "creator.toggle_finder",
+        "Finder",
+        CommandScope::Context(Context::Creator),
+    )
+    .with_detail("Opens or closes the trail finder without changing trail focus."),
+    CommandSpec::new(
         Edict::BeginManual,
-        "finder.begin_manual",
+        "creator.begin_manual",
         "Manual",
-        CommandScope::Context(Context::Finder),
+        CommandScope::Context(Context::Creator),
     )
     .with_detail("Starts a new trail design authored directly from support points.")
     .with_mnemonic('M'),
@@ -146,11 +160,11 @@ const EDICTS: [CommandSpec<Edict, Context>; 18] = [
     CommandSpec::new(
         Edict::EditTrail,
         "focus.edit_trail",
-        "Edit Trail",
+        "Edit",
         CommandScope::Context(Context::Focus),
     )
     .with_detail("Opens the focused trail's support-point design in the editor.")
-    .with_mnemonic('E'),
+    .with_default_shortcuts(&EDIT),
     CommandSpec::new(
         Edict::SaveCandidate,
         "focus.save_candidate",
@@ -169,13 +183,13 @@ const EDICTS: [CommandSpec<Edict, Context>; 18] = [
     .with_default_shortcuts(&RENAME)
     .with_mnemonic('R'),
     CommandSpec::new(
-        Edict::SelectFinder,
-        "editor.select_finder",
-        "Finder",
+        Edict::DiscardTrailEdit,
+        "editor.discard_trail_edit",
+        "Discard Trail Edit",
         CommandScope::Context(Context::Editor),
     )
     .with_detail("Discards the unfinished edit and restores its exact return view.")
-    .with_mnemonic('F'),
+    .with_default_shortcuts(&DISCARD),
     CommandSpec::new(
         Edict::UndoTrailEdit,
         "editor.undo_trail_edit",
@@ -338,9 +352,9 @@ const EDITOR_GESTURES: [GuideGesture; 4] = [
         &[],
     ),
     GuideGesture::new(
-        "Cancel trail edit",
+        "Discard trail edit",
         "Discards the unfinished design and restores its exact return view.",
-        &ESCAPE,
+        &DISCARD,
     ),
 ];
 const PROFILE_GESTURES: [GuideGesture; 2] = [
@@ -367,6 +381,7 @@ const PROFILE_IDIOM: GuideSection = GuideSection::new("ELEVATION PROFILE", &PROF
 
 pub const PROJECT_IDIOMS: [GuideSection; 1] = [PROJECT_IDIOM];
 pub const SURVEY_IDIOMS: [GuideSection; 3] = [SIDEBAR_IDIOM, MAP_IDIOM, SURVEY_IDIOM];
+pub const BROWSE_IDIOMS: [GuideSection; 2] = [SIDEBAR_IDIOM, MAP_IDIOM];
 pub const FINDER_IDIOMS: [GuideSection; 3] = [SIDEBAR_IDIOM, MAP_IDIOM, FINDER_IDIOM];
 pub const CANDIDATE_IDIOMS: [GuideSection; 5] = [
     SIDEBAR_IDIOM,
@@ -383,6 +398,7 @@ pub const fn scope_name(context: Context) -> &'static str {
     match context {
         Context::Projects => "PROJECT DECK",
         Context::Survey => "MAP AREAS",
+        Context::Creator => "TRAIL CREATOR",
         Context::Finder => "FINDER",
         Context::Focus => "TRAIL DETAIL",
         Context::Editor => "TRAIL EDITOR",

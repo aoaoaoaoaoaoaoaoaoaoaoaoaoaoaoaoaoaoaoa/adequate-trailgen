@@ -870,7 +870,10 @@ impl WalkGraph {
                 || !edge.attr.traversal.valid()
             {
                 return Err(TrailgenError::InvalidData(format!(
-                    "edge {index} has invalid geometry or length"
+                    "edge {index} has invalid geometry or length: points={}, length_m={}, traversal={:?}",
+                    edge.geometry.points.len(),
+                    edge.attr.length_m,
+                    edge.attr.traversal,
                 )));
             }
         }

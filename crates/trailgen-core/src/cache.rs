@@ -6,6 +6,7 @@ const MAGIC: &[u8; 16] = b"TRAILGEN-GRAPH\0\0";
 const FORMAT: u16 = 2;
 
 pub fn encode_graph(graph: &WalkGraph) -> Result<Vec<u8>> {
+    graph.validate()?;
     let mut bytes = Vec::new();
     bytes.extend_from_slice(MAGIC);
     bytes.extend_from_slice(&FORMAT.to_le_bytes());
