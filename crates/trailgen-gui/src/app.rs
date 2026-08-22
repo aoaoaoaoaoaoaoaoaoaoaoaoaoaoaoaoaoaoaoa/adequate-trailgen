@@ -194,10 +194,16 @@ struct TrailEditor {
     realizing: Option<u64>,
     shape_guard: Option<(u64, RouteShape)>,
     profile: Option<ElevationProfile>,
-    fault: Option<String>,
+    fault: Option<EditorFault>,
     notice: Option<String>,
     history: UndoLog<TrailSketch>,
     drag: Option<PinDrag>,
+}
+
+#[derive(Clone)]
+struct EditorFault {
+    message: String,
+    support_slot: Option<usize>,
 }
 
 struct EditorNameDraft {
@@ -619,14 +625,14 @@ impl TrailEditor {
                 self.notice = None;
             }
             Err(err) => {
-                self.fault = Some(editor_fault(&err));
+                self.fault = Some(editor_fault(&err, self.support_points.len()));
                 self.notice = None;
             }
         }
     }
 
     fn reject_loop_closure(&mut self, error: &TrailgenError) -> String {
-        let notice = editor_fault(error);
+        let notice = editor_fault(error, self.support_points.len()).message;
         self.notice = Some(notice.clone());
         notice
     }
@@ -1472,6 +1478,7 @@ impl TrailApp {
                     .enumerate()
                     .filter_map(|(slot, visible)| visible.then_some(slot))
                     .collect(),
+                fault_support: editor.fault.as_ref().and_then(|fault| fault.support_slot),
                 route_signature: editor
                     .realization
                     .as_ref()
@@ -2441,7 +2448,7 @@ impl TrailApp {
             let _progress = ui.label(chrome::eyebrow("UPDATING ROUTE…"));
         }
         if let Some(fault) = fault {
-            let _fault = ui.colored_label(chrome::HOT, chrome::muted(fault));
+            let _fault = ui.colored_label(chrome::HOT, chrome::muted(fault.message));
         } else if let Some(notice) = notice {
             let _notice = ui.colored_label(chrome::HOT, chrome::muted(notice));
         }
@@ -3475,7 +3482,7 @@ impl TrailApp {
         self.map_regime = regime;
         self.water.begin(Domain::shelf(rect));
         self.apply_fit(rect);
-        let legend_claims_pointer = self.interact_trail_legend(ui, rect);
+        let (legend_claims_pointer, legend_rect) = self.interact_trail_legend(ui, rect);
         let pointer = (!legend_claims_pointer)
             .then(|| response.interact_pointer_pos())
             .flatten();
@@ -3546,7 +3553,7 @@ impl TrailApp {
             }
         }
         let (scribe_event, boundary_event) = self.interact_scribes(ui, &response, rect);
-        self.paint_map_scene(ui, rect);
+        self.paint_map_scene(ui, rect, legend_rect);
 
         self.settle_map_gestures(
             ui,
@@ -3567,7 +3574,12 @@ impl TrailApp {
         self.handle_boundary(boundary_event);
     }
 
-    fn paint_map_scene(&mut self, ui: &egui::Ui, rect: egui::Rect) {
+    fn paint_map_scene(
+        &mut self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        legend_rect: Option<egui::Rect>,
+    ) {
         let canvas = ui.painter_at(rect);
         let frame = map::MapFramePlan::forge(self.viewport, rect);
         let cartography = product_phase!(
@@ -3615,7 +3627,7 @@ impl TrailApp {
         );
         self.paint_profile_marker(&canvas, rect);
         if self.view.is_editing() {
-            self.paint_support_points(&canvas, rect);
+            self.paint_support_points(&canvas, rect, legend_rect);
         } else if let Some(trailhead) = self.active_trailhead() {
             let (coord, seized) = self
                 .trailhead_drag
@@ -3640,9 +3652,13 @@ impl TrailApp {
         self.paint_map_footer(&canvas, rect);
     }
 
-    fn interact_trail_legend(&mut self, ui: &egui::Ui, rect: egui::Rect) -> bool {
+    fn interact_trail_legend(
+        &mut self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+    ) -> (bool, Option<egui::Rect>) {
         let Some(sinew) = &mut self.sinew else {
-            return false;
+            return (false, None);
         };
         let legend = sinew.atlas.show_legend(ui.ctx(), rect, self.trail_coloring);
         for (coloring, tab) in &legend.tabs {
@@ -3660,13 +3676,14 @@ impl TrailApp {
             self.water.click(tab);
             ui.ctx().request_repaint();
         }
-        ui.input(|input| {
+        let claims_pointer = ui.input(|input| {
             input
                 .pointer
                 .hover_pos()
                 .zip(legend.rect)
                 .is_some_and(|(pointer, legend)| legend.contains(pointer))
-        })
+        });
+        (claims_pointer, legend.rect)
     }
 
     fn paint_live_area(&self, painter: &egui::Painter, rect: egui::Rect) {
@@ -4295,7 +4312,12 @@ impl TrailApp {
             })
     }
 
-    fn paint_support_points(&self, painter: &egui::Painter, rect: egui::Rect) {
+    fn paint_support_points(
+        &self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        legend_rect: Option<egui::Rect>,
+    ) {
         let Some(editor) = self.view.editor() else {
             return;
         };
@@ -4358,6 +4380,17 @@ impl TrailApp {
             );
             #[cfg(feature = "egui-test")]
             crate::witness::rect(painter.ctx(), Target::Support(slot), hardware.grip());
+            if let Some(fault) = editor
+                .fault
+                .as_ref()
+                .filter(|fault| fault.support_slot == Some(slot))
+            {
+                let plate = paint_support_fault(painter, rect, legend_rect, anchor, &fault.message);
+                #[cfg(feature = "egui-test")]
+                crate::witness::rect(painter.ctx(), Target::SupportFault(slot), plate);
+                #[cfg(not(feature = "egui-test"))]
+                let _ = plate;
+            }
         }
     }
 
@@ -4370,7 +4403,10 @@ impl TrailApp {
         };
         if projection.distance_m > TRAILHEAD_SNAP_M {
             if let Some(editor) = self.view.editor_mut() {
-                editor.fault = Some("Move closer to a downloaded trail.".to_owned());
+                editor.fault = Some(EditorFault {
+                    message: "Move closer to a downloaded trail.".to_owned(),
+                    support_slot: slot,
+                });
             }
             return;
         }
@@ -5238,16 +5274,16 @@ impl TrailApp {
         let accepted = launched.is_ok();
         if let Some(editor) = self.view.editor_mut() {
             editor.shape_guard = None;
-            match launched {
-                Ok(()) => {
-                    editor.realizing = Some(serial);
-                    editor.fault = None;
-                    editor.notice = None;
-                }
-                Err(error) => {
-                    editor.realizing = None;
-                    editor.fault = Some(format!("Could not update this trail: {error:#}"));
-                }
+            if accepted {
+                editor.realizing = Some(serial);
+                editor.fault = None;
+                editor.notice = None;
+            } else {
+                editor.realizing = None;
+                editor.fault = Some(EditorFault {
+                    message: "Trailgen could not update this route. Try again.".to_owned(),
+                    support_slot: None,
+                });
             }
         }
         accepted.then_some(serial)
@@ -6148,12 +6184,88 @@ fn gallery_empty(ui: &egui::Ui, message: &str) {
     );
 }
 
-fn editor_fault(error: &TrailgenError) -> String {
+fn paint_support_fault(
+    painter: &egui::Painter,
+    map_rect: egui::Rect,
+    legend_rect: Option<egui::Rect>,
+    anchor: egui::Pos2,
+    message: &str,
+) -> egui::Rect {
+    let wrap_width = (map_rect.width() - 24.0).clamp(96.0, 220.0);
+    let galley = painter.layout(
+        message.to_owned(),
+        egui::FontId::monospace(11.0),
+        chrome::HOT,
+        wrap_width,
+    );
+    let size = galley.size() + vec2(12.0, 8.0);
+    let top = if anchor.y - size.y - 19.0 >= map_rect.top() + 4.0 {
+        anchor.y - size.y - 19.0
+    } else {
+        anchor.y + 19.0
+    };
+    let mut left = size
+        .x
+        .mul_add(-0.5, anchor.x)
+        .clamp(map_rect.left() + 4.0, map_rect.right() - size.x - 4.0);
+    let mut plate = egui::Rect::from_min_size(egui::pos2(left, top), size);
+    if let Some(legend) = legend_rect.filter(|legend| legend.expand(4.0).intersects(plate)) {
+        left = (legend.left() - size.x - 6.0).max(map_rect.left() + 4.0);
+        plate = egui::Rect::from_min_size(egui::pos2(left, top), size);
+    }
+    let tether = if plate.center().y < anchor.y {
+        plate.center_bottom()
+    } else {
+        plate.center_top()
+    };
+    painter.line_segment([tether, anchor], Stroke::new(1.5, chrome::HOT));
+    let _fill = painter.rect_filled(plate, 1.0, chrome::SURFACE.gamma_multiply(0.98));
+    let _stroke = painter.rect_stroke(
+        plate,
+        1.0,
+        Stroke::new(1.5, chrome::HOT),
+        egui::StrokeKind::Inside,
+    );
+    painter.galley(plate.min + vec2(6.0, 4.0), galley, chrome::HOT);
+    plate
+}
+
+fn editor_fault(error: &TrailgenError, support_count: usize) -> EditorFault {
+    let last = support_count.checked_sub(1);
     match error {
-        TrailgenError::ShapeMismatch { actual, expected } => {
-            format!("This design forms {actual:?}, not {expected:?}. Move a support point.")
-        }
-        _ => error.to_string(),
+        TrailgenError::UnreachableSupport { from, to } => EditorFault {
+            message: format!(
+                "Pin {to} cannot reach pin {from} on the downloaded trails. Move pin {to} or add an intermediate pin."
+            ),
+            support_slot: Some(*to),
+        },
+        TrailgenError::SupportOffNetwork { slot, .. } => EditorFault {
+            message: format!(
+                "Pin {slot} is too far from a downloaded trail. Move it onto a trail."
+            ),
+            support_slot: Some(*slot),
+        },
+        TrailgenError::ShapeMismatch { actual, expected } => EditorFault {
+            message: format!(
+                "This design forms {actual:?}, not {expected:?}. Move a support point."
+            ),
+            support_slot: last,
+        },
+        TrailgenError::InvalidData(_) | TrailgenError::InvalidGeometry(_) => EditorFault {
+            message: last.map_or_else(
+                || "Trailgen could not connect these support points.".to_owned(),
+                |slot| {
+                    format!(
+                        "Trailgen could not connect pin {slot} to the route. Move it or add an intermediate pin."
+                    )
+                },
+            ),
+            support_slot: last,
+        },
+        _ => EditorFault {
+            message: error.to_string(),
+            support_slot: last,
+        },
     }
 }
 

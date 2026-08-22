@@ -74,6 +74,7 @@ pub struct EditorState {
     pub dragging_support: Option<usize>,
     pub support_points: Vec<[f64; 2]>,
     pub coordinate_callouts: Vec<usize>,
+    pub fault_support: Option<usize>,
     pub route_signature: Option<u64>,
     pub redo_depth: usize,
 }
@@ -287,6 +288,15 @@ pub mod shows {
                     .is_some_and(|editor| editor.coordinate_callouts.contains(&slot) == visible)
             },
         )
+    }
+
+    pub fn support_fault(expected: Option<usize>) -> Condition<Observation> {
+        condition(format!("support fault {expected:?}"), move |state| {
+            state
+                .editor
+                .as_ref()
+                .is_some_and(|editor| editor.fault_support == expected)
+        })
     }
 
     pub fn survey_drawing() -> Condition<Observation> {

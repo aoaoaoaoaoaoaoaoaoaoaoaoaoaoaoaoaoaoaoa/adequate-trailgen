@@ -142,6 +142,7 @@ mod active {
         pub dragging_support: Option<usize>,
         pub support_points: Vec<[f64; 2]>,
         pub coordinate_callouts: Vec<usize>,
+        pub fault_support: Option<usize>,
         pub route_signature: Option<u64>,
         pub redo_depth: usize,
     }

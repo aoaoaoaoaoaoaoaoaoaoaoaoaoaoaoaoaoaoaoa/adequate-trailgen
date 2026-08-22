@@ -71,6 +71,10 @@ pub enum TrailgenError {
     InvalidGeometry(String),
     #[error("invalid data: {0}")]
     InvalidData(String),
+    #[error("support point {to} cannot connect to support point {from}")]
+    UnreachableSupport { from: usize, to: usize },
+    #[error("support point {slot} lies {distance_m:.0} m from the walking network")]
+    SupportOffNetwork { slot: usize, distance_m: f64 },
     #[error("support points realize {actual:?}, not {expected:?}")]
     ShapeMismatch {
         actual: RouteShape,

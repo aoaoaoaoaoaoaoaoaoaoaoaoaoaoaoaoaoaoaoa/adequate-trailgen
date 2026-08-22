@@ -215,7 +215,7 @@ impl Trail {
             .walk_edges(start, &realized.edges)
             .ok_or_else(|| {
                 TrailgenError::InvalidData(
-                    "support points induce an illegal directed trail".to_owned(),
+                    "the routed support points do not form one continuous walk".to_owned(),
                 )
             })?;
         let route = Route::from_edges(name, &realized.graph, start, realized.edges, constraints);
@@ -260,7 +260,7 @@ impl Trail {
         let mut spans = Vec::new();
         let mut support_span_offsets = vec![0];
         let mut previous = None;
-        for targets in anchors.windows(2) {
+        for (from, targets) in anchors.windows(2).enumerate() {
             let leg = forge
                 .route(
                     targets[0].projection,
@@ -268,11 +268,7 @@ impl Trail {
                     previous,
                     PathVeto::default(),
                 )
-                .ok_or_else(|| {
-                    TrailgenError::InvalidData(
-                        "no lawful trail connects consecutive support points".to_owned(),
-                    )
-                })?;
+                .ok_or(TrailgenError::UnreachableSupport { from, to: from + 1 })?;
             previous = leg.last().map(|span| span.edge).or(previous);
             spans.extend(leg);
             support_span_offsets.push(spans.len());
@@ -311,10 +307,9 @@ impl Trail {
                             PathVeto::default(),
                         )
                     })
-                    .ok_or_else(|| {
-                        TrailgenError::InvalidData(
-                            "no lawful return connects the final support point".to_owned(),
-                        )
+                    .ok_or(TrailgenError::UnreachableSupport {
+                        from: anchors.len() - 1,
+                        to: 0,
                     })?;
                 spans.extend(return_path);
             }
@@ -436,8 +431,8 @@ fn same_spans(left: &[PartialSpan], right: &[PartialSpan]) -> bool {
     left.len() == right.len()
         && left.iter().zip(right).all(|(left, right)| {
             left.edge == right.edge
-                && (left.from_m - right.from_m).abs() <= SUPPORT_EPSILON_M
-                && (left.to_m - right.to_m).abs() <= SUPPORT_EPSILON_M
+                && (left.from_m - right.from_m).abs() <= SUPPORT_EQUIVALENCE_M
+                && (left.to_m - right.to_m).abs() <= SUPPORT_EQUIVALENCE_M
         })
 }
 
@@ -605,7 +600,10 @@ impl TrailRealization {
     }
 }
 
-const SUPPORT_EPSILON_M: f64 = 0.05;
+/// Approximate equality for comparing two independently recovered designs.
+const SUPPORT_EQUIVALENCE_M: f64 = 0.05;
+/// Numerical slack for cut arithmetic. This must never consume a real edge.
+const TOPOLOGY_EPSILON_M: f64 = 1.0e-6;
 
 #[derive(Clone, Copy)]
 struct BoundProjection {
@@ -639,17 +637,18 @@ fn bind_projections(
     supports
         .iter()
         .copied()
-        .map(|requested| {
+        .enumerate()
+        .map(|(slot, requested)| {
             let projection = index.project(graph, requested.coord()).ok_or_else(|| {
                 TrailgenError::InvalidData(
                     "cannot bind a support point to an empty network".to_owned(),
                 )
             })?;
             if projection.distance_m > max_snap_m {
-                return Err(TrailgenError::InvalidData(format!(
-                    "support point lies {:.0} m from the walking network",
-                    projection.distance_m
-                )));
+                return Err(TrailgenError::SupportOffNetwork {
+                    slot,
+                    distance_m: projection.distance_m,
+                });
             }
             Ok(BoundProjection {
                 requested,
@@ -860,9 +859,9 @@ fn partial_cost(graph: &WalkGraph, law: RoutingLaw, span: PartialSpan) -> Option
 }
 
 fn endpoint_at(edge: &Edge, progress_m: f64) -> Option<VertexId> {
-    if progress_m <= SUPPORT_EPSILON_M {
+    if progress_m <= TOPOLOGY_EPSILON_M {
         Some(edge.a)
-    } else if edge.geometry.length_m() - progress_m <= SUPPORT_EPSILON_M {
+    } else if edge.geometry.length_m() - progress_m <= TOPOLOGY_EPSILON_M {
         Some(edge.b)
     } else {
         None
@@ -948,7 +947,7 @@ fn materialize_walk(
         let length_m = source.edges[edge.0].geometry.length_m();
         marks.extend([0.0, length_m]);
         marks.sort_by(f64::total_cmp);
-        marks.dedup_by(|left, right| (*left - *right).abs() <= SUPPORT_EPSILON_M);
+        marks.dedup_by(|left, right| (*left - *right).abs() <= TOPOLOGY_EPSILON_M);
     }
 
     let mut vertices = Vec::new();
@@ -967,7 +966,7 @@ fn materialize_walk(
         let hi = from.max(to);
         let mut intervals = marks
             .windows(2)
-            .filter(|pair| pair[0] >= lo - SUPPORT_EPSILON_M && pair[1] <= hi + SUPPORT_EPSILON_M)
+            .filter(|pair| pair[0] >= lo - TOPOLOGY_EPSILON_M && pair[1] <= hi + TOPOLOGY_EPSILON_M)
             .map(|pair| (pair[0], pair[1]))
             .collect::<Vec<_>>();
         if to < from {
@@ -1072,9 +1071,9 @@ fn materialized_vertex(
     vertex_ids: &mut BTreeMap<LocalVertex, VertexId>,
 ) -> VertexId {
     let edge = &source.edges[source_edge.0];
-    let key = if progress_m <= SUPPORT_EPSILON_M {
+    let key = if progress_m <= TOPOLOGY_EPSILON_M {
         LocalVertex::Base(edge.a)
-    } else if edge.geometry.length_m() - progress_m <= SUPPORT_EPSILON_M {
+    } else if edge.geometry.length_m() - progress_m <= TOPOLOGY_EPSILON_M {
         LocalVertex::Base(edge.b)
     } else {
         LocalVertex::Interior(source_edge, progress_m.to_bits())
@@ -1103,7 +1102,7 @@ fn canonical_mark(marks: &[f64], progress_m: f64) -> f64 {
     marks
         .iter()
         .copied()
-        .find(|mark| (*mark - progress_m).abs() <= SUPPORT_EPSILON_M)
+        .find(|mark| (*mark - progress_m).abs() <= TOPOLOGY_EPSILON_M)
         .unwrap_or(progress_m)
 }
 
@@ -1364,6 +1363,56 @@ mod tests {
             allowed_shapes: vec![RouteShape::Loop],
             ..LoopConstraints::default()
         }
+    }
+
+    #[test]
+    fn materialization_cannot_sever_a_short_graph_edge() {
+        let a = Coord::new(0.0, 0.0);
+        let b = Coord::new(0.001, 0.0);
+        let c = Coord::new(0.001_000_4, 0.0);
+        let d = Coord::new(0.002, 0.0);
+        let graph = GraphBuilder {
+            snap_tolerance_m: 0.0,
+            ..GraphBuilder::default()
+        }
+        .build(&[
+            draft("west", a, b),
+            draft("short-connector", b, c),
+            draft("east", c, d),
+        ])
+        .expect("build chain");
+        assert_eq!(graph.edges.len(), 3);
+        assert!(
+            graph.edges.iter().any(|edge| edge.attr.length_m < 0.05),
+            "fixture must exercise an edge shorter than support equivalence"
+        );
+
+        let trail = Trail::forge(
+            RouteShape::Open,
+            [a, d]
+                .map(|coord| SupportPoint::forge(coord).expect("valid support"))
+                .to_vec(),
+            RoutingLaw::default(),
+        )
+        .expect("valid open design");
+        let constraints = LoopConstraints {
+            min_distance_m: 0.0,
+            max_distance_m: f64::MAX,
+            allowed_shapes: vec![RouteShape::Open],
+            ..LoopConstraints::default()
+        };
+        let realized = trail
+            .realize("short connector", &graph, &constraints, 1.0)
+            .expect("materialization preserves source topology");
+
+        assert_eq!(realized.route.edges.len(), 3);
+        assert_eq!(realized.graph().edges.len(), 3);
+        assert!(
+            realized
+                .graph()
+                .walk_edges(realized.route.start, &realized.route.edges)
+                .is_some()
+        );
     }
 
     #[test]

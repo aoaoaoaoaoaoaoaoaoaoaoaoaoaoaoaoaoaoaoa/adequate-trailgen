@@ -7,7 +7,7 @@ use std::{borrow::Cow, fmt};
 
 use serde::{Deserialize, Serialize};
 
-pub const UI_FINGERPRINT: &str = "trailgen.ui/17";
+pub const UI_FINGERPRINT: &str = "trailgen.ui/18";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -184,6 +184,7 @@ pub enum Target {
     SavedExport(usize),
     Support(usize),
     SupportCallout(usize),
+    SupportFault(usize),
     AreaRename(usize),
     AreaRenameField(usize),
     AreaHandle { slot: usize, corner: AreaCorner },
@@ -298,6 +299,9 @@ impl Target {
             Self::Support(slot) => return Cow::Owned(format!("editor.support/{slot}")),
             Self::SupportCallout(slot) => {
                 return Cow::Owned(format!("editor.support/{slot}/coordinates"));
+            }
+            Self::SupportFault(slot) => {
+                return Cow::Owned(format!("editor.support/{slot}/fault"));
             }
             Self::AreaRename(slot) => return Cow::Owned(format!("areas.rename/{slot}")),
             Self::AreaRenameField(slot) => {

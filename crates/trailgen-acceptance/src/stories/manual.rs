@@ -1,10 +1,10 @@
-use std::time::Duration;
+use std::{path::Path, time::Duration};
 
 use egui_tester::{Button, Key, Modifiers, PixelRegion, Result, demand};
 
 use crate::harness::{
     DataMode, Harness, RunClass, Target, TargetClass, TrailFrame, TrailStory, first_anchor,
-    read_json, verdict,
+    map_pixel, read_json, verdict,
 };
 use crate::interactions::{
     add_support, delete_support, exercise_profile, exercise_support_delete_affordance,
@@ -19,6 +19,7 @@ const SUPPORTS: [[f64; 2]; 5] = [
     [-105.0, 40.012],
     [-105.0, 40.0],
 ];
+const ISOLATED_SUPPORT: [f64; 2] = [-104.978, 40.010];
 
 pub fn run(harness: &Harness<'_>) -> Result<()> {
     harness.seed_project(ROOT, "/test/fixtures/mini_network.geojson", false)?;
@@ -28,7 +29,7 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
     let (before_signature, trailhead) = {
         let app = harness.launch_gui(Some(ROOT), DataMode::Offline, RunClass::Functional)?;
         let mut story = harness.story(&app, RunClass::Functional)?;
-        let design = draw_open_route(&mut story)?;
+        let design = draw_open_route(&mut story, harness.artifacts)?;
         let _persisted = story.wait_stable(
             Duration::from_secs(3),
             Duration::from_millis(650),
@@ -137,7 +138,10 @@ fn verify_visibility(story: &mut TrailStory<'_, '_>) -> Result<()> {
     Ok(())
 }
 
-fn draw_open_route(story: &mut TrailStory<'_, '_>) -> Result<(u64, [f64; 2])> {
+fn draw_open_route(
+    story: &mut TrailStory<'_, '_>,
+    artifacts: Option<&Path>,
+) -> Result<(u64, [f64; 2])> {
     let dormant = story.wait(shows::results_open(false))?;
     demand(
         dormant.anchor(&Target::Find.to_string()).is_none(),
@@ -169,6 +173,7 @@ fn draw_open_route(story: &mut TrailStory<'_, '_>) -> Result<(u64, [f64; 2])> {
     let _redone = story
         .chord(Modifiers::CTRL, Key::Character('y'))?
         .until(shows::supports(2) & shows::support(1, SUPPORTS[1]) & shows::editor_ready())?;
+    exercise_unreachable_support(story, artifacts)?;
     for (slot, coordinate) in SUPPORTS.iter().copied().enumerate().skip(2) {
         let _added = add_support(story, coordinate, slot + 1)?;
     }
@@ -189,6 +194,54 @@ fn draw_open_route(story: &mut TrailStory<'_, '_>) -> Result<(u64, [f64; 2])> {
     let trailhead =
         support(&before_reverse, 0).ok_or_else(|| verdict("manual route omitted support 0"))?;
     Ok((before_signature, trailhead))
+}
+
+fn exercise_unreachable_support(
+    story: &mut TrailStory<'_, '_>,
+    artifacts: Option<&Path>,
+) -> Result<()> {
+    let before = story.capture()?;
+    let before_signature = signature(&story.frame()?)
+        .ok_or_else(|| verdict("ready route omitted its signature before a rejected support"))?;
+    let target = map_pixel(&story.frame()?, ISOLATED_SUPPORT)?;
+    let rejected = story
+        .click_at(target, Button::Primary)?
+        .until(shows::supports(3) & shows::support_fault(Some(2)))?;
+    demand(
+        signature(rejected.value()) == Some(before_signature),
+        "an unreachable support erased the last valid route",
+    )?;
+    let _presented = story.wait_stable(
+        Duration::from_secs(2),
+        Duration::from_millis(80),
+        "the rejected support and its anchored fault to reach the screen",
+        |frame| {
+            frame
+                .state
+                .editor
+                .as_ref()
+                .is_some_and(|editor| {
+                    editor.support_points.len() == 3 && editor.fault_support == Some(2)
+                })
+                .then_some(())
+        },
+    )?;
+    let plate = PixelRegion::anchor(&story.anchor(Target::SupportFault(2))?);
+    let shown = story.capture()?;
+    if let Some(artifacts) = artifacts {
+        shown.save_png(artifacts.join("story-4-support-fault.png"))?;
+    }
+    demand(
+        before.difference_region(&shown, plate, 2)? >= 0.01,
+        "an unreachable support reported a fault without painting it over the pin",
+    )?;
+    let _restored = story.chord(Modifiers::CTRL, Key::Character('z'))?.until(
+        shows::supports(2)
+            & shows::support_fault(None)
+            & shows::signature(before_signature)
+            & shows::editor_ready(),
+    )?;
+    Ok(())
 }
 
 fn exercise_support_callout(story: &mut TrailStory<'_, '_>, slot: usize) -> Result<()> {

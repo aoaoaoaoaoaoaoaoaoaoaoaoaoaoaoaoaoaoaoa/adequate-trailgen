@@ -154,8 +154,9 @@ The editor row is absolute: an invalid or realizing draft must not fall through
 to Results, Library, Focus, segment edicts, or search-boundary rendering. The
 last valid editor realization and profile remain visible while a successor is
 realizing or invalid. Realizing shows a named preparing state and disables Save;
-failure shows the fault and disables Save. A subsequent valid generation
-atomically replaces both projections.
+failure anchors a plain-language fault to the responsible support and disables
+Save. A subsequent valid generation atomically replaces both projections and
+clears the fault.
 
 A click on the current realized trail inserts a support at that routed leg.
 A click away from it appends a new destination. Dragging replaces one existing
