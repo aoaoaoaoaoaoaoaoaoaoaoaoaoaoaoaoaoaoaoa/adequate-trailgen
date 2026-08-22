@@ -1,6 +1,8 @@
 use std::{collections::BTreeSet, path::Path, time::Duration};
 
-use egui_tester::{Button, Frame, Key, Modifiers, Motion, PixelRegion, Result, Wheel, demand};
+use egui_tester::{
+    Button, Frame, Key, Modifiers, Motion, PixelRegion, ProbeFrame, Result, Wheel, demand,
+};
 
 use crate::harness::{
     DataMode, Harness, RunClass, Target, TargetClass, TrailStory, durable_budget, first_anchor,
@@ -8,7 +10,7 @@ use crate::harness::{
 };
 use crate::interactions::lasso_boundary;
 use crate::observation::{
-    AreaCorner, CorpusPhase, SearchPhase, TrailColoring, View, Workspace, shows,
+    AreaCorner, CorpusPhase, Observation, SearchPhase, TrailColoring, View, Workspace, shows,
 };
 
 const ROOT: &str = "/test/discover-loop";
@@ -73,22 +75,7 @@ fn exercise_command_guide(
     artifacts: Option<&std::path::Path>,
 ) -> Result<()> {
     let controls = story.wait(shows::workspace(Workspace::Trail))?;
-    let help = controls
-        .anchor(&Target::Help.to_string())
-        .ok_or_else(|| crate::harness::verdict("application omitted its Help actuator"))?;
-    let settings = controls
-        .anchor("eternalist.settings.open")
-        .ok_or_else(|| crate::harness::verdict("application omitted its Settings actuator"))?;
-    demand(
-        help.rect[2] <= settings.rect[0]
-            && settings.rect[0] - help.rect[2] <= 24.0
-            && (help.rect[1] - settings.rect[1]).abs() <= 1.0
-            && (help.rect[3] - settings.rect[3]).abs() <= 1.0,
-        format!(
-            "Help {:?} was not immediately left of Settings {:?}",
-            help.rect, settings.rect
-        ),
-    )?;
+    verify_application_header(&controls)?;
     let baseline = neutral_capture(story)?;
     let opened = story
         .click(Target::Help)?
@@ -115,8 +102,13 @@ fn exercise_command_guide(
         .state
         .map
         .ok_or_else(|| crate::harness::verdict("command guide obscured the map witness"))?;
+    let body = opened
+        .value()
+        .anchor("eternalist.command-guide.body")
+        .ok_or_else(|| crate::harness::verdict("command guide omitted its scroll body"))?
+        .clone();
     let blocked_scroll = story
-        .wheel(card.center(), -4, Wheel::default())?
+        .wheel(body.center(), 4, Wheel::default())?
         .next_frame()?
         .into_value();
     demand(
@@ -125,6 +117,17 @@ fn exercise_command_guide(
             "guide scroll escaped into the map: before {map_before_scroll:?}, after {:?}",
             blocked_scroll.state.map
         ),
+    )?;
+    let scrolled = story.session().wait_changed_region(
+        &visible,
+        PixelRegion::anchor(&body),
+        0.04,
+        8,
+        Duration::from_secs(2),
+    )?;
+    demand(
+        visible.difference_region(&scrolled, PixelRegion::anchor(&body), 8)? >= 0.04,
+        "mouse wheel left the command-guide body visibly unchanged",
     )?;
     let blocked = story
         .chord(Modifiers::ALT, Key::Character('p'))?
@@ -136,12 +139,52 @@ fn exercise_command_guide(
     )?;
     let _closed = story.key(Key::Escape)?.until(shows::command_guide(false))?;
 
+    verify_panel_traversal(story)
+}
+
+fn verify_application_header(controls: &ProbeFrame<Observation>) -> Result<()> {
+    let help = controls
+        .anchor(&Target::Help.to_string())
+        .ok_or_else(|| crate::harness::verdict("application omitted its Help actuator"))?;
+    let settings = controls
+        .anchor("eternalist.settings.open")
+        .ok_or_else(|| crate::harness::verdict("application omitted its Settings actuator"))?;
+    let name = controls
+        .anchor("eternalist.application.name")
+        .ok_or_else(|| crate::harness::verdict("application omitted its name"))?;
+    let projects = controls
+        .anchor(&Target::Panel("projects").to_string())
+        .ok_or_else(|| crate::harness::verdict("application omitted its Projects panel"))?;
+    demand(
+        name.rect[2] <= help.rect[0]
+            && help.rect[2] <= settings.rect[0]
+            && settings.rect[0] - help.rect[2] <= 24.0
+            && (help.rect[1] - settings.rect[1]).abs() <= 1.0
+            && (help.rect[3] - settings.rect[3]).abs() <= 1.0
+            && settings.rect[2] <= projects.rect[2]
+            && settings.rect[3] <= projects.rect[1],
+        format!(
+            "application header {:?} {:?} {:?} escaped above Projects {:?}",
+            name.rect, help.rect, settings.rect, projects.rect
+        ),
+    )
+}
+
+fn verify_panel_traversal(story: &mut TrailStory<'_, '_>) -> Result<()> {
+    let library = Target::Panel("library").to_string();
+    let _next_panel = story.chord(Modifiers::CTRL, Key::Tab)?.next_frame()?;
+    let _library_focused = story.wait_stable(
+        Duration::from_secs(5),
+        Duration::from_millis(80),
+        "Control+Tab focused the next inspector panel",
+        move |frame| frame.focused_anchor(&library).map(|_| ()),
+    )?;
     let search = Target::Panel("search").to_string();
     let _next_panel = story.chord(Modifiers::CTRL, Key::Tab)?.next_frame()?;
     let _search_focused = story.wait_stable(
         Duration::from_secs(5),
         Duration::from_millis(80),
-        "Control+Tab focused the next inspector panel",
+        "Control+Tab focused the following inspector panel",
         move |frame| frame.focused_anchor(&search).map(|_| ()),
     )?;
     let library = Target::Panel("library").to_string();

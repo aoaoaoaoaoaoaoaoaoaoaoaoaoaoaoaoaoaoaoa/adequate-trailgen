@@ -18,7 +18,7 @@ use anyhow::{Context as _, Result, ensure};
 use brass_poolrooms::water::{Frame as WaterFrame, Surface};
 use egui::{Color32, RichText, Stroke, vec2};
 use eternalist_apps::{
-    Inspector, LivingWait, ScribeOutcome, SettledScribe,
+    ApplicationHeader, Inspector, LivingWait, ScribeOutcome, SettledScribe,
     command_guide::CommandGuide,
     commands::{CommandDispatch, CommandStatus},
     configuration::ConfigurationLedger,
@@ -37,12 +37,6 @@ use trailgen_data::SurveyRegion;
 
 const EVENT_DRAIN: DrainBudget = DrainBudget::new(64, Duration::from_millis(3));
 const CONFIGURATION_SETTLE: Duration = Duration::from_millis(400);
-
-fn present_help(ui: &mut egui::Ui, guide: &mut CommandGuide, water: &mut Surface) {
-    let help = guide.activator(ui);
-    crate::witness::response(ui, Target::Help, &help);
-    water.monoglyph(&help);
-}
 
 pub struct Workbench {
     mode: WorkbenchMode,
@@ -149,14 +143,15 @@ impl Workbench {
         if settings_invoked && self.settings.is_open() {
             self.reload_configuration();
         }
-        self.application_actuators(ui.ctx());
+        let settings_attention = self.configuration.fault().is_some();
         let configuration = &mut self.configuration;
+        let settings = &mut self.settings;
         self.transition = match &mut self.mode {
             WorkbenchMode::Project {
                 workspace,
                 habitat,
                 offline,
-            } => match workspace.pulse(ui, configuration) {
+            } => match workspace.pulse(ui, configuration, settings, settings_attention) {
                 None => None,
                 Some(WorkspaceAction::Projects) => Some(WorkbenchTransition::Projects),
                 Some(WorkspaceAction::Reload) => {
@@ -179,7 +174,7 @@ impl Workbench {
                 }
             },
             WorkbenchMode::Projects(deck) => {
-                deck.pulse(ui)
+                deck.pulse(ui, settings, settings_attention)
                     .map(|workspace| WorkbenchTransition::Project {
                         workspace,
                         habitat: deck.habitat.clone(),
@@ -245,22 +240,6 @@ impl Workbench {
         if self.configuration.fault().is_some() || self.configuration.settled() {
             let _requested = self.configuration.request_reload();
         }
-    }
-
-    fn application_actuators(&mut self, ctx: &egui::Context) {
-        let needs_attention = self.configuration.fault().is_some();
-        let mode = &mut self.mode;
-        let settings = &mut self.settings;
-        let _actuators = egui::Area::new(egui::Id::new("trailgen-application-actuators"))
-            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 16.0))
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    mode.help_activator(ui);
-                    let settings = settings.activator(ui, needs_attention);
-                    mode.water_mut().monoglyph(&settings);
-                });
-            });
     }
 
     fn show_settings(&mut self, ctx: &egui::Context) {
@@ -389,13 +368,17 @@ impl ProjectWorkspace {
         &mut self,
         ui: &mut egui::Ui,
         configuration: &mut ConfigurationLedger<Preferences>,
+        settings: &mut SettingsSheet,
+        settings_attention: bool,
     ) -> Option<WorkspaceAction> {
         match self {
-            Self::Trail(app) => app.pulse(ui, configuration).map(|action| match action {
-                TrailAction::Projects => WorkspaceAction::Projects,
-                TrailAction::Reload => WorkspaceAction::Reload,
-            }),
-            Self::Survey(project) => project.pulse(ui),
+            Self::Trail(app) => app
+                .pulse(ui, configuration, settings, settings_attention)
+                .map(|action| match action {
+                    TrailAction::Projects => WorkspaceAction::Projects,
+                    TrailAction::Reload => WorkspaceAction::Reload,
+                }),
+            Self::Survey(project) => project.pulse(ui, settings, settings_attention),
         }
     }
 
@@ -403,15 +386,6 @@ impl ProjectWorkspace {
         match self {
             Self::Trail(app) => app.water_mut(),
             Self::Survey(project) => &mut project.water,
-        }
-    }
-
-    fn help_activator(&mut self, ui: &mut egui::Ui) {
-        match self {
-            Self::Trail(app) => app.help_activator(ui),
-            Self::Survey(project) => {
-                present_help(ui, &mut project.guide, &mut project.water);
-            }
         }
     }
 
@@ -489,14 +463,6 @@ impl WorkbenchMode {
             Self::Project { workspace, .. } => workspace.water_mut(),
             Self::Projects(deck) => &mut deck.water,
             Self::Limbo => unreachable!("workbench transition escaped its water"),
-        }
-    }
-
-    fn help_activator(&mut self, ui: &mut egui::Ui) {
-        match self {
-            Self::Project { workspace, .. } => workspace.help_activator(ui),
-            Self::Projects(deck) => present_help(ui, &mut deck.guide, &mut deck.water),
-            Self::Limbo => unreachable!("workbench transition escaped its help actuator"),
         }
     }
 
@@ -597,7 +563,12 @@ impl SurveyWorkbench {
         Ok(project)
     }
 
-    fn pulse(&mut self, ui: &mut egui::Ui) -> Option<WorkspaceAction> {
+    fn pulse(
+        &mut self,
+        ui: &mut egui::Ui,
+        settings: &mut SettingsSheet,
+        settings_attention: bool,
+    ) -> Option<WorkspaceAction> {
         let mut drain = EVENT_DRAIN.arm();
         self.absorb_persistence();
         self.vector.absorb(ui.ctx());
@@ -624,8 +595,9 @@ impl SurveyWorkbench {
         }
         self.absorb_corpus(ui.ctx(), &mut drain, &mut action);
         let mut panels = std::mem::take(&mut self.panels);
-        let inspector = Inspector::new("survey-inspector")
-            .show(ui, |ui| self.inspector(ui, &mut panels, &mut action));
+        let inspector = Inspector::new("survey-inspector").show(ui, |ui| {
+            self.inspector(ui, &mut panels, &mut action, settings, settings_attention);
+        });
         self.panels = panels;
         inspector.agitate(&mut self.water);
         let _center = egui::CentralPanel::default().show(ui, |ui| self.arena(ui));
@@ -720,32 +692,41 @@ impl SurveyWorkbench {
         ui: &mut egui::Ui,
         navigator: &mut PanelNavigator,
         action: &mut Option<WorkspaceAction>,
+        settings: &mut SettingsSheet,
+        settings_attention: bool,
     ) {
-        ui.add_space(ui.spacing().item_spacing.x);
-        let _name = ui.label(chrome::title(self.name.to_ascii_uppercase()));
-        ui.add_space(3.0);
-        let spec = commands::canon().spec(Edict::OpenProjects);
-        let projects = ui
-            .add(
-                chrome::command_spec_button(ui, spec, false)
-                    .min_size(vec2(ui.available_width(), 27.0)),
-            )
-            .on_hover_text(format!(
-                "{} · {}",
-                spec.detail(),
-                commands::canon().shortcuts(Edict::OpenProjects)[0].label(ui.ctx())
-            ));
-        chrome::tension(ui, &projects);
-        if chrome::exact_activation(ui, &projects) {
-            self.apply_edict(
-                ui.ctx(),
-                CommandDispatch::Invoke(Edict::OpenProjects),
-                action,
-            );
-            self.water.click(projects.rect);
-        }
-        ui.add_space(14.0);
+        let header = ApplicationHeader::new("TRAILGEN")
+            .settings_attention(settings_attention)
+            .show(ui, &mut self.guide, settings, &mut self.water);
+        crate::witness::response(ui, Target::Help, &header.help);
+        ui.add_space(5.0);
         let mut panels = navigator.frame(ui.ctx());
+        let projects = panels.section(ui, "projects", "projects", true, |ui| {
+            let _name = ui.label(chrome::eyebrow(self.name.to_ascii_uppercase()));
+            ui.add_space(4.0);
+            let spec = commands::canon().spec(Edict::OpenProjects);
+            let projects = ui
+                .add(
+                    chrome::command_spec_button(ui, spec, false)
+                        .min_size(vec2(ui.available_width(), 27.0)),
+                )
+                .on_hover_text(format!(
+                    "{} · {}",
+                    spec.detail(),
+                    commands::canon().shortcuts(Edict::OpenProjects)[0].label(ui.ctx())
+                ));
+            chrome::tension(ui, &projects);
+            if chrome::exact_activation(ui, &projects) {
+                self.apply_edict(
+                    ui.ctx(),
+                    CommandDispatch::Invoke(Edict::OpenProjects),
+                    action,
+                );
+                self.water.click(projects.rect);
+            }
+        });
+        crate::witness::response(ui, Target::Panel("projects"), &projects.header);
+        self.water.fold(projects.wake);
         let section = panels.section(ui, "areas", "map areas", true, |ui| {
             self.area_panel(ui);
         });
@@ -1227,7 +1208,12 @@ impl ProjectDeck {
         }
     }
 
-    fn pulse(&mut self, ui: &mut egui::Ui) -> Option<ProjectWorkspace> {
+    fn pulse(
+        &mut self,
+        ui: &mut egui::Ui,
+        settings: &mut SettingsSheet,
+        settings_attention: bool,
+    ) -> Option<ProjectWorkspace> {
         let guide_invoked = self.guide.take_shortcuts(ui.ctx());
         let mut action = if !guide_invoked
             && !self.guide.is_open()
@@ -1255,7 +1241,9 @@ impl ProjectDeck {
                     .stroke(Stroke::new(1.0_f32, chrome::EDGE_STRONG))
                     .corner_radius(2)
                     .inner_margin(egui::Margin::same(24))
-                    .show(ui, |ui| self.plate(ui, &mut action));
+                    .show(ui, |ui| {
+                        self.plate(ui, &mut action, settings, settings_attention);
+                    });
             });
         });
         self.command_guide(ui);
@@ -1327,9 +1315,20 @@ impl ProjectDeck {
         self.guide = guide;
     }
 
-    fn plate(&mut self, ui: &mut egui::Ui, action: &mut Option<ProjectAction>) {
+    fn plate(
+        &mut self,
+        ui: &mut egui::Ui,
+        action: &mut Option<ProjectAction>,
+        settings: &mut SettingsSheet,
+        settings_attention: bool,
+    ) {
         let _column = ui.vertical(|ui| {
             ui.set_width(710.0);
+            let header = ApplicationHeader::new("TRAILGEN")
+                .settings_attention(settings_attention)
+                .show(ui, &mut self.guide, settings, &mut self.water);
+            crate::witness::response(ui, Target::Help, &header.help);
+            ui.add_space(12.0);
             self.heading(ui);
             self.new_project(ui, action);
             self.open_project(ui, action);

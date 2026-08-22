@@ -28,12 +28,13 @@ use brass_poolrooms::water::{Domain, Frame as WaterFrame, Surface, Wetness};
 use crossbeam_channel::{Receiver, Sender, bounded};
 use egui::{Color32, RichText, Stroke, vec2};
 use eternalist_apps::{
-    Inspector, LivingWait, NativeWake, ScribeOutcome, SettledScribe,
+    ApplicationHeader, Inspector, LivingWait, NativeWake, ScribeOutcome, SettledScribe,
     command_guide::{CommandGuide, GuideSection},
     commands::{CommandDispatch, CommandStatus},
     configuration::ConfigurationLedger,
     panel_navigation::{PanelFrame, PanelNavigator},
     responsiveness::{Drain, DrainBudget, SupersedingSender, superseding_channel},
+    settings::SettingsSheet,
 };
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -1175,6 +1176,8 @@ impl TrailApp {
         &mut self,
         ui: &mut egui::Ui,
         configuration: &mut ConfigurationLedger<Preferences>,
+        settings: &mut SettingsSheet,
+        settings_attention: bool,
     ) -> Option<Action> {
         self.set_base_pace(configuration.live().base_pace());
         let mut drain = EVENT_DRAIN.arm();
@@ -1231,7 +1234,9 @@ impl TrailApp {
             Inspector::new("trail-inspector")
                 .scroll_id("trail-inspector-scroll")
                 .scroll_offset(self.inspector_scroll)
-                .show(ui, |ui| self.inspector(ui, &mut panels))
+                .show(ui, |ui| {
+                    self.inspector(ui, &mut panels, settings, settings_attention);
+                })
         );
         self.panels = panels;
         self.inspector_scroll = inspector.scroll_offset;
@@ -1308,12 +1313,6 @@ impl TrailApp {
 
     pub const fn water_mut(&mut self) -> &mut Surface {
         &mut self.water
-    }
-
-    pub(crate) fn help_activator(&mut self, ui: &mut egui::Ui) {
-        let help = self.guide.activator(ui);
-        crate::witness::response(ui, Target::Help, &help);
-        self.water.monoglyph(&help);
     }
 
     pub fn root(&self) -> &Path {
@@ -1734,29 +1733,27 @@ impl TrailApp {
         self.guide = guide;
     }
 
-    fn inspector(&mut self, ui: &mut egui::Ui, navigator: &mut PanelNavigator) {
-        let _name = ui.label(chrome::title(self.name.to_ascii_uppercase()));
-        ui.add_space(3.0);
-        let spec = commands::canon().spec(Edict::OpenProjects);
-        let projects = ui
-            .add_enabled(
-                !self.view.is_editing(),
-                chrome::command_spec_button(ui, spec, false)
-                    .min_size(vec2(ui.available_width(), 27.0)),
-            )
-            .on_hover_text(format!(
-                "{} · {}",
-                spec.detail(),
-                commands::canon().shortcuts(Edict::OpenProjects)[0].label(ui.ctx())
-            ))
-            .on_disabled_hover_text("Save or discard the trail edit first.");
-        chrome::tension(ui, &projects);
-        if chrome::exact_activation(ui, &projects) {
-            self.apply_edict(CommandDispatch::Invoke(Edict::OpenProjects));
-            self.water.click(projects.rect);
-        }
-        ui.add_space(3.0);
+    fn inspector(
+        &mut self,
+        ui: &mut egui::Ui,
+        navigator: &mut PanelNavigator,
+        settings: &mut SettingsSheet,
+        settings_attention: bool,
+    ) {
+        let header = ApplicationHeader::new("TRAILGEN")
+            .settings_attention(settings_attention)
+            .show(ui, &mut self.guide, settings, &mut self.water);
+        crate::witness::response(ui, Target::Help, &header.help);
+        ui.add_space(5.0);
         let mut panels = navigator.frame(ui.ctx());
+        self.section(
+            &mut panels,
+            ui,
+            "projects",
+            "projects",
+            true,
+            Self::projects_panel,
+        );
         self.section(
             &mut panels,
             ui,
@@ -1797,6 +1794,29 @@ impl TrailApp {
             true,
             Self::civic_panel,
         );
+    }
+
+    fn projects_panel(&mut self, ui: &mut egui::Ui) {
+        let _name = ui.label(chrome::eyebrow(self.name.to_ascii_uppercase()));
+        ui.add_space(4.0);
+        let spec = commands::canon().spec(Edict::OpenProjects);
+        let projects = ui
+            .add_enabled(
+                !self.view.is_editing(),
+                chrome::command_spec_button(ui, spec, false)
+                    .min_size(vec2(ui.available_width(), 27.0)),
+            )
+            .on_hover_text(format!(
+                "{} · {}",
+                spec.detail(),
+                commands::canon().shortcuts(Edict::OpenProjects)[0].label(ui.ctx())
+            ))
+            .on_disabled_hover_text("Save or discard the trail edit first.");
+        chrome::tension(ui, &projects);
+        if chrome::exact_activation(ui, &projects) {
+            self.apply_edict(CommandDispatch::Invoke(Edict::OpenProjects));
+            self.water.click(projects.rect);
+        }
     }
 
     fn calibration_panel(&mut self, ui: &mut egui::Ui) {
