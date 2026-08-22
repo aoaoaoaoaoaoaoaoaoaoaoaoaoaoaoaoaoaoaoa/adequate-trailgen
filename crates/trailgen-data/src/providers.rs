@@ -1,4 +1,4 @@
-use crate::{MAX_REGION_DEG2, MAX_SOURCE_BYTES, SurveyRegion, provider_client};
+use crate::{MAX_REGION_DEG2, MAX_SOURCE_BYTES, ParkingPlace, SurveyRegion, provider_client};
 use anyhow::{Context as _, Result, bail, ensure};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value, json};
@@ -100,6 +100,7 @@ pub struct RawShard<'a> {
 pub struct NormalizedNetwork {
     pub drafts: Vec<SegmentDraft>,
     pub context: Vec<ContextOverlay>,
+    pub parking: Vec<ParkingPlace>,
 }
 
 pub trait NetworkProvider {
@@ -346,6 +347,7 @@ impl NetworkProvider for AuthorityTrailProvider {
         Ok(NormalizedNetwork {
             drafts,
             context: Vec::new(),
+            parking: Vec::new(),
         })
     }
 }
@@ -486,6 +488,7 @@ impl NetworkProvider for UsgsNationalTrails {
         Ok(NormalizedNetwork {
             drafts,
             context: Vec::new(),
+            parking: Vec::new(),
         })
     }
 }

@@ -43,6 +43,7 @@ pub struct MapState {
     pub world_points: f64,
     pub coloring: TrailColoring,
     pub basemap_tiles: usize,
+    pub parking_marks: usize,
     pub probe: Option<[f64; 2]>,
 }
 
@@ -180,6 +181,18 @@ pub mod shows {
                 .as_ref()
                 .is_some_and(|map| map.world_points >= minimum)
         })
+    }
+
+    pub fn parking_marks_at_least(minimum: usize) -> Condition<Observation> {
+        condition(
+            format!("at least {minimum} rendered parking mark(s)"),
+            move |state| {
+                state
+                    .map
+                    .as_ref()
+                    .is_some_and(|map| map.parking_marks >= minimum)
+            },
+        )
     }
 
     pub fn map_probe(expected: [f64; 2], tolerance: f64) -> Condition<Observation> {

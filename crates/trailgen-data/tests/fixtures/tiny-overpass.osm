@@ -5,6 +5,14 @@
   <node id="4" lat="41.2305" lon="-74.1240"/>
   <node id="5" lat="41.2320" lon="-74.1260"/>
   <node id="6" lat="41.2320" lon="-74.1240"/>
+  <node id="7" lat="41.2298" lon="-74.1252"/>
+  <node id="8" lat="41.2298" lon="-74.1248"/>
+  <node id="9" lat="41.2296" lon="-74.1248"/>
+  <node id="10" lat="41.2296" lon="-74.1252"/>
+  <node id="30" lat="41.2302" lon="-74.1248">
+    <tag k="amenity" v="parking"/>
+    <tag k="motor_vehicle" v="private"/>
+  </node>
   <way id="10">
     <nd ref="1"/>
     <nd ref="2"/>
@@ -22,6 +30,15 @@
     <nd ref="6"/>
     <tag k="waterway" v="stream"/>
     <tag k="name" v="Stream One"/>
+  </way>
+  <way id="13">
+    <nd ref="7"/>
+    <nd ref="8"/>
+    <nd ref="9"/>
+    <nd ref="10"/>
+    <nd ref="7"/>
+    <tag k="amenity" v="parking"/>
+    <tag k="parking" v="surface"/>
   </way>
   <relation id="20">
     <member type="way" ref="10" role=""/>

@@ -114,6 +114,7 @@ mod active {
         pub world_points: f64,
         pub coloring: TrailColoring,
         pub basemap_tiles: usize,
+        pub parking_marks: usize,
         pub probe: Option<[f64; 2]>,
     }
 
@@ -124,6 +125,7 @@ mod active {
             world_points: f64,
             coloring: TrailColoring,
             basemap_tiles: usize,
+            parking_marks: usize,
             probe: Option<[f64; 2]>,
         ) -> Self {
             Self {
@@ -132,6 +134,7 @@ mod active {
                 world_points,
                 coloring,
                 basemap_tiles,
+                parking_marks,
                 probe,
             }
         }

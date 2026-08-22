@@ -12,7 +12,7 @@ use crate::{
     trail_data::{
         Event as TrailDataEvent, Mutation as TrailDataMutation, TrailData, progress_status,
     },
-    vector_field::VectorField,
+    vector_field::{ParkingAtlas, VectorField},
 };
 use anyhow::{Context as _, Result, ensure};
 use brass_poolrooms::water::{Frame as WaterFrame, Surface};
@@ -520,7 +520,12 @@ impl SurveyWorkbench {
             center: map::world_from_coord(Coord::new(-98.5, 39.5)),
             zoom: 4.2,
         });
-        let vector = VectorField::raise(ctx, BasemapSource::bootstrap()?, offline, None)?;
+        let vector = VectorField::raise(
+            ctx,
+            BasemapSource::bootstrap()?,
+            offline,
+            ParkingAtlas::default(),
+        )?;
         let cartography = map::CartographicClock::new(viewport);
         let scribe_path = slate_path;
         let state_scribe = SettledScribe::spawn(
@@ -1043,6 +1048,7 @@ impl SurveyWorkbench {
                 map::world_pixels(self.viewport),
                 trailgen_contract::TrailColoring::Class,
                 self.vector.presented_tile_count(),
+                0,
                 None,
             )
         });

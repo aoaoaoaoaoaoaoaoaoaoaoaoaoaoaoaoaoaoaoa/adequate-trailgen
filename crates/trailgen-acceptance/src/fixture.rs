@@ -479,12 +479,17 @@ const OSM: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
   <node id="3" lat="39.514" lon="-98.486"/>
   <node id="4" lat="39.514" lon="-98.514"/>
   <node id="5" lat="39.500" lon="-98.500"/>
+  <node id="6" lat="39.4860" lon="-98.5140"/>
+  <node id="7" lat="39.4860" lon="-98.5136"/>
+  <node id="8" lat="39.4863" lon="-98.5136"/>
+  <node id="9" lat="39.4863" lon="-98.5140"/>
   <way id="101"><nd ref="1"/><nd ref="2"/><tag k="highway" v="path"/><tag k="surface" v="asphalt"/><tag k="name" v="South Trail"/></way>
   <way id="102"><nd ref="2"/><nd ref="3"/><tag k="highway" v="path"/><tag k="name" v="East Trail"/></way>
   <way id="103"><nd ref="3"/><nd ref="4"/><tag k="highway" v="path"/><tag k="name" v="North Trail"/></way>
   <way id="104"><nd ref="4"/><nd ref="1"/><tag k="highway" v="path"/><tag k="name" v="West Trail"/></way>
   <way id="105"><nd ref="1"/><nd ref="5"/><nd ref="3"/><tag k="highway" v="path"/><tag k="informal" v="yes"/><tag k="surface" v="scree"/><tag k="name" v="Diagonal Trail"/></way>
   <way id="106"><nd ref="2"/><nd ref="5"/><nd ref="4"/><tag k="highway" v="path"/><tag k="name" v="Cross Trail"/></way>
+  <way id="107"><nd ref="6"/><nd ref="7"/><nd ref="8"/><nd ref="9"/><nd ref="6"/><tag k="amenity" v="parking"/><tag k="parking" v="surface"/></way>
 </osm>"#;
 
 #[cfg(test)]

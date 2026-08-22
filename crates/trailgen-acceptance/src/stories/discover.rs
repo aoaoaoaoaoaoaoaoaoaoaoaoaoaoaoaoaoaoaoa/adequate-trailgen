@@ -903,7 +903,7 @@ fn configure_search(story: &mut TrailStory<'_, '_>) -> Result<()> {
         .until(shows::map_scale_at_least(
             800_000.0_f64.max(initial_scale * 128.0),
         ))?;
-    let frame = story.wait_stable(
+    let _settled = story.wait_stable(
         Duration::from_secs(8),
         Duration::from_millis(160),
         "trailhead-placement viewport to settle",
@@ -917,6 +917,7 @@ fn configure_search(story: &mut TrailStory<'_, '_>) -> Result<()> {
             })
         },
     )?;
+    let frame = story.wait(shows::parking_marks_at_least(1))?;
     exercise_color_legend(story, &frame)?;
     let frame = story.wait(shows::coloring(TrailColoring::Terrain))?;
     let trailhead_coord = [-98.5, 39.5];
@@ -1114,6 +1115,17 @@ fn verify_discovery(harness: &Harness<'_>) -> Result<()> {
             .as_u64()
             .is_some_and(|edges| edges > 0),
         "provider acquisition committed an empty graph",
+    )?;
+    demand(
+        index["summary"]["inventory"]["parking_places"].as_u64() == Some(1),
+        "provider acquisition did not retain the unnamed public parking place",
+    )?;
+    let parking = read_json(harness.testbed, "discover-loop/cache/parking.json")?;
+    demand(
+        parking["places"]
+            .as_array()
+            .is_some_and(|places| places.len() == 1),
+        "parking index did not commit the acquired public place",
     )?;
     let providers = index["sources"]
         .as_array()

@@ -37,6 +37,7 @@ use trailgen_core::{WalkGraph, source::GeoBounds};
 pub const ARCHIVE_NAME: &str = "basemap.pmtiles";
 pub const MAX_SOURCE_ZOOM: u8 = 15;
 pub const APPARITION_SPAN: f32 = 1.35;
+pub const WAYFINDING_TILE_ZOOM: u8 = 13;
 const BUILDS_INDEX: &str = "https://build-metadata.protomaps.dev/builds.json";
 const BUILDS_ORIGIN: &str = "https://build.protomaps.com";
 const FORGE_BATCH: usize = 64;
@@ -312,12 +313,7 @@ pub struct Cover {
 impl Cover {
     pub fn demand_order(&self) -> Vec<TileKey> {
         let mut ordered = Vec::new();
-        for intent in [
-            Intent::Fallback,
-            Intent::Required,
-            Intent::Wayfinding,
-            Intent::Prefetch,
-        ] {
+        for intent in [Intent::Fallback, Intent::Required, Intent::Prefetch] {
             ordered.extend(
                 self.strata
                     .iter()
@@ -339,7 +335,6 @@ pub struct Stratum {
 pub enum Intent {
     Fallback,
     Required,
-    Wayfinding,
     Prefetch,
 }
 
@@ -390,13 +385,6 @@ pub struct LineLabel {
 }
 
 #[derive(Clone, Debug)]
-pub struct Parking {
-    pub world: [f64; 2],
-    pub name: Option<Arc<str>>,
-    pub onset_zoom: f32,
-}
-
-#[derive(Clone, Debug)]
 pub struct Mesh<V> {
     pub vertices: Arc<[V]>,
     pub indices: Arc<[u32]>,
@@ -418,7 +406,6 @@ pub struct VectorTile {
     pub strokes: Mesh<StrokePoint>,
     pub labels: Arc<[Label]>,
     pub line_labels: Arc<[LineLabel]>,
-    pub parking: Arc<[Parking]>,
 }
 
 impl VectorTile {
@@ -457,14 +444,6 @@ impl VectorTile {
                             .saturating_mul(size_of::<[f64; 2]>())
                             .saturating_add(label.text.len())
                     })
-                    .sum::<usize>(),
-            )
-            .saturating_add(self.parking.len().saturating_mul(size_of::<Parking>()))
-            .saturating_add(
-                self.parking
-                    .iter()
-                    .filter_map(|parking| parking.name.as_ref())
-                    .map(|name| name.len())
                     .sum::<usize>(),
             )
     }
@@ -528,12 +507,7 @@ impl Basemap {
     }
 }
 
-pub fn cover(
-    frame: MapFramePlan,
-    detail: DetailPlan,
-    archive_zoom: Option<u8>,
-    with_wayfinding: bool,
-) -> Cover {
+pub fn cover(frame: MapFramePlan, detail: DetailPlan, archive_zoom: Option<u8>) -> Cover {
     let source = detail.source;
     let fallback = archive_zoom
         .filter(|archive_zoom| *archive_zoom < source.get())
@@ -555,21 +529,15 @@ pub fn cover(
             keys: keys_at(frame, source.successor(), 0),
         });
     }
-    if with_wayfinding
-        && archive_zoom.is_some_and(|zoom| zoom >= TRAILHEAD_PARKING_SOURCE_ZOOM)
-        && source.get() < TRAILHEAD_PARKING_SOURCE_ZOOM
-        && frame.zoom.get() >= f64::from(TRAILHEAD_PARKING_ONSET_ZOOM) + TRAILHEAD_PARKING_FETCH_LAG
-    {
-        strata.push(Stratum {
-            intent: Intent::Wayfinding,
-            keys: keys_at(frame, SourceLevel::new(TRAILHEAD_PARKING_SOURCE_ZOOM), 0),
-        });
-    }
     Cover {
         source,
         cells: cells_at(frame, source, 0),
         strata,
     }
+}
+
+pub fn wayfinding_keys(frame: MapFramePlan) -> Vec<TileKey> {
+    keys_at(frame, SourceLevel::new(WAYFINDING_TILE_ZOOM), 1)
 }
 
 fn keys_at(frame: MapFramePlan, level: SourceLevel, apron: i64) -> Vec<TileKey> {
@@ -1333,21 +1301,12 @@ const WATER_STROKE: StrokeStyle = StrokeStyle {
     radius_world: 0.0,
     onset_zoom: 0.0,
 };
-const TRAILHEAD_PARKING_ONSET_ZOOM: f32 = 10.25;
-const TRAILHEAD_PARKING_SOURCE_ZOOM: u8 = 13;
-const TRAILHEAD_PARKING_FETCH_LAG: f64 = 0.5;
-
-const fn trailhead_parking_onset(_provider_onset: Option<f64>) -> f32 {
-    TRAILHEAD_PARKING_ONSET_ZOOM
-}
-
 struct Forge {
     key: TileKey,
     fills: VertexBuffers<FillPoint, u32>,
     strokes: VertexBuffers<StrokePoint, u32>,
     labels: Vec<Label>,
     line_labels: Vec<LineLabel>,
-    parking: Vec<Parking>,
     tessellator: FillTessellator,
 }
 
@@ -1359,7 +1318,6 @@ impl Forge {
             strokes: VertexBuffers::new(),
             labels: Vec::new(),
             line_labels: Vec::new(),
-            parking: Vec::new(),
             tessellator: FillTessellator::new(),
         }
     }
@@ -1507,15 +1465,6 @@ impl Forge {
 
     fn push_poi(&mut self, point: Point<i32>, extent: u32, tags: FeatureTags<'_>) {
         match tags.kind {
-            Some("parking") if public_access(tags.access) => {
-                // Generic POI priority is immaterial after VectorField
-                // reclassifies this as public parking abutting a trail.
-                self.parking.push(Parking {
-                    world: world64(self.key, extent, point.0),
-                    name: tags.name.map(Arc::from),
-                    onset_zoom: trailhead_parking_onset(tags.min_zoom),
-                });
-            }
             Some("peak") => {
                 let Some(name) = tags.name else { return };
                 let text = tags.elevation_m.map_or_else(
@@ -1711,7 +1660,6 @@ impl Forge {
             },
             labels: self.labels.into(),
             line_labels: self.line_labels.into(),
-            parking: self.parking.into(),
         }
     }
 }
@@ -1825,13 +1773,6 @@ fn road_label_style(
     })
 }
 
-fn public_access(access: Option<&str>) -> bool {
-    !matches!(
-        access,
-        Some("private" | "no" | "customers" | "permit" | "destination")
-    )
-}
-
 #[derive(Clone, Copy)]
 struct LabelStyle {
     rank: u16,
@@ -1939,7 +1880,6 @@ struct FeatureTags<'a> {
     name: Option<&'a str>,
     population_rank: Option<f64>,
     min_zoom: Option<f64>,
-    access: Option<&'a str>,
     elevation_m: Option<f64>,
 }
 
@@ -1957,7 +1897,6 @@ impl<'a> FeatureTags<'a> {
                 }
                 ("population_rank", value) => tags.population_rank = numeric(value),
                 ("min_zoom", value) => tags.min_zoom = numeric(value),
-                ("access", MvtValueRef::String(value)) => tags.access = Some(value),
                 ("ele" | "elevation", value) => tags.elevation_m = numeric(value),
                 _ => {}
             }
@@ -2258,12 +2197,7 @@ mod tests {
     #[test]
     fn cover_demands_one_fallback_and_current_detail_only() {
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
-        let cover = cover(
-            MapFramePlan::forge(VIEW, rect),
-            detail(9, false),
-            None,
-            false,
-        );
+        let cover = cover(MapFramePlan::forge(VIEW, rect), detail(9, false), None);
         assert_eq!(cover.strata.len(), 2);
         assert_eq!(cover.strata[0].intent, Intent::Fallback);
         assert_eq!(cover.strata[1].intent, Intent::Required);
@@ -2279,12 +2213,7 @@ mod tests {
     #[test]
     fn visible_cells_are_independent_units_of_refinement() {
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
-        let cover = cover(
-            MapFramePlan::forge(VIEW, rect),
-            detail(9, true),
-            None,
-            false,
-        );
+        let cover = cover(MapFramePlan::forge(VIEW, rect), detail(9, true), None);
         assert_eq!(cover.strata.len(), 3);
         assert_eq!(cover.strata[2].intent, Intent::Prefetch);
         let cells = cover.cells;
@@ -2313,7 +2242,6 @@ mod tests {
             ),
             detail(0, false),
             None,
-            false,
         );
         for stratum in cover.strata {
             let distinct = stratum

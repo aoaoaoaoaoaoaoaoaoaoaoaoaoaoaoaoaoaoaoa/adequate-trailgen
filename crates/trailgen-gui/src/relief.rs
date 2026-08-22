@@ -990,7 +990,6 @@ fn raise_tiles(isohypses: &[Isohypse], law: ReliefLaw) -> Arc<[Arc<VectorTile>]>
                 },
                 labels: Arc::from([]),
                 line_labels: Arc::from([]),
-                parking: Arc::from([]),
             })
         })
         .collect()
@@ -1212,7 +1211,6 @@ mod tests {
                 },
                 labels: Arc::from([]),
                 line_labels: Arc::from([]),
-                parking: Arc::from([]),
             })
         };
         let tiles = [tile(1_203), tile(1_204), tile(1_205)];

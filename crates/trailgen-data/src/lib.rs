@@ -47,11 +47,13 @@ pub const FALLBACK_OVERPASS_ENDPOINT: &str = "https://overpass.private.coffee/ap
 pub const MAX_REGION_DEG2: f64 = 4.0;
 pub(crate) const MAX_SOURCE_BYTES: u64 = 256 * 1024 * 1024;
 const AUTOMATIC_OSM_PROFILE: OsmProfile = OsmProfile::All;
-const INDEX_SCHEMA: u8 = 23;
+const INDEX_SCHEMA: u8 = 24;
 const RAW_SCHEMA: u8 = 4;
+const PARKING_CACHE_SCHEMA: u8 = 1;
 const MAX_OSM_CONNECTOR_M: f64 = 1_000.0;
 const LOCATION_CACHE: &str = "sources/location.json";
 const TRAIL_INDEX: &str = "cache/trails.json";
+const PARKING_INDEX: &str = "cache/parking.json";
 const GRAPH_GEOJSON: &str = "cache/graph.geojson";
 const CONFLATION_REPORT: &str = "cache/conflation.json";
 const SOURCE_MANIFEST: &str = "sources/manifest.json";
@@ -72,6 +74,7 @@ const OSM_ROAD_SELECTORS: &[&str] = &[
 ];
 const OSM_HYDROLOGY_SELECTORS: &[&str] =
     &[r#"way["waterway"~"^(stream|river|canal|drain|ditch|brook)$"]"#];
+const OSM_PARKING_SELECTOR: &str = r#"nwr["amenity"="parking"]"#;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -134,6 +137,15 @@ pub struct SurveyRegion {
     pub bounds: GeoBounds,
 }
 
+/// One publicly accessible motor-vehicle parking place acquired from a
+/// completeness-bearing trail-data source.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ParkingPlace {
+    pub coord: Coord,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
 impl SurveyRegion {
     pub fn new(bounds: GeoBounds) -> Result<Self> {
         validate_region(bounds)?;
@@ -158,6 +170,8 @@ pub struct Inventory {
     pub trail_segments: usize,
     pub road_features: usize,
     pub waterway_features: usize,
+    #[serde(default)]
+    pub parking_places: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -178,6 +192,34 @@ pub struct Summary {
 pub struct Topography {
     pub identity: String,
     pub tiles: Vec<TopographicTile>,
+}
+
+/// Read the canonical public-parking index prepared with the routing corpus.
+pub fn indexed_parking(project: &Path) -> Result<Vec<ParkingPlace>> {
+    let index = match fs::read(project.join(TRAIL_INDEX)) {
+        Ok(raw) => match serde_json::from_slice::<TrailIndex>(&raw) {
+            Ok(index) if index.schema == INDEX_SCHEMA => index,
+            Ok(_) | Err(_) => return Ok(Vec::new()),
+        },
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err).context("read trail index for parking"),
+    };
+    let path = project.join(PARKING_INDEX);
+    let raw = match fs::read(&path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
+    };
+    if fingerprint(&raw) != index.parking {
+        return Ok(Vec::new());
+    }
+    let cache = serde_json::from_slice::<ParkingCache>(&raw)
+        .with_context(|| format!("parse {}", path.display()))?;
+    ensure!(
+        cache.schema == PARKING_CACHE_SCHEMA,
+        "parking index schema is obsolete"
+    );
+    Ok(cache.places)
 }
 
 /// The content address of the indexed elevation field, without decoding its rasters.
@@ -803,7 +845,7 @@ impl NetworkProvider for Overpass {
         ProviderDescriptor {
             id: ProviderId::new("osm").expect("static provider id is valid"),
             label: "OpenStreetMap",
-            adapter_revision: 7,
+            adapter_revision: 8,
             precedence: 10,
             extension: "osm",
             request_extension: "overpassql",
@@ -824,6 +866,7 @@ impl NetworkProvider for Overpass {
         Ok(NormalizedNetwork {
             drafts: classify_osm_realms(osm::network_from_str(&merged)?),
             context: osm::context_overlays_from_str(&merged)?,
+            parking: parking_from_osm(&merged)?,
         })
     }
 }
@@ -1142,6 +1185,7 @@ fn trail_overpass_query(bbox: &str, timeout_s: u64, context: bool) -> String {
          rel(bw.trailways)[\"type\"=\"restriction\"][\"restriction:foot\"]->.restrictions;\n",
     );
     if context {
+        writeln!(query, "{OSM_PARKING_SELECTOR}{bbox}->.parking;").expect("write to string");
         query.push_str("node(w.trailways)->.trailnodes;\n(\n");
         writeln!(query, "  {}{bbox};", OSM_ROAD_SELECTORS[0]).expect("write to string");
         let hydrology = OSM_HYDROLOGY_SELECTORS[0]
@@ -1150,12 +1194,16 @@ fn trail_overpass_query(bbox: &str, timeout_s: u64, context: bool) -> String {
         writeln!(query, "  way(bn.trailnodes){hydrology};").expect("write to string");
         query.push_str(
             ")->.context;\n\
-             (.trailways; .routes; .restrictions; .context; .trailways >; .context >;);\n",
+             (.trailways; .routes; .restrictions; .context; .parking; .trailways >; .context >; .parking >>;);\n",
         );
     } else {
         query.push_str("(.trailways; .routes; .restrictions; .trailways >;);\n");
     }
-    query.push_str("out body;\n");
+    query.push_str(if context {
+        "out body center;\n"
+    } else {
+        "out body;\n"
+    });
     query
 }
 
@@ -1163,7 +1211,7 @@ fn trail_overpass_query(bbox: &str, timeout_s: u64, context: bool) -> String {
 pub const fn overpass_selector_count(profile: OsmProfile) -> usize {
     match profile {
         OsmProfile::All => {
-            OSM_TRAIL_SELECTORS.len() + OSM_ROAD_SELECTORS.len() + OSM_HYDROLOGY_SELECTORS.len() + 2
+            OSM_TRAIL_SELECTORS.len() + OSM_ROAD_SELECTORS.len() + OSM_HYDROLOGY_SELECTORS.len() + 3
         }
         OsmProfile::Trails => OSM_TRAIL_SELECTORS.len() + 2,
         OsmProfile::Roads => OSM_ROAD_SELECTORS.len(),
@@ -1186,7 +1234,14 @@ struct TrailIndex {
     sources: Vec<ProviderReceipt>,
     #[serde(default)]
     elevation: Vec<terrain::TerrainReceipt>,
+    parking: SourceFingerprint,
     graph: SourceFingerprint,
+}
+
+#[derive(Deserialize, Serialize)]
+struct ParkingCache {
+    schema: u8,
+    places: Vec<ParkingPlace>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1241,24 +1296,20 @@ impl Default for GraphLaw {
     }
 }
 
-fn index_corpus(
-    project: &Path,
+struct NormalizedCorpus {
+    strata: Vec<trailgen_core::NetworkStratum>,
+    overlays: Vec<ContextOverlay>,
+    parking: Vec<ParkingPlace>,
+}
+
+fn normalize_sources(
     config: &TrailDataConfig,
     sources: &[ProviderSource],
     providers: &[&dyn NetworkProvider],
-    terrain: &[terrain::TerrainSource],
-) -> Result<Summary> {
-    let corpus_bytes = sources
-        .iter()
-        .map(|source| source.bytes.len() as u64)
-        .sum::<u64>();
-    ensure!(
-        corpus_bytes <= MAX_SOURCE_BYTES * providers.len().max(1) as u64 * 4,
-        "live trail corpus exceeds {} MiB",
-        MAX_SOURCE_BYTES * providers.len().max(1) as u64 * 4 / 1_048_576
-    );
+) -> Result<NormalizedCorpus> {
     let mut strata = Vec::with_capacity(providers.len());
     let mut overlays = Vec::new();
+    let mut parking = Vec::new();
     for provider in providers {
         let descriptor = provider.descriptor();
         let shards = sources
@@ -1275,7 +1326,53 @@ fn index_corpus(
             drafts: clip_drafts(normalized.drafts, &config.regions),
         });
         overlays.extend(clip_overlays(normalized.context, &config.regions));
+        parking.extend(normalized.parking.into_iter().filter(|place| {
+            config
+                .regions
+                .iter()
+                .any(|region| contains(region.bounds, place.coord))
+        }));
     }
+    parking.sort_unstable_by(|left, right| {
+        left.coord
+            .lat
+            .total_cmp(&right.coord.lat)
+            .then_with(|| left.coord.lon.total_cmp(&right.coord.lon))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    parking.dedup_by(|left, right| {
+        left.coord.lon.to_bits() == right.coord.lon.to_bits()
+            && left.coord.lat.to_bits() == right.coord.lat.to_bits()
+            && left.name == right.name
+    });
+    Ok(NormalizedCorpus {
+        strata,
+        overlays,
+        parking,
+    })
+}
+
+fn index_corpus(
+    project: &Path,
+    config: &TrailDataConfig,
+    sources: &[ProviderSource],
+    providers: &[&dyn NetworkProvider],
+    terrain: &[terrain::TerrainSource],
+) -> Result<Summary> {
+    let corpus_bytes = sources
+        .iter()
+        .map(|source| source.bytes.len() as u64)
+        .sum::<u64>();
+    ensure!(
+        corpus_bytes <= MAX_SOURCE_BYTES * providers.len().max(1) as u64 * 4,
+        "live trail corpus exceeds {} MiB",
+        MAX_SOURCE_BYTES * providers.len().max(1) as u64 * 4 / 1_048_576
+    );
+    let NormalizedCorpus {
+        strata,
+        overlays,
+        parking,
+    } = normalize_sources(config, sources, providers)?;
     let law = read_graph_law(project)?;
     let conflated = trailgen_core::conflate(strata, law.conflation);
     let drafts = conflated.drafts;
@@ -1293,15 +1390,22 @@ fn index_corpus(
             .iter()
             .filter(|overlay| overlay.kind == CrossingKind::Water)
             .count(),
+        parking_places: parking.len(),
     };
     let graph = forge_graph(&drafts, &overlays, terrain, law)?;
     let graph_cache = encode_graph(&graph)?;
     let graph_fingerprint = fingerprint(&graph_cache);
+    let parking_cache = serde_json::to_vec_pretty(&ParkingCache {
+        schema: PARKING_CACHE_SCHEMA,
+        places: parking,
+    })?;
+    let parking_fingerprint = fingerprint(&parking_cache);
     clear_graph_auxiliaries(project)?;
     write_json_atomic(project.join(CONFLATION_REPORT), &conflated.report)?;
     let bounds = live_bounds(&config.regions).context("live area has no bounds")?;
     store_area(project, Some(bounds))?;
     write_source_manifest(project, sources, &inventory, bounds)?;
+    write_atomic(&project.join(PARKING_INDEX), &parking_cache)?;
     let summary = Summary {
         regions: config.regions.clone(),
         providers: config.providers.clone(),
@@ -1336,6 +1440,7 @@ fn index_corpus(
                 .iter()
                 .map(|source| source.receipt.clone())
                 .collect(),
+            parking: parking_fingerprint,
             graph: graph_fingerprint,
         },
     )?;
@@ -1416,6 +1521,133 @@ fn merge_osm(sources: &[RawShard<'_>]) -> Result<String> {
     }
     merged.push_str("</osm>\n");
     Ok(merged)
+}
+
+fn parking_from_osm(raw: &str) -> Result<Vec<ParkingPlace>> {
+    let document = roxmltree::Document::parse(raw).context("parse parking OSM XML")?;
+    let root = document.root_element();
+    ensure!(root.has_tag_name("osm"), "parking source has no OSM root");
+    let nodes = root
+        .children()
+        .filter(|node| node.has_tag_name("node"))
+        .map(|node| Ok((required_xml_attr(node, "id")?.to_owned(), xml_coord(node)?)))
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    let mut places = Vec::new();
+    for object in root.children().filter(roxmltree::Node::is_element) {
+        if !public_parking(object) {
+            continue;
+        }
+        let coord = if object.has_tag_name("node") {
+            xml_coord(object)?
+        } else if let Some(center) = object.children().find(|node| node.has_tag_name("center")) {
+            xml_coord(center)?
+        } else if object.has_tag_name("way") {
+            let points = object
+                .children()
+                .filter(|node| node.has_tag_name("nd"))
+                .map(|reference| {
+                    let id = required_xml_attr(reference, "ref")?;
+                    nodes
+                        .get(id)
+                        .copied()
+                        .with_context(|| format!("parking way references missing node {id}"))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            polygon_centroid(&points).context("parking way has no usable geometry")?
+        } else {
+            anyhow::bail!("parking relation has no Overpass center");
+        };
+        let name = xml_tag(object, "name")
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned);
+        places.push(ParkingPlace { coord, name });
+    }
+    places.sort_unstable_by(|left, right| {
+        left.coord
+            .lat
+            .total_cmp(&right.coord.lat)
+            .then_with(|| left.coord.lon.total_cmp(&right.coord.lon))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    places.dedup_by(|left, right| {
+        left.coord.lon.to_bits() == right.coord.lon.to_bits()
+            && left.coord.lat.to_bits() == right.coord.lat.to_bits()
+            && left.name == right.name
+    });
+    Ok(places)
+}
+
+fn public_parking(object: roxmltree::Node<'_, '_>) -> bool {
+    xml_tag(object, "amenity") == Some("parking")
+        && ["motorcar", "motor_vehicle", "vehicle", "access"]
+            .into_iter()
+            .find_map(|key| xml_tag(object, key))
+            .is_none_or(|access| matches!(access, "yes" | "permissive" | "designated" | "public"))
+}
+
+fn xml_tag<'a>(object: roxmltree::Node<'a, 'a>, key: &str) -> Option<&'a str> {
+    object
+        .children()
+        .filter(|node| node.has_tag_name("tag"))
+        .find(|tag| tag.attribute("k") == Some(key))
+        .and_then(|tag| tag.attribute("v"))
+}
+
+fn required_xml_attr<'a>(node: roxmltree::Node<'a, '_>, key: &str) -> Result<&'a str> {
+    node.attribute(key)
+        .with_context(|| format!("OSM {} has no {key}", node.tag_name().name()))
+}
+
+fn xml_coord(node: roxmltree::Node<'_, '_>) -> Result<Coord> {
+    let lon = required_xml_attr(node, "lon")?
+        .parse::<f64>()
+        .context("invalid OSM parking longitude")?;
+    let lat = required_xml_attr(node, "lat")?
+        .parse::<f64>()
+        .context("invalid OSM parking latitude")?;
+    ensure!(
+        lon.is_finite()
+            && lat.is_finite()
+            && (-180.0..=180.0).contains(&lon)
+            && (-90.0..=90.0).contains(&lat),
+        "OSM parking coordinate is invalid"
+    );
+    Ok(Coord::new(lon, lat))
+}
+
+fn polygon_centroid(points: &[Coord]) -> Option<Coord> {
+    if points.len() < 3 {
+        return None;
+    }
+    let origin = points[0];
+    let mut area2 = 0.0;
+    let mut longitude = 0.0;
+    let mut latitude = 0.0;
+    for (left, right) in points
+        .iter()
+        .zip(points.iter().skip(1).chain(points.first()))
+    {
+        let left_lon = left.lon - origin.lon;
+        let left_lat = left.lat - origin.lat;
+        let right_lon = right.lon - origin.lon;
+        let right_lat = right.lat - origin.lat;
+        let cross = left_lon.mul_add(right_lat, -(right_lon * left_lat));
+        area2 += cross;
+        longitude = (left_lon + right_lon).mul_add(cross, longitude);
+        latitude = (left_lat + right_lat).mul_add(cross, latitude);
+    }
+    if area2.abs() <= f64::EPSILON {
+        let count = f64::from(u32::try_from(points.len()).ok()?);
+        return Some(Coord::new(
+            points.iter().map(|point| point.lon).sum::<f64>() / count,
+            points.iter().map(|point| point.lat).sum::<f64>() / count,
+        ));
+    }
+    Some(Coord::new(
+        origin.lon + longitude / (3.0 * area2),
+        origin.lat + latitude / (3.0 * area2),
+    ))
 }
 
 fn clip_drafts(drafts: Vec<SegmentDraft>, regions: &[SurveyRegion]) -> Vec<SegmentDraft> {
@@ -1676,6 +1908,14 @@ fn reusable_index(
     } else if !index.elevation.is_empty() {
         return Ok(None);
     }
+    let parking_bytes = match fs::read(project.join(PARKING_INDEX)) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).context("read cached parking index"),
+    };
+    if fingerprint(&parking_bytes) != index.parking {
+        return Ok(None);
+    }
     let graph_bytes = fs::read(project.join(GRAPH_CACHE)).context("read cached trail graph")?;
     if fingerprint(&graph_bytes) != index.graph {
         return Ok(None);
@@ -1885,6 +2125,14 @@ pub fn indexed_summary(project: &Path) -> Result<Option<Summary>> {
             return Ok(None);
         }
     }
+    let parking = match fs::read(project.join(PARKING_INDEX)) {
+        Ok(parking) => parking,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).context("read cached parking index"),
+    };
+    if fingerprint(&parking) != index.parking {
+        return Ok(None);
+    }
     Ok(Some(index.summary))
 }
 
@@ -2056,7 +2304,10 @@ fn write_source_manifest(
 
 fn clear_corpus(project: &Path) -> Result<()> {
     clear_graph_auxiliaries(project)?;
-    remove_files(project, &[TRAIL_INDEX, GRAPH_CACHE, CONFLATION_REPORT])?;
+    remove_files(
+        project,
+        &[TRAIL_INDEX, GRAPH_CACHE, CONFLATION_REPORT, PARKING_INDEX],
+    )?;
     store_area(project, None)?;
     let manifest_path = project.join(SOURCE_MANIFEST);
     match fs::read_to_string(&manifest_path) {
@@ -2625,8 +2876,21 @@ mod tests {
             Ok(NormalizedNetwork {
                 drafts: osm::network_from_str(&merged)?,
                 context: osm::context_overlays_from_str(&merged)?,
+                parking: parking_from_osm(&merged)?,
             })
         }
+    }
+
+    #[test]
+    fn complete_osm_profile_carries_parking_geometries_and_centers() {
+        let query = overpass_query(
+            OsmProfile::All,
+            GeoBounds::new(-74.2, 41.1, -74.0, 41.3),
+            90,
+        );
+        assert!(query.contains(r#"nwr["amenity"="parking"]"#));
+        assert!(query.contains(".parking >>;"));
+        assert!(query.ends_with("out body center;\n"));
     }
 
     #[derive(Clone, Default)]
@@ -2764,6 +3028,7 @@ mod tests {
         assert_eq!(first.inventory.trail_segments, 2);
         assert_eq!(first.inventory.road_features, 1);
         assert_eq!(first.inventory.waterway_features, 1);
+        assert_eq!(first.inventory.parking_places, 1);
         assert_eq!(calls.get(), 1);
         assert_eq!(first_events.len(), 6);
         assert_eq!(first.regions.len(), 1);
@@ -2783,9 +3048,20 @@ mod tests {
                 .with_extension("request")
                 .is_file()
         );
-        for artifact in [LOCATION_CACHE, TRAIL_INDEX, GRAPH_CACHE, SOURCE_MANIFEST] {
+        for artifact in [
+            LOCATION_CACHE,
+            TRAIL_INDEX,
+            GRAPH_CACHE,
+            PARKING_INDEX,
+            SOURCE_MANIFEST,
+        ] {
             assert!(project.join(artifact).is_file(), "missing {artifact}");
         }
+        let parking = indexed_parking(project)?;
+        assert_eq!(parking.len(), 1);
+        assert!(parking[0].name.is_none());
+        assert!((parking[0].coord.lon + 74.125).abs() < 1.0e-9);
+        assert!((parking[0].coord.lat - 41.2297).abs() < 1.0e-9);
         for absent in [GRAPH_GEOJSON, "cache/edges.csv", "cache/vertices.csv"] {
             assert!(!project.join(absent).exists(), "unsolicited {absent}");
         }

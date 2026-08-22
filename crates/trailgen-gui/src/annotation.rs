@@ -180,6 +180,11 @@ struct ResidentParking {
 }
 
 impl Engine {
+    #[cfg(feature = "egui-test")]
+    pub const fn parking_mark_count(&self) -> usize {
+        self.parking.len()
+    }
+
     #[must_use]
     pub fn coherent(&self, stamp: Stamp) -> bool {
         self.stamp == Some(stamp)

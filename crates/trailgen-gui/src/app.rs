@@ -21,7 +21,7 @@ use crate::{
     trail_data::{
         Event as TrailDataEvent, Mutation as TrailDataMutation, TrailData, progress_status,
     },
-    vector_field::VectorField,
+    vector_field::{ParkingAtlas, VectorField},
 };
 use anyhow::{Context as _, Result};
 use brass_poolrooms::water::{Domain, Frame as WaterFrame, Surface, Wetness};
@@ -877,6 +877,7 @@ impl ProjectionForge {
 
 struct CorpusArmament {
     sinew: Sinew,
+    parking: ParkingAtlas,
     source: BasemapSource,
     regions: Vec<SurveyRegion>,
     region_names: BTreeMap<String, String>,
@@ -918,6 +919,14 @@ impl CorpusForge {
                         "corpus.edge_index",
                         EdgeIndex::forge(&graph)
                     ));
+                    let parking_places = product_phase!(
+                        "corpus.load_parking",
+                        trailgen_data::indexed_parking(&root)?
+                    );
+                    let parking = product_phase!(
+                        "corpus.parking_atlas",
+                        ParkingAtlas::forge(&parking_places, &graph, &edge_index)
+                    );
                     let finder_index = Arc::new(product_phase!(
                         "corpus.finder_index",
                         WalkRealmIndex::finder(&graph)
@@ -955,6 +964,7 @@ impl CorpusForge {
                             editor_forge,
                             atlas,
                         },
+                        parking,
                         source,
                         regions: config.regions,
                         region_names: config.region_names,
@@ -1019,7 +1029,7 @@ fn raise_region_vector(
     let source = BasemapSource::regions(root, &bounds)?;
     product_phase!(
         "project.vector_field",
-        VectorField::raise(ctx, source, offline, None).map(Some)
+        VectorField::raise(ctx, source, offline, ParkingAtlas::default()).map(Some)
     )
 }
 
@@ -1419,6 +1429,9 @@ impl TrailApp {
                     self.vector
                         .as_ref()
                         .map_or(0, VectorField::presented_tile_count),
+                    self.vector
+                        .as_ref()
+                        .map_or(0, VectorField::parking_mark_count),
                     self.map_probe.map(|coord| [coord.lon, coord.lat]),
                 )
             }),
@@ -5062,29 +5075,16 @@ impl TrailApp {
         }
         let vector_retired = if let Some(vector) = &mut self.vector {
             Some(if initial {
-                vector.bind_trails(
-                    ctx,
-                    Arc::clone(&armament.sinew.graph),
-                    Arc::clone(&armament.sinew.edge_index),
-                )?
+                vector.bind_parking(ctx, armament.parking)
             } else {
-                vector.retarget(
-                    ctx,
-                    armament.source,
-                    self.offline,
-                    Arc::clone(&armament.sinew.graph),
-                    Arc::clone(&armament.sinew.edge_index),
-                )?
+                vector.retarget(ctx, armament.source, self.offline, armament.parking)?
             })
         } else {
             self.vector = Some(VectorField::raise(
                 ctx,
                 armament.source,
                 self.offline,
-                Some((
-                    Arc::clone(&armament.sinew.graph),
-                    Arc::clone(&armament.sinew.edge_index),
-                )),
+                armament.parking,
             )?);
             None
         };
