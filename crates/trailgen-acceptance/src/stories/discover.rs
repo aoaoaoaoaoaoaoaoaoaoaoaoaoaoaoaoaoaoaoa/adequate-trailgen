@@ -143,6 +143,9 @@ fn exercise_command_guide(
 }
 
 fn verify_application_header(controls: &ProbeFrame<Observation>) -> Result<()> {
+    let header = controls
+        .anchor("eternalist.application.header")
+        .ok_or_else(|| crate::harness::verdict("application omitted its header geometry"))?;
     let help = controls
         .anchor(&Target::Help.to_string())
         .ok_or_else(|| crate::harness::verdict("application omitted its Help actuator"))?;
@@ -161,11 +164,12 @@ fn verify_application_header(controls: &ProbeFrame<Observation>) -> Result<()> {
             && settings.rect[0] - help.rect[2] <= 24.0
             && (help.rect[1] - settings.rect[1]).abs() <= 1.0
             && (help.rect[3] - settings.rect[3]).abs() <= 1.0
-            && settings.rect[2] <= projects.rect[2]
+            && settings.rect[2] >= header.rect[2] - 0.5
+            && header.rect[2] <= projects.rect[2] + 2.0
             && settings.rect[3] <= projects.rect[1],
         format!(
-            "application header {:?} {:?} {:?} escaped above Projects {:?}",
-            name.rect, help.rect, settings.rect, projects.rect
+            "application header {:?} did not oppose {:?} and right-justified {:?} {:?} above Projects {:?}",
+            header.rect, name.rect, help.rect, settings.rect, projects.rect
         ),
     )
 }
