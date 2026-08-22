@@ -7,6 +7,7 @@ use crate::{
     habitat::{Habitat, ProjectPlace, create_project},
     live_area::{self, RegionHandles, RegionScribe, ResizeEvent, ScribeEvent},
     map::{self, Viewport},
+    preferences::{BASE_PACE_SETTING, MAX_BASE_PACE_KMH, MIN_BASE_PACE_KMH, Preferences},
     slate::Slate,
     trail_data::{
         Event as TrailDataEvent, Mutation as TrailDataMutation, TrailData, progress_status,
@@ -20,8 +21,10 @@ use eternalist_apps::{
     Inspector, LivingWait, ScribeOutcome, SettledScribe,
     command_guide::CommandGuide,
     commands::{CommandDispatch, CommandStatus},
+    configuration::ConfigurationLedger,
     panel_navigation::PanelNavigator,
     responsiveness::{Drain, DrainBudget},
+    settings::{SettingsFile, SettingsSheet},
 };
 use std::{
     collections::BTreeMap,
@@ -33,10 +36,13 @@ use trailgen_core::Coord;
 use trailgen_data::SurveyRegion;
 
 const EVENT_DRAIN: DrainBudget = DrainBudget::new(64, Duration::from_millis(3));
+const CONFIGURATION_SETTLE: Duration = Duration::from_millis(400);
 
 pub struct Workbench {
     mode: WorkbenchMode,
     transition: Option<WorkbenchTransition>,
+    configuration: ConfigurationLedger<Preferences>,
+    settings: SettingsSheet,
 }
 
 enum WorkbenchMode {
@@ -75,50 +81,75 @@ impl Workbench {
         habitat: Habitat,
         intent: ProjectIntent,
         offline: bool,
-    ) -> Self {
-        let candidate = match intent {
-            ProjectIntent::Open(root) => Some(root),
-            ProjectIntent::Resume => match habitat.resume() {
-                Ok(candidate) => candidate,
-                Err(err) => {
-                    return Self::still(WorkbenchMode::Projects(Box::new(ProjectDeck::new(
-                        habitat,
-                        offline,
-                        None,
-                        Some(format!("could not read the previous project: {err:#}")),
-                        None,
-                    ))));
-                }
-            },
-        };
-        let Some(root) = candidate else {
-            return Self::still(WorkbenchMode::Projects(Box::new(ProjectDeck::new(
-                habitat, offline, None, None, None,
-            ))));
-        };
-        match open_project(ctx, &habitat, &root, offline) {
-            Ok(workspace) => Self::still(WorkbenchMode::Project {
-                workspace,
-                habitat,
-                offline,
-            }),
-            Err(err) => Self::still(WorkbenchMode::Projects(Box::new(ProjectDeck::new(
-                habitat,
-                offline,
-                Some(&root),
-                Some(format!("could not open that project: {err:#}")),
-                None,
-            )))),
+    ) -> Result<Self> {
+        let configuration = ConfigurationLedger::raise(
+            "trailgen-configuration-scribe",
+            ctx,
+            habitat.preferences_path(),
+            CONFIGURATION_SETTLE,
+        )?;
+        let mut settings = SettingsSheet::default();
+        if configuration.fault().is_some() {
+            settings.require_attention(ctx);
         }
+        let mode = 'mode: {
+            let candidate = match intent {
+                ProjectIntent::Open(root) => Some(root),
+                ProjectIntent::Resume => match habitat.resume() {
+                    Ok(candidate) => candidate,
+                    Err(err) => {
+                        break 'mode WorkbenchMode::Projects(Box::new(ProjectDeck::new(
+                            habitat,
+                            offline,
+                            None,
+                            Some(format!("could not read the previous project: {err:#}")),
+                            None,
+                        )));
+                    }
+                },
+            };
+            let Some(root) = candidate else {
+                break 'mode WorkbenchMode::Projects(Box::new(ProjectDeck::new(
+                    habitat, offline, None, None, None,
+                )));
+            };
+            match open_project(ctx, &habitat, &root, offline) {
+                Ok(workspace) => WorkbenchMode::Project {
+                    workspace,
+                    habitat,
+                    offline,
+                },
+                Err(err) => WorkbenchMode::Projects(Box::new(ProjectDeck::new(
+                    habitat,
+                    offline,
+                    Some(&root),
+                    Some(format!("could not open that project: {err:#}")),
+                    None,
+                ))),
+            }
+        };
+        Ok(Self::still(mode, configuration, settings))
     }
 
     pub fn pulse(&mut self, ui: &mut egui::Ui) {
+        if self.configuration.absorb() {
+            self.mode
+                .configuration_changed(self.configuration.live().base_pace());
+        }
+        if self.configuration.fault().is_some() {
+            self.settings.require_attention(ui.ctx());
+        }
+        let settings_invoked = self.settings.take_shortcut(ui.ctx());
+        if settings_invoked && self.settings.is_open() {
+            self.reload_configuration();
+        }
+        let configuration = &mut self.configuration;
         self.transition = match &mut self.mode {
             WorkbenchMode::Project {
                 workspace,
                 habitat,
                 offline,
-            } => match workspace.pulse(ui) {
+            } => match workspace.pulse(ui, configuration) {
                 None => None,
                 Some(WorkspaceAction::Projects) => Some(WorkbenchTransition::Projects),
                 Some(WorkspaceAction::Reload) => {
@@ -150,6 +181,8 @@ impl Workbench {
             }
             WorkbenchMode::Limbo => unreachable!("workbench transition escaped its pulse"),
         };
+        self.settings_actuator(ui.ctx());
+        self.show_settings(ui.ctx());
     }
 
     pub fn window_title(&self) -> String {
@@ -169,23 +202,90 @@ impl Workbench {
     }
 
     pub fn next_service_deadline(&self, now: Instant) -> Option<Instant> {
-        match &self.mode {
+        let mode = match &self.mode {
             WorkbenchMode::Project { workspace, .. } => workspace.service_deadline(now),
             WorkbenchMode::Projects(_) | WorkbenchMode::Limbo => None,
-        }
+        };
+        mode.into_iter().chain(self.configuration.deadline()).min()
     }
 
     pub fn service_reached(&mut self, now: Instant) -> bool {
-        match &mut self.mode {
+        let changed = self.configuration.service_deadline_reached(now);
+        if changed {
+            self.mode
+                .configuration_changed(self.configuration.live().base_pace());
+        }
+        let mode_changed = match &mut self.mode {
             WorkbenchMode::Project { workspace, .. } => workspace.service_deadline_reached(now),
             WorkbenchMode::Projects(_) | WorkbenchMode::Limbo => false,
-        }
+        };
+        changed | mode_changed
     }
 
-    const fn still(mode: WorkbenchMode) -> Self {
+    const fn still(
+        mode: WorkbenchMode,
+        configuration: ConfigurationLedger<Preferences>,
+        settings: SettingsSheet,
+    ) -> Self {
         Self {
             mode,
             transition: None,
+            configuration,
+            settings,
+        }
+    }
+
+    fn reload_configuration(&mut self) {
+        if self.configuration.fault().is_some() || self.configuration.settled() {
+            let _requested = self.configuration.request_reload();
+        }
+    }
+
+    fn settings_actuator(&mut self, ctx: &egui::Context) {
+        let needs_attention = self.configuration.fault().is_some();
+        let response = egui::Area::new(egui::Id::new("trailgen-settings-actuator"))
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 16.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| self.settings.activator(ui, needs_attention))
+            .inner;
+        self.mode.water_mut().monoglyph(&response);
+    }
+
+    fn show_settings(&mut self, ctx: &egui::Context) {
+        let path = self.configuration.path().to_owned();
+        let fault = self.configuration.fault().map(ToString::to_string);
+        let mut base_pace = self.configuration.live().base_pace().kmh();
+        let file = fault.as_deref().map_or_else(
+            || SettingsFile::ready(&path),
+            |message| SettingsFile::fault(&path, message),
+        );
+        let file = file
+            .reloading(self.configuration.reload_pending())
+            .reloadable(self.configuration.fault().is_some() || self.configuration.settled());
+        let mut changed = false;
+        let response = self
+            .settings
+            .show(ctx, self.mode.water_mut(), file, |settings| {
+                settings.section("CALIBRATION");
+                changed |= settings.number(
+                    BASE_PACE_SETTING,
+                    &mut base_pace,
+                    MIN_BASE_PACE_KMH..=MAX_BASE_PACE_KMH,
+                    0.1,
+                    1,
+                );
+            });
+        if changed
+            && self
+                .configuration
+                .revise(|preferences| preferences.set_base_pace(base_pace))
+                .is_ok()
+        {
+            self.mode
+                .configuration_changed(self.configuration.live().base_pace());
+        }
+        if response.reload_requested() {
+            self.reload_configuration();
         }
     }
 
@@ -246,7 +346,7 @@ impl Workbench {
 
     #[cfg(feature = "egui-test")]
     pub(crate) fn witness_state(&self, text_edit_focused: bool) -> crate::witness::State {
-        match &self.mode {
+        let mut state = match &self.mode {
             WorkbenchMode::Project { workspace, .. } => match workspace {
                 ProjectWorkspace::Trail(app) => app.witness_state(text_edit_focused),
                 ProjectWorkspace::Survey(project) => project.witness_state(text_edit_focused),
@@ -261,18 +361,42 @@ impl Workbench {
                 state
             }
             WorkbenchMode::Limbo => unreachable!("workbench transition escaped its witness"),
-        }
+        };
+        state.base_pace_kmh = Some(self.configuration.live().base_pace().kmh());
+        state.settings = crate::witness::Settings {
+            open: self.settings.is_open(),
+            fault: self.configuration.fault().is_some(),
+            settled: self.configuration.settled(),
+        };
+        state
     }
 }
 
 impl ProjectWorkspace {
-    fn pulse(&mut self, ui: &mut egui::Ui) -> Option<WorkspaceAction> {
+    fn pulse(
+        &mut self,
+        ui: &mut egui::Ui,
+        configuration: &mut ConfigurationLedger<Preferences>,
+    ) -> Option<WorkspaceAction> {
         match self {
-            Self::Trail(app) => app.pulse(ui).map(|action| match action {
+            Self::Trail(app) => app.pulse(ui, configuration).map(|action| match action {
                 TrailAction::Projects => WorkspaceAction::Projects,
                 TrailAction::Reload => WorkspaceAction::Reload,
             }),
             Self::Survey(project) => project.pulse(ui),
+        }
+    }
+
+    fn water_mut(&mut self) -> &mut Surface {
+        match self {
+            Self::Trail(app) => app.water_mut(),
+            Self::Survey(project) => &mut project.water,
+        }
+    }
+
+    fn configuration_changed(&mut self, base_pace: crate::preferences::BasePace) {
+        if let Self::Trail(app) = self {
+            app.set_base_pace(base_pace);
         }
     }
 
@@ -334,6 +458,28 @@ impl ProjectWorkspace {
         match self {
             Self::Trail(app) => app.water_frame(ctx, pixels_per_point, tooltip_rects),
             Self::Survey(project) => project.water_frame(ctx, pixels_per_point, tooltip_rects),
+        }
+    }
+}
+
+impl WorkbenchMode {
+    fn water_mut(&mut self) -> &mut Surface {
+        match self {
+            Self::Project { workspace, .. } => workspace.water_mut(),
+            Self::Projects(deck) => &mut deck.water,
+            Self::Limbo => unreachable!("workbench transition escaped its water"),
+        }
+    }
+
+    fn configuration_changed(&mut self, base_pace: crate::preferences::BasePace) {
+        match self {
+            Self::Project { workspace, .. } => workspace.configuration_changed(base_pace),
+            Self::Projects(deck) => {
+                if let Some(workspace) = &mut deck.return_workspace {
+                    workspace.configuration_changed(base_pace);
+                }
+            }
+            Self::Limbo => {}
         }
     }
 }
@@ -1428,7 +1574,6 @@ fn open_project(
             &root,
             offline,
             habitat.slate_path(&root),
-            habitat.preferences_path(),
             config,
             indexed.as_ref(),
         )?))

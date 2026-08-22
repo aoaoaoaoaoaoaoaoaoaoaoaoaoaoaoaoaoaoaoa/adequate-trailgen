@@ -11,7 +11,7 @@ pub fn run(ctx: egui::Context, intent: ProjectIntent, offline: bool) -> Result<(
         let bootstrap =
             tracing::info_span!(target: "eternalist::startup", "application.bootstrap").entered();
         let habitat = Habitat::discover()?;
-        let app = Workbench::launch(ctx, habitat, intent, offline);
+        let app = Workbench::launch(ctx, habitat, intent, offline)?;
         drop(bootstrap);
         Ok(app)
     })

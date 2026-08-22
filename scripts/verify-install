@@ -9,7 +9,13 @@ prefix=$sandbox/prefix
 home=$sandbox/home
 mkdir -p "$home"
 
-"$root/scripts/install-local.sh" "$prefix"
+# Cargo ignores a binary package's lockfile by default. Exercise that ordinary
+# consumer resolution so every version admitted by Cargo.toml must compose.
+cargo install \
+  --path "$root/crates/trailgen-cli" \
+  --bin trailgen \
+  --root "$prefix" \
+  --force
 binary=$prefix/bin/trailgen
 test -x "$binary"
 

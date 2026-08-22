@@ -1,18 +1,16 @@
-use crate::persistence;
-use anyhow::{Context as _, Result, ensure};
-use eternalist_apps::{ScribeOutcome, SettledScribe};
+use eternalist_apps::configuration::Configuration;
+use eternalist_apps::settings::SettingSpec;
 use serde::{Deserialize, Serialize};
-use std::{
-    fs, io,
-    path::{Path, PathBuf},
-    time::{Duration, Instant},
-};
 use trailgen_core::HikingModel;
 
-const SETTLE: Duration = Duration::from_millis(400);
 const DEFAULT_BASE_PACE_KMH: f64 = 5.0;
-const MIN_BASE_PACE_KMH: f64 = 0.5;
-const MAX_BASE_PACE_KMH: f64 = 15.0;
+pub const MIN_BASE_PACE_KMH: f64 = 0.5;
+pub const MAX_BASE_PACE_KMH: f64 = 15.0;
+pub const BASE_PACE_SETTING: SettingSpec = SettingSpec::new(
+    "base_pace_kmh",
+    "BASE PACE",
+    "Calibrate moving-time estimates in kilometres per hour.",
+);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BasePace(f64);
@@ -51,11 +49,11 @@ impl BasePace {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
-struct Values {
+pub struct Preferences {
     base_pace_kmh: f64,
 }
 
-impl Default for Values {
+impl Default for Preferences {
     fn default() -> Self {
         Self {
             base_pace_kmh: DEFAULT_BASE_PACE_KMH,
@@ -63,121 +61,26 @@ impl Default for Values {
     }
 }
 
-impl Values {
-    fn validate(&self) -> Result<()> {
-        ensure!(
-            BasePace::forge(self.base_pace_kmh).is_some(),
-            "base_pace_kmh must be between {MIN_BASE_PACE_KMH} and {MAX_BASE_PACE_KMH}"
-        );
-        Ok(())
-    }
-
-    fn base_pace(&self) -> BasePace {
-        BasePace::forge(self.base_pace_kmh).expect("live preferences must remain valid")
-    }
-}
-
-/// A debounced, background-committed XDG preference ledger.
-pub struct PreferenceLedger {
-    live: Values,
-    scribe: SettledScribe<Values>,
-    alarm: Option<String>,
-}
-
-impl PreferenceLedger {
-    pub fn raise(ctx: &egui::Context, path: PathBuf) -> Result<Self> {
-        let (live, alarm) = match load(&path) {
-            Ok(values) => (values, None),
-            Err(err) => (
-                Values::default(),
-                Some(format!("Preferences reset to defaults: {err:#}")),
-            ),
-        };
-        let worker_path = path;
-        let scribe = SettledScribe::spawn(
-            "trailgen-preference-scribe",
-            ctx,
-            SETTLE,
-            move |values: Values| save(&worker_path, &values),
-        )?;
-        Ok(Self {
-            live,
-            scribe,
-            alarm,
-        })
-    }
-
+impl Preferences {
     #[must_use]
     pub fn base_pace(&self) -> BasePace {
-        self.live.base_pace()
+        BasePace::forge(self.base_pace_kmh).expect("live preferences must remain valid")
     }
 
-    pub fn revise_base_pace(&mut self, kmh: f64) -> bool {
-        let Some(pace) = BasePace::forge(kmh) else {
-            return false;
-        };
-        if pace == self.base_pace() {
-            return false;
-        }
-        self.live.base_pace_kmh = pace.kmh();
-        self.scribe.mark();
-        true
-    }
-
-    #[must_use]
-    pub fn deadline(&self) -> Option<Instant> {
-        self.scribe.deadline()
-    }
-
-    pub fn service_deadline_reached(&mut self, now: Instant) -> bool {
-        if self
-            .scribe
-            .deadline()
-            .is_some_and(|deadline| deadline <= now)
-        {
-            let values = self.live.clone();
-            if let Err(error) = self.scribe.tend(now, || values) {
-                self.alarm = Some(format!("Could not save preferences: {error:#}"));
-                return true;
-            }
-        }
-        false
-    }
-
-    pub fn take_alarm(&mut self) -> Option<String> {
-        if let Some(ScribeOutcome::Fault { message, .. }) = self.scribe.take_outcome() {
-            self.alarm = Some(format!("Could not save preferences: {message}"));
-        }
-        self.alarm.take()
+    pub fn set_base_pace(&mut self, kmh: f64) {
+        self.base_pace_kmh = (kmh * 10.0).round() / 10.0;
     }
 }
 
-impl Drop for PreferenceLedger {
-    fn drop(&mut self) {
-        if let Err(err) = self.scribe.flush(self.live.clone()) {
-            eprintln!("could not save trailgen preferences: {err:#}");
-        }
+impl Configuration for Preferences {
+    fn validate(&self) -> std::result::Result<(), String> {
+        BasePace::forge(self.base_pace_kmh).map_or_else(
+            || {
+                Err(format!(
+                    "base_pace_kmh must be between {MIN_BASE_PACE_KMH} and {MAX_BASE_PACE_KMH}"
+                ))
+            },
+            |_| Ok(()),
+        )
     }
-}
-
-fn load(path: &Path) -> Result<Values> {
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Values::default()),
-        Err(err) => {
-            return Err(err).with_context(|| format!("read preferences {}", path.display()));
-        }
-    };
-    let values = toml::from_str::<Values>(&text)
-        .with_context(|| format!("parse preferences {}", path.display()))?;
-    values.validate()?;
-    Ok(values)
-}
-
-fn save(path: &Path, values: &Values) -> Result<()> {
-    let parent = path.parent().context("preferences path has no parent")?;
-    crate::habitat::create_private_dir(parent)?;
-    let body = toml::to_string_pretty(values).context("serialize preferences")?;
-    persistence::replace(path, body.as_bytes())
-        .with_context(|| format!("replace preferences {}", path.display()))
 }

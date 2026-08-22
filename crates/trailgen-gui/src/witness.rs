@@ -59,6 +59,7 @@ mod active {
         pub last_exported: Option<String>,
         pub candidates: usize,
         pub base_pace_kmh: Option<f64>,
+        pub settings: Settings,
         pub map: Option<MapState>,
         pub areas: Option<AreaState>,
         pub civic: Option<CivicState>,
@@ -81,6 +82,11 @@ mod active {
                 last_exported: None,
                 candidates: 0,
                 base_pace_kmh: None,
+                settings: Settings {
+                    open: false,
+                    fault: false,
+                    settled: false,
+                },
                 map: None,
                 areas: None,
                 civic: None,
@@ -90,6 +96,13 @@ mod active {
                 profile: None,
             }
         }
+    }
+
+    #[derive(Default, Serialize)]
+    pub struct Settings {
+        pub open: bool,
+        pub fault: bool,
+        pub settled: bool,
     }
 
     #[derive(Serialize)]

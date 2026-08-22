@@ -22,10 +22,10 @@ bytemuck = { version = "1.25.2", features = ["derive"] }
 clap = { version = "4.6.6", features = ["derive"] }
 crossbeam-channel = "0.5.16"
 directories = "6.0.0"
-brass_poolrooms = "0.13.12"
+brass_poolrooms = "0.14.0"
 egui = "=0.36.1"
 egui-wgpu = { version = "=0.36.1", default-features = false }
-eternalist-apps = "0.7.12"
+eternalist-apps = "0.9.0"
 fast-mvt = { version = "0.6.2", default-features = false, features = ["reader"] }
 futures-util = "0.3.34"
 geo-types = "0.7.20"
@@ -53,18 +53,18 @@ toml = "1.1.4"
 tracing = "0.1.44"
 tracing-chrome = "0.7.2"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry"] }
-trailgen-core = { path = "crates/trailgen-core", version = "0.3.8" }
-trailgen-contract = { path = "crates/trailgen-contract", version = "0.3.8" }
-trailgen-data = { path = "crates/trailgen-data", version = "0.3.8" }
-trailgen-gui = { path = "crates/trailgen-gui", version = "0.3.8" }
+trailgen-core = { path = "crates/trailgen-core", version = "0.3.11" }
+trailgen-contract = { path = "crates/trailgen-contract", version = "0.3.11" }
+trailgen-data = { path = "crates/trailgen-data", version = "0.3.11" }
+trailgen-gui = { path = "crates/trailgen-gui", version = "0.3.11" }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 zstd = "0.13.3"
 
 [workspace.dependencies.egui-tester]
-version = "0.9.6"
+version = "0.9.7"
 
 [workspace.dependencies.egui-tester-witness]
-version = "0.9.6"
+version = "0.9.7"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

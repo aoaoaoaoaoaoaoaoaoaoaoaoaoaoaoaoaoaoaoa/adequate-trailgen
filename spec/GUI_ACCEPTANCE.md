@@ -10,7 +10,7 @@ durable or rendered oracle before passing. Tests never call product internals.
 1. **Discover and keep.** Create a project, draw a map area, acquire local OSM,
    USGS, and terrain fixtures; switch class → formal/informal → terrain colors
    while rendered line cadence remains fixed; place a trailhead with Alt-click,
-   set and explain Base Pace, lasso a search boundary, set moving-time bounds
+   open Settings with `F2`, set and explain Base Pace, lasso a search boundary, set moving-time bounds
    and a lower-limb-load target,
    start with Enter, observe eager candidate promotion, and save. Open the
    generated command guide with `F1`, prove its rendered presentation and modal
@@ -21,7 +21,7 @@ durable or rendered oracle before passing. Tests never call product internals.
    prior basemap through acquisition and installation, resize the area by its
    typed corner handle, refresh without unloading the saved trail or focused
    view, then recover both areas, the trail, and the color projection after
-   restart. Base Pace must reach XDG configuration and survive restart. No
+   restart. Base Pace must reach strict XDG configuration and survive restart. No
    intervening witness may report zero presented basemap tiles.
 2. **Refine deliberately.** Open and rename a saved trail, drag a support onto
    another branch, prove recomputation occurs after release, verify the native
@@ -39,7 +39,7 @@ durable or rendered oracle before passing. Tests never call product internals.
    successor renumbering, restore it, restart before saving and recover the
    exact unfinished design, close and reverse a loop, exercise the elevation
    reticle, reject torn editor/focus presentation during save, export through
-   the saved-row `↥` target, parse the resulting GPX through the production
+   the saved-row `➚` target, parse the resulting GPX through the production
    route reader, and recover the loop after restart.
 5. **Work while preparing.** Open the real workbench while graph armament is
    deliberately stalled, edit and durably persist the search recipe, reject a

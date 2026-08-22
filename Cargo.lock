@@ -204,6 +204,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
+name = "atomic-write-file"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae67d5c03ee972c101a1d8db3ddbf8a9c819ad1ea9d6fd9cd385605547b60edb"
+dependencies = [
+ "nix",
+ "rand",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -315,15 +325,15 @@ dependencies = [
 
 [[package]]
 name = "brass_foundry"
-version = "0.13.12"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a17ec4de95d3ab5bd4621b4b415888c2b81a967d0e8d2558bf39390472daa77"
+checksum = "ce56acf00bd1a8696d088e40b776e06476ea1c056a2ca8b4d718092b1551255b"
 
 [[package]]
 name = "brass_poolrooms"
-version = "0.13.12"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca675435651f2ca30b09aa4733d820e53781ac22011aac61fbe11a415eb12cf1"
+checksum = "a5daa0cc4b70b32026dc953529149c4be67768cd685cc5dae7852cf371568db5"
 dependencies = [
  "anyhow",
  "brass_foundry",
@@ -914,9 +924,9 @@ dependencies = [
 
 [[package]]
 name = "egui-tester"
-version = "0.9.6"
+version = "0.9.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c611c4f9f7da0c596688d85ab92ec91bd00601f7f04fe11d5ac8af6149d3aef6"
+checksum = "5b274f03990d187570b3c1172dd504296ee88d28cafa60968013d1fd69d0ba23"
 dependencies = [
  "bitflags 2.13.1",
  "egui-tester-witness",
@@ -932,9 +942,9 @@ dependencies = [
 
 [[package]]
 name = "egui-tester-witness"
-version = "0.9.6"
+version = "0.9.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2177c0efe0f2d2c362bfcc9fb6a833e799730c27697248578cce86ff12d4cad7"
+checksum = "09759d7c75eb3d380c0307d0347f0b024eafaf783f337abeed11e130ae115728"
 dependencies = [
  "egui",
  "rustix 1.1.4",
@@ -1052,11 +1062,12 @@ checksum = "0b5343afd4a8365a643ac588dab4cf234a190c7f6c88c9f6dd6ffe00837661b7"
 
 [[package]]
 name = "eternalist-apps"
-version = "0.7.12"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3aa020d70f593f396c74bc124fe3695afc4803e45f2aa56036da96cf212a4c4a"
+checksum = "13ad86c78234a33c52dd3807b3ae90b162e78b6705382200ca3b378a7d1cc172"
 dependencies = [
  "anyhow",
+ "atomic-write-file",
  "brass_poolrooms",
  "crossbeam-channel",
  "egui",
@@ -1065,8 +1076,10 @@ dependencies = [
  "egui-winit",
  "pollster 1.0.1",
  "serde",
+ "serde_ignored",
  "serde_json",
  "sha2 0.10.9",
+ "toml_edit",
  "tracing",
  "tracing-chrome",
  "tracing-subscriber",
@@ -2121,6 +2134,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee6cda3051665f1fb8d9e08fc35c96d5a244fb1be711a03b71118828afc9a873"
 dependencies = [
  "jni-sys 0.3.1",
+]
+
+[[package]]
+name = "nix"
+version = "0.31.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
+dependencies = [
+ "bitflags 2.13.1",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
 ]
 
 [[package]]
@@ -3457,6 +3482,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_ignored"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "115dffd5f3853e06e746965a20dcbae6ee747ae30b543d91b0e089668bb07798"
+dependencies = [
+ "serde",
+ "serde_core",
+]
+
+[[package]]
 name = "serde_json"
 version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3933,8 +3968,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6975367e4d2ef766d86af01ffad14b622fecc8d4357a998fbc4deb6e9bacaf9b"
 dependencies = [
  "indexmap",
+ "serde_core",
+ "serde_spanned",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 
@@ -4069,7 +4107,7 @@ dependencies = [
 
 [[package]]
 name = "trailgen"
-version = "0.3.8"
+version = "0.3.11"
 dependencies = [
  "anyhow",
  "clap",
@@ -4078,7 +4116,7 @@ dependencies = [
 
 [[package]]
 name = "trailgen-acceptance"
-version = "0.3.8"
+version = "0.3.11"
 dependencies = [
  "egui-tester",
  "fast-mvt",
@@ -4095,14 +4133,14 @@ dependencies = [
 
 [[package]]
 name = "trailgen-contract"
-version = "0.3.8"
+version = "0.3.11"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "trailgen-core"
-version = "0.3.8"
+version = "0.3.11"
 dependencies = [
  "num-traits",
  "osmpbfreader",
@@ -4122,7 +4160,7 @@ dependencies = [
 
 [[package]]
 name = "trailgen-data"
-version = "0.3.8"
+version = "0.3.11"
 dependencies = [
  "anyhow",
  "png",
@@ -4138,7 +4176,7 @@ dependencies = [
 
 [[package]]
 name = "trailgen-gui"
-version = "0.3.8"
+version = "0.3.11"
 dependencies = [
  "anyhow",
  "brass_poolrooms",

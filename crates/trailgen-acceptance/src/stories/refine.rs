@@ -112,7 +112,7 @@ fn save_refinement(
         .as_ref()
         .map_or(0, |editor| editor.support_points.len());
     let _rename = story
-        .key(Key::Function(2))?
+        .key(Key::Function(3))?
         .until(shows::view(View::Edit) & shows::rename(true) & shows::text_focused())?;
     let _typed = story
         .replace_text(

@@ -11,7 +11,7 @@ use crate::{
     live_area::{self, RegionHandles, RegionScribe, ResizeEvent, ScribeEvent},
     map::{self, Atlas, SELECTED_TRAIL_COLOR, Viewport},
     portfolio::{self, CandidatePortfolio, CandidateWarmth},
-    preferences::PreferenceLedger,
+    preferences::{BASE_PACE_SETTING, BasePace, Preferences},
     profile::ElevationProfile,
     project::{Project, SearchEvent, SearchForge, SearchHandle, SearchRequest},
     readout,
@@ -31,6 +31,7 @@ use eternalist_apps::{
     Inspector, LivingWait, NativeWake, ScribeOutcome, SettledScribe,
     command_guide::{CommandGuide, GuideSection},
     commands::{CommandDispatch, CommandStatus},
+    configuration::ConfigurationLedger,
     panel_navigation::{PanelFrame, PanelNavigator},
     responsiveness::{Drain, DrainBudget, SupersedingSender, superseding_channel},
 };
@@ -118,7 +119,8 @@ pub struct TrailApp {
     shutters: BTreeMap<String, bool>,
     inspector_scroll: f32,
     observed_slate: Slate,
-    preferences: PreferenceLedger,
+    base_pace: BasePace,
+    pending_base_pace: Option<f64>,
     water: Surface,
     living_wait: LivingWait,
     status: String,
@@ -1043,7 +1045,6 @@ impl TrailApp {
         root: &Path,
         offline: bool,
         slate_path: PathBuf,
-        preferences_path: PathBuf,
         trail_data: trailgen_data::TrailDataConfig,
         indexed: Option<&trailgen_data::Summary>,
     ) -> Result<Self> {
@@ -1055,10 +1056,6 @@ impl TrailApp {
         .entered();
         let project = product_phase!("project.open", Project::open(root)?);
         let slate = product_phase!("project.slate", Slate::load(&slate_path, &project.root));
-        let mut preferences = product_phase!(
-            "project.preferences",
-            PreferenceLedger::raise(ctx, preferences_path)?
-        );
         let refresh = !offline && !trail_data.regions.is_empty() && indexed.is_none();
         let vector = raise_region_vector(ctx, &project.root, &trail_data.regions, offline)?;
         let relief = product_phase!("project.relief", Relief::raise(ctx, &project.root)?);
@@ -1075,11 +1072,8 @@ impl TrailApp {
             config,
             library,
         } = project;
-        let (viewport, view, fit, mut status) =
+        let (viewport, view, fit, status) =
             resurrect_workbench(&slate, trail_data.regions.is_empty());
-        if let Some(alarm) = preferences.take_alarm() {
-            status = alarm;
-        }
         let cartography = map::CartographicClock::new(viewport);
         let state_scribe = raise_state_scribe(ctx, &root, slate_path)?;
         let mut app = Self {
@@ -1133,7 +1127,8 @@ impl TrailApp {
             shutters: slate.shutters.clone(),
             inspector_scroll: slate.inspector_scroll,
             observed_slate: slate,
-            preferences,
+            base_pace: BasePace::default(),
+            pending_base_pace: None,
             water: forge_water(),
             living_wait: LivingWait::default(),
             status,
@@ -1153,7 +1148,12 @@ impl TrailApp {
         self.observed_slate = self.snapshot();
     }
 
-    pub fn pulse(&mut self, ui: &mut egui::Ui) -> Option<Action> {
+    pub fn pulse(
+        &mut self,
+        ui: &mut egui::Ui,
+        configuration: &mut ConfigurationLedger<Preferences>,
+    ) -> Option<Action> {
+        self.set_base_pace(configuration.live().base_pace());
         let mut drain = EVENT_DRAIN.arm();
         self.absorb_persistence();
         product_phase!(
@@ -1212,16 +1212,22 @@ impl TrailApp {
         );
         self.panels = panels;
         self.inspector_scroll = inspector.scroll_offset;
-        inspector.agitate(&mut self.water);
+        if let Some(kmh) = self.pending_base_pace.take()
+            && configuration
+                .revise(|preferences| preferences.set_base_pace(kmh))
+                .is_ok()
+        {
+            self.set_base_pace(configuration.live().base_pace());
+        }
+        // Moving-wall impulses starve presentation during concurrent search;
+        // scroll displacement retains water response within the 40 ms cadence law.
+        self.water.heave(ui.ctx(), inspector.scroll_offset);
         let _center = product_phase!(
             "pulse.arena",
             egui::CentralPanel::default().show(ui, |ui| self.arena(ui))
         );
         product_phase!("pulse.command_guide", self.command_guide(ui));
         self.observe_persistence();
-        if let Some(alarm) = self.preferences.take_alarm() {
-            self.status = alarm;
-        }
         self.workspace_signal.take()
     }
 
@@ -1232,7 +1238,6 @@ impl TrailApp {
         self.state_scribe
             .deadline()
             .into_iter()
-            .chain(self.preferences.deadline())
             .chain(self.civic.service_deadline())
             .chain(self.vector.as_ref().and_then(VectorField::service_deadline))
             .chain(search)
@@ -1252,7 +1257,6 @@ impl TrailApp {
             changed |= vector.service_deadline_reached(now);
         }
         changed |= self.civic.service_deadline_reached(now);
-        changed |= self.preferences.service_deadline_reached(now);
         if self
             .state_scribe
             .deadline()
@@ -1270,6 +1274,17 @@ impl TrailApp {
             }
         }
         changed
+    }
+
+    pub fn set_base_pace(&mut self, base_pace: BasePace) {
+        if self.base_pace != base_pace {
+            self.base_pace = base_pace;
+            self.schedule_revision();
+        }
+    }
+
+    pub const fn water_mut(&mut self) -> &mut Surface {
+        &mut self.water
     }
 
     pub fn root(&self) -> &Path {
@@ -1357,7 +1372,8 @@ impl TrailApp {
                 .candidates
                 .as_ref()
                 .map_or(0, |portfolio| portfolio.routes.len()),
-            base_pace_kmh: Some(self.preferences.base_pace().kmh()),
+            base_pace_kmh: Some(self.base_pace.kmh()),
+            settings: crate::witness::Settings::default(),
             map: self.map_rect.is_positive().then(|| {
                 crate::witness::MapState::forge(
                     self.map_rect,
@@ -1740,9 +1756,12 @@ impl TrailApp {
     }
 
     fn calibration_panel(&mut self, ui: &mut egui::Ui) {
-        let label = ui.label(chrome::eyebrow("BASE PACE · KM/H"));
+        let label = ui.label(chrome::eyebrow(format!(
+            "{} · KM/H",
+            BASE_PACE_SETTING.name()
+        )));
         let _label = Glosses::BASE_PACE.explain(label);
-        let mut kmh = self.preferences.base_pace().kmh();
+        let mut kmh = self.base_pace.kmh();
         let pace = ui.add(
             egui::DragValue::new(&mut kmh)
                 .suffix(" KM/H")
@@ -1753,8 +1772,8 @@ impl TrailApp {
         crate::witness::anchor(ui, Target::BasePace, pace.rect);
         let changed = pace.changed();
         let _pace = Glosses::BASE_PACE.explain(pace);
-        if changed && self.preferences.revise_base_pace(kmh) {
-            self.schedule_revision();
+        if changed && BasePace::forge(kmh).is_some() {
+            self.pending_base_pace = Some(kmh);
         }
     }
 
@@ -2494,12 +2513,12 @@ impl TrailApp {
             _ => None,
         };
         let navigable = !self.view.is_editing();
-        let pace = self.preferences.base_pace();
+        let pace = self.base_pace;
         let mut opened = None;
         let mut exported = None;
         for (slot, trail) in self.library.trails().iter().enumerate() {
             let selected = active.as_ref() == Some(&trail.id);
-            let response = library_button(ui, trail, selected, navigable);
+            let response = library_button(ui, &mut self.water, trail, selected, navigable);
             #[cfg(feature = "egui-test")]
             crate::witness::anchor(
                 ui,
@@ -2893,7 +2912,7 @@ impl TrailApp {
                 rename_action = self.focus_name_control(ui, saved_id.as_ref(), name);
                 let _metrics = toolbar_text(
                     ui,
-                    readout::metrics_summary(metrics, self.preferences.base_pace()),
+                    readout::metrics_summary(metrics, self.base_pace),
                     chrome::MUTED,
                 );
                 if let Some(standing) = self
@@ -3037,7 +3056,7 @@ impl TrailApp {
             .then_some(editor)
             .and_then(|editor| editor.realization.as_ref())
             .map(|realization| {
-                readout::metrics_summary(&realization.route.metrics, self.preferences.base_pace())
+                readout::metrics_summary(&realization.route.metrics, self.base_pace)
             });
         let mut action = None;
         let _row = ui.horizontal(|ui| {
@@ -3209,7 +3228,7 @@ impl TrailApp {
                             ui,
                             &run.routes[slot],
                             &run.previews[slot],
-                            self.preferences.base_pace(),
+                            self.base_pace,
                             identity,
                             active,
                         );
@@ -4473,7 +4492,7 @@ impl TrailApp {
                 .wrapping_add(serial.wrapping_mul(0x9e37_79b9_7f4a_7c15));
         }
         let mut constraints = recipe.constraints(&self.defaults)?;
-        let pace = self.preferences.base_pace();
+        let pace = self.base_pace;
         constraints.min_moving_time_s = pace.population_time_s(constraints.min_moving_time_s);
         constraints.max_moving_time_s = pace.population_time_s(constraints.max_moving_time_s);
         Ok(SearchRequest {
@@ -5753,13 +5772,14 @@ struct LibraryResponses {
 
 fn library_button(
     ui: &mut egui::Ui,
+    water: &mut Surface,
     trail: &SavedTrail,
     selected: bool,
     enabled: bool,
 ) -> LibraryResponses {
     ui.add_enabled_ui(enabled, |ui| {
         ui.horizontal(|ui| {
-            let export_side = 30.0;
+            let export_side = chrome::MechanismSize::Large.side();
             let open_width =
                 (ui.available_width() - ui.spacing().item_spacing.x - export_side).max(1.0);
             let (rect, _) = ui.allocate_exact_size(vec2(open_width, 38.0), egui::Sense::hover());
@@ -5815,11 +5835,15 @@ fn library_button(
                     chrome::MUTED,
                 );
             }
-            let export = ui
-                .add(chrome::command_button("↥", false).min_size(vec2(export_side, export_side)))
+            let export = chrome::Monoglyph::symbol(chrome::Symbol::Export)
+                .size(chrome::MechanismSize::Large)
+                .show(ui)
                 .on_hover_text("Export GPX");
-            chrome::tension(ui, &export);
-            LibraryResponses { open, export }
+            water.monoglyph(&export);
+            LibraryResponses {
+                open,
+                export: export.into_response(),
+            }
         })
         .inner
     })
