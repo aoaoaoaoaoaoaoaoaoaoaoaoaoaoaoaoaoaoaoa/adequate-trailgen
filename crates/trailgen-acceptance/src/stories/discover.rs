@@ -72,9 +72,26 @@ fn exercise_command_guide(
     story: &mut TrailStory<'_, '_>,
     artifacts: Option<&std::path::Path>,
 ) -> Result<()> {
+    let controls = story.wait(shows::workspace(Workspace::Trail))?;
+    let help = controls
+        .anchor(&Target::Help.to_string())
+        .ok_or_else(|| crate::harness::verdict("application omitted its Help actuator"))?;
+    let settings = controls
+        .anchor("eternalist.settings.open")
+        .ok_or_else(|| crate::harness::verdict("application omitted its Settings actuator"))?;
+    demand(
+        help.rect[2] <= settings.rect[0]
+            && settings.rect[0] - help.rect[2] <= 24.0
+            && (help.rect[1] - settings.rect[1]).abs() <= 1.0
+            && (help.rect[3] - settings.rect[3]).abs() <= 1.0,
+        format!(
+            "Help {:?} was not immediately left of Settings {:?}",
+            help.rect, settings.rect
+        ),
+    )?;
     let baseline = neutral_capture(story)?;
     let opened = story
-        .key(Key::Function(1))?
+        .click(Target::Help)?
         .until(shows::command_guide(true))?;
     let card = opened
         .value()

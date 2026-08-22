@@ -123,6 +123,8 @@ open, it suspends command routing and target-relative keys, and `Escape` closes
 only the top layer. No command may bleed through an opening or closing stroke.
 Rename fields and other editors retain ordinary text ownership according to
 each command's declared text-focus policy.
+Their persistent actuators share the application window's top-right lane, with
+Help immediately left of Settings; they do not consume inspector space.
 
 The inspector has one active logical panel. Pointer engagement makes a panel
 active. `Tab` and `Shift+Tab` cycle only through that panel, including its

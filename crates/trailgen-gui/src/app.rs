@@ -1304,6 +1304,12 @@ impl TrailApp {
         &mut self.water
     }
 
+    pub(crate) fn help_activator(&mut self, ui: &mut egui::Ui) {
+        let help = self.guide.activator(ui);
+        crate::witness::response(ui, Target::Help, &help);
+        self.water.monoglyph(&help);
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -1724,27 +1730,19 @@ impl TrailApp {
     fn inspector(&mut self, ui: &mut egui::Ui, navigator: &mut PanelNavigator) {
         let _name = ui.label(chrome::title(self.name.to_ascii_uppercase()));
         ui.add_space(3.0);
+        let spec = commands::canon().spec(Edict::OpenProjects);
         let projects = ui
-            .horizontal(|ui| {
-                let width = (ui.available_width() - 31.0).max(24.0);
-                let spec = commands::canon().spec(Edict::OpenProjects);
-                let projects = ui
-                    .add_enabled(
-                        !self.view.is_editing(),
-                        chrome::command_spec_button(ui, spec, false).min_size(vec2(width, 27.0)),
-                    )
-                    .on_hover_text(format!(
-                        "{} · {}",
-                        spec.detail(),
-                        commands::canon().shortcuts(Edict::OpenProjects)[0].label(ui.ctx())
-                    ))
-                    .on_disabled_hover_text("Save or discard the trail edit first.");
-                let help = self.guide.activator(ui);
-                crate::witness::response(ui, Target::Help, &help);
-                self.water.monoglyph(&help);
-                projects
-            })
-            .inner;
+            .add_enabled(
+                !self.view.is_editing(),
+                chrome::command_spec_button(ui, spec, false)
+                    .min_size(vec2(ui.available_width(), 27.0)),
+            )
+            .on_hover_text(format!(
+                "{} · {}",
+                spec.detail(),
+                commands::canon().shortcuts(Edict::OpenProjects)[0].label(ui.ctx())
+            ))
+            .on_disabled_hover_text("Save or discard the trail edit first.");
         chrome::tension(ui, &projects);
         if chrome::exact_activation(ui, &projects) {
             self.apply_edict(CommandDispatch::Invoke(Edict::OpenProjects));
@@ -6111,6 +6109,15 @@ fn area_row(
     let mut action = None;
     let name = name.map_or_else(|| format!("AREA {slot:02}"), str::to_ascii_uppercase);
     let _row = ui.horizontal(|ui| {
+        let remove = ui
+            .add_enabled_ui(mutable, |ui| {
+                chrome::Monoglyph::symbol(chrome::Symbol::Delete)
+                    .size(chrome::MechanismSize::Medium)
+                    .show(ui)
+            })
+            .inner
+            .on_hover_text("Remove this downloaded area and update trails.");
+        water.monoglyph(&remove);
         let rename = ui
             .add_enabled_ui(renameable, |ui| {
                 chrome::Monoglyph::symbol(chrome::Symbol::Rename)
@@ -6122,18 +6129,9 @@ fn area_row(
         water.monoglyph(&rename);
         crate::witness::anchor(ui, Target::AreaRename(slot), rename.rect);
         let _label = ui.add(egui::Label::new(chrome::muted(name)).truncate());
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let remove = ui
-                .add_enabled(
-                    mutable,
-                    chrome::command_button("REMOVE", false).min_size(vec2(58.0, 22.0)),
-                )
-                .on_hover_text("Remove this downloaded area and update trails.");
-            if remove.clicked() {
-                action = Some(AreaRowAction::Remove(remove.rect));
-            }
-        });
-        if action.is_none() && rename.clicked() {
+        if remove.clicked() {
+            action = Some(AreaRowAction::Remove(remove.rect));
+        } else if rename.clicked() {
             action = Some(AreaRowAction::Rename);
         }
     });

@@ -38,6 +38,12 @@ use trailgen_data::SurveyRegion;
 const EVENT_DRAIN: DrainBudget = DrainBudget::new(64, Duration::from_millis(3));
 const CONFIGURATION_SETTLE: Duration = Duration::from_millis(400);
 
+fn present_help(ui: &mut egui::Ui, guide: &mut CommandGuide, water: &mut Surface) {
+    let help = guide.activator(ui);
+    crate::witness::response(ui, Target::Help, &help);
+    water.monoglyph(&help);
+}
+
 pub struct Workbench {
     mode: WorkbenchMode,
     transition: Option<WorkbenchTransition>,
@@ -143,6 +149,7 @@ impl Workbench {
         if settings_invoked && self.settings.is_open() {
             self.reload_configuration();
         }
+        self.application_actuators(ui.ctx());
         let configuration = &mut self.configuration;
         self.transition = match &mut self.mode {
             WorkbenchMode::Project {
@@ -181,7 +188,6 @@ impl Workbench {
             }
             WorkbenchMode::Limbo => unreachable!("workbench transition escaped its pulse"),
         };
-        self.settings_actuator(ui.ctx());
         self.show_settings(ui.ctx());
     }
 
@@ -241,14 +247,20 @@ impl Workbench {
         }
     }
 
-    fn settings_actuator(&mut self, ctx: &egui::Context) {
+    fn application_actuators(&mut self, ctx: &egui::Context) {
         let needs_attention = self.configuration.fault().is_some();
-        let response = egui::Area::new(egui::Id::new("trailgen-settings-actuator"))
+        let mode = &mut self.mode;
+        let settings = &mut self.settings;
+        let _actuators = egui::Area::new(egui::Id::new("trailgen-application-actuators"))
             .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 16.0))
             .order(egui::Order::Foreground)
-            .show(ctx, |ui| self.settings.activator(ui, needs_attention))
-            .inner;
-        self.mode.water_mut().monoglyph(&response);
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    mode.help_activator(ui);
+                    let settings = settings.activator(ui, needs_attention);
+                    mode.water_mut().monoglyph(&settings);
+                });
+            });
     }
 
     fn show_settings(&mut self, ctx: &egui::Context) {
@@ -394,6 +406,15 @@ impl ProjectWorkspace {
         }
     }
 
+    fn help_activator(&mut self, ui: &mut egui::Ui) {
+        match self {
+            Self::Trail(app) => app.help_activator(ui),
+            Self::Survey(project) => {
+                present_help(ui, &mut project.guide, &mut project.water);
+            }
+        }
+    }
+
     fn configuration_changed(&mut self, base_pace: crate::preferences::BasePace) {
         if let Self::Trail(app) = self {
             app.set_base_pace(base_pace);
@@ -468,6 +489,14 @@ impl WorkbenchMode {
             Self::Project { workspace, .. } => workspace.water_mut(),
             Self::Projects(deck) => &mut deck.water,
             Self::Limbo => unreachable!("workbench transition escaped its water"),
+        }
+    }
+
+    fn help_activator(&mut self, ui: &mut egui::Ui) {
+        match self {
+            Self::Project { workspace, .. } => workspace.help_activator(ui),
+            Self::Projects(deck) => present_help(ui, &mut deck.guide, &mut deck.water),
+            Self::Limbo => unreachable!("workbench transition escaped its help actuator"),
         }
     }
 
@@ -695,23 +724,17 @@ impl SurveyWorkbench {
         ui.add_space(ui.spacing().item_spacing.x);
         let _name = ui.label(chrome::title(self.name.to_ascii_uppercase()));
         ui.add_space(3.0);
+        let spec = commands::canon().spec(Edict::OpenProjects);
         let projects = ui
-            .horizontal(|ui| {
-                let width = (ui.available_width() - 31.0).max(24.0);
-                let spec = commands::canon().spec(Edict::OpenProjects);
-                let projects = ui
-                    .add(chrome::command_spec_button(ui, spec, false).min_size(vec2(width, 27.0)))
-                    .on_hover_text(format!(
-                        "{} · {}",
-                        spec.detail(),
-                        commands::canon().shortcuts(Edict::OpenProjects)[0].label(ui.ctx())
-                    ));
-                let help = self.guide.activator(ui);
-                crate::witness::response(ui, Target::Help, &help);
-                self.water.monoglyph(&help);
-                projects
-            })
-            .inner;
+            .add(
+                chrome::command_spec_button(ui, spec, false)
+                    .min_size(vec2(ui.available_width(), 27.0)),
+            )
+            .on_hover_text(format!(
+                "{} · {}",
+                spec.detail(),
+                commands::canon().shortcuts(Edict::OpenProjects)[0].label(ui.ctx())
+            ));
         chrome::tension(ui, &projects);
         if chrome::exact_activation(ui, &projects) {
             self.apply_edict(
@@ -1471,26 +1494,21 @@ impl ProjectDeck {
         }
     }
 
-    fn footnotes(&mut self, ui: &mut egui::Ui) {
+    fn footnotes(&self, ui: &mut egui::Ui) {
         ui.add_space(10.0);
         let library = self.habitat.library_root().map_or_else(
             || "OS DOCUMENTS DIRECTORY UNAVAILABLE · CHOOSE A PARENT FOLDER".to_owned(),
             |root| format!("CONVENTIONAL LIBRARY · {}", root.display()),
         );
         let _library = chrome::note(ui, library);
-        let _row = ui.horizontal(|ui| {
-            let _shortcut = chrome::note(
-                ui,
-                format!(
-                    "{} OPENS THIS DECK FROM A PROJECT",
-                    commands::canon().shortcuts(Edict::OpenProjects)[0].label(ui.ctx())
-                )
-                .to_ascii_uppercase(),
-            );
-            let help = self.guide.activator(ui);
-            crate::witness::response(ui, Target::Help, &help);
-            self.water.monoglyph(&help);
-        });
+        let _shortcut = chrome::note(
+            ui,
+            format!(
+                "{} OPENS THIS DECK FROM A PROJECT",
+                commands::canon().shortcuts(Edict::OpenProjects)[0].label(ui.ctx())
+            )
+            .to_ascii_uppercase(),
+        );
     }
 
     fn new_project_root(&self) -> Option<PathBuf> {
