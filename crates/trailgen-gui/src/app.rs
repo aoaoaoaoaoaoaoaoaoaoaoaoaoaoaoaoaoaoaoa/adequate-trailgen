@@ -99,6 +99,7 @@ pub struct TrailApp {
     sort: TrailSort,
     trail_coloring: map::TrailColoring,
     viewport: Viewport,
+    map_probe: Option<Coord>,
     cartography: map::CartographicClock,
     scale_bar: map::ScaleBar,
     focus_frame: FocusFrame,
@@ -1127,6 +1128,7 @@ impl TrailApp {
             sort: slate.sort,
             trail_coloring: slate.trail_coloring,
             viewport,
+            map_probe: None,
             cartography,
             scale_bar: map::ScaleBar::default(),
             focus_frame: FocusFrame::default(),
@@ -1417,6 +1419,7 @@ impl TrailApp {
                     self.vector
                         .as_ref()
                         .map_or(0, VectorField::presented_tile_count),
+                    self.map_probe.map(|coord| [coord.lon, coord.lat]),
                 )
             }),
             areas: Some(crate::witness::AreaState {
@@ -2286,9 +2289,9 @@ impl TrailApp {
             } else if placing {
                 place.on_hover_text("Cancel trailhead placement · Esc")
             } else {
-                place.on_hover_text("Place or move the trailhead on the map · Alt+Click")
+                place.on_hover_text("Arm the map, then click a trail")
             };
-            crate::witness::anchor(ui, "search.trailhead", place.rect);
+            crate::witness::anchor(ui, Target::TrailheadPlacement, place.rect);
             chrome::tension(ui, &place);
             if place.clicked() {
                 self.placing_trailhead = !placing;
@@ -2314,9 +2317,9 @@ impl TrailApp {
         let _set = chrome::note(
             ui,
             if recipe.trailhead.is_some() {
-                "TRAILHEAD SET · DRAG PIN OR ALT+CLICK TO MOVE"
+                "TRAILHEAD SET · DRAG PIN OR CHOOSE MOVE ON MAP"
             } else {
-                "ALT+CLICK MAP TO PLACE"
+                "CHOOSE PLACE ON MAP, THEN CLICK A TRAIL"
             },
         );
     }
@@ -2934,9 +2937,9 @@ impl TrailApp {
             } else if self.creator_mode == CreatorMode::Neutral {
                 "Select Manual to draw a trail or Finder to search."
             } else if self.placing_trailhead {
-                "Click a trail to place the trailhead. Alt+click also works; Esc cancels."
+                "Click a trail to place the trailhead; Esc cancels."
             } else if self.active_trailhead().is_none() {
-                "Place a trailhead, or Alt+click the map, then choose Find trails."
+                "Choose Place on Map, then click a trail and choose Find Trails."
             } else if self.trailhead_drag.is_some() {
                 "Drag the trailhead to a new starting point."
             } else {
@@ -3646,6 +3649,7 @@ impl TrailApp {
             civic_area::paint_labels(&canvas, &civic_labels)
         );
         self.paint_profile_marker(&canvas, rect);
+        self.paint_map_probe(&canvas, rect);
         if self.view.is_editing() {
             self.paint_support_points(&canvas, rect, legend_rect);
         } else if let Some(trailhead) = self.active_trailhead() {
@@ -3769,6 +3773,30 @@ impl TrailApp {
             Stroke::new(4.2_f32, Color32::from_black_alpha(185)),
         );
         let _ring = painter.circle_stroke(center, 7.5, Stroke::new(2.3_f32, chrome::HOT));
+    }
+
+    fn paint_map_probe(&self, painter: &egui::Painter, rect: egui::Rect) {
+        let Some(coord) = self.map_probe else {
+            return;
+        };
+        let anchor = map::screen_at(self.viewport, rect, map::world_from_coord(coord));
+        if !rect.contains(anchor) {
+            return;
+        }
+        let _shadow = painter.circle_filled(anchor, 6.0, Color32::from_black_alpha(190));
+        let _dot = painter.circle_filled(anchor, 3.5, chrome::HOT);
+        let plate = paint_coordinate_callout(painter, rect, anchor, coord);
+        #[cfg(feature = "egui-test")]
+        crate::witness::rect(painter.ctx(), Target::MapProbe, plate);
+        #[cfg(not(feature = "egui-test"))]
+        let _ = plate;
+    }
+
+    fn place_map_probe(&mut self, ctx: &egui::Context, coord: Coord) {
+        let coordinates = coordinate_text(coord);
+        self.map_probe = Some(coord);
+        ctx.copy_text(coordinates.clone());
+        self.status = format!("Coordinates copied: {coordinates}");
     }
 
     fn forge_cartography(
@@ -3967,8 +3995,7 @@ impl TrailApp {
         if trailhead.stopped {
             self.finish_trailhead_drag(rect);
         }
-        let alt_click = click_modifiers.is_some_and(|modifiers| modifiers.alt)
-            && self.trailhead_input_available()
+        let alt_click = click_modifiers.is_some_and(|modifiers| modifiers.alt && !modifiers.shift)
             && !trailhead.captured;
         let annotation_click = self.view.is_editing()
             && click_modifiers.is_some_and(|modifiers| modifiers.alt && !modifiers.shift);
@@ -3976,10 +4003,12 @@ impl TrailApp {
             self.view.is_editing() && click_modifiers.is_some_and(|modifiers| modifiers.shift);
         if annotation_click {
             if let Some(slot) = support_under_pointer {
-                self.toggle_support_callout(slot);
+                self.toggle_support_callout(ui.ctx(), slot);
+            } else if let Some(pointer) = pointer {
+                self.place_map_probe(ui.ctx(), map::coord_at(self.viewport, rect, pointer));
             }
         } else if alt_click && let Some(pointer) = pointer {
-            self.place_trailhead(map::coord_at(self.viewport, rect, pointer), pointer);
+            self.place_map_probe(ui.ctx(), map::coord_at(self.viewport, rect, pointer));
         } else if excision_click {
             if let Some(slot) = support_under_pointer {
                 self.excise_editor_support(slot);
@@ -4349,39 +4378,11 @@ impl TrailApp {
                 map::screen_at(self.viewport, rect, map::world_from_coord(support.coord()));
             let hardware = chrome::ForgePin::new(anchor).size(chrome::MechanismSize::Medium);
             if editor.coordinate_callouts[slot] {
-                let coord = support.coord();
-                let galley = painter.layout_no_wrap(
-                    format!("{:.6}, {:.6}", coord.lat, coord.lon),
-                    egui::FontId::monospace(11.0),
-                    chrome::TEXT,
-                );
-                let size = galley.size() + vec2(10.0, 6.0);
-                let top = if anchor.y - size.y - 17.0 >= rect.top() + 4.0 {
-                    anchor.y - size.y - 17.0
-                } else {
-                    anchor.y + 17.0
-                };
-                let left = size
-                    .x
-                    .mul_add(-0.5, anchor.x)
-                    .clamp(rect.left() + 4.0, rect.right() - size.x - 4.0);
-                let plate = egui::Rect::from_min_size(egui::pos2(left, top), size);
-                let tether = if plate.center().y < anchor.y {
-                    plate.center_bottom()
-                } else {
-                    plate.center_top()
-                };
-                painter.line_segment([tether, anchor], Stroke::new(1.0_f32, chrome::EDGE_STRONG));
-                let _fill = painter.rect_filled(plate, 1.0, chrome::SURFACE.gamma_multiply(0.96));
-                let _stroke = painter.rect_stroke(
-                    plate,
-                    1.0,
-                    Stroke::new(1.0_f32, chrome::EDGE_STRONG),
-                    egui::StrokeKind::Inside,
-                );
-                painter.galley(plate.min + vec2(5.0, 3.0), galley, chrome::TEXT);
+                let plate = paint_coordinate_callout(painter, rect, anchor, support.coord());
                 #[cfg(feature = "egui-test")]
                 crate::witness::rect(painter.ctx(), Target::SupportCallout(slot), plate);
+                #[cfg(not(feature = "egui-test"))]
+                let _ = plate;
             }
             let hot = hover_pointer.is_some_and(|pointer| hardware.grip().contains(pointer));
             let hardware = hardware.inscription(if excising {
@@ -4505,19 +4506,22 @@ impl TrailApp {
         self.status = format!("Pin {slot} deleted.");
     }
 
-    fn toggle_support_callout(&mut self, slot: usize) {
-        let Some(visible) = self
-            .view
-            .editor_mut()
-            .and_then(|editor| editor.coordinate_callouts.get_mut(slot))
-        else {
+    fn toggle_support_callout(&mut self, ctx: &egui::Context, slot: usize) {
+        let Some(editor) = self.view.editor_mut() else {
             return;
         };
+        let Some(visible) = editor.coordinate_callouts.get_mut(slot) else {
+            return;
+        };
+        let coord = editor.support_points[slot].coord();
         *visible = !*visible;
-        self.status = format!(
-            "Pin {slot} coordinates {}.",
-            if *visible { "shown" } else { "hidden" }
-        );
+        if *visible {
+            let coordinates = coordinate_text(coord);
+            ctx.copy_text(coordinates.clone());
+            self.status = format!("Pin {slot} coordinates copied: {coordinates}");
+        } else {
+            self.status = format!("Pin {slot} coordinates hidden.");
+        }
     }
 
     fn finish_editor_drag(&mut self) {
@@ -6202,6 +6206,49 @@ fn gallery_empty(ui: &egui::Ui, message: &str) {
         egui::FontId::monospace(13.0),
         chrome::MUTED,
     );
+}
+
+fn coordinate_text(coord: Coord) -> String {
+    format!("{:.7}, {:.7}", coord.lat, coord.lon)
+}
+
+fn paint_coordinate_callout(
+    painter: &egui::Painter,
+    map_rect: egui::Rect,
+    anchor: egui::Pos2,
+    coord: Coord,
+) -> egui::Rect {
+    let galley = painter.layout_no_wrap(
+        coordinate_text(coord),
+        egui::FontId::monospace(11.0),
+        chrome::TEXT,
+    );
+    let size = galley.size() + vec2(10.0, 6.0);
+    let top = if anchor.y - size.y - 17.0 >= map_rect.top() + 4.0 {
+        anchor.y - size.y - 17.0
+    } else {
+        anchor.y + 17.0
+    };
+    let left = size
+        .x
+        .mul_add(-0.5, anchor.x)
+        .clamp(map_rect.left() + 4.0, map_rect.right() - size.x - 4.0);
+    let plate = egui::Rect::from_min_size(egui::pos2(left, top), size);
+    let tether = if plate.center().y < anchor.y {
+        plate.center_bottom()
+    } else {
+        plate.center_top()
+    };
+    painter.line_segment([tether, anchor], Stroke::new(1.0_f32, chrome::EDGE_STRONG));
+    let _fill = painter.rect_filled(plate, 1.0, chrome::SURFACE.gamma_multiply(0.96));
+    let _stroke = painter.rect_stroke(
+        plate,
+        1.0,
+        Stroke::new(1.0_f32, chrome::EDGE_STRONG),
+        egui::StrokeKind::Inside,
+    );
+    painter.galley(plate.min + vec2(5.0, 3.0), galley, chrome::TEXT);
+    plate
 }
 
 fn paint_support_fault(

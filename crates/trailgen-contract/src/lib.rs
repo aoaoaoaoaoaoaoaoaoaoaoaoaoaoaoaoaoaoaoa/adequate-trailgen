@@ -7,7 +7,7 @@ use std::{borrow::Cow, fmt};
 
 use serde::{Deserialize, Serialize};
 
-pub const UI_FINGERPRINT: &str = "trailgen.ui/18";
+pub const UI_FINGERPRINT: &str = "trailgen.ui/19";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -140,7 +140,9 @@ pub enum Target {
     SurveyAddArea,
     SurveyMap,
     Map,
+    MapProbe,
     TrailheadPin,
+    TrailheadPlacement,
     TrailDataWait,
     SearchWait,
     LegendClass,
@@ -195,14 +197,16 @@ pub enum Target {
 }
 
 impl Target {
-    pub const STATIC: [Self; 45] = [
+    pub const STATIC: [Self; 47] = [
         Self::ProjectName,
         Self::ProjectParent,
         Self::ProjectCreate,
         Self::SurveyAddArea,
         Self::SurveyMap,
         Self::Map,
+        Self::MapProbe,
         Self::TrailheadPin,
+        Self::TrailheadPlacement,
         Self::TrailDataWait,
         Self::SearchWait,
         Self::LegendClass,
@@ -252,7 +256,9 @@ impl Target {
             Self::SurveyAddArea => "survey.add-area",
             Self::SurveyMap => "survey.map",
             Self::Map => "map.canvas",
+            Self::MapProbe => "map.coordinate-probe",
             Self::TrailheadPin => "map.trailhead-pin",
+            Self::TrailheadPlacement => "search.trailhead",
             Self::TrailDataWait => "status.trail-data.waiting",
             Self::SearchWait => "results.waiting",
             Self::LegendClass => "map.legend/class",

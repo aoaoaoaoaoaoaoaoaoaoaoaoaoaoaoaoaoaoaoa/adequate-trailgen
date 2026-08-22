@@ -114,6 +114,7 @@ mod active {
         pub world_points: f64,
         pub coloring: TrailColoring,
         pub basemap_tiles: usize,
+        pub probe: Option<[f64; 2]>,
     }
 
     impl MapState {
@@ -123,6 +124,7 @@ mod active {
             world_points: f64,
             coloring: TrailColoring,
             basemap_tiles: usize,
+            probe: Option<[f64; 2]>,
         ) -> Self {
             Self {
                 rect: [rect.min.x, rect.min.y, rect.max.x, rect.max.y],
@@ -130,6 +132,7 @@ mod active {
                 world_points,
                 coloring,
                 basemap_tiles,
+                probe,
             }
         }
     }

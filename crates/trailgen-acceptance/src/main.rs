@@ -5,11 +5,20 @@ mod observation;
 mod performance;
 mod stories;
 
-use std::{env, ffi::OsString, path::PathBuf};
+use std::{
+    env,
+    ffi::{OsStr, OsString},
+    path::PathBuf,
+};
 
 use egui_tester::{Backend, Error, Result, TestbedBuilder, WaylandConfig, X11Config};
 
+const CLIPBOARD_PROBE: &str = "--clipboard-probe";
+
 fn main() -> Result<()> {
+    if env::args_os().nth(1).as_deref() == Some(OsStr::new(CLIPBOARD_PROBE)) {
+        return print_clipboard();
+    }
     let cli = Cli::parse()?;
     let binary = env::var_os("TRAILGEN_ACCEPTANCE_BINARY")
         .map(PathBuf::from)
@@ -30,6 +39,17 @@ fn main() -> Result<()> {
             stories::run(&harness, cli.story.as_deref())
         }
     })
+}
+
+fn print_clipboard() -> Result<()> {
+    let mut clipboard = arboard::Clipboard::new().map_err(|error| Error::Verdict {
+        detail: format!("open native clipboard: {error}"),
+    })?;
+    let contents = clipboard.get_text().map_err(|error| Error::Verdict {
+        detail: format!("read native clipboard: {error}"),
+    })?;
+    print!("{contents}");
+    Ok(())
 }
 
 struct Cli {

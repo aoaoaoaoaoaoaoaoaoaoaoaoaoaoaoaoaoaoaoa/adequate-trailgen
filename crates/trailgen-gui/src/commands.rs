@@ -272,7 +272,7 @@ const PROJECT_GESTURES: [GuideGesture; 2] = [
         &ESCAPE,
     ),
 ];
-const MAP_GESTURES: [GuideGesture; 2] = [
+const MAP_GESTURES: [GuideGesture; 3] = [
     GuideGesture::new(
         "Pan map",
         "Drag unclaimed map ground to move the viewport.",
@@ -281,6 +281,11 @@ const MAP_GESTURES: [GuideGesture; 2] = [
     GuideGesture::new(
         "Zoom map",
         "Use the wheel over the map to change scale.",
+        &[],
+    ),
+    GuideGesture::new(
+        "Copy coordinates",
+        "Alt-click map ground to mark that point and copy its latitude and longitude.",
         &[],
     ),
 ];
@@ -309,7 +314,7 @@ const FINDER_GESTURES: [GuideGesture; 4] = [
     ),
     GuideGesture::new(
         "Place trailhead",
-        "Alt-click map ground to place or move the trailhead.",
+        "Choose Place on Map, then click a trail; drag an existing trailhead pin to move it.",
         &[],
     ),
     GuideGesture::new(

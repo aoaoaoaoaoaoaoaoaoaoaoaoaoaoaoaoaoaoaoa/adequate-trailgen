@@ -59,6 +59,23 @@ impl<'a> Harness<'a> {
         }
     }
 
+    pub fn clipboard_text(&self) -> Result<String> {
+        let probe = env::current_exe()
+            .map_err(|error| verdict(format!("resolve Trailgen acceptance executable: {error}")))?;
+        let clipboard = self.testbed.launch(
+            AppCommand::new(probe)
+                .arg(crate::CLIPBOARD_PROBE)
+                .runtime(Duration::from_secs(5)),
+        )?;
+        let exit = clipboard.wait(Duration::from_secs(5))?;
+        demand(
+            exit.success(),
+            format!("clipboard probe could not read native text: {exit:#?}"),
+        )?;
+        clipboard.terminate()?;
+        Ok(exit.stdout.trim().to_owned())
+    }
+
     pub fn seed_project(&self, root: &str, source: &str, route: bool) -> Result<()> {
         let relative_root = Path::new(root)
             .strip_prefix("/test")

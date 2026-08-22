@@ -9,6 +9,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+arboard.workspace = true
 egui-tester.workspace = true
 fast-mvt = { workspace = true, features = ["writer"] }
 geo-types.workspace = true

@@ -26,6 +26,20 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
     acquire_region(&mut story)?;
     exercise_command_guide(&mut story, harness.artifacts)?;
     find_and_keep(&mut story)?;
+    let probe = story
+        .frame()?
+        .state
+        .map
+        .and_then(|map| map.probe)
+        .ok_or_else(|| egui_tester::Error::Verdict {
+            detail: "coordinate probe disappeared before clipboard verification".to_owned(),
+        })?;
+    let expected_clipboard = format!("{:.7}, {:.7}", probe[1], probe[0]);
+    let clipboard = harness.clipboard_text()?;
+    demand(
+        clipboard == expected_clipboard,
+        format!("coordinate probe copied {clipboard:?} instead of {expected_clipboard:?}"),
+    )?;
     verify_preferences(harness)?;
     add_civic_area(&mut story, harness)?;
     harness.fixtures.assert_harvested()?;
@@ -905,9 +919,27 @@ fn configure_search(story: &mut TrailStory<'_, '_>) -> Result<()> {
     )?;
     exercise_color_legend(story, &frame)?;
     let frame = story.wait(shows::coloring(TrailColoring::Terrain))?;
-    let trailhead = map_pixel(&frame, [-98.5, 39.5])?;
-    let _placed = story
+    let trailhead_coord = [-98.5, 39.5];
+    let trailhead = map_pixel(&frame, trailhead_coord)?;
+    let unprobed = story.capture()?;
+    let _probed = story
         .modified_click_at(trailhead, Button::Primary, Modifiers::ALT)?
+        .until(shows::map_probe(trailhead_coord, 0.001))?;
+    let probe_plate = PixelRegion::anchor(&story.anchor(Target::MapProbe)?);
+    let probed = story.session().wait_changed_region(
+        &unprobed,
+        probe_plate,
+        0.01,
+        2,
+        Duration::from_secs(4),
+    )?;
+    demand(
+        unprobed.difference_region(&probed, probe_plate, 2)? >= 0.01,
+        "Alt-click reported a coordinate probe without painting its map marker",
+    )?;
+    let _armed = story.click(Target::TrailheadPlacement)?.next_frame()?;
+    let _placed = story
+        .click_at(trailhead, Button::Primary)?
         .until(shows::trailhead())?;
     // Trailhead placement settles after inspector layout; fence its reflow before targeting it again.
     let reflow = story.session().move_to(4, 4)?;

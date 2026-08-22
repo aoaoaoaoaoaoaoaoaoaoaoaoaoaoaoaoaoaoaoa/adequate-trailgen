@@ -24,8 +24,9 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
     let _finder = story.click(Target::Finder)?.next_frame()?;
     let frame = story.frame()?;
     let trailhead = map_pixel(&frame, [-105.0, 40.0])?;
+    let _armed = story.click(Target::TrailheadPlacement)?.next_frame()?;
     let _placed = story
-        .modified_click_at(trailhead, Button::Primary, Modifiers::ALT)?
+        .click_at(trailhead, Button::Primary)?
         .until(shows::trailhead())?;
 
     let mut strike = story.key(Key::Return)?;

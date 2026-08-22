@@ -9,7 +9,8 @@ durable or rendered oracle before passing. Tests never call product internals.
 
 1. **Discover and keep.** Create a project, draw a map area, acquire local OSM,
    USGS, and terrain fixtures; switch class → formal/informal → terrain colors
-   while rendered line cadence remains fixed; place a trailhead with Alt-click,
+   while rendered line cadence remains fixed; Alt-click a coordinate probe,
+   explicitly arm and place a trailhead,
    open Settings with `F2`, set and explain Base Pace, lasso a search boundary, set moving-time bounds
    and a lower-limb-load target,
    start with Enter, observe eager candidate promotion, and save. Open the

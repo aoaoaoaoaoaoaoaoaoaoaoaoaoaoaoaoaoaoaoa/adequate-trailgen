@@ -1043,6 +1043,7 @@ impl SurveyWorkbench {
                 map::world_pixels(self.viewport),
                 trailgen_contract::TrailColoring::Class,
                 self.vector.presented_tile_count(),
+                None,
             )
         });
         state.areas = Some(crate::witness::AreaState {

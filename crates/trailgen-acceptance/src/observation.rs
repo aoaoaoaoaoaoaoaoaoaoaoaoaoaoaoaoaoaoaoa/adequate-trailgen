@@ -43,6 +43,7 @@ pub struct MapState {
     pub world_points: f64,
     pub coloring: TrailColoring,
     pub basemap_tiles: usize,
+    pub probe: Option<[f64; 2]>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -179,6 +180,24 @@ pub mod shows {
                 .as_ref()
                 .is_some_and(|map| map.world_points >= minimum)
         })
+    }
+
+    pub fn map_probe(expected: [f64; 2], tolerance: f64) -> Condition<Observation> {
+        condition(
+            format!("map coordinate probe near {expected:?}"),
+            move |state| {
+                state
+                    .map
+                    .as_ref()
+                    .and_then(|map| map.probe)
+                    .is_some_and(|actual| {
+                        actual
+                            .into_iter()
+                            .zip(expected)
+                            .all(|(actual, expected)| (actual - expected).abs() <= tolerance)
+                    })
+            },
+        )
     }
 
     pub fn basemap_tiles_at_least(minimum: usize) -> Condition<Observation> {
