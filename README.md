@@ -30,7 +30,7 @@ Projects are portable directories rooted by `trailgen.toml`. Project content, in
 2. Draw one or more bronze-framed map areas. Trailgen acquires and indexes their union.
 3. Draw a trail directly from support points, or place a trailhead and search by distance, moving time, climb, target lower-limb load, and shape.
 4. Inspect a trail on the full map and elevation profile. Save it when it deserves durable project identity.
-5. In **Saved Trails**, press `↥` beside its name to export GPX. Unsaved candidates and unfinished edits cannot be exported.
+5. In **Saved Trails**, press `➚` beside its name to export GPX. Unsaved candidates and unfinished edits cannot be exported.
 
 The GPX carries one contiguous hiking track, the Library name, elevations where known, and the saved measurements in its description. Upload that file to AllTrails as a custom route, then open it under **Saved → Lists → Custom routes & maps** for navigation. See the [AllTrails handoff](docs/alltrails.md).
 
@@ -66,7 +66,7 @@ trailgen saved PROJECT
 trailgen export PROJECT --trail NAME_OR_ID --output route.gpx
 ```
 
-Bare `trailgen` and `trailgen gui` launch the same native workbench. `saved` prints durable Library identities and names. `export` invokes the same saved-trail GPX writer as the `↥` control; it does not regenerate, reinterpret, or select transient candidates. New shell commands belong here only when a concrete debugging need appears and shared product logic already owns the operation.
+Bare `trailgen` and `trailgen gui` launch the same native workbench. `saved` prints durable Library identities and names. `export` invokes the same saved-trail GPX writer as the `➚` control; it does not regenerate, reinterpret, or select transient candidates. New shell commands belong here only when a concrete debugging need appears and shared product logic already owns the operation.
 
 ## Verification
 

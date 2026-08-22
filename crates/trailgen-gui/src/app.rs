@@ -2473,7 +2473,7 @@ impl TrailApp {
         let mut exported = None;
         for (slot, trail) in self.library.trails().iter().enumerate() {
             let selected = active.as_ref() == Some(&trail.id);
-            let response = library_button(ui, trail, selected, navigable);
+            let response = library_button(ui, &mut self.water, trail, selected, navigable);
             #[cfg(feature = "egui-test")]
             crate::witness::anchor(
                 ui,
@@ -5660,13 +5660,14 @@ struct LibraryResponses {
 
 fn library_button(
     ui: &mut egui::Ui,
+    water: &mut Surface,
     trail: &SavedTrail,
     selected: bool,
     enabled: bool,
 ) -> LibraryResponses {
     ui.add_enabled_ui(enabled, |ui| {
         ui.horizontal(|ui| {
-            let export_side = 30.0;
+            let export_side = chrome::MechanismSize::Large.side();
             let open_width =
                 (ui.available_width() - ui.spacing().item_spacing.x - export_side).max(1.0);
             let (rect, _) = ui.allocate_exact_size(vec2(open_width, 38.0), egui::Sense::hover());
@@ -5722,11 +5723,15 @@ fn library_button(
                     chrome::MUTED,
                 );
             }
-            let export = ui
-                .add(chrome::command_button("↥", false).min_size(vec2(export_side, export_side)))
+            let export = chrome::Monoglyph::symbol(chrome::Symbol::Export)
+                .size(chrome::MechanismSize::Large)
+                .show(ui)
                 .on_hover_text("Export GPX");
-            chrome::tension(ui, &export);
-            LibraryResponses { open, export }
+            water.monoglyph(&export);
+            LibraryResponses {
+                open,
+                export: export.into_response(),
+            }
         })
         .inner
     })

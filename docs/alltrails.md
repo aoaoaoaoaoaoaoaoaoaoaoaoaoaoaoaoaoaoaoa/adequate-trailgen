@@ -5,7 +5,7 @@ Verified against [AllTrails’ official upload instructions](https://support.all
 Trailgen’s supported boundary is a manual GPX handoff. It does not automate an AllTrails account or private API.
 
 1. Finish the route and save it to the project Library.
-2. Press `↥` beside its name under **Saved Trails** and choose a `.gpx` destination.
+2. Press `➚` beside its name under **Saved Trails** and choose a `.gpx` destination.
 3. In the AllTrails mobile app, open **Saved → Lists → Custom routes & maps**, use the overflow menu, and select **Upload route**. On the website, use **Explore → Build custom route → Upload a route**.
 4. Open the resulting custom route in the mobile app and use Navigate. Download its map before departure if offline navigation is required.
 

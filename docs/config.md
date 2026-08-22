@@ -52,4 +52,4 @@ Closed and private edges remain unlawful. Roads are discouraged by finite routin
 
 ## Export
 
-The Library is the export authority. The GUI’s `↥` control and `trailgen export` both serialize the stored name, exact saved geometry, available elevations, and durable metrics through the same GPX writer. Export neither invokes a solver nor consults legacy `routes/generated.*` files.
+The Library is the export authority. The GUI’s `➚` control and `trailgen export` both serialize the stored name, exact saved geometry, available elevations, and durable metrics through the same GPX writer. Export neither invokes a solver nor consults legacy `routes/generated.*` files.
