@@ -16,6 +16,12 @@ pub const DEFAULT_SNAP_TOLERANCE_M: f64 = 15.0;
 #[serde(transparent)]
 pub struct JunctionKey(pub String);
 
+impl JunctionKey {
+    fn is_inferable_seam(&self) -> bool {
+        self.0.starts_with("seam:")
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SegmentDraft {
     pub geometry: LineString,
@@ -59,6 +65,17 @@ impl SegmentDraft {
     /// clips of distinct facilities remain distinct topology.
     #[must_use]
     pub fn fragment(&self, geometry: LineString) -> Self {
+        self.fragment_with(geometry, "clip")
+    }
+
+    /// Cut a lower-precedence line at a conflation handoff. Unlike a region
+    /// clip, the new endpoint is allowed to bind back onto the preferred
+    /// facility which displaced its adjacent geometry.
+    pub(crate) fn seam_fragment(&self, geometry: LineString) -> Self {
+        self.fragment_with(geometry, "seam")
+    }
+
+    fn fragment_with(&self, geometry: LineString, namespace_kind: &str) -> Self {
         let whole = same_location(geometry.start(), self.geometry.start())
             && same_location(geometry.end(), self.geometry.end());
         let mut fragment = self.clone();
@@ -69,7 +86,7 @@ impl SegmentDraft {
                 .any(|point| same_location(*point, restriction.via))
         });
         fragment.junction_keys = self.junction_keys.as_ref().map(|[a, b]| {
-            let namespace = format!("{}→{}", a.0, b.0);
+            let namespace = format!("{namespace_kind}:{}→{}", a.0, b.0);
             [
                 fragment_junction(a, self.geometry.start(), geometry.start(), &namespace),
                 fragment_junction(b, self.geometry.end(), geometry.end(), &namespace),
@@ -93,7 +110,7 @@ fn fragment_junction(
         source.clone()
     } else {
         JunctionKey(format!(
-            "clip:{namespace}:{:016x}:{:016x}",
+            "{namespace}:{:016x}:{:016x}",
             fragment_coord.lon.to_bits(),
             fragment_coord.lat.to_bits()
         ))
@@ -404,13 +421,14 @@ fn support_key(edge: &Edge) -> (VertexId, VertexId, Vec<(u64, u64)>, WayKind, Ge
 
 fn endpoint_key(draft: &SegmentDraft, progress: f64) -> Option<JunctionKey> {
     let keys = draft.junction_keys.as_ref()?;
-    if progress <= 1.0e-12 {
-        Some(keys[0].clone())
+    let key = if progress <= 1.0e-12 {
+        &keys[0]
     } else if progress >= 1.0 - 1.0e-12 {
-        Some(keys[1].clone())
+        &keys[1]
     } else {
-        None
-    }
+        return None;
+    };
+    (!key.is_inferable_seam()).then(|| key.clone())
 }
 
 fn corroborate_edge(preferred: &mut Edge, suppressed: &Edge) {
@@ -553,17 +571,32 @@ fn junctions_may_be_inferred(drafts: &[SegmentDraft], a: Primitive, b: Primitive
         && drafts[b.src].junctions == JunctionPolicy::Planar
 }
 
-fn snaps_may_be_inferred(drafts: &[SegmentDraft], a: Primitive, b: Primitive) -> bool {
-    if drafts[a.src].junction_keys.is_some() || drafts[b.src].junction_keys.is_some() {
-        return false;
-    }
+fn snaps_may_be_inferred(
+    drafts: &[SegmentDraft],
+    a: Primitive,
+    a_t: f64,
+    b: Primitive,
+    b_t: f64,
+) -> bool {
     let inferable = |policy| {
         matches!(
             policy,
             JunctionPolicy::Planar | JunctionPolicy::ExplicitEndpoints
         )
     };
-    inferable(drafts[a.src].junctions) && inferable(drafts[b.src].junctions)
+    let endpoint_is_inferable = |draft: &SegmentDraft, t| {
+        inferable(draft.junctions)
+            && draft.junction_keys.as_ref().is_none_or(|keys| {
+                if t <= 1.0e-12 {
+                    keys[0].is_inferable_seam()
+                } else if t >= 1.0 - 1.0e-12 {
+                    keys[1].is_inferable_seam()
+                } else {
+                    false
+                }
+            })
+    };
+    endpoint_is_inferable(&drafts[a.src], a_t) && endpoint_is_inferable(&drafts[b.src], b_t)
 }
 
 fn primitive_index(primitives: &[Primitive]) -> RTree<PrimitiveEnvelope> {
@@ -843,9 +876,6 @@ fn near_miss_candidates(
                 if src_idx == target_idx || primitive.src == target.src {
                     continue;
                 }
-                if !snaps_may_be_inferred(drafts, primitive, target) {
-                    continue;
-                }
                 let Some((segment_t, coord, distance2)) = projected_snap(
                     endpoint,
                     target_segment.a,
@@ -856,6 +886,9 @@ fn near_miss_candidates(
                 };
                 let target_t = (target_segment.end_t - target_segment.start_t)
                     .mul_add(segment_t, target_segment.start_t);
+                if !snaps_may_be_inferred(drafts, primitive, endpoint_t, target, target_t) {
+                    continue;
+                }
                 let target_endpoint = if target_t <= 1.0e-9 {
                     Some(target_idx * 2)
                 } else if target_t >= 1.0 - 1.0e-9 {

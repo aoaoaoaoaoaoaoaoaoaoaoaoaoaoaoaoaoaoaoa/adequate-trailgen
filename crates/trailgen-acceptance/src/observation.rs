@@ -64,6 +64,7 @@ pub struct EditorState {
     pub ready: bool,
     pub dragging_support: Option<usize>,
     pub support_points: Vec<[f64; 2]>,
+    pub coordinate_callouts: Vec<usize>,
     pub route_signature: Option<u64>,
     pub redo_depth: usize,
 }
@@ -255,6 +256,21 @@ pub mod shows {
                 .as_ref()
                 .is_some_and(|map| map.coloring == expected)
         })
+    }
+
+    pub fn support_callout(slot: usize, visible: bool) -> Condition<Observation> {
+        condition(
+            format!(
+                "support {slot} coordinate callout {}",
+                if visible { "visible" } else { "hidden" }
+            ),
+            move |state| {
+                state
+                    .editor
+                    .as_ref()
+                    .is_some_and(|editor| editor.coordinate_callouts.contains(&slot) == visible)
+            },
+        )
     }
 
     pub fn survey_drawing() -> Condition<Observation> {

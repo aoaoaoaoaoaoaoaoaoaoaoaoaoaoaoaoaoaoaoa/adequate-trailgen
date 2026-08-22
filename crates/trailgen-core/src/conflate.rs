@@ -258,7 +258,7 @@ fn seal_run(draft: &SegmentDraft, run: &mut Vec<Coord>, admitted: &mut Vec<Segme
         run.clear();
         return;
     }
-    admitted.push(draft.fragment(LineString::unchecked(std::mem::take(run))));
+    admitted.push(draft.seam_fragment(LineString::unchecked(std::mem::take(run))));
 }
 
 fn draft_order(left: &SegmentDraft, right: &SegmentDraft) -> std::cmp::Ordering {
@@ -316,8 +316,8 @@ const fn same_location(left: Coord, right: Coord) -> bool {
 mod tests {
     use super::*;
     use crate::{
-        CrossingControl, EdgeTravel, GeometryClaim, JunctionPolicy, TrailMarking, TrailStanding,
-        WayRealm,
+        CrossingControl, EdgeTravel, GeometryClaim, GraphBuilder, JunctionKey, JunctionPolicy,
+        TrailMarking, TrailStanding, WayRealm,
     };
 
     fn draft(name: &str, latitude: f64, standing: TrailStanding) -> SegmentDraft {
@@ -350,10 +350,24 @@ mod tests {
     #[test]
     fn higher_strata_suppress_parallel_duplicates_and_keep_provenance() {
         let mut primary = draft("osm", 41.2, TrailStanding::Informal);
+        primary.geometry =
+            LineString::unchecked(vec![Coord::new(-74.08, 41.2), Coord::new(-74.02, 41.2)]);
         primary.provenance[0].source = "z-authority".to_owned();
         let mut secondary = draft("usgs", 41.200_03, TrailStanding::Established);
+        secondary.geometry = LineString::unchecked(vec![
+            Coord::new(-74.1, 41.200_03),
+            Coord::new(-74.08, 41.200_03),
+            Coord::new(-74.02, 41.200_03),
+            Coord::new(-74.0, 41.200_03),
+        ]);
+        secondary.junctions = JunctionPolicy::ExplicitNodes;
+        secondary.junction_keys = Some([
+            JunctionKey("osm:start".to_owned()),
+            JunctionKey("osm:end".to_owned()),
+        ]);
         secondary.provenance[0].source = "a-corroborator".to_owned();
         secondary.marking = TrailMarking::Marked;
+        let trace = secondary.geometry.clone();
         let network = conflate(
             vec![
                 NetworkStratum {
@@ -367,13 +381,19 @@ mod tests {
             ],
             ConflationPolicy::default(),
         );
-        assert_eq!(network.drafts.len(), 1);
+        assert_eq!(network.drafts.len(), 3);
         assert_eq!(network.drafts[0].standing, TrailStanding::Informal);
         assert_eq!(network.drafts[0].marking, TrailMarking::Marked);
         assert_eq!(network.drafts[0].provenance.len(), 2);
         assert_eq!(network.drafts[0].provenance[0].source, "z-authority");
         assert_eq!(network.drafts[0].provenance[1].source, "a-corroborator");
         assert_eq!(network.report.suppressed_parallel_segments, 1);
+        let graph = GraphBuilder::default()
+            .build(&network.drafts)
+            .expect("conflated network is valid");
+        let coverage = graph.trace_coverage(&trace, 10.0);
+        assert_eq!(coverage.stats.disconnected_transition_count, 0);
+        assert_eq!(coverage.stats.rejected_segment_count, 0);
     }
 
     #[test]

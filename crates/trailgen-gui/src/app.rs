@@ -184,6 +184,7 @@ struct TrailEditor {
     return_to: EditorReturn,
     shape: RouteShape,
     support_points: Vec<SupportPoint>,
+    coordinate_callouts: Vec<bool>,
     realization: Option<TrailRealization>,
     realizing: Option<u64>,
     shape_guard: Option<(u64, RouteShape)>,
@@ -475,6 +476,7 @@ impl TrailEditor {
             origin,
             return_to,
             shape,
+            coordinate_callouts: vec![false; support_points.len()],
             support_points,
             realization: None,
             realizing: None,
@@ -520,6 +522,7 @@ impl TrailEditor {
         }
         self.checkpoint();
         self.support_points.remove(slot);
+        self.coordinate_callouts.remove(slot);
         true
     }
 
@@ -556,7 +559,42 @@ impl TrailEditor {
 
     fn restore(&mut self, target: TrailSketch) {
         self.shape = target.shape;
-        self.support_points = target.support_points;
+        self.replace_supports(target.support_points);
+    }
+
+    fn replace_supports(&mut self, support_points: Vec<SupportPoint>) {
+        let mut callouts = vec![false; support_points.len()];
+        let mut claimed = vec![false; self.support_points.len()];
+        let mut unmatched_old = Vec::new();
+        let mut unmatched_new = Vec::new();
+
+        for (new_slot, support) in support_points.iter().enumerate() {
+            if let Some(old_slot) = self
+                .support_points
+                .iter()
+                .enumerate()
+                .position(|(slot, old)| !claimed[slot] && old == support)
+            {
+                claimed[old_slot] = true;
+                callouts[new_slot] = self.coordinate_callouts[old_slot];
+            } else {
+                unmatched_new.push(new_slot);
+            }
+        }
+        unmatched_old.extend(
+            claimed
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, claimed)| (!claimed).then_some(slot)),
+        );
+        if unmatched_old.len() == unmatched_new.len() {
+            for (old_slot, new_slot) in unmatched_old.into_iter().zip(unmatched_new) {
+                callouts[new_slot] = self.coordinate_callouts[old_slot];
+            }
+        }
+
+        self.support_points = support_points;
+        self.coordinate_callouts = callouts;
     }
 
     fn absorb_realization(&mut self, result: trailgen_core::Result<TrailRealization>) {
@@ -1382,6 +1420,12 @@ impl TrailApp {
                         let coord = support.coord();
                         [coord.lon, coord.lat]
                     })
+                    .collect(),
+                coordinate_callouts: editor
+                    .coordinate_callouts
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(slot, visible)| visible.then_some(slot))
                     .collect(),
                 route_signature: editor
                     .realization
@@ -2303,7 +2347,7 @@ impl TrailApp {
             if count == 0 {
                 "CLICK A TRAIL TO PLACE THE TRAILHEAD"
             } else {
-                "CLICK TO ADD · DRAG TO MOVE · SHIFT+CLICK TO DELETE"
+                "CLICK TO ADD · DRAG TO MOVE · SHIFT+CLICK TO DELETE · ALT+CLICK FOR COORDINATES"
             },
         );
         if realizing {
@@ -2327,6 +2371,7 @@ impl TrailApp {
             self.remember_editor();
             if let Some(editor) = self.view.editor_mut() {
                 editor.support_points.clear();
+                editor.coordinate_callouts.clear();
             }
             let _serial = self.reforge_editor();
             self.water.click(clear.rect);
@@ -3266,8 +3311,8 @@ impl TrailApp {
             .flatten();
         let support_under_pointer =
             pointer.and_then(|pointer| self.editor_support_at(pointer, rect));
-        let excising_supports = self.view.is_editing() && ui.input(|input| input.modifiers.shift);
-        let support_excision_hot = excising_supports && support_under_pointer.is_some();
+        let (excising_supports, annotating_supports) =
+            support_modifiers(self.view.is_editing(), ui);
         let area_handles_enabled = self.area_handles_enabled();
         let resize_event = if legend_claims_pointer {
             ResizeEvent::None
@@ -3277,6 +3322,7 @@ impl TrailApp {
         };
         if !legend_claims_pointer
             && !excising_supports
+            && !annotating_supports
             && ui.input(|input| input.pointer.button_pressed(egui::PointerButton::Primary))
         {
             self.seize_editor_support(pointer, support_under_pointer, rect);
@@ -3298,18 +3344,19 @@ impl TrailApp {
         if editor_dragging {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
         } else if support_under_pointer.is_some() {
-            ui.ctx().set_cursor_icon(if excising_supports {
-                egui::CursorIcon::PointingHand
-            } else {
-                egui::CursorIcon::Grab
-            });
+            ui.ctx()
+                .set_cursor_icon(if excising_supports || annotating_supports {
+                    egui::CursorIcon::PointingHand
+                } else {
+                    egui::CursorIcon::Grab
+                });
         }
         let before = self.viewport;
         let map_gesture_captured = self.scribe.active()
             || self.boundary_scribe.active()
             || self.area_handles.captured()
             || editor_dragging
-            || support_excision_hot
+            || (support_under_pointer.is_some() && (excising_supports || annotating_supports))
             || trailhead_gesture.captured;
         let moved = map::navigate_with(
             &mut self.viewport,
@@ -3670,9 +3717,15 @@ impl TrailApp {
         let alt_click = click_modifiers.is_some_and(|modifiers| modifiers.alt)
             && self.trailhead_input_available()
             && !trailhead.captured;
+        let annotation_click = self.view.is_editing()
+            && click_modifiers.is_some_and(|modifiers| modifiers.alt && !modifiers.shift);
         let excision_click =
             self.view.is_editing() && click_modifiers.is_some_and(|modifiers| modifiers.shift);
-        if alt_click && let Some(pointer) = pointer {
+        if annotation_click {
+            if let Some(slot) = support_under_pointer {
+                self.toggle_support_callout(slot);
+            }
+        } else if alt_click && let Some(pointer) = pointer {
             self.place_trailhead(map::coord_at(self.viewport, rect, pointer), pointer);
         } else if excision_click {
             if let Some(slot) = support_under_pointer {
@@ -4030,6 +4083,41 @@ impl TrailApp {
             let anchor =
                 map::screen_at(self.viewport, rect, map::world_from_coord(support.coord()));
             let hardware = chrome::ForgePin::new(anchor).size(chrome::MechanismSize::Medium);
+            if editor.coordinate_callouts[slot] {
+                let coord = support.coord();
+                let galley = painter.layout_no_wrap(
+                    format!("{:.6}, {:.6}", coord.lat, coord.lon),
+                    egui::FontId::monospace(11.0),
+                    chrome::TEXT,
+                );
+                let size = galley.size() + vec2(10.0, 6.0);
+                let top = if anchor.y - size.y - 17.0 >= rect.top() + 4.0 {
+                    anchor.y - size.y - 17.0
+                } else {
+                    anchor.y + 17.0
+                };
+                let left = size
+                    .x
+                    .mul_add(-0.5, anchor.x)
+                    .clamp(rect.left() + 4.0, rect.right() - size.x - 4.0);
+                let plate = egui::Rect::from_min_size(egui::pos2(left, top), size);
+                let tether = if plate.center().y < anchor.y {
+                    plate.center_bottom()
+                } else {
+                    plate.center_top()
+                };
+                painter.line_segment([tether, anchor], Stroke::new(1.0_f32, chrome::EDGE_STRONG));
+                let _fill = painter.rect_filled(plate, 1.0, chrome::SURFACE.gamma_multiply(0.96));
+                let _stroke = painter.rect_stroke(
+                    plate,
+                    1.0,
+                    Stroke::new(1.0_f32, chrome::EDGE_STRONG),
+                    egui::StrokeKind::Inside,
+                );
+                painter.galley(plate.min + vec2(5.0, 3.0), galley, chrome::TEXT);
+                #[cfg(feature = "egui-test")]
+                crate::witness::rect(painter.ctx(), Target::SupportCallout(slot), plate);
+            }
             let hot = hover_pointer.is_some_and(|pointer| hardware.grip().contains(pointer));
             let hardware = hardware.inscription(if excising {
                 chrome::Symbol::Remove.glyph().to_string()
@@ -4093,6 +4181,7 @@ impl TrailApp {
         } else {
             let slot = insertion.flatten().unwrap_or(editor.support_points.len());
             editor.support_points.insert(slot, support);
+            editor.coordinate_callouts.insert(slot, false);
         }
         let _serial = self.reforge_editor();
     }
@@ -4137,6 +4226,21 @@ impl TrailApp {
         self.status = format!("Pin {slot} deleted.");
     }
 
+    fn toggle_support_callout(&mut self, slot: usize) {
+        let Some(visible) = self
+            .view
+            .editor_mut()
+            .and_then(|editor| editor.coordinate_callouts.get_mut(slot))
+        else {
+            return;
+        };
+        *visible = !*visible;
+        self.status = format!(
+            "Pin {slot} coordinates {}.",
+            if *visible { "shown" } else { "hidden" }
+        );
+    }
+
     fn finish_editor_drag(&mut self) {
         if self.view.editor_mut().is_some_and(TrailEditor::finish_drag) {
             let _serial = self.reforge_editor();
@@ -4170,7 +4274,7 @@ impl TrailApp {
                 self.remember_editor();
                 let editor = self.view.editor_mut().expect("editor existence checked");
                 editor.shape = reversal.trail.shape;
-                editor.support_points = reversal.trail.support_points;
+                editor.replace_supports(reversal.trail.support_points);
                 let _serial = self.reforge_editor();
                 let notice = match reversal.added_supports {
                     0 => "Loop direction reversed.".to_owned(),
@@ -5403,6 +5507,14 @@ impl TrailApp {
     }
 }
 
+fn support_modifiers(editing: bool, ui: &egui::Ui) -> (bool, bool) {
+    let modifiers = ui.input(|input| input.modifiers);
+    (
+        editing && modifiers.shift,
+        editing && modifiers.alt && !modifiers.shift,
+    )
+}
+
 fn primary_click_modifiers(ui: &egui::Ui, rect: egui::Rect) -> Option<egui::Modifiers> {
     ui.input(|input| {
         input.events.iter().rev().find_map(|event| match event {
@@ -5866,6 +5978,7 @@ mod tests {
             },
             shape: RouteShape::OutAndBack,
             support_points: vec![first],
+            coordinate_callouts: vec![false],
             realization: None,
             realizing: None,
             shape_guard: None,
@@ -5974,6 +6087,7 @@ mod tests {
                 },
             },
             shape: RouteShape::Loop,
+            coordinate_callouts: vec![false; trail.support_points.len()],
             support_points: trail.support_points,
             realization: Some(realization),
             realizing: None,

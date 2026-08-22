@@ -34,7 +34,8 @@ durable or rendered oracle before passing. Tests never call product internals.
    segments with undo and redo, stop without discarding promoted results, then
    save a candidate.
 4. **Draw from nothing.** Enter the manual editor without search, place a
-   partial-edge support, undo and redo, Shift-delete a middle support and prove
+   partial-edge support, undo and redo, toggle a pin's coordinate callout,
+   Shift-delete a middle support and prove
    successor renumbering, restore it, restart before saving and recover the
    exact unfinished design, close and reverse a loop, exercise the elevation
    reticle, reject torn editor/focus presentation during save, export through

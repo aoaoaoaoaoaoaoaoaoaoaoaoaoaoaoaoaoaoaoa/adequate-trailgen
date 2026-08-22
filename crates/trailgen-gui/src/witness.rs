@@ -126,6 +126,7 @@ mod active {
         pub ready: bool,
         pub dragging_support: Option<usize>,
         pub support_points: Vec<[f64; 2]>,
+        pub coordinate_callouts: Vec<usize>,
         pub route_signature: Option<u64>,
         pub redo_depth: usize,
     }

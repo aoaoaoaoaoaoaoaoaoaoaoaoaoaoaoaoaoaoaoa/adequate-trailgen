@@ -143,6 +143,11 @@ one removes it and immediately renumbers its successors. These operations
 alter the ordered support design; they never mutate provider topology, and
 each is one undoable gesture.
 
+Alt-clicking a support toggles a coordinate callout anchored to that pin. The
+callout is transient editor presentation: it follows pin movement and ordered
+design edits, does not enter undo history, and is never persisted with the
+trail.
+
 Support points are ordered from zero everywhere, including visible pin labels.
 For any editable `Open` or `Loop` trail, `Close Loop` changes the design between
 those topologies; `Loop` realization routes from the last support back to
@@ -186,9 +191,9 @@ Arming one tool disarms every other tool and dissolves Focus in place: the
 current detail camera becomes the Browse camera and the obsolete return frame
 is discarded. Ordinary Back still restores the camera that preceded Focus.
 Edit owns primary click and pin dragging, so no map tool may be armed there.
-Segment edicts own plain and Shift-click only in Find mode. Alt-click owns
-trailhead placement only when neither Edit, Focus, nor a scribe has the
-pointer.
+Segment edicts own plain and Shift-click only in Find mode. Alt-click owns a
+pin's coordinate callout in Edit, and trailhead placement only when neither
+Edit, Focus, nor a scribe has the pointer.
 
 The present scribe implementations retain their own gesture data, so exclusivity
 is enforced at their arming boundary rather than by one enum. The invariant is
@@ -298,6 +303,7 @@ without corrupting the viewport to which Back or Cancel returns.
 | drag map-area corner | `Browse + Idle` | `Browse + AdjustMapArea`, then replacement acquisition or exact rollback |
 | refresh trail data | `Focus(Saved)` | same focus and viewport while a successor corpus is prepared and installed |
 | Shift-click support | `Edit(*)` | same editor with that support removed and successors renumbered |
+| Alt-click support | `Edit(*)` | same editor with that pin's coordinate callout toggled |
 | Close Loop | `Edit(*)` with `Open | Loop` shape | same editor, shape changed and re-realized |
 | Reverse Direction | `Edit(Loop)` | same editor with exact walk inverted |
 | Clear Results | `Browse` | `Browse` with no portfolio or edicts |

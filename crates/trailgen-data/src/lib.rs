@@ -47,7 +47,7 @@ pub const FALLBACK_OVERPASS_ENDPOINT: &str = "https://overpass.private.coffee/ap
 pub const MAX_REGION_DEG2: f64 = 4.0;
 pub(crate) const MAX_SOURCE_BYTES: u64 = 256 * 1024 * 1024;
 const AUTOMATIC_OSM_PROFILE: OsmProfile = OsmProfile::All;
-const INDEX_SCHEMA: u8 = 17;
+const INDEX_SCHEMA: u8 = 20;
 const RAW_SCHEMA: u8 = 4;
 const MAX_OSM_CONNECTOR_M: f64 = 1_000.0;
 const LOCATION_CACHE: &str = "sources/location.json";
@@ -2698,12 +2698,14 @@ mod tests {
     #[test]
     fn clipping_preserves_contracted_osm_junctions() -> Result<()> {
         let raw = r#"<osm version="0.6">
-          <node id="1" lon="-1" lat="0"/><node id="2" lon="0" lat="0"/>
-          <node id="3" lon="1" lat="0"/><node id="4" lon="0" lat="1"/>
+          <node id="1" lon="-74.1501" lat="41.2501"/>
+          <node id="2" lon="-74.1402" lat="41.2502"/>
+          <node id="3" lon="-74.1303" lat="41.2503"/>
+          <node id="4" lon="-74.1404" lat="41.2604"/>
           <way id="10"><nd ref="1"/><nd ref="2"/><nd ref="3"/><tag k="highway" v="path"/></way>
           <way id="11"><nd ref="2"/><nd ref="4"/><tag k="highway" v="path"/></way>
         </osm>"#;
-        let region = SurveyRegion::new(GeoBounds::new(-0.5, -0.5, 0.5, 0.5))?;
+        let region = SurveyRegion::new(GeoBounds::new(-74.2, 41.2, -74.1, 41.3))?;
 
         let drafts = clip_drafts(osm::network_from_str(raw)?, &[region]);
         assert!(
@@ -2715,7 +2717,7 @@ mod tests {
         let junction = graph
             .vertices
             .iter()
-            .find(|vertex| same_location(vertex.coord, Coord::new(0.0, 0.0)))
+            .find(|vertex| same_location(vertex.coord, Coord::new(-74.1402, 41.2502)))
             .context("shared OSM node should survive clipping")?;
         assert_eq!(graph.adjacency[junction.id.0].len(), 3);
         Ok(())
