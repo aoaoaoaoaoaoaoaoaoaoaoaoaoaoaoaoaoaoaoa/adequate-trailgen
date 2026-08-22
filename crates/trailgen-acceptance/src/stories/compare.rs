@@ -20,7 +20,9 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
     let mut story = harness.story(&app, RunClass::Performance)?;
     let frames = app.frames()?;
 
-    let frame = story.wait_within(Duration::from_secs(15), shows::map())?;
+    let _ready = story.wait_within(Duration::from_secs(15), shows::map())?;
+    let _finder = story.click(Target::Finder)?.next_frame()?;
+    let frame = story.frame()?;
     let trailhead = map_pixel(&frame, [-105.0, 40.0])?;
     let _placed = story
         .modified_click_at(trailhead, Button::Primary, Modifiers::ALT)?

@@ -31,10 +31,11 @@ remain impassable regardless of support.
 
 OSM topology follows OSM node identity. Two ways join when they share a source
 node. Distinct source nodes remain distinct even when their coordinates agree;
-layer, bridge, and tunnel tags refine geometry but do not manufacture identity.
-Near-miss repair never joins two OSM members. Cross-provider conflation may
-corroborate geometry but cannot erase a separately mapped sidewalk, crossing,
-or side of a street.
+layer, bridge, tunnel, and near-miss repair do not manufacture identity.
+A preferred cross-provider replacement inherits every exact source incidence
+carried by the geometry it suppresses without aliasing distinct source nodes.
+Conflation cannot erase a source junction, separately mapped sidewalk,
+crossing, or side of a street.
 
 Provider ways lacking explicit pedestrian geometry may contribute a declared
 road-centerline proxy when their tags assert a sidewalk and do not assert a

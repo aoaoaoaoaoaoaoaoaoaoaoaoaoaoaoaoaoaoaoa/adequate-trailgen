@@ -15,6 +15,7 @@ pub struct Observation {
     pub guide_open: bool,
     pub text_edit_focused: bool,
     pub saved_trails: usize,
+    pub visible_saved: usize,
     pub last_exported: Option<String>,
     pub candidates: usize,
     pub base_pace_kmh: Option<f64>,
@@ -72,6 +73,7 @@ pub struct EditorState {
     pub ready: bool,
     pub dragging_support: Option<usize>,
     pub support_points: Vec<[f64; 2]>,
+    pub coordinate_callouts: Vec<usize>,
     pub route_signature: Option<u64>,
     pub redo_depth: usize,
 }
@@ -131,6 +133,13 @@ pub mod shows {
     pub fn library(expected: usize) -> Condition<Observation> {
         field("saved Library size", |state: &Observation| {
             state.saved_trails
+        })
+        .eq(expected)
+    }
+
+    pub fn visible_saved(expected: usize) -> Condition<Observation> {
+        field("visible saved-trail overlays", |state: &Observation| {
+            state.visible_saved
         })
         .eq(expected)
     }
@@ -263,6 +272,21 @@ pub mod shows {
                 .as_ref()
                 .is_some_and(|map| map.coloring == expected)
         })
+    }
+
+    pub fn support_callout(slot: usize, visible: bool) -> Condition<Observation> {
+        condition(
+            format!(
+                "support {slot} coordinate callout {}",
+                if visible { "visible" } else { "hidden" }
+            ),
+            move |state| {
+                state
+                    .editor
+                    .as_ref()
+                    .is_some_and(|editor| editor.coordinate_callouts.contains(&slot) == visible)
+            },
+        )
     }
 
     pub fn survey_drawing() -> Condition<Observation> {

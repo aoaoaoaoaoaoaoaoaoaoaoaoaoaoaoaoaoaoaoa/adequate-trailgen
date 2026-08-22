@@ -54,6 +54,10 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
             & shows::coloring(TrailColoring::Terrain)
             & shows::base_pace(BASE_PACE_KMH),
     )?;
+    demand(
+        restored.anchor(&Target::TrailheadPin.to_string()).is_none(),
+        "neutral restart painted the durable Finder trailhead pin",
+    )?;
     let trail = first_anchor(
         &restored,
         TargetClass::LibraryTrail,
@@ -774,6 +778,7 @@ fn acquire_region(story: &mut TrailStory<'_, '_>) -> Result<()> {
 
 fn find_and_keep(story: &mut TrailStory<'_, '_>) -> Result<()> {
     let _dormant = story.wait(shows::results_open(false))?;
+    let _finder = story.click(Target::Finder)?.next_frame()?;
     configure_search(story)?;
     let mut strike = story.key(Key::Return)?;
     let _progress =
@@ -842,7 +847,14 @@ fn configure_search(story: &mut TrailStory<'_, '_>) -> Result<()> {
         .until(shows::trailhead())?;
     // Trailhead placement settles after inspector layout; fence its reflow before targeting it again.
     let reflow = story.session().move_to(4, 4)?;
-    let _reflowed = story.reaction(reflow).next_frame()?;
+    let reflowed = story.reaction(reflow).next_frame()?;
+    demand(
+        reflowed
+            .value()
+            .anchor(&Target::TrailheadPin.to_string())
+            .is_some(),
+        "Finder retained the trailhead without painting its map pin",
+    )?;
     let _armed = story
         .click(Target::Boundary)?
         .until(shows::boundary_drawing(true))?;

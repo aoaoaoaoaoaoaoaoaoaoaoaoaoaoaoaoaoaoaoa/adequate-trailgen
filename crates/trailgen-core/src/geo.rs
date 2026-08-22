@@ -45,6 +45,12 @@ impl Coord {
 
     #[must_use]
     pub fn lerp(self, rhs: Self, t: f64) -> Self {
+        if t == 0.0 {
+            return self;
+        }
+        if t.to_bits() == 1.0_f64.to_bits() {
+            return rhs;
+        }
         let ele = match (self.ele, rhs.ele) {
             (Some(a), Some(b)) => Some((b - a).mul_add(t, a)),
             _ => None,

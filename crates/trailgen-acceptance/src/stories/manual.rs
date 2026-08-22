@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use egui_tester::{Key, Modifiers, Result, demand};
+use egui_tester::{Button, Key, Modifiers, PixelRegion, Result, demand};
 
 use crate::harness::{
     DataMode, Harness, RunClass, Target, TargetClass, TrailFrame, TrailStory, first_anchor,
@@ -68,6 +68,7 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
     }
     close_reverse_and_save(&mut story, before_signature, trailhead)?;
     verify_export(&mut story, harness)?;
+    verify_visibility(&mut story)?;
     verify_saved(harness)?;
 
     if let Some(artifacts) = harness.artifacts {
@@ -100,13 +101,58 @@ fn verify_export(story: &mut TrailStory<'_, '_>, harness: &Harness<'_>) -> Resul
     )
 }
 
+fn verify_visibility(story: &mut TrailStory<'_, '_>) -> Result<()> {
+    let _browse = story
+        .click(Target::FocusBack)?
+        .until(shows::view(View::Browse) & shows::visible_saved(0))?;
+    let _latched = story
+        .click(Target::SavedVisibility(0))?
+        .until(shows::view(View::Browse) & shows::visible_saved(1))?;
+    let _editor = story.click(Target::Manual)?.until(
+        shows::view(View::Edit) & shows::editor_origin(EditorOrigin::New) & shows::visible_saved(1),
+    )?;
+    let map = PixelRegion::anchor(&story.anchor(Target::Map)?);
+    let visible = story.capture()?;
+    let _hidden = story
+        .click(Target::SavedVisibility(0))?
+        .until(shows::view(View::Edit) & shows::visible_saved(0))?;
+    let hidden = story.capture()?;
+    demand(
+        visible.difference_region(&hidden, map, 2)? >= 0.000_5,
+        "releasing the saved-trail eye during Edit removed no persistent map ink",
+    )?;
+    let _relatched = story
+        .click(Target::SavedVisibility(0))?
+        .until(shows::view(View::Edit) & shows::visible_saved(1))?;
+    let browse = story
+        .click(Target::EditorDiscard)?
+        .until(shows::view(View::Browse) & shows::visible_saved(1))?;
+    demand(
+        browse
+            .value()
+            .anchor(&Target::EditorDiscard.to_string())
+            .is_none(),
+        "discard reported Browse while retaining the editor controls",
+    )?;
+    Ok(())
+}
+
 fn draw_open_route(story: &mut TrailStory<'_, '_>) -> Result<(u64, [f64; 2])> {
-    let _dormant = story.wait(shows::results_open(false))?;
+    let dormant = story.wait(shows::results_open(false))?;
+    demand(
+        dormant.anchor(&Target::Find.to_string()).is_none(),
+        "new workbench entered Finder instead of the neutral creator state",
+    )?;
     let _manual = story.click(Target::Manual)?.until(
         shows::view(View::Edit) & shows::editor_origin(EditorOrigin::New) & shows::supports(0),
     )?;
-    let _finder = story
-        .click(Target::Finder)?
+    let escaped = story.key(Key::Escape)?.next_frame()?.into_value();
+    demand(
+        escaped.state.view == View::Edit,
+        "Escape discarded an unfinished manual trail",
+    )?;
+    let _discarded = story
+        .chord(Modifiers::ALT, Key::Delete)?
         .until(shows::view(View::Browse) & shows::results_open(false))?;
     let _editor = story.click(Target::Manual)?.until(
         shows::view(View::Edit) & shows::editor_origin(EditorOrigin::New) & shows::supports(0),
@@ -126,6 +172,7 @@ fn draw_open_route(story: &mut TrailStory<'_, '_>) -> Result<(u64, [f64; 2])> {
     for (slot, coordinate) in SUPPORTS.iter().copied().enumerate().skip(2) {
         let _added = add_support(story, coordinate, slot + 1)?;
     }
+    exercise_support_callout(story, 0)?;
     exercise_support_delete_affordance(story, 2, SUPPORTS.len())?;
     let _deleted = delete_support(story, 2, SUPPORTS.len() - 1)?;
     let renumbered = story.frame()?;
@@ -142,6 +189,27 @@ fn draw_open_route(story: &mut TrailStory<'_, '_>) -> Result<(u64, [f64; 2])> {
     let trailhead =
         support(&before_reverse, 0).ok_or_else(|| verdict("manual route omitted support 0"))?;
     Ok((before_signature, trailhead))
+}
+
+fn exercise_support_callout(story: &mut TrailStory<'_, '_>, slot: usize) -> Result<()> {
+    let bare = story.capture()?;
+    let _shown = story
+        .modified_click(Target::Support(slot), Button::Primary, Modifiers::ALT)?
+        .until(shows::support_callout(slot, true))?;
+    let plate = PixelRegion::anchor(&story.anchor(Target::SupportCallout(slot))?);
+    let shown = story.capture()?;
+    demand(
+        bare.difference_region(&shown, plate, 2)? >= 0.01,
+        "Alt-click reported a coordinate callout without painting one",
+    )?;
+    let _hidden = story
+        .modified_click(Target::Support(slot), Button::Primary, Modifiers::ALT)?
+        .until(shows::support_callout(slot, false))?;
+    let hidden = story.capture()?;
+    demand(
+        shown.difference_region(&hidden, plate, 2)? >= 0.01,
+        "a second Alt-click did not remove the coordinate callout",
+    )
 }
 
 fn close_reverse_and_save(

@@ -1,11 +1,12 @@
 # Workbench State Model
 
-The workbench state is a product of four independent axes:
+The workbench state is a product of five independent axes:
 
 1. one primary `WorkbenchView`;
-2. at most one map tool;
-3. background operations;
-4. durable project and workbench state.
+2. one session-only creator selection, `Neutral | Finder`;
+3. at most one map tool;
+4. background operations;
+5. durable project and workbench state.
 
 Only the primary view chooses the toolbar, working shelf, privileged trail
 overlay, and ordinary map-click meaning. Background work never becomes a view.
@@ -21,11 +22,14 @@ Stored candidates never confer focus by their presence alone.
   behavior; it does not create separate rendering implementations.
 - `Browse` is the base workbench. The inspector always owns the saved-trail
   Library; the lower shelf always owns transient Results.
+- `CreatorMode` is `Neutral` or `Finder`. It chooses whether the durable search
+  recipe and its map artifacts are exposed; `Neutral` is the launch default.
 - A `Command` is a typed application consequence with one stable declaration.
   A map or widget `Gesture` is target-relative interaction, not a Command.
 
-“Find mode” therefore means `Browse` or `Focus(Candidate)`, optionally with a
-search worker running. `Edit(Candidate)` is an editor, not Find mode.
+“Find mode” therefore means `CreatorMode::Finder` together with `Browse` or
+`Focus(Candidate)`, optionally with a search worker running. `Edit(Candidate)`
+is an editor, not Find mode.
 
 ## Primary View
 
@@ -51,7 +55,7 @@ Browse(base viewport)
 ```
 
 `FocusFrame` owns the Browse viewport while Focus is active.
-`EditorReturn` owns the exact view and viewport that opened Edit. Cancel pops
+`EditorReturn` owns the exact view and viewport that opened Edit. Discard pops
 one frame. Leaving Focus pops the remaining frame. Entering another focused
 item replaces the top item without changing the stored Browse viewport.
 Candidate focus stores the portfolio’s stable identity, never its mutable
@@ -86,9 +90,18 @@ is the sole transition that grants export authority. Destination choice is a
 deliberate native dialog; GPX serialization and filesystem work occur on the
 saved-trail export worker, whose completion changes only status and the export
 receipt.
-Library navigation is inert while Edit owns an unsaved draft; only Save,
-Cancel, or explicitly selecting Finder may leave that editor. Selecting Finder
-is a visible cancellation and restores the exact editor return frame. Map-area names are metadata keyed by the
+The eye beside Export latches that saved trail onto the project map without
+entering Focus. Latched trails remain visible beneath Browse, Focus, and every
+Edit origin at 0.5 opacity. Their activation order consumes the cartographic
+comparison cycle; removing one compacts the cycle. Hovering an unlatched row
+uses the next unconsumed hue at full opacity. Hovering a latched row preserves
+its assigned hue and raises only its opacity to full. Visibility is session
+state, survives an in-process trail-data reload, and disappears when its trail
+is deleted. A comparison trail composites the union of its visible geometry
+once, so coincident segments do not accumulate opacity.
+Library navigation and Finder selection are inert while Edit owns an unsaved
+draft; only Save or the explicit danger-colored Discard control may leave that
+editor. Discard restores the exact editor return frame. Map-area names are metadata keyed by the
 content-derived identity of one region snapshot; renaming cannot invalidate or
 reacquire its corpus. Resizing replaces that identity transactionally while
 preserving the region's inspector slot and moving its name to the successor.
@@ -121,15 +134,19 @@ never captured into its loop.
 Enter, Space, arrows, wheel input, map clicks, drags, and similar interactions
 remain target-relative gestures unless they name an application consequence.
 They appear in contextual guide sections but never enter global routing.
+Plain `E` opens the focused trail editor and is rendered by the standard
+single-letter command-button legend. `Alt+Delete` is the sole editor-discard
+shortcut. `Escape` never leaves Edit. Saved-trail deletion first opens an
+explicit confirmation menu; no first stroke or click removes durable data.
 
 ## Presentation
 
 | View | Privileged map content | Working shelf | Search artifacts |
 | --- | --- | --- | --- |
-| `Browse` | hovered saved trail, otherwise candidate portfolio | result tiles after the first search attempt | boundary and segment edicts |
-| `Focus(Candidate)` | one candidate | its elevation profile | boundary and segment edicts |
-| `Focus(Saved)` | one saved trail | its elevation profile | hidden |
-| `Edit(*)` | editor realization and support pins | editor elevation profile | hidden |
+| `Browse` | latched saved trails and hovered saved trail, otherwise candidate portfolio | result tiles after the first search attempt | only while Finder is selected |
+| `Focus(Candidate)` | latched saved trails beneath one candidate | its elevation profile | only while Finder is selected |
+| `Focus(Saved)` | latched saved trails beneath one saved trail | its elevation profile | hidden |
+| `Edit(*)` | latched saved trails beneath the editor realization and support pins | editor elevation profile | hidden |
 
 The editor row is absolute: an invalid or realizing draft must not fall through
 to Results, Library, Focus, segment edicts, or search-boundary rendering. The
@@ -144,6 +161,11 @@ support. Holding Shift marks every support head for deletion; Shift-clicking
 one removes it and immediately renumbers its successors. These operations
 alter the ordered support design; they never mutate provider topology, and
 each is one undoable gesture.
+
+Alt-clicking a support toggles a coordinate callout anchored to that pin. The
+callout is transient editor presentation: it follows pin movement and ordered
+design edits, does not enter undo history, and is never persisted with the
+trail.
 
 Support points are ordered from zero everywhere, including visible pin labels.
 For any editable `Open` or `Loop` trail, `Close Loop` changes the design between
@@ -188,9 +210,9 @@ Arming one tool disarms every other tool and dissolves Focus in place: the
 current detail camera becomes the Browse camera and the obsolete return frame
 is discarded. Ordinary Back still restores the camera that preceded Focus.
 Edit owns primary click and pin dragging, so no map tool may be armed there.
-Segment edicts own plain and Shift-click only in Find mode. Alt-click owns
-trailhead placement only when neither Edit, Focus, nor a scribe has the
-pointer.
+Segment edicts own plain and Shift-click only in Find mode. Alt-click owns a
+pin's coordinate callout in Edit, and trailhead placement only when neither
+Edit, Focus, nor a scribe has the pointer.
 
 The present scribe implementations retain their own gesture data, so exclusivity
 is enforced at their arming boundary rather than by one enum. The invariant is
@@ -222,14 +244,14 @@ disabled until armament arrives.
 An unfinished manual design is published with this shell: its pins and editing
 viewport do not depend on the graph. Armament later realizes the same design in
 place. An automatic provider refresh waits until that editor is saved or
-cancelled, because installing a successor graph may not evict authored work.
+discarded, because installing a successor graph may not evict authored work.
 
 - Search is `Idle` or `Striking(serial, progress, stopping)`.
 - Editor realization is `Idle` or `Realizing(serial)`. Each support, shape,
   undo, or redo gesture supersedes the prior serial. Dragging may coalesce
   pointer samples, but release must publish a generation for the visible pin
-  set. Save is disabled while realizing. Undo, redo, another edit, Cancel, and
-  leaving Manual never wait for an obsolete generation; its eventual result is
+  set. Save is disabled while realizing. Undo, redo, another edit, and Discard
+  never wait for an obsolete generation; its eventual result is
   discarded. The prior valid route and profile remain visible until one current
   generation atomically replaces them.
 - The Results shelf is dormant until a valid Find Trails action launches a search.
@@ -263,7 +285,9 @@ prepared render projections remain session state.
 Search intent is geographic and graph-independent: trailhead, boundary,
 distance and moving-time windows, climb window, lower-limb-load target, shape,
 and segment edicts. Graph vertex IDs and solver frontier controls never enter
-durable UI state.
+durable UI state. `CreatorMode` is session state and always launches `Neutral`;
+the durable trailhead and search artifacts remain hidden until Finder is
+explicitly selected.
 XDG configuration owns app-wide Base Pace through one strict typed ledger.
 Unknown keys and invalid values block mutation without rewriting the file;
 Settings names the fault and offers explicit reload after repair. Stored route
@@ -273,13 +297,13 @@ result sorting, inspector position,
 section shutters, trail-color projection, and an unfinished `Edit(New)` design
 once it has at least one pin. The manual draft contains only its committed
 name, shape, ordered support points, and editing viewport; route realization is
-reconstructed from the project graph. It is cleared by Save, Cancel, or
-selecting Finder. Candidate and saved-trail editor drafts, candidates, focus,
+reconstructed from the project graph. It is cleared only by Save or explicit
+Discard. Candidate and saved-trail editor drafts, candidates, focus,
 undo history, profile cursor, map gestures, worker progress, and navigation
 frames are session state.
 
 Only the base Browse viewport is persisted. Focus and Edit may pan or zoom
-without corrupting the viewport to which Back or Cancel returns.
+without corrupting the viewport to which Back or Discard returns.
 
 ## Transition Laws
 
@@ -288,10 +312,11 @@ without corrupting the viewport to which Back or Cancel returns.
 | open candidate tile | `Browse` | `Focus(Candidate)` |
 | open saved Library row | `Browse` | `Focus(Saved)` |
 | Back / Escape | `Focus(*)` | prior `Browse` viewport |
-| Edit Trail | `Focus(*)` | `Edit(*)` with exact return frame |
+| Edit | `Focus(*)` | `Edit(*)` with exact return frame |
 | select Manual | `Browse` | `Edit(New)` |
-| select Finder | `Edit(*)` | exact return view and viewport, discarding the draft |
-| Cancel / Escape | `Edit(*)` | exact opening view and viewport |
+| toggle Finder | `Browse` or `Focus(*)` | same view with `CreatorMode` toggled |
+| Discard / `Alt+Delete` | `Edit(*)` | exact opening view and viewport |
+| Escape | `Edit(*)` | unchanged |
 | Save | `Edit(*)` | `Focus(Saved)` |
 | restart with unfinished manual pins | process launch | `Edit(New)` at the editing viewport; realization follows graph armament |
 | previous / next | `Focus(kind)` | adjacent `Focus(kind)` |
@@ -302,6 +327,7 @@ without corrupting the viewport to which Back or Cancel returns.
 | drag map-area corner | `Browse + Idle` | `Browse + AdjustMapArea`, then replacement acquisition or exact rollback |
 | refresh trail data | `Focus(Saved)` | same focus and viewport while a successor corpus is prepared and installed |
 | Shift-click support | `Edit(*)` | same editor with that support removed and successors renumbered |
+| Alt-click support | `Edit(*)` | same editor with that pin's coordinate callout toggled |
 | Close Loop | `Edit(*)` with `Open | Loop` shape | same editor, shape changed and re-realized |
 | Reverse Direction | `Edit(Loop)` | same editor with exact walk inverted |
 | Clear Results | `Browse` | `Browse` with no portfolio or edicts |

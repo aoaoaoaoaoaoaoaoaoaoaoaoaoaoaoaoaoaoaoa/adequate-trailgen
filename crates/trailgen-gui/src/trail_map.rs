@@ -241,6 +241,33 @@ impl TrailField {
         frame: MapFramePlan,
         coloring: TrailColoring,
     ) {
+        self.paint(painter, frame, coloring, None, 1.0);
+    }
+
+    pub fn paint_hued(
+        &mut self,
+        painter: &Painter,
+        frame: MapFramePlan,
+        hue: Color32,
+        opacity: f32,
+    ) {
+        self.paint(
+            painter,
+            frame,
+            TrailColoring::Class,
+            Some(hue),
+            opacity.clamp(0.0, 1.0),
+        );
+    }
+
+    fn paint(
+        &mut self,
+        painter: &Painter,
+        frame: MapFramePlan,
+        coloring: TrailColoring,
+        hue: Option<Color32>,
+        opacity: f32,
+    ) {
         let Some(band) = DetailBand::resolve(
             self.visibility.as_ref().map(|visibility| visibility.band),
             frame.zoom.get(),
@@ -296,21 +323,27 @@ impl TrailField {
         {
             self.transition = None;
         }
+        let comparison = hue.is_some();
         let mut layers = Vec::with_capacity(2);
-        if let Some((prior, maturity)) = &transition
+        if !comparison
+            && let Some((prior, maturity)) = &transition
             && *maturity < 1.0
         {
             layers.push(TrailLayer {
                 band: prior.band,
                 tiles: Arc::clone(&prior.tiles),
-                opacity: 1.0 - *maturity,
+                opacity: (1.0 - *maturity) * opacity,
             });
             painter.ctx().request_repaint();
         }
         layers.push(TrailLayer {
             band,
             tiles,
-            opacity: transition.map_or(1.0, |(_, maturity)| maturity.min(1.0)),
+            opacity: if comparison {
+                1.0
+            } else {
+                transition.map_or(opacity, |(_, maturity)| maturity.min(1.0) * opacity)
+            },
         });
         painter.add(egui_wgpu::Callback::new_paint_callback(
             frame.rect,
@@ -320,12 +353,15 @@ impl TrailField {
                 layers: layers.into(),
                 repaint: painter.ctx().clone(),
                 center_world: frame.viewport.center,
+                viewport: frame.rect,
                 world_points,
                 viewport_points: [frame.rect.width(), frame.rect.height()],
                 view_zoom: frame.zoom.get() as f32,
                 cadence_cells_per_world: cadence.cells_per_world() as f32,
                 dialect: self.dialect,
                 coloring: self.dialect.coloring(coloring),
+                hue,
+                opacity,
             },
         ));
     }
@@ -933,12 +969,15 @@ struct TrailPaint {
     layers: Arc<[TrailLayer]>,
     repaint: egui::Context,
     center_world: [f64; 2],
+    viewport: egui::Rect,
     world_points: f32,
     viewport_points: [f32; 2],
     view_zoom: f32,
     cadence_cells_per_world: f32,
     dialect: TrailDialect,
     coloring: TrailColoring,
+    hue: Option<Color32>,
+    opacity: f32,
 }
 
 impl TrailPaint {
@@ -959,12 +998,15 @@ impl CallbackTrait for TrailPaint {
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        _screen: &ScreenDescriptor,
+        screen: &ScreenDescriptor,
         _encoder: &mut wgpu::CommandEncoder,
         resources: &mut CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
         if let Some(gpu) = resources.get_mut::<TrailMapGpu>() {
             gpu.prepare(device, queue, self);
+            if self.hue.is_some() {
+                gpu.prepare_comparison(device, queue, screen, self);
+            }
         }
         Vec::new()
     }
@@ -973,10 +1015,13 @@ impl CallbackTrait for TrailPaint {
         &self,
         _device: &wgpu::Device,
         _queue: &wgpu::Queue,
-        _encoder: &mut wgpu::CommandEncoder,
+        encoder: &mut wgpu::CommandEncoder,
         resources: &mut CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
         if let Some(gpu) = resources.get_mut::<TrailMapGpu>() {
+            if self.hue.is_some() {
+                gpu.render_comparison(encoder, self);
+            }
             gpu.finish_prepare();
         }
         Vec::new()
@@ -994,7 +1039,22 @@ impl CallbackTrait for TrailPaint {
         let Some(view) = gpu.views.get(&self.corpus) else {
             return;
         };
+        if self.hue.is_some() {
+            let Some(comparison) = gpu.comparisons.get(&self.corpus) else {
+                return;
+            };
+            pass.set_pipeline(&gpu.comparison_pipeline);
+            pass.set_bind_group(0, &comparison.bind, &[]);
+            pass.draw(0..3, 0..1);
+            return;
+        }
         pass.set_pipeline(&gpu.pipeline);
+        self.paint_geometry(pass, gpu, view);
+    }
+}
+
+impl TrailPaint {
+    fn paint_geometry(&self, pass: &mut wgpu::RenderPass<'_>, gpu: &TrailMapGpu, view: &GpuView) {
         pass.set_bind_group(0, &view.bind, &[]);
         pass.set_bind_group(1, &view.law_bind, &[]);
         for (layer_slot, layer) in self.layers.iter().enumerate() {
@@ -1101,7 +1161,7 @@ impl Draw {
 
     fn paint(
         &self,
-        pass: &mut wgpu::RenderPass<'static>,
+        pass: &mut wgpu::RenderPass<'_>,
         buffer: &wgpu::Buffer,
         transform: &Range<u64>,
         instances: Range<u32>,
@@ -1124,10 +1184,15 @@ fn append<T: Pod>(blade: &mut Vec<u8>, values: &[T]) -> Range<u64> {
 
 pub struct TrailMapGpu {
     pipeline: wgpu::RenderPipeline,
+    comparison_mask_pipeline: wgpu::RenderPipeline,
+    comparison_pipeline: wgpu::RenderPipeline,
     camera_layout: wgpu::BindGroupLayout,
     law_layout: wgpu::BindGroupLayout,
     opacity_layout: wgpu::BindGroupLayout,
+    comparison_layout: wgpu::BindGroupLayout,
+    comparison_sampler: wgpu::Sampler,
     views: HashMap<TrailCorpus, GpuView>,
+    comparisons: HashMap<TrailCorpus, GpuComparison>,
     tiles: HashMap<GpuKey, GpuTrailTile>,
     visible: HashMap<TrailCorpus, HashSet<GpuKey>>,
     prepared: HashSet<GpuKey>,
@@ -1149,6 +1214,204 @@ struct GpuView {
     opacities: [GpuOpacity; 2],
     instances: u32,
     bytes: usize,
+}
+
+struct GpuComparison {
+    _texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    uniform: wgpu::Buffer,
+    bind: wgpu::BindGroup,
+    value: ComparisonUniform,
+    size: [u32; 2],
+    bytes: usize,
+}
+
+struct UnionCompositor {
+    mask: wgpu::RenderPipeline,
+    composite: wgpu::RenderPipeline,
+    layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+}
+
+impl UnionCompositor {
+    fn forge(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        trail_layout: &wgpu::PipelineLayout,
+        trail_shader: &wgpu::ShaderModule,
+    ) -> Self {
+        let layout = comparison_bind_layout(device);
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("trail-comparison-union"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        Self {
+            mask: comparison_mask_pipeline(device, trail_layout, trail_shader),
+            composite: comparison_composite_pipeline(device, format, &layout),
+            layout,
+            sampler,
+        }
+    }
+}
+
+fn comparison_bind_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("trail-comparison-composite"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(size_of::<ComparisonUniform>() as u64),
+                },
+                count: None,
+            },
+        ],
+    })
+}
+
+fn trail_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("trail-map"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("trail_vertex"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[Some(trail_layout()), Some(tile_layout())],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some(if format.is_srgb() {
+                "fragment_linear"
+            } else {
+                "fragment_gamma"
+            }),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+fn comparison_mask_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+) -> wgpu::RenderPipeline {
+    let union = wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Max,
+    };
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("trail-comparison-union"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("trail_vertex"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[Some(trail_layout()), Some(tile_layout())],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fragment_mask"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: wgpu::TextureFormat::R8Unorm,
+                blend: Some(wgpu::BlendState {
+                    color: union,
+                    alpha: union,
+                }),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+fn comparison_composite_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    bind_layout: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("trail-comparison-composite"),
+        bind_group_layouts: &[Some(bind_layout)],
+        immediate_size: 0,
+    });
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("trail-comparison-composite"),
+        source: wgpu::ShaderSource::Wgsl(COMPARISON_WGSL.into()),
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("trail-comparison-composite"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("comparison_vertex"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some(if format.is_srgb() {
+                "comparison_fragment_linear"
+            } else {
+                "comparison_fragment_gamma"
+            }),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 impl GpuView {
@@ -1235,6 +1498,76 @@ impl GpuView {
             .enumerate()
             .map(|(slot, layer)| self.opacities[slot].refresh(queue, layer.opacity))
             .sum()
+    }
+}
+
+impl GpuComparison {
+    fn raise(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        sampler: &wgpu::Sampler,
+        size: [u32; 2],
+        value: ComparisonUniform,
+    ) -> Self {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("trail-comparison-union"),
+            size: wgpu::Extent3d {
+                width: size[0],
+                height: size[1],
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("trail-comparison-composite"),
+            contents: bytemuck::bytes_of(&value),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("trail-comparison-composite"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: uniform.as_entire_binding(),
+                },
+            ],
+        });
+        let bytes = (size[0] as usize)
+            .saturating_mul(size[1] as usize)
+            .saturating_add(size_of::<ComparisonUniform>());
+        Self {
+            _texture: texture,
+            view,
+            uniform,
+            bind,
+            value,
+            size,
+            bytes,
+        }
+    }
+
+    fn refresh(&mut self, queue: &wgpu::Queue, value: ComparisonUniform) -> usize {
+        if bytemuck::bytes_of(&self.value) == bytemuck::bytes_of(&value) {
+            return 0;
+        }
+        queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&value));
+        self.value = value;
+        size_of::<ComparisonUniform>()
     }
 }
 
@@ -1329,42 +1662,19 @@ impl TrailMapGpu {
             label: Some("trail-map"),
             source: wgpu::ShaderSource::Wgsl(WGSL.into()),
         });
-        let buffers = [Some(trail_layout()), Some(tile_layout())];
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("trail-map"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("trail_vertex"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &buffers,
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some(if format.is_srgb() {
-                    "fragment_linear"
-                } else {
-                    "fragment_gamma"
-                }),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let pipeline = trail_pipeline(device, format, &pipeline_layout, &shader);
+        let comparison = UnionCompositor::forge(device, format, &pipeline_layout, &shader);
         Self {
             pipeline,
+            comparison_mask_pipeline: comparison.mask,
+            comparison_pipeline: comparison.composite,
             camera_layout,
             law_layout,
             opacity_layout,
+            comparison_layout: comparison.layout,
+            comparison_sampler: comparison.sampler,
             views: HashMap::new(),
+            comparisons: HashMap::new(),
             tiles: HashMap::new(),
             visible: HashMap::new(),
             prepared: HashSet::new(),
@@ -1479,6 +1789,87 @@ impl TrailMapGpu {
         );
     }
 
+    fn prepare_comparison(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        screen: &ScreenDescriptor,
+        paint: &TrailPaint,
+    ) {
+        let Some(hue) = paint.hue else {
+            return;
+        };
+        let viewport = egui::epaint::ViewportInPixels::from_points(
+            &paint.viewport,
+            screen.pixels_per_point,
+            screen.size_in_pixels,
+        );
+        let Ok(width) = u32::try_from(viewport.width_px.max(1)) else {
+            return;
+        };
+        let Ok(height) = u32::try_from(viewport.height_px.max(1)) else {
+            return;
+        };
+        let size = [width, height];
+        let value = ComparisonUniform::forge(hue, paint.opacity);
+        let resize = self
+            .comparisons
+            .get(&paint.corpus)
+            .is_some_and(|comparison| comparison.size != size);
+        if resize && let Some(retired) = self.comparisons.remove(&paint.corpus) {
+            self.bytes = self.bytes.saturating_sub(retired.bytes);
+        }
+        if !self.comparisons.contains_key(&paint.corpus) {
+            let comparison = GpuComparison::raise(
+                device,
+                &self.comparison_layout,
+                &self.comparison_sampler,
+                size,
+                value,
+            );
+            self.bytes = self.bytes.saturating_add(comparison.bytes);
+            let _prior = self.comparisons.insert(paint.corpus, comparison);
+        }
+        let comparison = self
+            .comparisons
+            .get_mut(&paint.corpus)
+            .expect("comparison target was just established");
+        if comparison.value == value {
+            return;
+        }
+        let uploaded = comparison.refresh(queue, value);
+        if uploaded != 0 && self.profile {
+            eprintln!("trail-gpu comparison_upload_bytes={uploaded}");
+        }
+    }
+
+    fn render_comparison(&self, encoder: &mut wgpu::CommandEncoder, paint: &TrailPaint) {
+        let Some(view) = self.views.get(&paint.corpus) else {
+            return;
+        };
+        let Some(comparison) = self.comparisons.get(&paint.corpus) else {
+            return;
+        };
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("trail-comparison-union"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &comparison.view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.comparison_mask_pipeline);
+        paint.paint_geometry(&mut pass, self, view);
+    }
+
     fn report_prepare(
         &self,
         paint: &TrailPaint,
@@ -1550,6 +1941,9 @@ impl TrailMapGpu {
         for corpus in dead {
             if let Some(view) = self.views.remove(&corpus) {
                 self.bytes = self.bytes.saturating_sub(view.bytes);
+            }
+            if let Some(comparison) = self.comparisons.remove(&corpus) {
+                self.bytes = self.bytes.saturating_sub(comparison.bytes);
             }
         }
         self.visible
@@ -1696,7 +2090,24 @@ struct Uniform {
     deferred_onset_delay: f32,
     _context_padding: f32,
     projection: [u32; 4],
+    comparison_hue: [f32; 4],
     palette: [[f32; 4]; 11],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Pod, Zeroable)]
+struct ComparisonUniform {
+    hue: [f32; 4],
+    opacity: [f32; 4],
+}
+
+impl ComparisonUniform {
+    fn forge(hue: Color32, opacity: f32) -> Self {
+        Self {
+            hue: normalized(hue),
+            opacity: [opacity.clamp(0.0, 1.0), 0.0, 0.0, 0.0],
+        }
+    }
 }
 
 impl Uniform {
@@ -1724,7 +2135,13 @@ impl Uniform {
             road_width_scale: ROAD_WIDTH_SCALE,
             deferred_onset_delay: DEFERRED_ONSET_DELAY_ZOOM,
             _context_padding: 0.0,
-            projection: [coloring_shader_code(paint.coloring), 0, 0, 0],
+            projection: [
+                coloring_shader_code(paint.coloring),
+                u32::from(paint.hue.is_some()),
+                0,
+                0,
+            ],
+            comparison_hue: paint.hue.map_or([0.0; 4], normalized),
             palette: trail_palette(paint.dialect.salience),
         }
     }
@@ -1839,6 +2256,7 @@ struct Uniform {
     deferred_onset_delay: f32,
     _context_padding: f32,
     projection: vec4u,
+    comparison_hue: vec4f,
     palette: array<vec4f, 11>,
 };
 
@@ -1936,10 +2354,11 @@ fn trail_vertex(
         + vec2f(offset.x, -offset.y);
     out.position = vec4f(clip, 0.0, 1.0);
     var tube = color;
-    if blocked == 0u && u.projection.x == 1u {
+    if blocked == 0u && u.projection.y == 1u {
+        tube = u.comparison_hue;
+    } else if blocked == 0u && u.projection.x == 1u {
         tube = u.palette[informal];
-    }
-    if blocked == 0u && u.projection.x == 2u {
+    } else if blocked == 0u && u.projection.x == 2u {
         tube = u.palette[2u + min(terrain, 8u)];
     }
     let core_alpha = select(0.0, 0.5, pattern != 0u);
@@ -2049,6 +2468,12 @@ fn painted(in: VertexOut) -> vec4f {
 }
 
 @fragment
+fn fragment_mask(in: VertexOut) -> @location(0) vec4f {
+    let coverage = painted(in).a;
+    return vec4f(coverage, coverage, coverage, coverage);
+}
+
+@fragment
 fn fragment_gamma(in: VertexOut) -> @location(0) vec4f {
     return painted(in);
 }
@@ -2061,6 +2486,69 @@ fn linear_channel(encoded: f32) -> f32 {
 @fragment
 fn fragment_linear(in: VertexOut) -> @location(0) vec4f {
     let color = painted(in);
+    return vec4f(
+        linear_channel(color.r),
+        linear_channel(color.g),
+        linear_channel(color.b),
+        color.a,
+    );
+}
+";
+
+const COMPARISON_WGSL: &str = r"
+struct Comparison {
+    hue: vec4f,
+    opacity: vec4f,
+};
+
+@group(0) @binding(0) var union_mask: texture_2d<f32>;
+@group(0) @binding(1) var union_sampler: sampler;
+@group(0) @binding(2) var<uniform> comparison: Comparison;
+
+struct CompositeVertex {
+    @builtin(position) position: vec4f,
+    @location(0) uv: vec2f,
+};
+
+@vertex
+fn comparison_vertex(@builtin(vertex_index) index: u32) -> CompositeVertex {
+    let positions = array(
+        vec2f(-1.0, 1.0),
+        vec2f(-1.0, -3.0),
+        vec2f(3.0, 1.0),
+    );
+    let coordinates = array(
+        vec2f(0.0, 0.0),
+        vec2f(0.0, 2.0),
+        vec2f(2.0, 0.0),
+    );
+    var out: CompositeVertex;
+    out.position = vec4f(positions[index], 0.0, 1.0);
+    out.uv = coordinates[index];
+    return out;
+}
+
+fn comparison_color(in: CompositeVertex) -> vec4f {
+    let coverage = textureSample(union_mask, union_sampler, in.uv).r;
+    return vec4f(
+        comparison.hue.rgb,
+        coverage * comparison.hue.a * comparison.opacity.x,
+    );
+}
+
+@fragment
+fn comparison_fragment_gamma(in: CompositeVertex) -> @location(0) vec4f {
+    return comparison_color(in);
+}
+
+fn linear_channel(encoded: f32) -> f32 {
+    if encoded <= 0.04045 { return encoded / 12.92; }
+    return pow((encoded + 0.055) / 1.055, 2.4);
+}
+
+@fragment
+fn comparison_fragment_linear(in: CompositeVertex) -> @location(0) vec4f {
+    let color = comparison_color(in);
     return vec4f(
         linear_channel(color.r),
         linear_channel(color.g),
