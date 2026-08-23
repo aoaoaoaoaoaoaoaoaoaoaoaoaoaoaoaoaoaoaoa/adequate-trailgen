@@ -25,11 +25,12 @@ durable or rendered oracle before passing. Tests never call product internals.
    restart. Base Pace must reach strict XDG configuration and survive restart. No
    intervening witness may report zero presented basemap tiles. The neutral
    restart must not paint the retained Finder trailhead pin.
-2. **Refine deliberately.** Open and rename a saved trail, drag a support onto
-   another branch, prove recomputation occurs after release, verify the native
-   window title, undo, redo, prove Escape cannot discard, explicitly discard
-   with `Alt+Delete` without disk mutation, repeat, save, reject unconfirmed
-   deletion, and recover the changed geometry after restart.
+2. **Refine deliberately.** Open a saved trail without moving the inspector,
+   rename it, drag a support onto another branch, prove recomputation occurs
+   after release, verify the native window title, undo, redo, prove Escape
+   cannot discard, explicitly discard with `Alt+Delete` without disk mutation,
+   repeat, save, reject unconfirmed deletion, and recover the changed geometry
+   after restart.
 3. **Compare without lag.** Generate twelve alternatives on a dense graph, pan
    during search and after promotion, zoom across detail, enforce host cadence
    distributions, focus and return to the settled viewport, warm-revise

@@ -822,18 +822,7 @@ fn find_and_keep(story: &mut TrailStory<'_, '_>) -> Result<()> {
     let _focused = story
         .click_anchor(&candidate)?
         .until(shows::view(View::FocusCandidate))?;
-    let save_target = Target::FocusSave.to_string();
-    let _revealed = story.wait_stable(
-        Duration::from_secs(3),
-        Duration::from_millis(160),
-        "Trail Details to reveal the candidate Save control",
-        move |frame| {
-            frame
-                .anchor(save_target.as_str())
-                .filter(|anchor| anchor.rect[1] >= 0.0)
-                .map(|anchor| anchor.rect.map(f32::to_bits))
-        },
-    )?;
+    reveal_inspector_target(story, Target::FocusSave)?;
     let _saved = story
         .click(Target::FocusSave)?
         .until(shows::view(View::FocusSaved) & shows::library(1))?;

@@ -234,14 +234,30 @@ fn verify_restart(harness: &Harness<'_>) -> Result<()> {
 
 fn open_saved(story: &mut TrailStory<'_, '_>) -> Result<()> {
     let library = story.wait_within(Duration::from_secs(15), shows::library(1))?;
+    let details = Target::Panel("trail-details").to_string();
+    let details_y = library
+        .anchor(details.as_str())
+        .ok_or_else(|| verdict("workbench omitted its Trail Details panel"))?
+        .rect[1];
     let saved = first_anchor(
         &library,
         TargetClass::LibraryTrail,
         "saved Library row vanished",
     )?;
-    let _focused = story
+    let focused = story
         .click_anchor(&saved)?
         .until(shows::view(View::FocusSaved))?;
+    let focused_details_y = focused
+        .value()
+        .anchor(details.as_str())
+        .ok_or_else(|| verdict("trail selection removed its Trail Details panel"))?
+        .rect[1];
+    demand(
+        (focused_details_y - details_y).abs() <= 1.0,
+        format!(
+            "trail selection scrolled the inspector from {details_y:.1} to {focused_details_y:.1}"
+        ),
+    )?;
     let rename = Target::FocusRename.to_string();
     let _settled = story.wait_stable(
         Duration::from_secs(3),

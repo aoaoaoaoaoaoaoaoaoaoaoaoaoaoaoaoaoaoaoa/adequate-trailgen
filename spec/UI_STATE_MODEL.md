@@ -94,6 +94,8 @@ is the workbench's sole `LivingWait` claim and disappears when the work ends.
 The Library is one projection of the project’s canonical saved-trail store, not
 a second collection. Hovering a Library row exposes its prepared miniature and
 temporarily previews that trail on the map. Clicking enters `Focus(Saved)`.
+Selection changes the active Trail without scrolling the inspector; explicit
+pointer, wheel, and keyboard navigation alone own inspector scroll position.
 The Library’s Rename action and the pencil beside a focused trail’s name open
 the same inline rename transaction; `F3` is its keyboard entrance. Renaming
 changes metadata in place; deleting removes the canonical trail. Neither

@@ -94,7 +94,7 @@ pub struct TrailApp {
     edict_history: UndoLog<EdgeEdicts>,
     search_due: Option<Instant>,
     view: WorkbenchView,
-    panel_summons: Option<InspectorPanel>,
+    panel_activation: Option<InspectorPanel>,
     delete_confirmation: Option<TrailId>,
     sort: TrailSort,
     trail_coloring: map::TrailColoring,
@@ -1100,7 +1100,7 @@ fn resurrect_workbench(
     )
 }
 
-fn initial_panel_summons(view: &WorkbenchView) -> Option<InspectorPanel> {
+fn initial_panel_activation(view: &WorkbenchView) -> Option<InspectorPanel> {
     (!matches!(view, WorkbenchView::Browse)).then_some(InspectorPanel::TrailDetails)
 }
 
@@ -1139,7 +1139,7 @@ impl TrailApp {
         } = project;
         let (viewport, view, fit, status) =
             resurrect_workbench(&slate, trail_data.regions.is_empty());
-        let panel_summons = initial_panel_summons(&view);
+        let panel_activation = initial_panel_activation(&view);
         let cartography = map::CartographicClock::new(viewport);
         let state_scribe = raise_state_scribe(ctx, &root, slate_path)?;
         let mut app = Self {
@@ -1168,7 +1168,7 @@ impl TrailApp {
             edict_history: UndoLog::default(),
             search_due: None,
             view,
-            panel_summons,
+            panel_activation,
             delete_confirmation: None,
             sort: slate.sort,
             trail_coloring: slate.trail_coloring,
@@ -1412,11 +1412,11 @@ impl TrailApp {
         self.delete_confirmation = None;
         if let Some(id) = frame.focus.filter(|id| self.library.trail(id).is_some()) {
             self.view = WorkbenchView::Focus(Focus::Saved(id));
-            self.panel_summons = Some(InspectorPanel::TrailDetails);
+            self.panel_activation = Some(InspectorPanel::TrailDetails);
             self.focus_frame.return_to = frame.browse_viewport;
         } else {
             self.view = WorkbenchView::Browse;
-            self.panel_summons = None;
+            self.panel_activation = None;
             self.focus_frame = FocusFrame::default();
         }
     }
@@ -1801,7 +1801,7 @@ impl TrailApp {
         crate::witness::response(ui, Target::Help, &header.help);
         ui.add_space(5.0);
         let mut panels = navigator.frame(ui.ctx());
-        if let Some(panel) = self.panel_summons {
+        if let Some(panel) = self.panel_activation.take() {
             panels.activate(ui, panel.salt());
         }
         self.section(
@@ -1860,7 +1860,6 @@ impl TrailApp {
             true,
             Self::civic_panel,
         );
-        self.panel_summons = None;
     }
 
     fn projects_panel(&mut self, ui: &mut egui::Ui) {
@@ -2099,15 +2098,6 @@ impl TrailApp {
         let open = self.shutters.get(id).copied().unwrap_or(open);
         let section = panels.section(ui, id, title, open, |ui| body(self, ui));
         crate::witness::response(ui, Target::Panel(id), &section.header);
-        if self
-            .panel_summons
-            .is_some_and(|summons| summons.salt() == id)
-        {
-            section.header.scroll_to_me_animation(
-                Some(egui::Align::Min),
-                egui::style::ScrollAnimation::none(),
-            );
-        }
         if let Some(wake) = section.wake.as_ref() {
             let _prior = self
                 .shutters
@@ -5315,7 +5305,7 @@ impl TrailApp {
             shape,
             support_points,
         )));
-        self.panel_summons = Some(InspectorPanel::TrailDetails);
+        self.panel_activation = Some(InspectorPanel::TrailDetails);
         let _serial = self.reforge_editor();
         "Trail editor ready. Place support points on the map.".clone_into(&mut self.status);
     }
@@ -5406,7 +5396,7 @@ impl TrailApp {
                     self.focus_frame.push(return_viewport);
                 }
                 self.view = WorkbenchView::Focus(Focus::Saved(id.clone()));
-                self.panel_summons = Some(InspectorPanel::TrailDetails);
+                self.panel_activation = Some(InspectorPanel::TrailDetails);
                 self.delete_confirmation = None;
                 self.fit = Fit::Saved(id);
                 self.reconcile_saved_projections();
@@ -5547,7 +5537,7 @@ impl TrailApp {
             Focus::Saved(id) => Fit::Saved(id.clone()),
         };
         self.view = WorkbenchView::Focus(focus);
-        self.panel_summons = Some(InspectorPanel::TrailDetails);
+        self.panel_activation = Some(InspectorPanel::TrailDetails);
     }
 
     fn leave_focus(&mut self) {
