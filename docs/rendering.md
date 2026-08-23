@@ -5,9 +5,9 @@ when its corpus changes; a frame supplies only camera, disclosure, interaction,
 and other genuinely volatile state. New rendering code must preserve that
 division.
 
-Event-loop measurement, latency budgets, startup publication, and trace
-artifacts are governed by
-[Native Responsiveness Doctrine](design/RESPONSIVENESS_DOCTRINE.md).
+Eternalist Apps owns event-loop measurement, startup publication, and trace
+law. This document owns only Trailgen's renderer boundaries, product budgets,
+and measured evidence.
 
 ## Frame Law
 
@@ -193,3 +193,34 @@ it reduces candidates, hides a layer, weakens detail, changes the viewport, or
 moves work outside the measured interval. The result view must keep CPU and
 egui work proportional to visible UI and resident tiles, never to combined
 route geometry.
+
+## Performance Evidence
+
+The standing large-corpus workload has 560,108 vertices and 776,343 edges in
+the NJ–NYS project. The original host withheld the basemap behind 11.5–12.1 s
+of graph decode and 2.1 s of atlas preparation; one ostensibly bounded tile
+absorption also performed a complete parking projection and consumed 44.3 ms
+on the event-loop thread. Panning reached 75.3 ms p95 and 79.4 ms worst
+cadence.
+
+After separating publication and preparing parking projections in a bounded
+forge, the regional map presents at about 0.83 s while graph armament
+continues. A later isolated trace raised the workbench in 61.7 ms, began its
+first UI frame at 258 ms, and completed graph armament at 14.86 s. The first
+Inspector pass cost 5.0 ms, the first map pass 1.0 ms, and `basemap.absorb`
+stayed below 0.023 ms. Two host-GPU repeats measured 39.0–45.3 ms p95 and
+39.3–53.6 ms worst cadence; product UI work peaked at 6.6 ms while presentation
+return enlarged `frame.render` to 65.0 ms.
+
+An August 2026 idle-residency inquest found an overnight process at 44.9 GiB
+RSS, including 44.5 GiB of private dirty memory in 350 128 MiB mappings through
+`/dev/nvidiactl`. The Rust heap was about 182 MiB and device-local allocation
+was below 500 MiB. A 7,200-frame offscreen run settled at 2.52 GiB RSS and was
+flat after frame 900, isolating the proved causal envelope to perpetual surface
+presentation plus driver host mappings rather than an application-heap leak.
+The repair bounds tension wakes, denies frame-originated continuation while
+unfocused, stops known concealed presentation, uses foreground-only streaming
+wakes, bounds result drains, suppresses unchanged uniform uploads, requests one
+frame in flight, and performs nonblocking device maintenance after present.
+Release evidence must cover settled focused, unfocused, and concealed rests
+plus an RSS soak.

@@ -35,7 +35,7 @@ Shared bootstrap and roaming vectors live in the platform cache directory;
 on Linux that is `$XDG_CACHE_HOME/trailgen`.
 content-addressed project cuts live under the project’s `cache/`. Viewport,
 inspector, gallery, and sorting state are atomically debounced beneath
-`$XDG_STATE_HOME/trailgen/projects/`. App-wide preferences live in
+`$XDG_STATE_HOME/trailgen/projects/`. App-wide configuration lives in
 `$XDG_CONFIG_HOME/trailgen/preferences.toml`. `--offline` suppresses network
 acquisition while retaining cached maps, trails, search, and profiles.
 `TRAILGEN_BASEMAP_ARCHIVE=/path/to/map.pmtiles` selects a prepared vector

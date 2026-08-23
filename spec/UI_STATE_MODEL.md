@@ -128,7 +128,7 @@ moving its name to the successor.
 
 Each workspace routes input through one command canon before rendering its
 controls. A command declaration owns its stable identity, scope, default
-accelerators, optional `Alt` mnemonic, text-focus policy, label, and consequence
+shortcuts, optional `Alt` mnemonic, text-focus policy, label, and consequence
 description. Buttons and the generated command guide read that declaration;
 they may not maintain parallel shortcut prose. The canon exposes effective
 bindings as the future custom-keymap seam, so persisted remapping can replace
@@ -310,8 +310,8 @@ the primary view implicitly or perform graph-scale work on the event loop.
 The project owns its library, search recipe, downloaded regions, civic areas,
 and graph. Civic areas are durable named context, independent of the primary
 view and routing graph. Adding one never moves the camera; clicking its ready
-inspector row is an explicit fit command. XDG state owns only the Overlays
-shutter, while completion text, suggestions, acquisition progress, hover, and
+Inspector row is an explicit fit command. XDG state owns only the Overlays
+panel fold, while completion text, suggestions, acquisition progress, hover, and
 prepared render projections remain session state.
 Search intent is geographic and graph-independent: trailhead, boundary,
 distance and moving-time windows, climb window, lower-limb-load target, shape,
@@ -325,8 +325,8 @@ Unknown keys and invalid values block mutation without rewriting the file;
 Settings names the fault and offers explicit reload after repair. Stored route
 metrics remain the population Wood estimate; GUI moving-time readouts and
 time-window constraints are projections through Base Pace. XDG state owns the base Browse viewport,
-result sorting, inspector position,
-section shutters, trail-color projection, and an unfinished `Edit(New)` design
+result sorting, Inspector position,
+panel folds, trail-color projection, and an unfinished `Edit(New)` design
 once it has at least one pin. The new-Trail draft contains only its committed
 name, shape, ordered support points, and editing viewport; route realization is
 reconstructed from the project graph. It is cleared only by Save or explicit

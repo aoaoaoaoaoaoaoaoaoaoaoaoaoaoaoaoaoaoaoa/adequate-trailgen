@@ -1,14 +1,14 @@
 use crate::{
     ProjectIntent,
     app::{Action as TrailAction, ReloadFrame, TrailApp, forge_water},
+    application_paths::{ApplicationPaths, ProjectPlace, create_project},
     basemap::Source as BasemapSource,
     chrome,
     commands::{self, Context as CommandContext, Edict},
-    habitat::{Habitat, ProjectPlace, create_project},
-    live_area::{self, RegionHandles, RegionScribe, ResizeEvent, ScribeEvent},
+    configuration::{BASE_PACE_SETTING, Configuration, MAX_BASE_PACE_KMH, MIN_BASE_PACE_KMH},
+    live_area::{self, RegionDraft, RegionDraftEvent, RegionHandles, ResizeEvent},
     map::{self, Viewport},
-    preferences::{BASE_PACE_SETTING, MAX_BASE_PACE_KMH, MIN_BASE_PACE_KMH, Preferences},
-    slate::Slate,
+    session_state::SessionState,
     trail_data::{
         Event as TrailDataEvent, Mutation as TrailDataMutation, TrailData, progress_status,
     },
@@ -41,14 +41,14 @@ const CONFIGURATION_SETTLE: Duration = Duration::from_millis(400);
 pub struct Workbench {
     mode: WorkbenchMode,
     transition: Option<WorkbenchTransition>,
-    configuration: ConfigurationLedger<Preferences>,
+    configuration: ConfigurationLedger<Configuration>,
     settings: SettingsSheet,
 }
 
 enum WorkbenchMode {
     Project {
         workspace: ProjectWorkspace,
-        habitat: Habitat,
+        application_paths: ApplicationPaths,
         offline: bool,
     },
     Projects(Box<ProjectDeck>),
@@ -59,7 +59,7 @@ enum WorkbenchTransition {
     Projects,
     Project {
         workspace: ProjectWorkspace,
-        habitat: Habitat,
+        application_paths: ApplicationPaths,
         offline: bool,
     },
 }
@@ -78,14 +78,14 @@ enum WorkspaceAction {
 impl Workbench {
     pub fn launch(
         ctx: &egui::Context,
-        habitat: Habitat,
+        application_paths: ApplicationPaths,
         intent: ProjectIntent,
         offline: bool,
     ) -> Result<Self> {
         let configuration = ConfigurationLedger::raise(
             "trailgen-configuration-scribe",
             ctx,
-            habitat.preferences_path(),
+            application_paths.configuration_path(),
             CONFIGURATION_SETTLE,
         )?;
         let mut settings = SettingsSheet::default();
@@ -95,11 +95,11 @@ impl Workbench {
         let mode = 'mode: {
             let candidate = match intent {
                 ProjectIntent::Open(root) => Some(root),
-                ProjectIntent::Resume => match habitat.resume() {
+                ProjectIntent::Resume => match application_paths.resume() {
                     Ok(candidate) => candidate,
                     Err(err) => {
                         break 'mode WorkbenchMode::Projects(Box::new(ProjectDeck::new(
-                            habitat,
+                            application_paths,
                             offline,
                             None,
                             Some(format!("could not read the previous project: {err:#}")),
@@ -110,17 +110,21 @@ impl Workbench {
             };
             let Some(root) = candidate else {
                 break 'mode WorkbenchMode::Projects(Box::new(ProjectDeck::new(
-                    habitat, offline, None, None, None,
+                    application_paths,
+                    offline,
+                    None,
+                    None,
+                    None,
                 )));
             };
-            match open_project(ctx, &habitat, &root, offline) {
+            match open_project(ctx, &application_paths, &root, offline) {
                 Ok(workspace) => WorkbenchMode::Project {
                     workspace,
-                    habitat,
+                    application_paths,
                     offline,
                 },
                 Err(err) => WorkbenchMode::Projects(Box::new(ProjectDeck::new(
-                    habitat,
+                    application_paths,
                     offline,
                     Some(&root),
                     Some(format!("could not open that project: {err:#}")),
@@ -149,7 +153,7 @@ impl Workbench {
         self.transition = match &mut self.mode {
             WorkbenchMode::Project {
                 workspace,
-                habitat,
+                application_paths,
                 offline,
             } => match workspace.pulse(ui, configuration, settings, settings_attention) {
                 None => None,
@@ -157,12 +161,12 @@ impl Workbench {
                 Some(WorkspaceAction::Reload) => {
                     let root = workspace.root().to_owned();
                     let frame = workspace.reload_frame();
-                    match open_project(ui.ctx(), habitat, &root, *offline) {
+                    match open_project(ui.ctx(), application_paths, &root, *offline) {
                         Ok(mut workspace) => {
                             workspace.restore_reload_frame(frame);
                             Some(WorkbenchTransition::Project {
                                 workspace,
-                                habitat: habitat.clone(),
+                                application_paths: application_paths.clone(),
                                 offline: *offline,
                             })
                         }
@@ -177,7 +181,7 @@ impl Workbench {
                 deck.pulse(ui, settings, settings_attention)
                     .map(|workspace| WorkbenchTransition::Project {
                         workspace,
-                        habitat: deck.habitat.clone(),
+                        application_paths: deck.application_paths.clone(),
                         offline: deck.offline,
                     })
             }
@@ -225,7 +229,7 @@ impl Workbench {
 
     const fn still(
         mode: WorkbenchMode,
-        configuration: ConfigurationLedger<Preferences>,
+        configuration: ConfigurationLedger<Configuration>,
         settings: SettingsSheet,
     ) -> Self {
         Self {
@@ -269,7 +273,7 @@ impl Workbench {
         if changed
             && self
                 .configuration
-                .revise(|preferences| preferences.set_base_pace(base_pace))
+                .revise(|configuration| configuration.set_base_pace(base_pace))
                 .is_ok()
         {
             self.mode
@@ -285,12 +289,12 @@ impl Workbench {
             Some(WorkbenchTransition::Projects) => self.open_project_deck(),
             Some(WorkbenchTransition::Project {
                 workspace,
-                habitat,
+                application_paths,
                 offline,
             }) => {
                 self.mode = WorkbenchMode::Project {
                     workspace,
-                    habitat,
+                    application_paths,
                     offline,
                 };
             }
@@ -302,7 +306,7 @@ impl Workbench {
         let displaced = std::mem::replace(&mut self.mode, WorkbenchMode::Limbo);
         let WorkbenchMode::Project {
             workspace,
-            habitat,
+            application_paths,
             offline,
         } = displaced
         else {
@@ -310,7 +314,7 @@ impl Workbench {
         };
         let root = workspace.root().to_owned();
         self.mode = WorkbenchMode::Projects(Box::new(ProjectDeck::new(
-            habitat,
+            application_paths,
             offline,
             Some(&root),
             None,
@@ -367,7 +371,7 @@ impl ProjectWorkspace {
     fn pulse(
         &mut self,
         ui: &mut egui::Ui,
-        configuration: &mut ConfigurationLedger<Preferences>,
+        configuration: &mut ConfigurationLedger<Configuration>,
         settings: &mut SettingsSheet,
         settings_attention: bool,
     ) -> Option<WorkspaceAction> {
@@ -389,7 +393,7 @@ impl ProjectWorkspace {
         }
     }
 
-    fn configuration_changed(&mut self, base_pace: crate::preferences::BasePace) {
+    fn configuration_changed(&mut self, base_pace: crate::configuration::BasePace) {
         if let Self::Trail(app) = self {
             app.set_base_pace(base_pace);
         }
@@ -466,7 +470,7 @@ impl WorkbenchMode {
         }
     }
 
-    fn configuration_changed(&mut self, base_pace: crate::preferences::BasePace) {
+    fn configuration_changed(&mut self, base_pace: crate::configuration::BasePace) {
         match self {
             Self::Project { workspace, .. } => workspace.configuration_changed(base_pace),
             Self::Projects(deck) => {
@@ -495,12 +499,12 @@ struct SurveyWorkbench {
     cartography: map::CartographicClock,
     scale_bar: map::ScaleBar,
     fit_regions: bool,
-    scribe: RegionScribe,
+    region_draft: RegionDraft,
     area_handles: RegionHandles,
     guide: CommandGuide,
     panels: PanelNavigator,
-    observed_slate: Slate,
-    state_scribe: SettledScribe<Slate>,
+    observed_session_state: SessionState,
+    state_scribe: SettledScribe<SessionState>,
     water: Surface,
     living_wait: LivingWait,
     map_rect: egui::Rect,
@@ -511,12 +515,12 @@ impl SurveyWorkbench {
         ctx: &egui::Context,
         place: ProjectPlace,
         offline: bool,
-        slate_path: PathBuf,
+        session_state_path: PathBuf,
     ) -> Result<Self> {
         let config = trailgen_data::project_config(&place.root)?;
-        let slate = Slate::load(&slate_path, &place.root);
-        let fit_regions = slate.viewport.is_none() && !config.regions.is_empty();
-        let viewport = slate.viewport.unwrap_or_else(|| Viewport {
+        let session_state = SessionState::load(&session_state_path, &place.root);
+        let fit_regions = session_state.viewport.is_none() && !config.regions.is_empty();
+        let viewport = session_state.viewport.unwrap_or_else(|| Viewport {
             center: map::world_from_coord(Coord::new(-98.5, 39.5)),
             zoom: 4.2,
         });
@@ -527,12 +531,12 @@ impl SurveyWorkbench {
             ParkingAtlas::default(),
         )?;
         let cartography = map::CartographicClock::new(viewport);
-        let scribe_path = slate_path;
+        let scribe_path = session_state_path;
         let state_scribe = SettledScribe::spawn(
             "trailgen-survey-state-scribe",
             ctx,
             STATE_SETTLE,
-            move |slate: Slate| slate.save(&scribe_path),
+            move |session_state: SessionState| session_state.save(&scribe_path),
         )?;
         let mut project = Self {
             root: place.root,
@@ -552,11 +556,11 @@ impl SurveyWorkbench {
             cartography,
             scale_bar: map::ScaleBar::default(),
             fit_regions,
-            scribe: RegionScribe::default(),
+            region_draft: RegionDraft::default(),
             area_handles: RegionHandles::default(),
             guide: CommandGuide::default(),
             panels: PanelNavigator::default(),
-            observed_slate: slate,
+            observed_session_state: session_state,
             state_scribe,
             water: forge_water(),
             living_wait: LivingWait::default(),
@@ -595,7 +599,7 @@ impl SurveyWorkbench {
                 .ctx()
                 .input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
         {
-            self.scribe.disarm();
+            self.region_draft.disarm();
             self.area_handles.cancel();
         }
         self.absorb_corpus(ui.ctx(), &mut drain, &mut action);
@@ -613,7 +617,7 @@ impl SurveyWorkbench {
 
     const fn edict_status(&self, edict: Edict) -> CommandStatus<'static> {
         match edict {
-            Edict::DrawMapArea if self.scribe.active() => {
+            Edict::DrawMapArea if self.region_draft.active() => {
                 CommandStatus::Disabled("a map-area drawing gesture is already armed")
             }
             Edict::DrawMapArea if self.offline => {
@@ -664,7 +668,7 @@ impl SurveyWorkbench {
             Edict::OpenProjects => *action = Some(WorkspaceAction::Projects),
             Edict::DrawMapArea => {
                 self.area_handles.cancel();
-                self.scribe.arm();
+                self.region_draft.arm();
             }
             Edict::RefreshMapAreas => {
                 if let Err(error) = self.strike(ctx, TrailDataMutation::Refresh) {
@@ -683,11 +687,8 @@ impl SurveyWorkbench {
             &[CommandContext::Survey],
             commands::scope_name,
             |edict| self.edict_status(edict),
-            &commands::SURVEY_IDIOMS,
+            &commands::SURVEY_GUIDE_GROUPS,
         );
-        if let Some(rect) = guide.rect() {
-            crate::witness::rect(ui.ctx(), Target::CommandGuide, rect);
-        }
         self.guide = guide;
     }
 
@@ -699,10 +700,9 @@ impl SurveyWorkbench {
         settings: &mut SettingsSheet,
         settings_attention: bool,
     ) {
-        let header = ApplicationHeader::new("TRAILGEN")
+        let _header = ApplicationHeader::new("TRAILGEN")
             .settings_attention(settings_attention)
             .show(ui, &mut self.guide, settings, &mut self.water);
-        crate::witness::response(ui, Target::Help, &header.help);
         ui.add_space(5.0);
         let mut panels = navigator.frame(ui.ctx());
         let projects = panels.section(ui, "projects", "projects", true, |ui| {
@@ -739,7 +739,7 @@ impl SurveyWorkbench {
     }
 
     fn area_panel(&mut self, ui: &mut egui::Ui) {
-        let selecting = self.scribe.active();
+        let selecting = self.region_draft.active();
         let draw_spec = commands::canon().spec(Edict::DrawMapArea);
         let select = ui.add_enabled(
             !self.offline && self.corpus.is_none(),
@@ -759,7 +759,7 @@ impl SurveyWorkbench {
         chrome::tension(ui, &select);
         if chrome::exact_activation(ui, &select) {
             if selecting {
-                self.scribe.disarm();
+                self.region_draft.disarm();
             } else {
                 let mut action = None;
                 self.apply_edict(
@@ -835,7 +835,7 @@ impl SurveyWorkbench {
             let waiting = self.corpus.is_some();
             let message = if self.corpus.is_some() {
                 &self.corpus_status
-            } else if self.scribe.active() {
+            } else if self.region_draft.active() {
                 "Drag a rectangle across the map to download its trails. Esc cancels."
             } else if self.offline && !self.vector.has_presented_tiles() {
                 "Go online once to load the map and download trails."
@@ -854,7 +854,7 @@ impl SurveyWorkbench {
                 self.living_wait.claim(rect);
                 crate::witness::anchor(ui, Target::TrailDataWait, rect);
             }
-            if self.corpus.is_none() && !self.scribe.active() {
+            if self.corpus.is_none() && !self.region_draft.active() {
                 let select = ui.add_enabled(
                     !self.offline,
                     chrome::command_spec_button(
@@ -908,7 +908,7 @@ impl SurveyWorkbench {
         }
         self.water
             .begin(brass_poolrooms::water::Domain::shelf(rect));
-        let handles_enabled = self.corpus.is_none() && !self.scribe.active();
+        let handles_enabled = self.corpus.is_none() && !self.region_draft.active();
         let resize_event =
             self.area_handles
                 .interact(self.viewport, ui, rect, &self.regions, handles_enabled);
@@ -917,7 +917,7 @@ impl SurveyWorkbench {
             ui,
             &response,
             rect,
-            !self.scribe.active() && !self.area_handles.captured(),
+            !self.region_draft.active() && !self.area_handles.captured(),
             true,
         ) {
             if response.dragged() {
@@ -927,7 +927,9 @@ impl SurveyWorkbench {
                 self.water.bump(rect);
             }
         }
-        let event = self.scribe.interact(self.viewport, ui, &response, rect);
+        let event = self
+            .region_draft
+            .interact(self.viewport, ui, &response, rect);
         let painter = ui.painter_at(rect);
         let frame = map::MapFramePlan::forge(self.viewport, rect);
         let cartography = self.cartography.observe(self.viewport, ui.ctx());
@@ -940,7 +942,7 @@ impl SurveyWorkbench {
                 canvas: rect,
                 regions: &self.regions,
                 names: &self.region_names,
-                preview: self.scribe.preview(self.viewport, rect),
+                preview: self.region_draft.preview(self.viewport, rect),
                 adjustment: self.area_handles.preview(),
                 handles: handles_enabled,
             },
@@ -955,14 +957,14 @@ impl SurveyWorkbench {
             egui::StrokeKind::Inside,
         );
         match event {
-            ScribeEvent::None => {}
-            ScribeEvent::Fault(fault) => self.fault = Some(fault.to_owned()),
-            ScribeEvent::Committed(bounds) => {
+            RegionDraftEvent::None => {}
+            RegionDraftEvent::Fault(fault) => self.fault = Some(fault.to_owned()),
+            RegionDraftEvent::Committed(bounds) => {
                 if self.offline {
                     self.fault = Some("map areas cannot be downloaded while offline".to_owned());
                 } else if let Err(err) = trailgen_data::validate_region(bounds) {
                     self.fault = Some(format!("{err:#}"));
-                    self.scribe.arm();
+                    self.region_draft.arm();
                 } else {
                     let region = SurveyRegion::new(bounds)
                         .expect("validated bounds must forge a survey region");
@@ -970,7 +972,7 @@ impl SurveyWorkbench {
                         self.fault = Some("that map area is already downloaded".to_owned());
                     } else if let Err(err) = self.strike(ui.ctx(), TrailDataMutation::Add(bounds)) {
                         self.fault = Some(format!("{err:#}"));
-                        self.scribe.arm();
+                        self.region_draft.arm();
                     } else {
                         self.regions.push(region);
                     }
@@ -1053,7 +1055,7 @@ impl SurveyWorkbench {
         });
         state.areas = Some(crate::witness::AreaState {
             regions: self.regions.len(),
-            drawing: self.scribe.active(),
+            drawing: self.region_draft.active(),
             resizing: self
                 .area_handles
                 .resizing()
@@ -1112,17 +1114,17 @@ impl SurveyWorkbench {
         }
     }
 
-    fn snapshot(&self) -> Slate {
-        let mut slate = self.observed_slate.clone();
-        slate.project.clone_from(&self.root);
-        slate.viewport = Some(self.viewport);
-        slate
+    fn snapshot(&self) -> SessionState {
+        let mut session_state = self.observed_session_state.clone();
+        session_state.project.clone_from(&self.root);
+        session_state.viewport = Some(self.viewport);
+        session_state
     }
 
     fn observe_persistence(&mut self) {
         let current = self.snapshot();
-        if current != self.observed_slate {
-            self.observed_slate = current;
+        if current != self.observed_session_state {
+            self.observed_session_state = current;
             self.state_scribe.mark();
         }
     }
@@ -1142,8 +1144,8 @@ impl SurveyWorkbench {
             .deadline()
             .is_some_and(|deadline| deadline <= now)
         {
-            let slate = self.observed_slate.clone();
-            match self.state_scribe.tend(now, || slate) {
+            let session_state = self.observed_session_state.clone();
+            match self.state_scribe.tend(now, || session_state) {
                 Ok(Some(_sequence)) => {}
                 Ok(None) => {}
                 Err(error) => {
@@ -1164,15 +1166,15 @@ impl SurveyWorkbench {
 
 impl Drop for SurveyWorkbench {
     fn drop(&mut self) {
-        let slate = self.snapshot();
-        if let Err(error) = self.state_scribe.flush(slate) {
+        let session_state = self.snapshot();
+        if let Err(error) = self.state_scribe.flush(session_state) {
             eprintln!("could not save survey workbench state: {error:#}");
         }
     }
 }
 
 pub struct ProjectDeck {
-    habitat: Habitat,
+    application_paths: ApplicationPaths,
     offline: bool,
     new_name: String,
     new_parent: String,
@@ -1186,21 +1188,21 @@ pub struct ProjectDeck {
 
 impl ProjectDeck {
     fn new(
-        habitat: Habitat,
+        application_paths: ApplicationPaths,
         offline: bool,
         proposed: Option<&Path>,
         mut fault: Option<String>,
         return_workspace: Option<ProjectWorkspace>,
     ) -> Self {
-        let new_parent = habitat
+        let new_parent = application_paths
             .library_root()
             .map_or_else(String::new, |root| root.to_string_lossy().into_owned());
-        let known = habitat.known_projects().unwrap_or_else(|err| {
+        let known = application_paths.known_projects().unwrap_or_else(|err| {
             fault = Some(format!("could not inspect the project library: {err:#}"));
             Vec::new()
         });
         Self {
-            habitat,
+            application_paths,
             offline,
             new_name: String::new(),
             new_parent,
@@ -1312,11 +1314,8 @@ impl ProjectDeck {
             &[CommandContext::Projects],
             commands::scope_name,
             |edict| self.edict_status(edict),
-            &commands::PROJECT_IDIOMS,
+            &commands::PROJECT_GUIDE_GROUPS,
         );
-        if let Some(rect) = guide.rect() {
-            crate::witness::rect(ui.ctx(), Target::CommandGuide, rect);
-        }
         self.guide = guide;
     }
 
@@ -1329,10 +1328,9 @@ impl ProjectDeck {
     ) {
         let _column = ui.vertical(|ui| {
             ui.set_width(710.0);
-            let header = ApplicationHeader::new("TRAILGEN")
+            let _header = ApplicationHeader::new("TRAILGEN")
                 .settings_attention(settings_attention)
                 .show(ui, &mut self.guide, settings, &mut self.water);
-            crate::witness::response(ui, Target::Help, &header.help);
             ui.add_space(12.0);
             self.heading(ui);
             self.new_project(ui, action);
@@ -1500,7 +1498,7 @@ impl ProjectDeck {
 
     fn footnotes(&self, ui: &mut egui::Ui) {
         ui.add_space(10.0);
-        let library = self.habitat.library_root().map_or_else(
+        let library = self.application_paths.library_root().map_or_else(
             || "OS DOCUMENTS DIRECTORY UNAVAILABLE · CHOOSE A PARENT FOLDER".to_owned(),
             |root| format!("CONVENTIONAL LIBRARY · {}", root.display()),
         );
@@ -1534,7 +1532,7 @@ impl ProjectDeck {
         let proposed = Path::new(self.open_root.trim());
         if let Some(parent) = nearest_existing(proposed) {
             dialog = dialog.set_directory(parent);
-        } else if let Some(library) = self.habitat.library_root()
+        } else if let Some(library) = self.application_paths.library_root()
             && let Some(parent) = nearest_existing(library)
         {
             dialog = dialog.set_directory(parent);
@@ -1555,7 +1553,7 @@ impl ProjectDeck {
                 }
                 ProjectAction::Back => unreachable!("back handled before opening a project"),
             };
-            open_project(ctx, &self.habitat, &root, self.offline)
+            open_project(ctx, &self.application_paths, &root, self.offline)
         })();
         match result {
             Ok(workspace) => Some(workspace),
@@ -1575,7 +1573,7 @@ enum ProjectAction {
 
 fn open_project(
     ctx: &egui::Context,
-    habitat: &Habitat,
+    application_paths: &ApplicationPaths,
     root: &Path,
     offline: bool,
 ) -> Result<ProjectWorkspace> {
@@ -1597,7 +1595,7 @@ fn open_project(
             ctx,
             &root,
             offline,
-            habitat.slate_path(&root),
+            application_paths.session_state_path(&root),
             config,
             indexed.as_ref(),
         )?))
@@ -1606,10 +1604,10 @@ fn open_project(
             ctx,
             place,
             offline,
-            habitat.slate_path(&root),
+            application_paths.session_state_path(&root),
         )?))
     };
-    if let Err(err) = habitat.remember(&root) {
+    if let Err(err) = application_paths.remember(&root) {
         eprintln!("could not remember project: {err:#}");
     }
     Ok(workspace)

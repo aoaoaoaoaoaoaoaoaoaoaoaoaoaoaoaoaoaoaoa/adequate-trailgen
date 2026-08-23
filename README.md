@@ -22,7 +22,7 @@ install above. Releases also carry an unsigned universal macOS disk image and
 an unsigned current-user Windows installer; Gatekeeper or SmartScreen may
 therefore require an explicit user override.
 
-Projects are portable directories rooted by `trailgen.toml`. Project content, including the canonical saved-trail Library, stays in that directory. View and window state belongs under `$XDG_STATE_HOME/trailgen`, app-wide preferences under `$XDG_CONFIG_HOME/trailgen`, and shared map cache under `$XDG_CACHE_HOME/trailgen`.
+Projects are portable directories rooted by `trailgen.toml`. Project content, including the canonical saved-trail Library, stays in that directory. View and window state belongs under `$XDG_STATE_HOME/trailgen`, app-wide configuration under `$XDG_CONFIG_HOME/trailgen`, and shared map cache under `$XDG_CACHE_HOME/trailgen`.
 
 ## Workflow
 
@@ -51,7 +51,7 @@ file untouched, and requires an explicit reload after repair. `F3` begins the
 focused trail's inline rename.
 
 Trailgen declares typed commands once. The same declaration routes their
-accelerators, supplies button labels and mnemonic underlines, and populates the
+shortcuts, supplies button labels and mnemonic underlines, and populates the
 guide with current availability and refusal reasons. Map gestures and other
 target-relative interactions remain in the guide without pretending to be
 global commands.
@@ -96,7 +96,11 @@ then verifies the complete registry-resolved package graph. The pinned Foundry
 workflow publishes the unsigned native artifacts and a machine-readable support
 receipt only after the declared proof graph passes.
 
-See [installation](docs/installation.md), [project state](docs/config.md), [model](docs/model.md), [physical load and moving time](docs/physical-load.md), and [known limitations](docs/limitations.md).
+See [installation](docs/installation.md), [project state](docs/config.md),
+[model](docs/model.md), [routing](docs/routing.md), [rendering](docs/rendering.md),
+[civic areas](docs/civic-areas.md), [physical load and moving time](docs/physical-load.md),
+[data sources](docs/data-sources.md), [known limitations](docs/limitations.md), and
+[releasing](docs/releasing.md).
 
 ## License
 

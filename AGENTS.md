@@ -7,26 +7,27 @@ Before changing visible controls, labels, legends, navigation, or feedback,
 load and obey `$ui-doctrine`.
 
 Before changing map, trail, gallery, annotation, or GPU code, read and obey
-[RENDERING_HYGIENE.md](RENDERING_HYGIENE.md). Renderer work is incomplete until
+[rendering contract](docs/rendering.md). Renderer work is incomplete until
 the many-candidate dogfood trace and its visual states have been checked.
 
 Before changing workbench navigation, tools, search sessions, overlays, or
 persistence, read and obey [spec/UI_STATE_MODEL.md](spec/UI_STATE_MODEL.md).
 
 Before changing startup publication, event-loop work, background drains, frame
-production, or latency evidence, read and obey
-[design/RESPONSIVENESS_DOCTRINE.md](design/RESPONSIVENESS_DOCTRINE.md).
+production, or latency evidence, load `$eternalist-apps`, read its current
+responsiveness contract, and retain Trailgen's measured evidence in
+[rendering](docs/rendering.md).
 
 Before changing pedestrian ingestion, graph topology, support binding, routing,
 or routing realms, read and obey
-[design/URBAN_WALK_ROUTING.md](design/URBAN_WALK_ROUTING.md).
+[routing contract](docs/routing.md).
 
 Before changing a critical GUI behavior or its witness surface, read and obey
 [spec/GUI_ACCEPTANCE.md](spec/GUI_ACCEPTANCE.md). Acceptance scenarios are
 full user stories; xdotool choreography is forbidden.
 
 Before changing CI, release gates, supported platforms, installation, or
-removal, read and obey [design/CI_DOCTRINE.md](design/CI_DOCTRINE.md). CI is a
+removal, read and obey [releasing](docs/releasing.md). CI is a
 thin scheduler over app-owned, independently runnable evidence units.
 
 Before extracting lifecycle, application primitives, physical controls, or

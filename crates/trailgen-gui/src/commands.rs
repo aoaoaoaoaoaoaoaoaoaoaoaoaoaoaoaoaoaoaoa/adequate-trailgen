@@ -220,32 +220,32 @@ const EDICTS: [CommandSpec<Edict, Context>; 18] = [
 
 const ENTER: [Shortcut; 1] = [Shortcut::new(ShortcutModifiers::NONE, ShortcutKey::Enter)];
 const ESCAPE: [Shortcut; 1] = [Shortcut::new(ShortcutModifiers::NONE, ShortcutKey::Escape)];
-const TOGGLE_SIDEBAR: [Shortcut; 1] = [Shortcut::new(
+const TOGGLE_INSPECTOR: [Shortcut; 1] = [Shortcut::new(
     ShortcutModifiers::NONE,
     ShortcutKey::Function(9),
 )];
-const NEXT_SIDEBAR_SECTION: [Shortcut; 1] =
+const NEXT_INSPECTOR_PANEL: [Shortcut; 1] =
     [Shortcut::new(ShortcutModifiers::CONTROL, ShortcutKey::Tab)];
-const PREVIOUS_SIDEBAR_SECTION: [Shortcut; 1] = [Shortcut::new(
+const PREVIOUS_INSPECTOR_PANEL: [Shortcut; 1] = [Shortcut::new(
     ShortcutModifiers::CONTROL.plus(ShortcutModifiers::SHIFT),
     ShortcutKey::Tab,
 )];
 
-const SIDEBAR_GESTURES: [GuideGesture; 3] = [
+const INSPECTOR_GESTURES: [GuideGesture; 3] = [
     GuideGesture::new(
-        "Show or hide sidebar",
+        "Show or hide Inspector",
         "Conceals or reveals the project controls.",
-        &TOGGLE_SIDEBAR,
+        &TOGGLE_INSPECTOR,
     ),
     GuideGesture::new(
-        "Next sidebar section",
-        "Moves focus to the next control section.",
-        &NEXT_SIDEBAR_SECTION,
+        "Next Inspector panel",
+        "Moves focus to the next Inspector panel.",
+        &NEXT_INSPECTOR_PANEL,
     ),
     GuideGesture::new(
-        "Previous sidebar section",
-        "Moves focus to the previous control section.",
-        &PREVIOUS_SIDEBAR_SECTION,
+        "Previous Inspector panel",
+        "Moves focus to the previous Inspector panel.",
+        &PREVIOUS_INSPECTOR_PANEL,
     ),
 ];
 const PROJECT_GESTURES: [GuideGesture; 2] = [
@@ -356,34 +356,40 @@ const PROFILE_GESTURES: [GuideGesture; 2] = [
     ),
 ];
 
-const PROJECT_IDIOM: GuideSection = GuideSection::new("PROJECT DECK", &PROJECT_GESTURES);
-const SIDEBAR_IDIOM: GuideSection = GuideSection::new("SIDEBAR", &SIDEBAR_GESTURES);
-const MAP_IDIOM: GuideSection = GuideSection::new("MAP", &MAP_GESTURES);
-const SURVEY_IDIOM: GuideSection = GuideSection::new("MAP AREAS", &SURVEY_GESTURES);
-const FINDER_IDIOM: GuideSection = GuideSection::new("FIND TRAILS", &FINDER_GESTURES);
-const FOCUS_IDIOM: GuideSection = GuideSection::new("TRAIL DETAIL", &FOCUS_GESTURES);
-const EDITOR_IDIOM: GuideSection = GuideSection::new("TRAIL EDITOR", &EDITOR_GESTURES);
-const PROFILE_IDIOM: GuideSection = GuideSection::new("ELEVATION PROFILE", &PROFILE_GESTURES);
+const PROJECT_GUIDE_GROUP: GuideSection = GuideSection::new("PROJECT DECK", &PROJECT_GESTURES);
+const INSPECTOR_GUIDE_GROUP: GuideSection = GuideSection::new("INSPECTOR", &INSPECTOR_GESTURES);
+const MAP_GUIDE_GROUP: GuideSection = GuideSection::new("MAP", &MAP_GESTURES);
+const SURVEY_GUIDE_GROUP: GuideSection = GuideSection::new("MAP AREAS", &SURVEY_GESTURES);
+const FINDER_GUIDE_GROUP: GuideSection = GuideSection::new("FIND TRAILS", &FINDER_GESTURES);
+const FOCUS_GUIDE_GROUP: GuideSection = GuideSection::new("TRAIL DETAIL", &FOCUS_GESTURES);
+const EDITOR_GUIDE_GROUP: GuideSection = GuideSection::new("TRAIL EDITOR", &EDITOR_GESTURES);
+const PROFILE_GUIDE_GROUP: GuideSection = GuideSection::new("ELEVATION PROFILE", &PROFILE_GESTURES);
 
-pub const PROJECT_IDIOMS: [GuideSection; 1] = [PROJECT_IDIOM];
-pub const SURVEY_IDIOMS: [GuideSection; 3] = [SIDEBAR_IDIOM, MAP_IDIOM, SURVEY_IDIOM];
-pub const FINDER_IDIOMS: [GuideSection; 3] = [SIDEBAR_IDIOM, MAP_IDIOM, FINDER_IDIOM];
-pub const CANDIDATE_IDIOMS: [GuideSection; 5] = [
-    SIDEBAR_IDIOM,
-    MAP_IDIOM,
-    FINDER_IDIOM,
-    FOCUS_IDIOM,
-    PROFILE_IDIOM,
+pub const PROJECT_GUIDE_GROUPS: [GuideSection; 1] = [PROJECT_GUIDE_GROUP];
+pub const SURVEY_GUIDE_GROUPS: [GuideSection; 3] =
+    [INSPECTOR_GUIDE_GROUP, MAP_GUIDE_GROUP, SURVEY_GUIDE_GROUP];
+pub const FINDER_GUIDE_GROUPS: [GuideSection; 3] =
+    [INSPECTOR_GUIDE_GROUP, MAP_GUIDE_GROUP, FINDER_GUIDE_GROUP];
+pub const CANDIDATE_GUIDE_GROUPS: [GuideSection; 5] = [
+    INSPECTOR_GUIDE_GROUP,
+    MAP_GUIDE_GROUP,
+    FINDER_GUIDE_GROUP,
+    FOCUS_GUIDE_GROUP,
+    PROFILE_GUIDE_GROUP,
 ];
-pub const SAVED_IDIOMS: [GuideSection; 5] = [
-    SIDEBAR_IDIOM,
-    MAP_IDIOM,
-    FINDER_IDIOM,
-    FOCUS_IDIOM,
-    PROFILE_IDIOM,
+pub const SAVED_GUIDE_GROUPS: [GuideSection; 5] = [
+    INSPECTOR_GUIDE_GROUP,
+    MAP_GUIDE_GROUP,
+    FINDER_GUIDE_GROUP,
+    FOCUS_GUIDE_GROUP,
+    PROFILE_GUIDE_GROUP,
 ];
-pub const EDITOR_IDIOMS: [GuideSection; 4] =
-    [SIDEBAR_IDIOM, MAP_IDIOM, EDITOR_IDIOM, PROFILE_IDIOM];
+pub const EDITOR_GUIDE_GROUPS: [GuideSection; 4] = [
+    INSPECTOR_GUIDE_GROUP,
+    MAP_GUIDE_GROUP,
+    EDITOR_GUIDE_GROUP,
+    PROFILE_GUIDE_GROUP,
+];
 
 pub const fn scope_name(context: Context) -> &'static str {
     match context {

@@ -4,20 +4,20 @@ use crate::{
     chrome,
     civic_area::{self, AddOutcome, CivicAreas, CivicKey, CivicRowState},
     commands::{self, Context as CommandContext, Edict},
+    configuration::{BASE_PACE_SETTING, BasePace, Configuration},
     export::{ExportEvent, ExportForge, ExportJob, suggested_filename},
     gallery::{self, TrailSort},
     lexicon::{ExplainedText, Glosses},
     library::{Library, SavedTrail, SearchRecipe, TrailId, Trailhead, validate_trail_name},
-    live_area::{self, RegionHandles, RegionScribe, ResizeEvent, ScribeEvent},
+    live_area::{self, RegionDraft, RegionDraftEvent, RegionHandles, ResizeEvent},
     map::{self, Atlas, SELECTED_TRAIL_COLOR, Viewport},
     portfolio::{self, CandidatePortfolio, CandidateWarmth},
-    preferences::{BASE_PACE_SETTING, BasePace, Preferences},
     profile::ElevationProfile,
     project::{Project, SearchEvent, SearchForge, SearchHandle, SearchRequest},
     readout,
     relief::Relief,
-    search_boundary::{self, BoundaryEvent, BoundaryScribe},
-    slate::{ManualDraft, Slate},
+    search_boundary::{self, BoundaryDraft, BoundaryEvent},
+    session_state::{ManualDraft, SessionState},
     trail_data::{
         Event as TrailDataEvent, Mutation as TrailDataMutation, TrailData, progress_status,
     },
@@ -115,15 +115,15 @@ pub struct TrailApp {
     civic: CivicAreas,
     area_rename: Option<AreaRenameDraft>,
     corpus: Option<CorpusTask>,
-    scribe: RegionScribe,
+    region_draft: RegionDraft,
     area_handles: RegionHandles,
     guide: CommandGuide,
     panels: PanelNavigator,
-    boundary_scribe: BoundaryScribe,
+    boundary_draft: BoundaryDraft,
     offline: bool,
-    shutters: BTreeMap<String, bool>,
+    panel_folds: BTreeMap<String, bool>,
     inspector_scroll: f32,
-    observed_slate: Slate,
+    observed_session_state: SessionState,
     base_pace: BasePace,
     pending_base_pace: Option<f64>,
     water: Surface,
@@ -140,13 +140,13 @@ pub struct TrailApp {
 #[derive(Clone)]
 struct DurableState {
     library: Option<Library>,
-    slate: Option<Slate>,
+    session_state: Option<SessionState>,
 }
 
 #[derive(Clone, Copy, Default)]
 struct DirtyState {
     library: bool,
-    slate: bool,
+    session_state: bool,
 }
 
 #[derive(Clone, Copy, Default, Eq, PartialEq)]
@@ -172,15 +172,15 @@ impl TrailheadPosture {
 }
 
 impl DurableState {
-    fn save(self, root: &Path, slate_path: &Path) -> Result<()> {
+    fn save(self, root: &Path, session_state_path: &Path) -> Result<()> {
         let mut faults = Vec::new();
         if let Some(library) = self.library
             && let Err(error) = library.save(root)
         {
             faults.push(format!("trail library: {error:#}"));
         }
-        if let Some(slate) = self.slate
-            && let Err(error) = slate.save(slate_path)
+        if let Some(session_state) = self.session_state
+            && let Err(error) = session_state.save(session_state_path)
         {
             faults.push(format!("window state: {error:#}"));
         }
@@ -195,14 +195,14 @@ impl DurableState {
 fn raise_state_scribe(
     ctx: &egui::Context,
     root: &Path,
-    slate_path: PathBuf,
+    session_state_path: PathBuf,
 ) -> Result<SettledScribe<DurableState>> {
     let root = root.to_owned();
     SettledScribe::spawn(
-        "trailgen-state-scribe",
+        "trailgen-state-region_draft",
         ctx,
         STATE_SETTLE,
-        move |state: DurableState| state.save(&root, &slate_path),
+        move |state: DurableState| state.save(&root, &session_state_path),
     )
 }
 
@@ -1063,11 +1063,11 @@ fn raise_region_vector(
 }
 
 fn resurrect_workbench(
-    slate: &Slate,
+    session_state: &SessionState,
     regions_empty: bool,
 ) -> (Viewport, WorkbenchView, Fit, String) {
-    let browse_viewport = slate.viewport;
-    if let Some(draft) = slate.manual_draft.clone() {
+    let browse_viewport = session_state.viewport;
+    if let Some(draft) = session_state.manual_draft.clone() {
         let viewport = draft.viewport;
         let editor = TrailEditor::forge(
             draft.name,
@@ -1104,23 +1104,30 @@ fn initial_panel_activation(view: &WorkbenchView) -> Option<InspectorPanel> {
     (!matches!(view, WorkbenchView::Browse)).then_some(InspectorPanel::TrailDetails)
 }
 
+fn enter_raise_span(root: &Path) -> tracing::span::EnteredSpan {
+    tracing::info_span!(
+        target: "eternalist::startup",
+        "trailgen.raise",
+        root = %root.display()
+    )
+    .entered()
+}
+
 impl TrailApp {
     pub(crate) fn raise(
         ctx: &egui::Context,
         root: &Path,
         offline: bool,
-        slate_path: PathBuf,
+        session_state_path: PathBuf,
         trail_data: trailgen_data::TrailDataConfig,
         indexed: Option<&trailgen_data::Summary>,
     ) -> Result<Self> {
-        let _open = tracing::info_span!(
-            target: "eternalist::startup",
-            "trailgen.raise",
-            root = %root.display()
-        )
-        .entered();
+        let _open = enter_raise_span(root);
         let project = product_phase!("project.open", Project::open(root)?);
-        let slate = product_phase!("project.slate", Slate::load(&slate_path, &project.root));
+        let session_state = product_phase!(
+            "project.session_state",
+            SessionState::load(&session_state_path, &project.root)
+        );
         let refresh = !offline && !trail_data.regions.is_empty() && indexed.is_none();
         let vector = raise_region_vector(ctx, &project.root, &trail_data.regions, offline)?;
         let relief = product_phase!("project.relief", Relief::raise(ctx, &project.root)?);
@@ -1138,11 +1145,11 @@ impl TrailApp {
             library,
         } = project;
         let (viewport, view, fit, status) =
-            resurrect_workbench(&slate, trail_data.regions.is_empty());
+            resurrect_workbench(&session_state, trail_data.regions.is_empty());
         let panel_activation = initial_panel_activation(&view);
         let cartography = map::CartographicClock::new(viewport);
-        let state_scribe = raise_state_scribe(ctx, &root, slate_path)?;
-        let mut app = Self {
+        let state_scribe = raise_state_scribe(ctx, &root, session_state_path)?;
+        Ok(Self {
             root,
             name: config.name,
             sinew: None,
@@ -1170,8 +1177,8 @@ impl TrailApp {
             view,
             panel_activation,
             delete_confirmation: None,
-            sort: slate.sort,
-            trail_coloring: slate.trail_coloring,
+            sort: session_state.sort,
+            trail_coloring: session_state.trail_coloring,
             viewport,
             map_probe: None,
             cartography,
@@ -1189,15 +1196,15 @@ impl TrailApp {
             civic,
             area_rename: None,
             corpus: Some(CorpusTask::Preparing(armament)),
-            scribe: RegionScribe::default(),
+            region_draft: RegionDraft::default(),
             area_handles: RegionHandles::default(),
             guide: CommandGuide::default(),
             panels: PanelNavigator::default(),
-            boundary_scribe: BoundaryScribe::default(),
+            boundary_draft: BoundaryDraft::default(),
             offline,
-            shutters: slate.shutters.clone(),
-            inspector_scroll: slate.inspector_scroll,
-            observed_slate: slate,
+            panel_folds: session_state.panel_folds.clone(),
+            inspector_scroll: session_state.inspector_scroll,
+            observed_session_state: session_state,
             base_pace: BasePace::default(),
             pending_base_pace: None,
             water: forge_water(),
@@ -1209,20 +1216,20 @@ impl TrailApp {
             map_regime: MapRegime::Browse,
             workspace_signal: None,
             post_armament: refresh.then_some(TrailDataMutation::Refresh),
-        };
-        app.settle_raise();
-        Ok(app)
+        }
+        .settled_after_raise())
     }
 
-    fn settle_raise(&mut self) {
+    fn settled_after_raise(mut self) -> Self {
         self.reconcile_saved_projections();
-        self.observed_slate = self.snapshot();
+        self.observed_session_state = self.snapshot();
+        self
     }
 
     pub fn pulse(
         &mut self,
         ui: &mut egui::Ui,
-        configuration: &mut ConfigurationLedger<Preferences>,
+        configuration: &mut ConfigurationLedger<Configuration>,
         settings: &mut SettingsSheet,
         settings_attention: bool,
     ) -> Option<Action> {
@@ -1289,7 +1296,7 @@ impl TrailApp {
         self.inspector_scroll = inspector.scroll_offset;
         if let Some(kmh) = self.pending_base_pace.take()
             && configuration
-                .revise(|preferences| preferences.set_base_pace(kmh))
+                .revise(|configuration| configuration.set_base_pace(kmh))
                 .is_ok()
         {
             self.set_base_pace(configuration.live().base_pace());
@@ -1485,7 +1492,7 @@ impl TrailApp {
             }),
             areas: Some(crate::witness::AreaState {
                 regions: self.regions.len(),
-                drawing: self.scribe.active(),
+                drawing: self.region_draft.active(),
                 resizing: self
                     .area_handles
                     .resizing()
@@ -1570,7 +1577,7 @@ impl TrailApp {
                 trailgen_contract::ResultsPhase::Dormant
             },
             trailhead: recipe.trailhead.is_some(),
-            boundary: match (recipe.boundary.is_some(), self.boundary_scribe.active()) {
+            boundary: match (recipe.boundary.is_some(), self.boundary_draft.active()) {
                 (false, false) => BoundaryPhase::Unlimited,
                 (false, true) => BoundaryPhase::Drawing,
                 (true, false) => BoundaryPhase::Committed,
@@ -1617,12 +1624,12 @@ impl TrailApp {
         }
     }
 
-    const fn command_idioms(&self) -> &'static [GuideSection] {
+    const fn command_guide_groups(&self) -> &'static [GuideSection] {
         match &self.view {
-            WorkbenchView::Browse => &commands::FINDER_IDIOMS,
-            WorkbenchView::Focus(Focus::Candidate { .. }) => &commands::CANDIDATE_IDIOMS,
-            WorkbenchView::Focus(Focus::Saved(_)) => &commands::SAVED_IDIOMS,
-            WorkbenchView::Edit(_) => &commands::EDITOR_IDIOMS,
+            WorkbenchView::Browse => &commands::FINDER_GUIDE_GROUPS,
+            WorkbenchView::Focus(Focus::Candidate { .. }) => &commands::CANDIDATE_GUIDE_GROUPS,
+            WorkbenchView::Focus(Focus::Saved(_)) => &commands::SAVED_GUIDE_GROUPS,
+            WorkbenchView::Edit(_) => &commands::EDITOR_GUIDE_GROUPS,
         }
     }
 
@@ -1772,7 +1779,7 @@ impl TrailApp {
 
     fn command_guide(&mut self, ui: &egui::Ui) {
         let contexts = self.command_contexts();
-        let idioms = self.command_idioms();
+        let guide_groups = self.command_guide_groups();
         let mut guide = std::mem::take(&mut self.guide);
         guide.show(
             ui.ctx(),
@@ -1780,11 +1787,8 @@ impl TrailApp {
             contexts,
             commands::scope_name,
             |edict| self.edict_status(edict),
-            idioms,
+            guide_groups,
         );
-        if let Some(rect) = guide.rect() {
-            crate::witness::rect(ui.ctx(), Target::CommandGuide, rect);
-        }
         self.guide = guide;
     }
 
@@ -1795,16 +1799,15 @@ impl TrailApp {
         settings: &mut SettingsSheet,
         settings_attention: bool,
     ) {
-        let header = ApplicationHeader::new("TRAILGEN")
+        let _header = ApplicationHeader::new("TRAILGEN")
             .settings_attention(settings_attention)
             .show(ui, &mut self.guide, settings, &mut self.water);
-        crate::witness::response(ui, Target::Help, &header.help);
         ui.add_space(5.0);
         let mut panels = navigator.frame(ui.ctx());
         if let Some(panel) = self.panel_activation.take() {
             panels.activate(ui, panel.salt());
         }
-        self.section(
+        self.panel(
             &mut panels,
             ui,
             "projects",
@@ -1812,7 +1815,7 @@ impl TrailApp {
             true,
             Self::projects_panel,
         );
-        self.section(
+        self.panel(
             &mut panels,
             ui,
             "library",
@@ -1820,7 +1823,7 @@ impl TrailApp {
             true,
             Self::library_panel,
         );
-        self.section(
+        self.panel(
             &mut panels,
             ui,
             "trail-details",
@@ -1828,7 +1831,7 @@ impl TrailApp {
             true,
             Self::trail_details_panel,
         );
-        self.section(
+        self.panel(
             &mut panels,
             ui,
             "search",
@@ -1836,7 +1839,7 @@ impl TrailApp {
             true,
             Self::search_panel,
         );
-        self.section(
+        self.panel(
             &mut panels,
             ui,
             "calibration",
@@ -1844,7 +1847,7 @@ impl TrailApp {
             true,
             Self::calibration_panel,
         );
-        self.section(
+        self.panel(
             &mut panels,
             ui,
             "areas",
@@ -1852,7 +1855,7 @@ impl TrailApp {
             true,
             Self::area_panel,
         );
-        self.section(
+        self.panel(
             &mut panels,
             ui,
             "overlays",
@@ -2086,7 +2089,7 @@ impl TrailApp {
         Coord::new(lon / count, lat / count)
     }
 
-    fn section(
+    fn panel(
         &mut self,
         panels: &mut PanelFrame<'_>,
         ui: &mut egui::Ui,
@@ -2095,12 +2098,12 @@ impl TrailApp {
         open: bool,
         body: fn(&mut Self, &mut egui::Ui),
     ) {
-        let open = self.shutters.get(id).copied().unwrap_or(open);
+        let open = self.panel_folds.get(id).copied().unwrap_or(open);
         let section = panels.section(ui, id, title, open, |ui| body(self, ui));
         crate::witness::response(ui, Target::Panel(id), &section.header);
         if let Some(wake) = section.wake.as_ref() {
             let _prior = self
-                .shutters
+                .panel_folds
                 .insert(id.to_owned(), matches!(wake.flux, chrome::FoldFlux::Open));
         }
         self.water.fold(section.wake);
@@ -2279,8 +2282,8 @@ impl TrailApp {
                 };
                 self.trailhead_drag = None;
                 if self.trailhead_posture.placing() {
-                    self.scribe.disarm();
-                    self.boundary_scribe.disarm();
+                    self.region_draft.disarm();
+                    self.boundary_draft.disarm();
                     self.dissolve_focus();
                 }
                 self.water.click(place.rect);
@@ -2310,7 +2313,7 @@ impl TrailApp {
         ui.add_space(5.0);
         let _boundary = ui.label(chrome::eyebrow("SEARCH AREA"));
         let _boundary_row = ui.horizontal(|ui| {
-            let drawing = self.boundary_scribe.active();
+            let drawing = self.boundary_draft.active();
             let draw = ui.add(
                 chrome::command_button(
                     if drawing {
@@ -2340,10 +2343,10 @@ impl TrailApp {
             chrome::tension(ui, &draw);
             if draw.clicked() {
                 if drawing {
-                    self.boundary_scribe.disarm();
+                    self.boundary_draft.disarm();
                 } else {
-                    self.boundary_scribe.arm();
-                    self.scribe.disarm();
+                    self.boundary_draft.arm();
+                    self.region_draft.disarm();
                     self.trailhead_posture = self.trailhead_posture.disarm();
                     self.trailhead_drag = None;
                     self.dissolve_focus();
@@ -2355,7 +2358,7 @@ impl TrailApp {
                     ui.add(chrome::command_button("CLEAR", false).min_size(vec2(48.0, 27.0)));
                 if clear.clicked() {
                     recipe.boundary = None;
-                    self.boundary_scribe.disarm();
+                    self.boundary_draft.disarm();
                     self.water.click(clear.rect);
                 }
             }
@@ -2639,7 +2642,7 @@ impl TrailApp {
     }
 
     fn area_picker(&mut self, ui: &mut egui::Ui, mutable: bool) {
-        let selecting = self.scribe.active();
+        let selecting = self.region_draft.active();
         let select = ui.add_enabled(
             !self.offline && mutable,
             chrome::command_button(
@@ -2661,10 +2664,10 @@ impl TrailApp {
         chrome::tension(ui, &select);
         if select.clicked() {
             if selecting {
-                self.scribe.disarm();
+                self.region_draft.disarm();
             } else {
-                self.scribe.arm();
-                self.boundary_scribe.disarm();
+                self.region_draft.arm();
+                self.boundary_draft.disarm();
                 self.trailhead_posture = self.trailhead_posture.disarm();
                 self.trailhead_drag = None;
                 self.dissolve_focus();
@@ -3541,8 +3544,8 @@ impl TrailApp {
             excising_supports || annotating_supports,
         );
         let before = self.viewport;
-        let map_gesture_captured = self.scribe.active()
-            || self.boundary_scribe.active()
+        let map_gesture_captured = self.region_draft.active()
+            || self.boundary_draft.active()
             || self.area_handles.captured()
             || editor_dragging
             || (support_under_pointer.is_some() && (excising_supports || annotating_supports))
@@ -3581,7 +3584,7 @@ impl TrailApp {
         if before != self.viewport {
             ui.ctx().request_repaint();
         }
-        self.handle_scribe(ui.ctx(), &scribe_event);
+        self.handle_region_draft(ui.ctx(), &scribe_event);
         self.handle_area_resize(ui.ctx(), resize_event);
         self.handle_boundary(boundary_event);
         self.paint_map_wait(ui, rect);
@@ -3775,7 +3778,7 @@ impl TrailApp {
     }
 
     fn paint_live_area(&self, painter: &egui::Painter, rect: egui::Rect) {
-        if !self.regions.is_empty() || self.scribe.active() {
+        if !self.regions.is_empty() || self.region_draft.active() {
             live_area::paint(
                 painter,
                 live_area::Scene {
@@ -3783,7 +3786,7 @@ impl TrailApp {
                     canvas: rect,
                     regions: &self.regions,
                     names: &self.region_names,
-                    preview: self.scribe.preview(self.viewport, rect),
+                    preview: self.region_draft.preview(self.viewport, rect),
                     adjustment: self.area_handles.preview(),
                     handles: self.area_handles_enabled(),
                 },
@@ -3796,8 +3799,8 @@ impl TrailApp {
             && matches!(self.view, WorkbenchView::Browse)
             && self.corpus.is_none()
             && !self.forge_phase.active()
-            && !self.scribe.active()
-            && !self.boundary_scribe.active()
+            && !self.region_draft.active()
+            && !self.boundary_draft.active()
             && self.area_rename.is_none()
             && !self.trailhead_posture.placing()
             && self.trailhead_drag.is_none()
@@ -3808,10 +3811,11 @@ impl TrailApp {
         ui: &egui::Ui,
         response: &egui::Response,
         rect: egui::Rect,
-    ) -> (ScribeEvent, BoundaryEvent) {
+    ) -> (RegionDraftEvent, BoundaryEvent) {
         (
-            self.scribe.interact(self.viewport, ui, response, rect),
-            self.boundary_scribe
+            self.region_draft
+                .interact(self.viewport, ui, response, rect),
+            self.boundary_draft
                 .interact(self.viewport, ui, response, rect),
         )
     }
@@ -3822,7 +3826,7 @@ impl TrailApp {
             self.viewport,
             rect,
             self.library.search().boundary.as_ref(),
-            self.boundary_scribe.preview(),
+            self.boundary_draft.preview(),
         );
     }
 
@@ -4092,8 +4096,8 @@ impl TrailApp {
             && !self.view.is_editing()
             && self.candidates.is_some()
             && self.shows_search_context()
-            && !self.scribe.active()
-            && !self.boundary_scribe.active()
+            && !self.region_draft.active()
+            && !self.boundary_draft.active()
             && let Some(pointer) = pointer
         {
             self.edict_segment(
@@ -4108,8 +4112,8 @@ impl TrailApp {
             && !self.view.is_editing()
             && self.view.focus().is_none()
             && self.corpus.is_none()
-            && !self.scribe.active()
-            && !self.boundary_scribe.active()
+            && !self.region_draft.active()
+            && !self.boundary_draft.active()
     }
 
     fn interact_trailhead(&mut self, ui: &egui::Ui, rect: egui::Rect) -> TrailheadGesture {
@@ -4203,7 +4207,7 @@ impl TrailApp {
             None
         } else if self.sinew.is_none() {
             Some(self.status.to_ascii_uppercase())
-        } else if self.scribe.active() {
+        } else if self.region_draft.active() {
             Some("DRAW A MAP AREA".to_owned())
         } else if self.view.is_editing() {
             Some("TRAIL EDITOR".to_owned())
@@ -4271,17 +4275,17 @@ impl TrailApp {
         );
     }
 
-    fn handle_scribe(&mut self, ctx: &egui::Context, event: &ScribeEvent) {
+    fn handle_region_draft(&mut self, ctx: &egui::Context, event: &RegionDraftEvent) {
         match event {
-            ScribeEvent::None => {}
-            ScribeEvent::Fault(fault) => {
+            RegionDraftEvent::None => {}
+            RegionDraftEvent::Fault(fault) => {
                 self.status.clear();
                 self.status.push_str(fault);
             }
-            ScribeEvent::Committed(bounds) => {
+            RegionDraftEvent::Committed(bounds) => {
                 if let Err(err) = trailgen_data::validate_region(*bounds) {
                     self.status = format!("That map area cannot be used: {err:#}");
-                    self.scribe.arm();
+                    self.region_draft.arm();
                 } else {
                     let region = SurveyRegion::new(*bounds)
                         .expect("validated bounds must forge a survey region");
@@ -4291,7 +4295,7 @@ impl TrailApp {
                         self.strike_corpus(ctx, TrailDataMutation::Add(*bounds))
                     {
                         self.status = format!("Could not add that map area: {err:#}");
-                        self.scribe.arm();
+                        self.region_draft.arm();
                     } else {
                         self.regions.push(region);
                         "Map area selected. Downloading its trails…".clone_into(&mut self.status);
@@ -4351,7 +4355,7 @@ impl TrailApp {
             BoundaryEvent::None => {}
             BoundaryEvent::Fault(fault) => {
                 self.status = fault;
-                self.boundary_scribe.arm();
+                self.boundary_draft.arm();
             }
             BoundaryEvent::Committed(boundary) => {
                 self.library.search_mut().boundary = Some(boundary);
@@ -5289,8 +5293,8 @@ impl TrailApp {
             || ("New Trail".to_owned(), RouteShape::Open, Vec::new()),
             |(name, trail)| (name, trail.shape, trail.support_points),
         );
-        self.scribe.disarm();
-        self.boundary_scribe.disarm();
+        self.region_draft.disarm();
+        self.boundary_draft.disarm();
         self.trailhead_posture = self.trailhead_posture.disarm();
         self.trailhead_drag = None;
         self.delete_confirmation = None;
@@ -5610,7 +5614,7 @@ impl TrailApp {
         let find = !widget_focused
             && ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
         if find {
-            let search_open = self.shutters.get("search").copied().unwrap_or(true);
+            let search_open = self.panel_folds.get("search").copied().unwrap_or(true);
             if search_open
                 && self.sinew.is_some()
                 && !self.view.is_editing()
@@ -5634,12 +5638,12 @@ impl TrailApp {
             self.leave_focus();
         } else if self.forge_phase.active() {
             self.stop_search();
-        } else if self.scribe.active() {
-            self.scribe.disarm();
+        } else if self.region_draft.active() {
+            self.region_draft.disarm();
         } else if self.area_handles.captured() {
             self.area_handles.cancel();
-        } else if self.boundary_scribe.active() {
-            self.boundary_scribe.disarm();
+        } else if self.boundary_draft.active() {
+            self.boundary_draft.disarm();
         } else if self.trailhead_drag.is_some() {
             self.trailhead_drag = None;
         } else if self.trailhead_posture.placing() {
@@ -5765,7 +5769,7 @@ impl TrailApp {
         }
     }
 
-    fn snapshot(&self) -> Slate {
+    fn snapshot(&self) -> SessionState {
         let viewport = match &self.view {
             WorkbenchView::Edit(editor) if editor.return_to.focus.is_none() => {
                 editor.return_to.viewport
@@ -5786,11 +5790,11 @@ impl TrailApp {
                 viewport: self.viewport,
             })
         });
-        Slate {
+        SessionState {
             project: self.root.clone(),
             viewport: Some(viewport),
             manual_draft,
-            shutters: self.shutters.clone(),
+            panel_folds: self.panel_folds.clone(),
             inspector_scroll: self.inspector_scroll,
             sort: self.sort,
             trail_coloring: self.trail_coloring,
@@ -5799,9 +5803,9 @@ impl TrailApp {
 
     fn observe_persistence(&mut self) {
         let current = self.snapshot();
-        if current != self.observed_slate {
-            self.observed_slate = current;
-            self.dirty_state.slate = true;
+        if current != self.observed_session_state {
+            self.observed_session_state = current;
+            self.dirty_state.session_state = true;
             self.state_scribe.mark();
         }
     }
@@ -5809,7 +5813,10 @@ impl TrailApp {
     fn durable_state(&self) -> DurableState {
         DurableState {
             library: self.dirty_state.library.then(|| self.library.clone()),
-            slate: self.dirty_state.slate.then(|| self.observed_slate.clone()),
+            session_state: self
+                .dirty_state
+                .session_state
+                .then(|| self.observed_session_state.clone()),
         }
     }
 
@@ -5817,8 +5824,8 @@ impl TrailApp {
         if state.library.is_some() {
             self.dirty_state.library = false;
         }
-        if state.slate.is_some() {
-            self.dirty_state.slate = false;
+        if state.session_state.is_some() {
+            self.dirty_state.session_state = false;
         }
         self.pending_state = Some((sequence, state));
     }
@@ -5838,7 +5845,7 @@ impl TrailApp {
             ScribeOutcome::Saved { .. } => {}
             ScribeOutcome::Fault { message, .. } => {
                 self.dirty_state.library |= state.library.is_some();
-                self.dirty_state.slate |= state.slate.is_some();
+                self.dirty_state.session_state |= state.session_state.is_some();
                 self.status = format!("Could not save project state: {message}");
             }
         }
@@ -6390,7 +6397,7 @@ impl Drop for TrailApp {
     fn drop(&mut self) {
         let state = DurableState {
             library: Some(self.library.clone()),
-            slate: Some(self.snapshot()),
+            session_state: Some(self.snapshot()),
         };
         if let Err(error) = self.state_scribe.flush(state) {
             eprintln!("could not save trailgen project state: {error:#}");

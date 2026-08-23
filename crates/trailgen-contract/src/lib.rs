@@ -7,7 +7,7 @@ use std::{borrow::Cow, fmt};
 
 use serde::{Deserialize, Serialize};
 
-pub const UI_FINGERPRINT: &str = "trailgen.ui/22";
+pub const UI_FINGERPRINT: &str = "trailgen.ui/23";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -177,8 +177,6 @@ pub enum Target {
     CloseLoop,
     Reverse,
     Profile,
-    Help,
-    CommandGuide,
     Panel(&'static str),
     SavedVisibility(usize),
     SavedExport(usize),
@@ -195,7 +193,7 @@ pub enum Target {
 }
 
 impl Target {
-    pub const STATIC: [Self; 45] = [
+    pub const STATIC: [Self; 43] = [
         Self::ProjectName,
         Self::ProjectParent,
         Self::ProjectCreate,
@@ -239,8 +237,6 @@ impl Target {
         Self::CloseLoop,
         Self::Reverse,
         Self::Profile,
-        Self::Help,
-        Self::CommandGuide,
     ];
 
     #[must_use]
@@ -257,9 +253,9 @@ impl Target {
             Self::TrailheadPlacement => "search.trailhead",
             Self::TrailDataWait => "status.trail-data.waiting",
             Self::SearchWait => "results.waiting",
-            Self::LegendClass => "map.legend/class",
-            Self::LegendFormality => "map.legend/formality",
-            Self::LegendTerrain => "map.legend/terrain",
+            Self::LegendClass => "map.legend.class",
+            Self::LegendFormality => "map.legend.formality",
+            Self::LegendTerrain => "map.legend.terrain",
             Self::NewTrail => "details.new-trail",
             Self::AddMapArea => "areas.add",
             Self::RefreshTrails => "areas.refresh",
@@ -289,39 +285,47 @@ impl Target {
             Self::CloseLoop => "editor.close-loop",
             Self::Reverse => "editor.reverse",
             Self::Profile => "profile.canvas",
-            Self::Help => "application.help",
-            Self::CommandGuide => "application.command-guide",
-            Self::Panel(name) => return Cow::Owned(format!("panel/{name}")),
-            Self::SavedVisibility(slot) => {
-                return Cow::Owned(format!("library.visibility/{slot}"));
+            Self::Panel(name) => {
+                return Cow::Owned(format!("trailgen.inspector.panel/{name}"));
             }
-            Self::SavedExport(slot) => return Cow::Owned(format!("library.export/{slot}")),
-            Self::Support(slot) => return Cow::Owned(format!("editor.support/{slot}")),
+            Self::SavedVisibility(slot) => {
+                return Cow::Owned(format!("trailgen.library.entry.visibility/{slot}"));
+            }
+            Self::SavedExport(slot) => {
+                return Cow::Owned(format!("trailgen.library.entry.export/{slot}"));
+            }
+            Self::Support(slot) => {
+                return Cow::Owned(format!("trailgen.editor.support/{slot}"));
+            }
             Self::SupportCallout(slot) => {
-                return Cow::Owned(format!("editor.support/{slot}/coordinates"));
+                return Cow::Owned(format!("trailgen.editor.support.coordinates/{slot}"));
             }
             Self::SupportFault(slot) => {
-                return Cow::Owned(format!("editor.support/{slot}/fault"));
+                return Cow::Owned(format!("trailgen.editor.support.fault/{slot}"));
             }
-            Self::AreaRename(slot) => return Cow::Owned(format!("areas.rename/{slot}")),
+            Self::AreaRename(slot) => {
+                return Cow::Owned(format!("trailgen.areas.rename/{slot}"));
+            }
             Self::AreaRenameField(slot) => {
-                return Cow::Owned(format!("areas.rename/{slot}/field"));
+                return Cow::Owned(format!("trailgen.areas.rename.field/{slot}"));
             }
             Self::AreaHandle { slot, corner } => {
-                return Cow::Owned(format!("areas.handle/{slot}/{}", corner.ordinal()));
+                return Cow::Owned(format!("trailgen.areas.handle/{slot}/{}", corner.ordinal()));
             }
             Self::CivicSuggestion(slot) => {
-                return Cow::Owned(format!("overlays.suggestion/{slot}"));
+                return Cow::Owned(format!("trailgen.overlays.suggestion/{slot}"));
             }
-            Self::CivicArea(slot) => return Cow::Owned(format!("overlays.area/{slot}")),
+            Self::CivicArea(slot) => {
+                return Cow::Owned(format!("trailgen.overlays.area/{slot}"));
+            }
             Self::CivicRemove(slot) => {
-                return Cow::Owned(format!("overlays.area/{slot}/remove"));
+                return Cow::Owned(format!("trailgen.overlays.area.remove/{slot}"));
             }
             Self::CivicRetry(slot) => {
-                return Cow::Owned(format!("overlays.area/{slot}/retry"));
+                return Cow::Owned(format!("trailgen.overlays.area.retry/{slot}"));
             }
         };
-        Cow::Borrowed(static_name)
+        Cow::Owned(format!("trailgen.{static_name}"))
     }
 }
 

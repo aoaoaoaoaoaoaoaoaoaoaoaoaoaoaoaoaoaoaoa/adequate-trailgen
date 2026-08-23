@@ -11,7 +11,7 @@ const SEARCH_MAGENTA: Color32 = Color32::from_rgb(190, 91, 147);
 const ROUND_JOIN_LIMIT: f32 = 1.8;
 
 #[derive(Default)]
-pub struct BoundaryScribe {
+pub struct BoundaryDraft {
     active: bool,
     stroke: Vec<Pos2>,
 }
@@ -22,7 +22,7 @@ pub enum BoundaryEvent {
     Fault(String),
 }
 
-impl BoundaryScribe {
+impl BoundaryDraft {
     #[must_use]
     pub const fn active(&self) -> bool {
         self.active

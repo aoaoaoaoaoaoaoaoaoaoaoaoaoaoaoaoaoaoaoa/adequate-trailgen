@@ -11,7 +11,7 @@ The GUI creates and governs projects. `trailgen.toml` is the project mark and th
 | Saved trails and compact search recipe | `library/index.json` |
 | Normalized routable corpus | `cache/graph.bin` plus sequestered `sources/` evidence |
 | Viewport, inspector, gallery, sorting, unfinished manual draft | `$XDG_STATE_HOME/trailgen/projects/` |
-| Base Pace and other app-wide preferences | `$XDG_CONFIG_HOME/trailgen/preferences.toml` |
+| Base Pace and other app-wide settings | `$XDG_CONFIG_HOME/trailgen/preferences.toml` |
 | Shared roaming map data | `$XDG_CACHE_HOME/trailgen` |
 
 No generated-route snapshot is current project state. `routes/generated.*` is read only by the explicit legacy migration path and must never outrank the Library or managed corpus.

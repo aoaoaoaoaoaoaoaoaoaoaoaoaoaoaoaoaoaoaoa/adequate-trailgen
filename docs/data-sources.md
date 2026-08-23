@@ -145,12 +145,29 @@ enriched the wider Harriman corpus but did not improve either owned trace. Repro
 dense public graph remains a separate support-point test obligation; scalar search constraints do
 not identify either custom route.
 
-The [Harriman source audit](harriman-source-audit.md) identifies every anonymous interval and traces
-the important near-bushwhack lines to OSM history, official NYS unmarked-trail data, and independent
-field descriptions. Its central semantic finding is now encoded directly: wayfinding marking is
-independent of standing, maintenance, and access.
+The audit identified five material anonymous intervals. South Lows uses OSM
+ways `157767744` (186 m), `981873271` (252 m), `893180559` (830 m), and
+`153969020` (405 m); West uses way `982415773` (417 m). The 2014 NYS OPRHP
+corpus classifies all but `981873271` as unnamed, unmarked trails. The 830 m
+pipeline corridor existed in that state corpus before OSM added it from aerial
+imagery and Strava heatmap evidence; it is absent from the current OPRHP
+service, so the old classification is historical evidence rather than a
+current access warranty. West's current record `08020RT10414` remains public,
+open, and foot-permitted. Shorter unnamed connectors in both traces are likewise
+topologically present.
 
-The [US public trail source census](../notes/us-public-trail-source-census.md) catalogs all state
+AllTrails' ordinary dashed path network derives from OSM and is not independent
+corroboration. Its Verified Routes are separately curated, but no public page
+exposes enough geometry to identify either custom loop. The current OPRHP
+service permits attributed informational, noncommercial use; the older
+data.ny.gov dataset declares no license. These sources support audit and manual
+comparison but cannot silently enter the redistributable default corpus.
+Wayfinding marking therefore remains independent of standing, maintenance, and
+access. Public-corpus Harriman evidence must use ordered support points and
+judge geometry, topology, wayfinding, and standing separately; scalar search
+constraints cannot identify these custom routes.
+
+The [US public trail source census](source-census.md) catalogs all state
 authorities and the principal federal land managers. Catalog presence is intentionally separate from
 automatic-provider admission: licensing, lifecycle filtering, field semantics, and coverage evidence
 must be proved first.

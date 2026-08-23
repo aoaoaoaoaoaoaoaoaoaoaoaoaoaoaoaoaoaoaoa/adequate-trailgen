@@ -1,5 +1,5 @@
 use crate::{
-    habitat::platform_dirs,
+    application_paths::platform_dirs,
     map::{self, MapFramePlan},
     persistence,
 };

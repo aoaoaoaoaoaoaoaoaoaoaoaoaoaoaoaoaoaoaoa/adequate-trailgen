@@ -94,6 +94,25 @@ Base Pace calibrates time only; sex, height,
 and body mass do not turn route geometry into a defensible capacity or injury
 forecast.
 
-See [the literature ledger](../notes/physical-load-literature.md) and
-[reference corpus](../references/README.md) for the derivation, alternatives,
-and evidentiary limits.
+## Rejected Models
+
+`FGE km` was rejected as the product unit because Minetti's treadmill
+metabolic-cost curve preserves energy, not lower-limb mechanical dose, and its
+ten trained male mountain runners do not establish technical-ground or delayed
+muscle-damage behavior. Soule–Goldman and Pandolf terrain coefficients are old
+load-carriage priors rather than a modern trail-surface taxonomy. Naismith,
+Tobler, DIN 33466, and UTMB kilometer-effort preserve time or convention, not
+the physical quantity named by Trailgen.
+
+`FGLE km` based on differential leg RPE was also rejected. Session RPE is a
+retrospective arbitrary-unit response and controlled high- and low-impact
+protocols show that it does not isolate mechanical impact. Sensor-derived
+high-power force sums amplify measurement error and require gait, speed,
+footwear, pack, body, and per-step force data absent from a route map. MIDE's
+movement grade remains useful as an ordinal footing descriptor, not an
+additive load total. Personal completed-route comparisons may eventually
+calibrate capacity, but cannot alter the population route-dose unit without a
+separate model and evidence contract.
+
+See the [reference corpus](../references/README.md) for exact sources,
+provenance, alternative models, and evidentiary limits.

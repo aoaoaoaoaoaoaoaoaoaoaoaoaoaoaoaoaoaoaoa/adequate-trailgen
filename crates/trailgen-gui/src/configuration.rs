@@ -1,4 +1,4 @@
-use eternalist_apps::configuration::Configuration;
+use eternalist_apps::configuration::Configuration as ConfigurationContract;
 use eternalist_apps::settings::SettingSpec;
 use serde::{Deserialize, Serialize};
 use trailgen_core::HikingModel;
@@ -49,11 +49,11 @@ impl BasePace {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct Preferences {
+pub struct Configuration {
     base_pace_kmh: f64,
 }
 
-impl Default for Preferences {
+impl Default for Configuration {
     fn default() -> Self {
         Self {
             base_pace_kmh: DEFAULT_BASE_PACE_KMH,
@@ -61,10 +61,10 @@ impl Default for Preferences {
     }
 }
 
-impl Preferences {
+impl Configuration {
     #[must_use]
     pub fn base_pace(&self) -> BasePace {
-        BasePace::forge(self.base_pace_kmh).expect("live preferences must remain valid")
+        BasePace::forge(self.base_pace_kmh).expect("live configuration must remain valid")
     }
 
     pub fn set_base_pace(&mut self, kmh: f64) {
@@ -72,7 +72,7 @@ impl Preferences {
     }
 }
 
-impl Configuration for Preferences {
+impl ConfigurationContract for Configuration {
     fn validate(&self) -> std::result::Result<(), String> {
         BasePace::forge(self.base_pace_kmh).map_or_else(
             || {

@@ -11,10 +11,10 @@ use std::{
 };
 
 const LIBRARY: &str = "trailgen";
-const PREFERENCES: &str = "preferences.toml";
+const CONFIGURATION_FILE: &str = "preferences.toml";
 const SESSION: &str = "session.json";
-const SLATE: &str = "slate.toml";
-const SLATES: &str = "projects";
+const LEGACY_SESSION_STATE: &str = "slate.toml";
+const PROJECT_STATES: &str = "projects";
 const PROJECT_MARK: &str = "trailgen.toml";
 const PROJECT_DIRS: [&str; 5] = ["cache", "reports", "routes", "seeds", "sources"];
 
@@ -24,7 +24,7 @@ struct ProjectMark<'a> {
 }
 
 #[derive(Clone, Debug)]
-pub struct Habitat {
+pub struct ApplicationPaths {
     config: PathBuf,
     library: Option<PathBuf>,
     state: PathBuf,
@@ -63,7 +63,7 @@ impl ProjectPlace {
     }
 }
 
-impl Habitat {
+impl ApplicationPaths {
     pub fn discover() -> Result<Self> {
         let platform = platform_dirs()?;
         let config = platform.config_dir().to_owned();
@@ -103,15 +103,16 @@ impl Habitat {
         self.library.as_deref()
     }
 
-    pub fn preferences_path(&self) -> PathBuf {
-        self.config.join(PREFERENCES)
+    pub fn configuration_path(&self) -> PathBuf {
+        // The filename is durable configuration ABI.
+        self.config.join(CONFIGURATION_FILE)
     }
 
     pub fn state_dir(&self) -> &Path {
         &self.state
     }
 
-    pub fn slate_path(&self, root: &Path) -> PathBuf {
+    pub fn session_state_path(&self, root: &Path) -> PathBuf {
         let root = root.canonicalize().unwrap_or_else(|_| root.to_owned());
         let digest = Sha256::digest(root.to_string_lossy().as_bytes());
         let mut name = String::with_capacity(29);
@@ -119,25 +120,25 @@ impl Habitat {
             let _hex = write!(name, "{byte:02x}");
         }
         name.push_str(".toml");
-        let path = self.state.join(SLATES).join(name);
-        self.migrate_slate(&root, &path);
+        let path = self.state.join(PROJECT_STATES).join(name);
+        self.migrate_legacy_session_state(&root, &path);
         path
     }
 
-    fn migrate_slate(&self, root: &Path, path: &Path) {
+    fn migrate_legacy_session_state(&self, root: &Path, path: &Path) {
         #[derive(Deserialize)]
-        struct SlateMark {
+        struct SessionStateMark {
             project: PathBuf,
         }
 
         if path.exists() {
             return;
         }
-        let legacy = self.state.join(SLATE);
+        let legacy = self.state.join(LEGACY_SESSION_STATE);
         let Some(text) = fs::read_to_string(&legacy).ok() else {
             return;
         };
-        let Ok(mark) = toml::from_str::<SlateMark>(&text) else {
+        let Ok(mark) = toml::from_str::<SessionStateMark>(&text) else {
             return;
         };
         if mark.project != root {
@@ -324,8 +325,8 @@ pub fn create_private_dir(path: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
-    fn habitat(root: &Path) -> Habitat {
-        Habitat {
+    fn application_paths(root: &Path) -> ApplicationPaths {
+        ApplicationPaths {
             config: root.join("config/trailgen"),
             library: Some(root.join("documents/trailgen")),
             state: root.join("state/trailgen"),
@@ -351,26 +352,27 @@ mod tests {
     }
 
     #[test]
-    fn project_slates_are_stable_separate_and_migrate_matching_legacy_state() -> Result<()> {
+    fn project_session_states_are_stable_separate_and_migrate_matching_legacy_state() -> Result<()>
+    {
         let temp = tempfile::tempdir()?;
         let alpha = temp.path().join("alpha");
         let beta = temp.path().join("beta");
         marked_project(&alpha, "Alpha")?;
         marked_project(&beta, "Beta")?;
-        let habitat = habitat(temp.path());
-        create_private_dir(&habitat.state)?;
+        let application_paths = application_paths(temp.path());
+        create_private_dir(&application_paths.state)?;
         fs::write(
-            habitat.state.join(SLATE),
+            application_paths.state.join(LEGACY_SESSION_STATE),
             format!("project = {:?}", alpha.canonicalize()?),
         )?;
 
-        let beta_slate = habitat.slate_path(&beta);
-        let alpha_slate = habitat.slate_path(&alpha);
-        assert_ne!(alpha_slate, beta_slate);
-        assert_eq!(alpha_slate, habitat.slate_path(&alpha));
-        assert!(alpha_slate.is_file());
-        assert!(!beta_slate.exists());
-        assert!(!habitat.state.join(SLATE).exists());
+        let beta_state = application_paths.session_state_path(&beta);
+        let alpha_state = application_paths.session_state_path(&alpha);
+        assert_ne!(alpha_state, beta_state);
+        assert_eq!(alpha_state, application_paths.session_state_path(&alpha));
+        assert!(alpha_state.is_file());
+        assert!(!beta_state.exists());
+        assert!(!application_paths.state.join(LEGACY_SESSION_STATE).exists());
         Ok(())
     }
 }

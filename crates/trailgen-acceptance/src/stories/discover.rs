@@ -40,7 +40,7 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
         clipboard == expected_clipboard,
         format!("coordinate probe copied {clipboard:?} instead of {expected_clipboard:?}"),
     )?;
-    verify_preferences(harness)?;
+    verify_configuration(harness)?;
     add_civic_area(&mut story, harness)?;
     harness.fixtures.assert_harvested()?;
     verify_discovery(harness)?;
@@ -92,11 +92,11 @@ fn exercise_command_guide(
     verify_application_header(&controls)?;
     let baseline = neutral_capture(story)?;
     let opened = story
-        .click(Target::Help)?
+        .click("eternalist.application.help")?
         .until(shows::command_guide(true))?;
     let card = opened
         .value()
-        .anchor(&Target::CommandGuide.to_string())
+        .anchor("eternalist.command-guide.body")
         .ok_or_else(|| crate::harness::verdict("command guide omitted its card anchor"))?
         .clone();
     // A completed wgpu present can precede X11 capture visibility; the tester
@@ -161,7 +161,7 @@ fn verify_application_header(controls: &ProbeFrame<Observation>) -> Result<()> {
         .anchor("eternalist.application.header")
         .ok_or_else(|| crate::harness::verdict("application omitted its header geometry"))?;
     let help = controls
-        .anchor(&Target::Help.to_string())
+        .anchor("eternalist.application.help")
         .ok_or_else(|| crate::harness::verdict("application omitted its Help actuator"))?;
     let settings = controls
         .anchor("eternalist.settings.open")
@@ -962,14 +962,14 @@ fn exercise_calibration(story: &mut TrailStory<'_, '_>) -> Result<()> {
     )
 }
 
-fn verify_preferences(harness: &Harness<'_>) -> Result<()> {
-    let preferences = harness
+fn verify_configuration(harness: &Harness<'_>) -> Result<()> {
+    let configuration = harness
         .testbed
         .read_private_to_string("xdg/config/trailgen/preferences.toml")?
         .parse::<toml::Table>()
-        .map_err(|error| crate::harness::verdict(format!("parse preferences: {error}")))?;
+        .map_err(|error| crate::harness::verdict(format!("parse configuration: {error}")))?;
     demand(
-        preferences
+        configuration
             .get("base_pace_kmh")
             .and_then(toml::Value::as_float)
             == Some(BASE_PACE_KMH),

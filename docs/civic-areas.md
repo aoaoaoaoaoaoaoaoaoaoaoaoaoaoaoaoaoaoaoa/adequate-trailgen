@@ -1,14 +1,12 @@
 # Civic Area Overlays
 
-Status: MVP contract.
-
 ## Purpose
 
 The feature answers one question while planning a trail: where is the edge of a
 named civic area? Its proving use is a walk around Brooklyn. It does not alter
 routing, trail acquisition, search boundaries, or the active workbench view.
 
-The UI calls the inspector section `Overlays`. The implementation calls one
+The UI calls the Inspector panel `Overlays`. The implementation calls one
 selected region a `CivicArea`; `Overlay` already names graph annotations and
 `Boundary` already names the finder constraint.
 
@@ -38,7 +36,7 @@ Dataset vintage belongs to snapshot provenance, not identity. The project owns
 an ordered index of active records and a normalized geometry snapshot for each
 ready record. The snapshot contains enough display metadata and geometry to
 survive catalog changes and offline restart. XDG state owns only the `Overlays`
-shutter. Query text, suggestions, selection, progress, faults, hover, and
+panel fold. Query text, suggestions, selection, progress, faults, hover, and
 prepared render projections are session state.
 
 ## Acquisition
@@ -55,7 +53,7 @@ York City Department of City Planning Borough Boundaries feature service.
 Raw provider payloads are not durable project state.
 
 Removal invalidates a pending generation and deletes project ownership. There
-is no refresh command in the MVP; a second source vintage must first prove the
+is no refresh command; a second source vintage must first prove the
 need and migration law.
 
 ## Inspector
@@ -119,8 +117,8 @@ budgets.
 - [Census TIGERweb census-designated places](https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/tigerWMS_Current/MapServer/30)
 - [NYC Department of City Planning Borough Boundaries](https://services5.arcgis.com/GfwWNkhOj9bNBqoJ/arcgis/rest/services/NYC_Borough_Boundary/FeatureServer/0)
 
-## Deferred
+## Exclusions
 
 Neighborhoods, parks, districts, generic counties, states, federal geographies,
 provider selection, refresh, per-area styling, visibility matrices, and
-arbitrary import are outside the MVP.
+arbitrary import are outside the present contract.

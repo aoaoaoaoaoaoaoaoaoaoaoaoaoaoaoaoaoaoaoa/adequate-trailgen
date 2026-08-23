@@ -111,22 +111,7 @@ Finder search, corpus preparation wall time, peak resident memory, and presented
 frame cadence. Hiding detail, reducing candidates, or moving work beyond the
 measured transaction is not an optimization.
 
-## Cutover
-
-The pedestrian ontology, exact OSM topology, virtual support representation,
-realm projections, Finder isolation, and derived-cache schema change publish as
-one corpus cutover. Superseded street severance, graph incision, linear support
-binding, and synchronous realization die in that cutover. No compatibility
-adapter may preserve either graph dialect.
-
-## Checkpoint Evidence
-
-CP0 fixed this contract. CP1 replaced the old trail-only ontology, approximate
-OSM junction repair, graph incision, and synchronous editor routing with one
-exact pedestrian graph, immutable router, virtual supports, and explicit Manual
-and Finder realms. CP2 cut the managed corpus over to that model, reingested the
-live three-region dogfood project, and exposed urban ways only at useful street
-zoom without diluting the recreational legend.
+## Evidence
 
 The CP2 corpus contains 560,108 vertices and 776,343 edges. A 9.45 km Manhattan
 manual route traverses 498 urban edges and realizes in 154 ms after a 255 ms
@@ -135,6 +120,7 @@ their single compressed authority is 134 MB, and the whole project fell from
 5.0 GiB to 418 MiB. Graph decoding fell from 39.45 s to 13.12 s and now runs
 behind an already-present native shell; the live X11 dogfood project presents
 its interactive workbench before graph decoding and arms routing within 15 s.
-Point barriers, via-way restrictions, and
-conditional restrictions remain named correctness work, not silent claims of
-support.
+Point barriers, via-way restrictions, and conditional restrictions remain
+named correctness work, not silent claims of support. No compatibility adapter
+may reintroduce the superseded graph dialect, approximate OSM junction repair,
+graph incision, linear support binding, or synchronous realization.

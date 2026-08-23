@@ -1,4 +1,4 @@
-use crate::{lexicon::ExplainedText, lexicon::Glosses, preferences::BasePace};
+use crate::{configuration::BasePace, lexicon::ExplainedText, lexicon::Glosses};
 use trailgen_core::RouteMetrics;
 
 #[must_use]

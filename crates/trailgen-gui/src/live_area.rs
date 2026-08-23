@@ -12,13 +12,13 @@ const HANDLE_RADIUS: f32 = 5.0;
 const HANDLE_GRIP: f32 = 13.0;
 
 #[derive(Default)]
-pub struct RegionScribe {
+pub struct RegionDraft {
     active: bool,
     anchor: Option<Pos2>,
     cursor: Option<Pos2>,
 }
 
-pub enum ScribeEvent {
+pub enum RegionDraftEvent {
     None,
     Committed(GeoBounds),
     Fault(&'static str),
@@ -145,7 +145,7 @@ impl RegionHandles {
     }
 }
 
-impl RegionScribe {
+impl RegionDraft {
     #[must_use]
     pub const fn active(&self) -> bool {
         self.active
@@ -169,9 +169,9 @@ impl RegionScribe {
         ui: &Ui,
         response: &Response,
         rect: Rect,
-    ) -> ScribeEvent {
+    ) -> RegionDraftEvent {
         if !self.active {
-            return ScribeEvent::None;
+            return RegionDraftEvent::None;
         }
         response.clone().on_hover_cursor(CursorIcon::Crosshair);
         if response.drag_started_by(egui::PointerButton::Primary) {
@@ -187,22 +187,22 @@ impl RegionScribe {
                 .map(|point| point.clamp(rect.min, rect.max));
         }
         if !response.drag_stopped_by(egui::PointerButton::Primary) {
-            return ScribeEvent::None;
+            return RegionDraftEvent::None;
         }
         let Some((anchor, cursor)) = self.anchor.zip(self.cursor) else {
             self.anchor = None;
             self.cursor = None;
-            return ScribeEvent::Fault("DRAG A RECTANGLE; A CLICK HAS NO AREA");
+            return RegionDraftEvent::Fault("DRAG A RECTANGLE; A CLICK HAS NO AREA");
         };
         self.anchor = None;
         self.cursor = None;
         if (anchor.x - cursor.x).abs() < 12.0 || (anchor.y - cursor.y).abs() < 12.0 {
-            return ScribeEvent::Fault("MAP AREA IS TOO SMALL; DRAG A WIDER RECTANGLE");
+            return RegionDraftEvent::Fault("MAP AREA IS TOO SMALL; DRAG A WIDER RECTANGLE");
         }
         self.active = false;
         let a = map::coord_at(viewport, rect, anchor);
         let b = map::coord_at(viewport, rect, cursor);
-        ScribeEvent::Committed(GeoBounds::new(
+        RegionDraftEvent::Committed(GeoBounds::new(
             a.lon.min(b.lon),
             a.lat.min(b.lat),
             a.lon.max(b.lon),

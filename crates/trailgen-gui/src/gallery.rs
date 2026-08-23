@@ -1,13 +1,13 @@
 use crate::chrome;
 use crate::{
     cadence,
+    configuration::BasePace,
     lexicon::Glosses,
     library::SavedTrail,
     map::{
         candidate_color, frailest_standing, paint_trail_tube_at, trail_mark, trail_standing_badge,
         trail_standing_color,
     },
-    preferences::BasePace,
     readout,
 };
 use egui::{Color32, Pos2, Rect, Response, Sense, Stroke, Ui, pos2, vec2};
