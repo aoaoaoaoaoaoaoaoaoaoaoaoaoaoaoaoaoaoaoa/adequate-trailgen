@@ -1,11 +1,64 @@
 use std::time::Duration;
 
-use egui_tester::{Button, Key, Modifiers, Motion, PixelRegion, Result, Timed};
+use egui_tester::{Button, Key, Modifiers, Motion, PixelRegion, Result, Timed, Wheel};
 
 use crate::{
     harness::{Target, TrailFrame, TrailStory, demand, map_pixel, screen_point, verdict},
     observation::shows,
 };
+
+pub fn reveal_inspector_target(
+    story: &mut TrailStory<'_, '_>,
+    target: impl std::fmt::Display,
+) -> Result<()> {
+    let target = target.to_string();
+    let reflow = story.session().move_to(4, 4)?;
+    let _reflowed = story.reaction(reflow).next_frame()?;
+    let frame = story.wait(shows::map())?;
+    let map = frame
+        .state
+        .map
+        .as_ref()
+        .ok_or_else(|| verdict("inspector reveal omitted its map transform"))?;
+    let ppp = f64::from(frame.ppp);
+    let point = screen_point([
+        f64::from(map.rect[0]) * ppp * 0.5,
+        f64::from(f32::midpoint(map.rect[1], map.rect[3])) * ppp,
+    ])?;
+    let screen_bottom = f64::from(story.capture()?.height().saturating_sub(20));
+    for _ in 0..4 {
+        let anchor = story.anchor(target.as_str())?;
+        let center = anchor.center();
+        if f64::from(center.1) >= 50.0 && f64::from(center.1) <= screen_bottom {
+            let _settled = story.wait_stable(
+                Duration::from_secs(2),
+                Duration::from_millis(300),
+                format!("inspector target `{target}` to stop moving"),
+                |frame| {
+                    frame
+                        .anchor(target.as_str())
+                        .map(|anchor| anchor.rect.map(f32::to_bits))
+                },
+            )?;
+            return Ok(());
+        }
+        let ticks = if f64::from(center.1) > screen_bottom {
+            10
+        } else {
+            -10
+        };
+        let _scrolled = story
+            .wheel(
+                point,
+                ticks,
+                Wheel {
+                    tick_duration: Duration::from_millis(8),
+                },
+            )?
+            .next_frame()?;
+    }
+    Err(verdict(format!("inspector could not reveal {target}")))
+}
 
 pub fn add_support(
     story: &mut TrailStory<'_, '_>,

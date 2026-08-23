@@ -141,12 +141,12 @@ dash-dot, or dotted marks. Access alarms continue to outrank every projection.
 
 ## Living Waits
 
-Real background work must leave its visible waiting surface alive. Claim the
-user-facing status label or empty-result region through
-`eternalist_apps::LivingWait`; its four-corner raft supplies restrained motion
-and excites the latent water table. Do not call Poolrooms' loading show/hide
-pair directly from competing panels. The arbiter admits the largest live claim
-for one frame and settles automatically when no work claims the next.
+Real background work must leave its visible waiting surface alive. Paint one
+thin, bottom-centered plaque over the map and claim that exact rectangle
+through `eternalist_apps::LivingWait`; its four-corner raft supplies restrained
+motion and excites the latent water table. Do not call Poolrooms' loading
+show/hide pair directly from competing panels. The plaque vanishes and the raft
+settles automatically when no work claims the next frame.
 
 Only actual in-flight work may animate. Empty, failed, and completed states are
 still. Waiting motion is decorative evidence of liveness, never a scheduler or
@@ -178,7 +178,7 @@ and surface-present return. `CadenceBudget` uses those raw product timestamps
 and rejects median, p95, worst, and p95 paint regressions; no guessed
 instrumentation multiplier or post-hoc witness correction is admissible.
 Witness serialization runs asynchronously after surface present. The story
-also focuses one candidate and proves Back restores the settled viewport
+also focuses one candidate and proves Escape restores the settled viewport
 exactly in semantic state; pointer-normalized map pixels must return near the
 baseline and decisively away from the focused-view control.
 

@@ -21,7 +21,6 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
     let frames = app.frames()?;
 
     let _ready = story.wait_within(Duration::from_secs(15), shows::map())?;
-    let _finder = story.click(Target::FindTrailsDisclosure)?.next_frame()?;
     let frame = story.frame()?;
     let trailhead = map_pixel(&frame, [-105.0, 40.0])?;
     let _armed = story.click(Target::TrailheadPlacement)?.next_frame()?;
@@ -178,9 +177,7 @@ fn focus_and_return(story: &mut TrailStory<'_, '_>, browse: &TrailFrame) -> Resu
         .click_anchor(&candidate)?
         .until(shows::view(View::FocusCandidate))?;
     let focused_pixels = neutral_capture(story)?;
-    let returned = story
-        .click(Target::FocusBack)?
-        .until(shows::view(View::Browse))?;
+    let returned = story.key(Key::Escape)?.until(shows::view(View::Browse))?;
     let restored = returned
         .value()
         .state

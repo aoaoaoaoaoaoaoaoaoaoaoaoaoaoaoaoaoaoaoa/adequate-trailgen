@@ -17,7 +17,6 @@ pub enum Edict {
     RefreshMapAreas,
     FindTrails,
     StopSearch,
-    ToggleTrailFinder,
     NewTrail,
     UndoSearchEdit,
     RedoSearchEdit,
@@ -35,7 +34,7 @@ pub enum Edict {
 pub enum Context {
     Projects,
     Survey,
-    Creator,
+    TrailDetails,
     Finder,
     Focus,
     Editor,
@@ -65,7 +64,7 @@ const EDIT: [Shortcut; 1] = [Shortcut::new(
 )];
 const DISCARD: [Shortcut; 1] = [Shortcut::new(ShortcutModifiers::ALT, ShortcutKey::Delete)];
 
-const EDICTS: [CommandSpec<Edict, Context>; 19] = [
+const EDICTS: [CommandSpec<Edict, Context>; 18] = [
     CommandSpec::new(
         Edict::OpenProjects,
         "application.open_projects",
@@ -127,17 +126,10 @@ const EDICTS: [CommandSpec<Edict, Context>; 19] = [
     )
     .with_detail("Stops the running search while retaining candidates already found."),
     CommandSpec::new(
-        Edict::ToggleTrailFinder,
-        "creator.toggle_trail_finder",
-        "Find Trails",
-        CommandScope::Context(Context::Creator),
-    )
-    .with_detail("Shows or hides the candidate generator without changing the active trail."),
-    CommandSpec::new(
         Edict::NewTrail,
-        "creator.new_trail",
+        "details.new_trail",
         "New Trail",
-        CommandScope::Context(Context::Creator),
+        CommandScope::Context(Context::TrailDetails),
     )
     .with_detail("Creates an empty active trail ready for support points.")
     .with_mnemonic('N'),
@@ -228,10 +220,6 @@ const EDICTS: [CommandSpec<Edict, Context>; 19] = [
 
 const ENTER: [Shortcut; 1] = [Shortcut::new(ShortcutModifiers::NONE, ShortcutKey::Enter)];
 const ESCAPE: [Shortcut; 1] = [Shortcut::new(ShortcutModifiers::NONE, ShortcutKey::Escape)];
-const FOCUS_ARROWS: [Shortcut; 2] = [
-    Shortcut::new(ShortcutModifiers::NONE, ShortcutKey::ArrowLeft),
-    Shortcut::new(ShortcutModifiers::NONE, ShortcutKey::ArrowRight),
-];
 const TOGGLE_SIDEBAR: [Shortcut; 1] = [Shortcut::new(
     ShortcutModifiers::NONE,
     ShortcutKey::Function(9),
@@ -328,18 +316,11 @@ const FINDER_GESTURES: [GuideGesture; 4] = [
         &ESCAPE,
     ),
 ];
-const FOCUS_GESTURES: [GuideGesture; 2] = [
-    GuideGesture::new(
-        "Previous or next trail",
-        "Moves through the current candidate or saved-trail sequence.",
-        &FOCUS_ARROWS,
-    ),
-    GuideGesture::new(
-        "Return to map",
-        "Restores the viewport that preceded trail detail.",
-        &ESCAPE,
-    ),
-];
+const FOCUS_GESTURES: [GuideGesture; 1] = [GuideGesture::new(
+    "Return to map",
+    "Restores the viewport that preceded trail detail.",
+    &ESCAPE,
+)];
 const EDITOR_GESTURES: [GuideGesture; 4] = [
     GuideGesture::new(
         "Add support point",
@@ -386,7 +367,6 @@ const PROFILE_IDIOM: GuideSection = GuideSection::new("ELEVATION PROFILE", &PROF
 
 pub const PROJECT_IDIOMS: [GuideSection; 1] = [PROJECT_IDIOM];
 pub const SURVEY_IDIOMS: [GuideSection; 3] = [SIDEBAR_IDIOM, MAP_IDIOM, SURVEY_IDIOM];
-pub const BROWSE_IDIOMS: [GuideSection; 2] = [SIDEBAR_IDIOM, MAP_IDIOM];
 pub const FINDER_IDIOMS: [GuideSection; 3] = [SIDEBAR_IDIOM, MAP_IDIOM, FINDER_IDIOM];
 pub const CANDIDATE_IDIOMS: [GuideSection; 5] = [
     SIDEBAR_IDIOM,
@@ -395,7 +375,13 @@ pub const CANDIDATE_IDIOMS: [GuideSection; 5] = [
     FOCUS_IDIOM,
     PROFILE_IDIOM,
 ];
-pub const SAVED_IDIOMS: [GuideSection; 4] = [SIDEBAR_IDIOM, MAP_IDIOM, FOCUS_IDIOM, PROFILE_IDIOM];
+pub const SAVED_IDIOMS: [GuideSection; 5] = [
+    SIDEBAR_IDIOM,
+    MAP_IDIOM,
+    FINDER_IDIOM,
+    FOCUS_IDIOM,
+    PROFILE_IDIOM,
+];
 pub const EDITOR_IDIOMS: [GuideSection; 4] =
     [SIDEBAR_IDIOM, MAP_IDIOM, EDITOR_IDIOM, PROFILE_IDIOM];
 
@@ -403,7 +389,7 @@ pub const fn scope_name(context: Context) -> &'static str {
     match context {
         Context::Projects => "PROJECT DECK",
         Context::Survey => "MAP AREAS",
-        Context::Creator => "TRAIL CREATOR",
+        Context::TrailDetails => "TRAIL DETAILS",
         Context::Finder => "FIND TRAILS",
         Context::Focus => "TRAIL DETAIL",
         Context::Editor => "TRAIL EDITOR",

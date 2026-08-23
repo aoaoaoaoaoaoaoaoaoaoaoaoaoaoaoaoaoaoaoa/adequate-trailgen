@@ -7,7 +7,7 @@ use std::{borrow::Cow, fmt};
 
 use serde::{Deserialize, Serialize};
 
-pub const UI_FINGERPRINT: &str = "trailgen.ui/21";
+pub const UI_FINGERPRINT: &str = "trailgen.ui/22";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -148,7 +148,6 @@ pub enum Target {
     LegendClass,
     LegendFormality,
     LegendTerrain,
-    FindTrailsDisclosure,
     NewTrail,
     AddMapArea,
     RefreshTrails,
@@ -162,7 +161,6 @@ pub enum Target {
     LowerLimbLoad,
     BasePace,
     GlossCard,
-    FocusBack,
     FocusEdit,
     FocusSave,
     FocusDelete,
@@ -197,7 +195,7 @@ pub enum Target {
 }
 
 impl Target {
-    pub const STATIC: [Self; 47] = [
+    pub const STATIC: [Self; 45] = [
         Self::ProjectName,
         Self::ProjectParent,
         Self::ProjectCreate,
@@ -212,7 +210,6 @@ impl Target {
         Self::LegendClass,
         Self::LegendFormality,
         Self::LegendTerrain,
-        Self::FindTrailsDisclosure,
         Self::NewTrail,
         Self::AddMapArea,
         Self::RefreshTrails,
@@ -226,7 +223,6 @@ impl Target {
         Self::LowerLimbLoad,
         Self::BasePace,
         Self::GlossCard,
-        Self::FocusBack,
         Self::FocusEdit,
         Self::FocusSave,
         Self::FocusDelete,
@@ -264,8 +260,7 @@ impl Target {
             Self::LegendClass => "map.legend/class",
             Self::LegendFormality => "map.legend/formality",
             Self::LegendTerrain => "map.legend/terrain",
-            Self::FindTrailsDisclosure => "creator.find-trails",
-            Self::NewTrail => "creator.new-trail",
+            Self::NewTrail => "details.new-trail",
             Self::AddMapArea => "areas.add",
             Self::RefreshTrails => "areas.refresh",
             Self::CivicSearch => "overlays.search",
@@ -278,7 +273,6 @@ impl Target {
             Self::LowerLimbLoad => "search.lower-limb-load",
             Self::BasePace => "calibration.base-pace",
             Self::GlossCard => "gloss.card",
-            Self::FocusBack => "focus.back",
             Self::FocusEdit => "focus.edit",
             Self::FocusSave => "focus.save",
             Self::FocusDelete => "focus.delete",

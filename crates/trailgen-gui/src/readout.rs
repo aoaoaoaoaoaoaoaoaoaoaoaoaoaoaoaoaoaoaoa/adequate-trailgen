@@ -4,21 +4,29 @@ use trailgen_core::RouteMetrics;
 #[must_use]
 pub fn metrics_summary(metrics: &RouteMetrics, pace: BasePace) -> ExplainedText {
     let head = format!(
-        "{:.2} KM · LOAD {:.1} FGJW KM · MOVING {} · QUALITY {:.0}",
+        "{:.2} KM / {:.1} FGJW KM\nQUALITY {:.0}\nMOVING TIME {}",
         metrics.distance_m / 1_000.0,
         metrics.lower_limb_load_km,
-        moving_time(metrics.moving_time_s, pace),
-        metrics.quality
+        metrics.quality,
+        moving_time(metrics.moving_time_s, pace)
     );
     let text = if metrics.elevation_fraction >= 0.8 {
         format!(
-            "{head} · ASCENT {:.0} M · DESCENT {:.0} M",
+            "{head}\nASCENT {:.0} M · DESCENT {:.0} M",
             metrics.ascent_m, metrics.descent_m
         )
     } else {
-        format!("{head} · ELEVATION UNAVAILABLE")
+        format!("{head}\nELEVATION UNAVAILABLE")
     };
     ExplainedText::forge(text, Glosses::ROUTE_METRICS)
+}
+
+#[must_use]
+pub fn empty_metrics_summary() -> ExplainedText {
+    ExplainedText::forge(
+        "— KM / — FGJW KM\nQUALITY —\nMOVING TIME —\nASCENT — M · DESCENT — M",
+        Glosses::ROUTE_METRICS,
+    )
 }
 
 #[must_use]

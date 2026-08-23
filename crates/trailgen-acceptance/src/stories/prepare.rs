@@ -30,7 +30,6 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
     )?;
     prove_wait_is_alive(&story, &preparing, harness.artifacts)?;
 
-    let _finder = story.click(Target::FindTrailsDisclosure)?.next_frame()?;
     let _distance = story
         .replace_text(Target::DistanceMax, "12.3", shows::text_focused())?
         .next_frame()?;
@@ -121,6 +120,36 @@ fn prove_wait_is_alive(
         .anchor(&Target::TrailDataWait.to_string())
         .ok_or_else(|| crate::harness::verdict("preparing workbench omitted its waiting target"))?;
     let baseline = story.capture()?;
+    let map = frame
+        .anchor(&Target::Map.to_string())
+        .ok_or_else(|| crate::harness::verdict("preparing workbench omitted its map target"))?;
+    let [map_left, map_top, map_right, map_bottom] = map.rect;
+    let [wait_left, wait_top, wait_right, wait_bottom] = anchor.rect;
+    demand(
+        (f32::midpoint(wait_left, wait_right) - f32::midpoint(map_left, map_right)).abs() <= 1.0,
+        "preparation plaque was not centered over the map",
+    )?;
+    demand(
+        wait_right - wait_left <= 300.0
+            && wait_bottom - wait_top <= 24.0
+            && (map_bottom - wait_bottom - 12.0).abs() <= 1.0,
+        format!(
+            "preparation plaque was not a thin bottom-inset map surface: {:?}",
+            anchor.rect
+        ),
+    )?;
+    let screen_width = f64::from(baseline.width()) / f64::from(frame.ppp);
+    let screen_height = f64::from(baseline.height()) / f64::from(frame.ppp);
+    let berths = [
+        f64::from(map_top),
+        screen_width - f64::from(map_right),
+        screen_height - f64::from(map_bottom),
+    ];
+    demand(
+        berths.iter().all(|berth| (6.0..=10.0).contains(berth))
+            && berths.iter().all(|berth| (*berth - berths[0]).abs() <= 1.0),
+        format!("map did not preserve its uniform HRRR berth: {berths:?}"),
+    )?;
     let motion = story.session().wait_changed_region(
         &baseline,
         PixelRegion::anchor(anchor),

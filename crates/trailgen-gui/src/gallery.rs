@@ -59,20 +59,6 @@ pub fn order_candidates(routes: &[Route], sort: TrailSort) -> Vec<usize> {
     slots
 }
 
-pub fn order_saved(trails: &[&SavedTrail], sort: TrailSort) -> Vec<usize> {
-    let mut slots = (0..trails.len()).collect::<Vec<_>>();
-    slots.sort_by(|&left, &right| {
-        let (left, right) = (trails[left], trails[right]);
-        match sort {
-            TrailSort::Best => left.name.cmp(&right.name),
-            TrailSort::Distance => right.metrics.distance_m.total_cmp(&left.metrics.distance_m),
-            TrailSort::Climb => right.metrics.ascent_m.total_cmp(&left.metrics.ascent_m),
-        }
-        .then_with(|| left.name.cmp(&right.name))
-    });
-    slots
-}
-
 pub fn candidate_tile(
     ui: &mut Ui,
     route: &Route,

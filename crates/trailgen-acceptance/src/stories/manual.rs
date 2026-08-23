@@ -8,6 +8,7 @@ use crate::harness::{
 };
 use crate::interactions::{
     add_support, delete_support, exercise_profile, exercise_support_delete_affordance,
+    reveal_inspector_target,
 };
 use crate::observation::{EditorOrigin, RouteShape, View, shows};
 
@@ -104,14 +105,17 @@ fn verify_export(story: &mut TrailStory<'_, '_>, harness: &Harness<'_>) -> Resul
 
 fn verify_visibility(story: &mut TrailStory<'_, '_>) -> Result<()> {
     let _browse = story
-        .click(Target::FocusBack)?
+        .key(Key::Escape)?
         .until(shows::view(View::Browse) & shows::visible_saved(0))?;
+    reveal_inspector_target(story, Target::SavedVisibility(0))?;
     let _latched = story
         .click(Target::SavedVisibility(0))?
         .until(shows::view(View::Browse) & shows::visible_saved(1))?;
+    reveal_inspector_target(story, Target::NewTrail)?;
     let _editor = story.click(Target::NewTrail)?.until(
         shows::view(View::Edit) & shows::editor_origin(EditorOrigin::New) & shows::visible_saved(1),
     )?;
+    reveal_inspector_target(story, Target::SavedVisibility(0))?;
     let map = PixelRegion::anchor(&story.anchor(Target::Map)?);
     let visible = story.capture()?;
     let _hidden = story
@@ -125,6 +129,7 @@ fn verify_visibility(story: &mut TrailStory<'_, '_>) -> Result<()> {
     let _relatched = story
         .click(Target::SavedVisibility(0))?
         .until(shows::view(View::Edit) & shows::visible_saved(1))?;
+    reveal_inspector_target(story, Target::EditorDiscard)?;
     let browse = story
         .click(Target::EditorDiscard)?
         .until(shows::view(View::Browse) & shows::visible_saved(1))?;
@@ -144,11 +149,26 @@ fn draw_open_route(
 ) -> Result<(u64, [f64; 2])> {
     let dormant = story.wait(shows::results_open(false))?;
     demand(
-        dormant.anchor(&Target::Find.to_string()).is_none(),
-        "new workbench entered Finder instead of the neutral creator state",
+        dormant.anchor(&Target::Find.to_string()).is_some(),
+        "new workbench did not expose the permanent Trail Finder",
     )?;
     let _manual = story.click(Target::NewTrail)?.until(
         shows::view(View::Edit) & shows::editor_origin(EditorOrigin::New) & shows::supports(0),
+    )?;
+    let caged_new = story.click(Target::NewTrail)?.next_frame()?.into_value();
+    demand(
+        caged_new.state.view == View::Edit
+            && caged_new
+                .state
+                .editor
+                .as_ref()
+                .is_some_and(|editor| editor.support_points.is_empty()),
+        "caged New Trail replaced an active edit",
+    )?;
+    let caged_delete = story.click(Target::FocusDelete)?.next_frame()?.into_value();
+    demand(
+        caged_delete.state.view == View::Edit,
+        "caged trail deletion discarded an active edit",
     )?;
     let escaped = story.key(Key::Escape)?.next_frame()?.into_value();
     demand(

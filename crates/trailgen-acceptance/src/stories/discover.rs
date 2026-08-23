@@ -8,7 +8,7 @@ use crate::harness::{
     DataMode, Harness, RunClass, Target, TargetClass, TrailStory, durable_budget, first_anchor,
     instant_budget, map_pixel, read_json, screen_point,
 };
-use crate::interactions::lasso_boundary;
+use crate::interactions::{lasso_boundary, reveal_inspector_target};
 use crate::observation::{
     AreaCorner, CorpusPhase, Observation, SearchPhase, TrailColoring, View, Workspace, shows,
 };
@@ -287,59 +287,6 @@ fn reveal_civic_search(story: &mut TrailStory<'_, '_>) -> Result<()> {
 
 fn reveal_civic_target(story: &mut TrailStory<'_, '_>, target: Target) -> Result<()> {
     reveal_inspector_target(story, target)
-}
-
-fn reveal_inspector_target(
-    story: &mut TrailStory<'_, '_>,
-    target: impl std::fmt::Display,
-) -> Result<()> {
-    let target = target.to_string();
-    let frame = story.wait(shows::map())?;
-    let map = frame
-        .state
-        .map
-        .as_ref()
-        .ok_or_else(|| crate::harness::verdict("civic reveal omitted its map transform"))?;
-    let ppp = f64::from(frame.ppp);
-    let point = screen_point([
-        f64::from(map.rect[0]) * ppp * 0.5,
-        f64::from(f32::midpoint(map.rect[1], map.rect[3])) * ppp,
-    ])?;
-    let screen_bottom = f64::from(story.capture()?.height().saturating_sub(20));
-    for _ in 0..4 {
-        let anchor = story.anchor(target.as_str())?;
-        let center = anchor.center();
-        if f64::from(center.1) >= 50.0 && f64::from(center.1) <= screen_bottom {
-            let _settled = story.wait_stable(
-                Duration::from_secs(2),
-                Duration::from_millis(300),
-                format!("inspector target `{target}` to stop moving"),
-                |frame| {
-                    frame
-                        .anchor(target.as_str())
-                        .map(|anchor| anchor.rect.map(f32::to_bits))
-                },
-            )?;
-            return Ok(());
-        }
-        let ticks = if f64::from(center.1) > screen_bottom {
-            10
-        } else {
-            -10
-        };
-        let _scrolled = story
-            .wheel(
-                point,
-                ticks,
-                Wheel {
-                    tick_duration: Duration::from_millis(8),
-                },
-            )?
-            .next_frame()?;
-    }
-    Err(crate::harness::verdict(format!(
-        "inspector could not reveal {target}"
-    )))
 }
 
 fn focus_library_trail(
@@ -856,7 +803,6 @@ fn acquire_region(story: &mut TrailStory<'_, '_>) -> Result<()> {
 
 fn find_and_keep(story: &mut TrailStory<'_, '_>) -> Result<()> {
     let _dormant = story.wait(shows::results_open(false))?;
-    let _finder = story.click(Target::FindTrailsDisclosure)?.next_frame()?;
     configure_search(story)?;
     let mut strike = story.key(Key::Return)?;
     let _progress =
@@ -876,6 +822,18 @@ fn find_and_keep(story: &mut TrailStory<'_, '_>) -> Result<()> {
     let _focused = story
         .click_anchor(&candidate)?
         .until(shows::view(View::FocusCandidate))?;
+    let save_target = Target::FocusSave.to_string();
+    let _revealed = story.wait_stable(
+        Duration::from_secs(3),
+        Duration::from_millis(160),
+        "Trail Details to reveal the candidate Save control",
+        move |frame| {
+            frame
+                .anchor(save_target.as_str())
+                .filter(|anchor| anchor.rect[1] >= 0.0)
+                .map(|anchor| anchor.rect.map(f32::to_bits))
+        },
+    )?;
     let _saved = story
         .click(Target::FocusSave)?
         .until(shows::view(View::FocusSaved) & shows::library(1))?;

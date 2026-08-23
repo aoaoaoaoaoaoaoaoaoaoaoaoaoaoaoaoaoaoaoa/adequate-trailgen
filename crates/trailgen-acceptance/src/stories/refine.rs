@@ -7,7 +7,7 @@ use crate::harness::{
     DataMode, Harness, RunClass, Target, TargetClass, TrailFrame, TrailStory, first_anchor,
     read_json, verdict,
 };
-use crate::interactions::drag_support;
+use crate::interactions::{drag_support, reveal_inspector_target};
 use crate::observation::{View, shows};
 
 const ROOT: &str = "/test/refine";
@@ -104,24 +104,51 @@ fn reject_unconfirmed_delete(
     story: &mut TrailStory<'_, '_>,
     artifacts: Option<&Path>,
 ) -> Result<()> {
-    let armed = story.click(Target::FocusDelete)?.next_frame()?.into_value();
+    reveal_inspector_target(story, Target::FocusDelete)?;
+    let _clicked = story.click(Target::FocusDelete)?.next_frame()?;
+    let confirm = Target::FocusDeleteConfirm.to_string();
+    let _armed = story.wait_stable(
+        Duration::from_secs(3),
+        Duration::from_millis(160),
+        "saved-trail deletion confirmation to settle",
+        move |frame| {
+            if frame.state.view == View::FocusSaved && frame.state.saved_trails == 1 {
+                frame
+                    .anchor(confirm.as_str())
+                    .map(|anchor| anchor.rect.map(f32::to_bits))
+            } else {
+                None
+            }
+        },
+    )?;
+    let armed = story.frame()?;
     demand(
         armed.state.view == View::FocusSaved
             && armed.state.saved_trails == 1
             && armed
                 .anchor(&Target::FocusDeleteConfirm.to_string())
                 .is_some(),
-        "one delete click removed a saved trail without confirmation",
+        "one delete click failed to preserve the trail behind confirmation",
     )?;
     if let Some(artifacts) = artifacts {
         story
             .capture()?
             .save_png(artifacts.join("story-2-delete-confirmation.png"))?;
     }
-    let cancelled = story
-        .click(Target::FocusDeleteCancel)?
-        .next_frame()?
-        .into_value();
+    let _cancelled = story.click(Target::FocusDeleteCancel)?.next_frame()?;
+    let cancel = Target::FocusDeleteConfirm.to_string();
+    let _settled = story.wait_stable(
+        Duration::from_secs(3),
+        Duration::from_millis(160),
+        "saved-trail deletion cancellation to settle",
+        move |frame| {
+            (frame.state.view == View::FocusSaved
+                && frame.state.saved_trails == 1
+                && frame.anchor(cancel.as_str()).is_none())
+            .then_some(())
+        },
+    )?;
+    let cancelled = story.frame()?;
     demand(
         cancelled.state.view == View::FocusSaved
             && cancelled.state.saved_trails == 1

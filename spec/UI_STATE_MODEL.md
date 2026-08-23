@@ -1,12 +1,11 @@
 # Workbench State Model
 
-The workbench state is a product of five independent axes:
+The workbench state is a product of four independent axes:
 
 1. one primary `WorkbenchView`;
-2. one session-only Find Trails disclosure;
-3. at most one map tool;
-4. background operations;
-5. durable project and workbench state.
+2. at most one map tool;
+3. background operations;
+4. durable project and workbench state.
 
 Only the primary view chooses the working shelf, privileged trail overlay, and
 ordinary map-click meaning. Background work never becomes a view. Stored
@@ -26,8 +25,8 @@ has zero or one active Trail: `Browse` means none, while `Focus(*)` and
   separate rendering implementation.
 - `Browse` is the base workbench. The inspector always owns the saved-trail
   Library; the lower shelf always owns transient Results.
-- `Find Trails` is an action surface that exposes the durable search recipe and
-  its map artifacts. Its disclosure is closed at launch and is not a mode.
+- `Trail Finder` is the always-present action surface for the durable search
+  recipe. `Find Trails` is the operation that generates candidates from it.
 - `New Trail` creates an empty active Trail with the default name and no
   support points.
 - A `Command` is a typed application consequence with one stable declaration.
@@ -79,12 +78,18 @@ The left inspector is durable project memory: saved trails, the active Trail,
 search intent, and downloaded map areas. The bottom is transient working
 memory: search results and elevation profiles. Durable objects must not require
 switching the bottom shelf into an alternate deck. The inspector presents
-Saved Trails, Trail Details, Trail Creator, then Map Areas. Trail Details has a
-stable structural slot and remains empty when no Trail is active; this prevents
-selection from moving controls while their panel unfolds. Trail Details
-owns active-Trail identity, metrics, standing, rename, save, delete/discard,
+Saved Trails, Trail Details, Trail Finder, then Map Areas. Trail Details never
+collapses into an empty shell: its title, object actions, and four metric rows
+retain one geometry with placeholders when no Trail is active. Editing adds one
+transaction row without replacing those controls. New and durable deletion
+remain visibly caged while Edit owns an unsaved draft; the vermillion X
+abandons that edit without claiming to delete the Trail. Trail Details owns
+active-Trail identity, metrics, standing, rename, new, save, delete/discard,
 undo, redo, and shape controls. The map extends to the top of the window; there
-is no workbench-wide top toolbar or permanent counsel strip.
+is no workbench-wide top toolbar or permanent counsel strip. It occupies the
+remaining workbench inside the same uniform berth as HRRR. Actual in-flight
+work owns one thin, bottom-centered plaque inset from the map edge; the plaque
+is the workbench's sole `LivingWait` claim and disappears when the work ends.
 
 The Library is one projection of the project’s canonical saved-trail store, not
 a second collection. Hovering a Library row exposes its prepared miniature and
@@ -109,9 +114,9 @@ its assigned hue and raises only its opacity to full. Visibility is session
 state, survives an in-process trail-data reload, and disappears when its trail
 is deleted. A comparison trail composites the union of its visible geometry
 once, so coincident segments do not accumulate opacity.
-Library navigation and Trail Creator actions are inert while Edit owns an
-unsaved draft; only Save or the explicit danger-colored Discard control may
-leave that editor. Discard restores the exact editor return frame. Map-area
+Library navigation and the Trail Finder body are inert while Edit owns an
+unsaved draft; only Save or the explicit danger-colored X may leave that
+editor. Discard restores the exact editor return frame. Map-area
 names are metadata keyed by the content-derived identity of one region
 snapshot; renaming cannot invalidate or reacquire its corpus. Resizing replaces
 that identity transactionally while preserving the region's inspector slot and
@@ -158,8 +163,8 @@ explicit confirmation menu; no first stroke or click removes durable data.
 
 | View | Privileged map content | Working shelf | Search artifacts |
 | --- | --- | --- | --- |
-| `Browse` | latched saved trails and hovered saved trail, otherwise candidate portfolio | result tiles after the first search attempt | only while Find Trails is disclosed |
-| `Focus(Candidate)` | latched saved trails beneath one candidate | its elevation profile | only while Find Trails is disclosed |
+| `Browse` | latched saved trails and hovered saved trail, otherwise candidate portfolio | result tiles after the first search attempt | visible |
+| `Focus(Candidate)` | latched saved trails beneath one candidate | its elevation profile | visible |
 | `Focus(Saved)` | latched saved trails beneath one saved trail | its elevation profile | hidden |
 | `Edit(*)` | latched saved trails beneath the editor realization and support pins | editor elevation profile | hidden |
 
@@ -168,8 +173,10 @@ to Results, Library, Focus, segment edicts, or search-boundary rendering. The
 last valid editor realization and profile remain visible while a successor is
 realizing or invalid. Realizing shows a named preparing state and disables Save;
 failure anchors a plain-language fault to the responsible support and disables
-Save. A subsequent valid generation atomically replaces both projections and
-clears the fault.
+Save. The invariant metric rows show placeholders while no current realization
+exists; they never report the superseded route as the edited design's metrics.
+A subsequent valid generation atomically replaces both projections and clears
+the fault.
 
 A click on the current realized trail inserts a support at that routed leg.
 A click away from it appends a new destination. Dragging replaces one existing
@@ -229,9 +236,9 @@ DrawSearchBoundary | PlaceTrailhead | DragTrailhead
 
 Arming one tool disarms every other tool and dissolves Focus in place: the
 current detail camera becomes the Browse camera and the obsolete return frame
-is discarded. Ordinary Back still restores the camera that preceded Focus.
+is discarded. Escape restores the camera that preceded Focus.
 Edit owns primary click and pin dragging, so no map tool may be armed there.
-Segment edicts own plain and Shift-click only while Find Trails is disclosed. Alt-click owns a
+Segment edicts own plain and Shift-click in Browse and Candidate Focus. Alt-click owns a
 pin's coordinate callout in Edit and otherwise owns the coordinate probe.
 Trailhead placement requires the explicit Place on Map tool; an existing
 trailhead pin remains directly draggable.
@@ -307,9 +314,10 @@ prepared render projections remain session state.
 Search intent is geographic and graph-independent: trailhead, boundary,
 distance and moving-time windows, climb window, lower-limb-load target, shape,
 and segment edicts. Graph vertex IDs and solver frontier controls never enter
-durable UI state. The Find Trails disclosure is session state and always
-launches closed; the durable trailhead and search artifacts remain hidden until
-the action surface is opened.
+durable UI state. Trail Finder is always present; Edit disables its body without
+erasing or concealing that durable intent. A durable trailhead's map pin is
+session presentation: placement or search reveals it, while a cold launch does
+not deposit an unexplained pin on the map.
 XDG configuration owns app-wide Base Pace through one strict typed ledger.
 Unknown keys and invalid values block mutation without rewriting the file;
 Settings names the fault and offers explicit reload after repair. Stored route
@@ -325,7 +333,7 @@ undo history, profile cursor, map gestures, worker progress, and navigation
 frames are session state.
 
 Only the base Browse viewport is persisted. Focus and Edit may pan or zoom
-without corrupting the viewport to which Back or Discard returns.
+without corrupting the viewport to which Escape or Discard returns.
 
 ## Transition Laws
 
@@ -333,17 +341,16 @@ without corrupting the viewport to which Back or Discard returns.
 | --- | --- | --- |
 | open candidate tile | `Browse` | `Focus(Candidate)` |
 | open saved Library row | `Browse` | `Focus(Saved)` |
-| Back / Escape | `Focus(*)` | prior `Browse` viewport |
+| Escape | `Focus(*)` | prior `Browse` viewport |
 | Edit | `Focus(*)` | `Edit(*)` with exact return frame |
-| New Trail | `Browse` | `Edit(New)` |
-| disclose Find Trails | `Browse` or `Focus(*)` | same view with candidate-generator controls exposed |
+| New Trail | `Browse` or `Focus(Saved)` | `Edit(New)` |
+| dismiss unsaved candidate | `Focus(Candidate)` | prior `Browse` viewport |
 | Discard / `Alt+Delete` | `Edit(*)` | exact opening view and viewport |
 | Escape | `Edit(*)` | unchanged |
 | Save | `Edit(*)` | `Focus(Saved)` |
 | restart with unfinished new-Trail pins | process launch | `Edit(New)` at the editing viewport; realization follows graph armament |
-| previous / next | `Focus(kind)` | adjacent `Focus(kind)` |
-| parameter change | Find Trails disclosed | prior results remain; warmed search scheduled |
-| click / Shift-click segment | Find Trails disclosed | edict toggled; warmed search scheduled |
+| parameter change | Trail Finder unlocked | prior results remain; warmed search scheduled |
+| click / Shift-click segment | `Browse` or `Focus(Candidate)` | edict toggled; warmed search scheduled |
 | arm a map tool | `Focus(*)` | `Browse` at the current detail viewport |
 | complete map-area selection | `Browse + SelectMapArea` | `Browse + desired region visible + acquisition running` |
 | drag map-area corner | `Browse + Idle` | `Browse + AdjustMapArea`, then replacement acquisition or exact rollback |
