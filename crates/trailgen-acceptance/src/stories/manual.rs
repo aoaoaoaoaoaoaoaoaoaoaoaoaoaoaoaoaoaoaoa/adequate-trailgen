@@ -93,7 +93,7 @@ fn verify_export(story: &mut TrailStory<'_, '_>, harness: &Harness<'_>) -> Resul
     let route = trailgen_core::io::gpx::route_file_from_str(&raw)
         .map_err(|error| verdict(format!("saved export is not valid GPX: {error}")))?;
     demand(
-        route.metadata.title.as_deref() == Some("manual trail"),
+        route.metadata.title.as_deref() == Some("New Trail"),
         "saved export lost the Library trail name",
     )?;
     demand(
@@ -109,7 +109,7 @@ fn verify_visibility(story: &mut TrailStory<'_, '_>) -> Result<()> {
     let _latched = story
         .click(Target::SavedVisibility(0))?
         .until(shows::view(View::Browse) & shows::visible_saved(1))?;
-    let _editor = story.click(Target::Manual)?.until(
+    let _editor = story.click(Target::NewTrail)?.until(
         shows::view(View::Edit) & shows::editor_origin(EditorOrigin::New) & shows::visible_saved(1),
     )?;
     let map = PixelRegion::anchor(&story.anchor(Target::Map)?);
@@ -147,7 +147,7 @@ fn draw_open_route(
         dormant.anchor(&Target::Find.to_string()).is_none(),
         "new workbench entered Finder instead of the neutral creator state",
     )?;
-    let _manual = story.click(Target::Manual)?.until(
+    let _manual = story.click(Target::NewTrail)?.until(
         shows::view(View::Edit) & shows::editor_origin(EditorOrigin::New) & shows::supports(0),
     )?;
     let escaped = story.key(Key::Escape)?.next_frame()?.into_value();
@@ -158,7 +158,7 @@ fn draw_open_route(
     let _discarded = story
         .chord(Modifiers::ALT, Key::Delete)?
         .until(shows::view(View::Browse) & shows::results_open(false))?;
-    let _editor = story.click(Target::Manual)?.until(
+    let _editor = story.click(Target::NewTrail)?.until(
         shows::view(View::Edit) & shows::editor_origin(EditorOrigin::New) & shows::supports(0),
     )?;
     let first = add_support(story, SUPPORTS[0], 1)?;
@@ -258,6 +258,13 @@ fn exercise_support_callout(story: &mut TrailStory<'_, '_>, slot: usize) -> Resu
     let _hidden = story
         .modified_click(Target::Support(slot), Button::Primary, Modifiers::ALT)?
         .until(shows::support_callout(slot, false))?;
+    let callout = Target::SupportCallout(slot).to_string();
+    let _settled = story.wait_stable(
+        Duration::from_secs(2),
+        Duration::from_millis(100),
+        "coordinate callout removal to reach the presented surface",
+        move |frame| frame.anchor(callout.as_str()).is_none().then_some(()),
+    )?;
     let hidden = story.capture()?;
     demand(
         shown.difference_region(&hidden, plate, 2)? >= 0.01,

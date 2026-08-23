@@ -1,6 +1,6 @@
 use std::{path::Path, time::Duration};
 
-use egui_tester::{Drag, Key, PixelRegion, Result, demand};
+use egui_tester::{Button, Drag, Key, Motion, PixelRegion, Result, demand};
 
 use crate::harness::{
     DataMode, Harness, RunClass, Target, TargetClass, first_anchor, read_json, screen_point,
@@ -30,7 +30,7 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
     )?;
     prove_wait_is_alive(&story, &preparing, harness.artifacts)?;
 
-    let _finder = story.click(Target::Finder)?.next_frame()?;
+    let _finder = story.click(Target::FindTrailsDisclosure)?.next_frame()?;
     let _distance = story
         .replace_text(Target::DistanceMax, "12.3", shows::text_focused())?
         .next_frame()?;
@@ -54,7 +54,7 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
             & shows::profile_visible(),
     )?;
     let _renaming = story
-        .click(Target::FocusRename)?
+        .tap(Target::FocusRename, Button::Primary, Motion::default())?
         .until(shows::workspace(Workspace::Preparing) & shows::rename(true))?;
     let _typed = story
         .replace_text(Target::RenameField, RENAMED, shows::text_focused())?

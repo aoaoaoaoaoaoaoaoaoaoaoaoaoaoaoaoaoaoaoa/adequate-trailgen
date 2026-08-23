@@ -17,8 +17,8 @@ pub enum Edict {
     RefreshMapAreas,
     FindTrails,
     StopSearch,
-    ToggleFinder,
-    BeginManual,
+    ToggleTrailFinder,
+    NewTrail,
     UndoSearchEdit,
     RedoSearchEdit,
     EditTrail,
@@ -127,20 +127,20 @@ const EDICTS: [CommandSpec<Edict, Context>; 19] = [
     )
     .with_detail("Stops the running search while retaining candidates already found."),
     CommandSpec::new(
-        Edict::ToggleFinder,
-        "creator.toggle_finder",
-        "Finder",
+        Edict::ToggleTrailFinder,
+        "creator.toggle_trail_finder",
+        "Find Trails",
         CommandScope::Context(Context::Creator),
     )
-    .with_detail("Opens or closes the trail finder without changing trail focus."),
+    .with_detail("Shows or hides the candidate generator without changing the active trail."),
     CommandSpec::new(
-        Edict::BeginManual,
-        "creator.begin_manual",
-        "Manual",
+        Edict::NewTrail,
+        "creator.new_trail",
+        "New Trail",
         CommandScope::Context(Context::Creator),
     )
-    .with_detail("Starts a new trail design authored directly from support points.")
-    .with_mnemonic('M'),
+    .with_detail("Creates an empty active trail ready for support points.")
+    .with_mnemonic('N'),
     CommandSpec::new(
         Edict::UndoSearchEdit,
         "finder.undo_segment_edict",
@@ -323,7 +323,7 @@ const FINDER_GESTURES: [GuideGesture; 4] = [
         &[],
     ),
     GuideGesture::new(
-        "Cancel finder action",
+        "Cancel Find Trails action",
         "Stops search or cancels the active map tool without clearing results.",
         &ESCAPE,
     ),
@@ -379,7 +379,7 @@ const PROJECT_IDIOM: GuideSection = GuideSection::new("PROJECT DECK", &PROJECT_G
 const SIDEBAR_IDIOM: GuideSection = GuideSection::new("SIDEBAR", &SIDEBAR_GESTURES);
 const MAP_IDIOM: GuideSection = GuideSection::new("MAP", &MAP_GESTURES);
 const SURVEY_IDIOM: GuideSection = GuideSection::new("MAP AREAS", &SURVEY_GESTURES);
-const FINDER_IDIOM: GuideSection = GuideSection::new("FINDER", &FINDER_GESTURES);
+const FINDER_IDIOM: GuideSection = GuideSection::new("FIND TRAILS", &FINDER_GESTURES);
 const FOCUS_IDIOM: GuideSection = GuideSection::new("TRAIL DETAIL", &FOCUS_GESTURES);
 const EDITOR_IDIOM: GuideSection = GuideSection::new("TRAIL EDITOR", &EDITOR_GESTURES);
 const PROFILE_IDIOM: GuideSection = GuideSection::new("ELEVATION PROFILE", &PROFILE_GESTURES);
@@ -404,7 +404,7 @@ pub const fn scope_name(context: Context) -> &'static str {
         Context::Projects => "PROJECT DECK",
         Context::Survey => "MAP AREAS",
         Context::Creator => "TRAIL CREATOR",
-        Context::Finder => "FINDER",
+        Context::Finder => "FIND TRAILS",
         Context::Focus => "TRAIL DETAIL",
         Context::Editor => "TRAIL EDITOR",
     }

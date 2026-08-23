@@ -35,7 +35,7 @@ impl ManualDraft {
             return None;
         }
         self.name = validate_trail_name(&self.name)
-            .unwrap_or("manual trail")
+            .unwrap_or("New Trail")
             .to_owned();
         self.viewport.normalize();
         Some(self)

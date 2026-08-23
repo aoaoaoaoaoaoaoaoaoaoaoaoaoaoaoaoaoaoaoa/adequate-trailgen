@@ -1,6 +1,6 @@
 use std::{path::Path, time::Duration};
 
-use egui_tester::{Key, Modifiers, Result, Testbed, Timed, WindowQuery, demand};
+use egui_tester::{Button, Key, Modifiers, Motion, Result, Testbed, Timed, WindowQuery, demand};
 use serde_json::Value;
 
 use crate::harness::{
@@ -215,12 +215,23 @@ fn open_saved(story: &mut TrailStory<'_, '_>) -> Result<()> {
     let _focused = story
         .click_anchor(&saved)?
         .until(shows::view(View::FocusSaved))?;
+    let rename = Target::FocusRename.to_string();
+    let _settled = story.wait_stable(
+        Duration::from_secs(3),
+        Duration::from_millis(160),
+        "Trail Details controls to settle after trail selection",
+        move |frame| {
+            frame
+                .anchor(rename.as_str())
+                .map(|anchor| anchor.rect.map(f32::to_bits))
+        },
+    )?;
     Ok(())
 }
 
 fn rename(story: &mut TrailStory<'_, '_>, testbed: &Testbed) -> Result<()> {
     let _opened = story
-        .click(Target::FocusRename)?
+        .tap(Target::FocusRename, Button::Primary, Motion::default())?
         .until(shows::rename(true) & shows::text_focused())?;
     let _typed = story
         .replace_text(Target::RenameField, RENAMED, shows::text_focused())?

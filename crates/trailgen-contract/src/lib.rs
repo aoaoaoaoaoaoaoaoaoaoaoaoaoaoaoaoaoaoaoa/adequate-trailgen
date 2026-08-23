@@ -7,7 +7,7 @@ use std::{borrow::Cow, fmt};
 
 use serde::{Deserialize, Serialize};
 
-pub const UI_FINGERPRINT: &str = "trailgen.ui/20";
+pub const UI_FINGERPRINT: &str = "trailgen.ui/21";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -148,8 +148,8 @@ pub enum Target {
     LegendClass,
     LegendFormality,
     LegendTerrain,
-    Finder,
-    Manual,
+    FindTrailsDisclosure,
+    NewTrail,
     AddMapArea,
     RefreshTrails,
     CivicSearch,
@@ -212,8 +212,8 @@ impl Target {
         Self::LegendClass,
         Self::LegendFormality,
         Self::LegendTerrain,
-        Self::Finder,
-        Self::Manual,
+        Self::FindTrailsDisclosure,
+        Self::NewTrail,
         Self::AddMapArea,
         Self::RefreshTrails,
         Self::CivicSearch,
@@ -264,8 +264,8 @@ impl Target {
             Self::LegendClass => "map.legend/class",
             Self::LegendFormality => "map.legend/formality",
             Self::LegendTerrain => "map.legend/terrain",
-            Self::Finder => "creator.finder",
-            Self::Manual => "creator.manual",
+            Self::FindTrailsDisclosure => "creator.find-trails",
+            Self::NewTrail => "creator.new-trail",
             Self::AddMapArea => "areas.add",
             Self::RefreshTrails => "areas.refresh",
             Self::CivicSearch => "overlays.search",

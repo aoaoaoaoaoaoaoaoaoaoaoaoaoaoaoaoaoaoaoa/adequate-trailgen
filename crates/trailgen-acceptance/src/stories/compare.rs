@@ -21,7 +21,7 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
     let frames = app.frames()?;
 
     let _ready = story.wait_within(Duration::from_secs(15), shows::map())?;
-    let _finder = story.click(Target::Finder)?.next_frame()?;
+    let _finder = story.click(Target::FindTrailsDisclosure)?.next_frame()?;
     let frame = story.frame()?;
     let trailhead = map_pixel(&frame, [-105.0, 40.0])?;
     let _armed = story.click(Target::TrailheadPlacement)?.next_frame()?;

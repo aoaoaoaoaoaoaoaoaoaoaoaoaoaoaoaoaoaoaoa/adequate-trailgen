@@ -197,13 +197,13 @@ fn verify_panel_traversal(story: &mut TrailStory<'_, '_>) -> Result<()> {
         "Control+Tab focused the next inspector panel",
         move |frame| frame.focused_anchor(&library).map(|_| ()),
     )?;
-    let search = Target::Panel("search").to_string();
+    let details = Target::Panel("trail-details").to_string();
     let _next_panel = story.chord(Modifiers::CTRL, Key::Tab)?.next_frame()?;
-    let _search_focused = story.wait_stable(
+    let _details_focused = story.wait_stable(
         Duration::from_secs(5),
         Duration::from_millis(80),
         "Control+Tab focused the following inspector panel",
-        move |frame| frame.focused_anchor(&search).map(|_| ()),
+        move |frame| frame.focused_anchor(&details).map(|_| ()),
     )?;
     let library = Target::Panel("library").to_string();
     let _previous_panel = story
@@ -856,7 +856,7 @@ fn acquire_region(story: &mut TrailStory<'_, '_>) -> Result<()> {
 
 fn find_and_keep(story: &mut TrailStory<'_, '_>) -> Result<()> {
     let _dormant = story.wait(shows::results_open(false))?;
-    let _finder = story.click(Target::Finder)?.next_frame()?;
+    let _finder = story.click(Target::FindTrailsDisclosure)?.next_frame()?;
     configure_search(story)?;
     let mut strike = story.key(Key::Return)?;
     let _progress =
@@ -971,16 +971,27 @@ fn configure_search(story: &mut TrailStory<'_, '_>) -> Result<()> {
 
 fn exercise_calibration(story: &mut TrailStory<'_, '_>) -> Result<()> {
     let _opened = story.key(Key::Function(2))?.until(shows::settings(true))?;
-    let _aimed = story
-        .point("eternalist.settings.base_pace_kmh", Motion::default())?
-        .next_frame()?;
+    let target = "eternalist.settings.base_pace_kmh";
+    let settled = story.wait_stable(
+        Duration::from_secs(3),
+        Duration::from_millis(160),
+        "Settings Base Pace control to settle",
+        |frame| {
+            frame
+                .anchor(target)
+                .map(|anchor| anchor.rect.map(f32::to_bits))
+        },
+    )?;
+    let control = settled
+        .anchor(target)
+        .ok_or_else(|| crate::harness::verdict("Settings omitted its Base Pace control"))?;
+    let wheel = screen_point([
+        f64::from(control.rect[2]) - 16.0,
+        f64::from(control.center().1),
+    ])?;
+    let _aimed = story.motion_to(wheel, Motion::default())?.next_frame()?;
     for _ in 0..12 {
-        let control = story.anchor("eternalist.settings.base_pace_kmh")?;
-        let wheel = screen_point([
-            f64::from(control.rect[2]) - 16.0,
-            f64::from(control.center().1),
-        ])?;
-        let _focused = story.click_at(wheel, Button::Primary)?.next_frame()?;
+        let _focused = story.click_current(Button::Primary)?.next_frame()?;
         let _step = story.key(Key::Up)?.next_frame()?;
     }
     let _pace = story.wait_within(Duration::from_secs(4), shows::base_pace(BASE_PACE_KMH))?;

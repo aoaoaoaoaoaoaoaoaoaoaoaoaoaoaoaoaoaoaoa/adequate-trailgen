@@ -630,8 +630,8 @@ impl SurveyWorkbench {
             | Edict::OpenProject
             | Edict::FindTrails
             | Edict::StopSearch
-            | Edict::ToggleFinder
-            | Edict::BeginManual
+            | Edict::ToggleTrailFinder
+            | Edict::NewTrail
             | Edict::UndoSearchEdit
             | Edict::RedoSearchEdit
             | Edict::EditTrail
@@ -1270,8 +1270,8 @@ impl ProjectDeck {
             | Edict::RefreshMapAreas
             | Edict::FindTrails
             | Edict::StopSearch
-            | Edict::ToggleFinder
-            | Edict::BeginManual
+            | Edict::ToggleTrailFinder
+            | Edict::NewTrail
             | Edict::UndoSearchEdit
             | Edict::RedoSearchEdit
             | Edict::EditTrail
