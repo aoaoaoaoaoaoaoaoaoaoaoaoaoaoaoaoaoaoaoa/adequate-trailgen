@@ -1048,6 +1048,12 @@ fn raise_region_vector(
     regions: &[SurveyRegion],
     offline: bool,
 ) -> Result<Option<VectorField>> {
+    region_vector_source(root, regions)?
+        .map(|source| VectorField::raise(ctx, source, offline, ParkingAtlas::default()))
+        .transpose()
+}
+
+fn region_vector_source(root: &Path, regions: &[SurveyRegion]) -> Result<Option<BasemapSource>> {
     let bounds = regions
         .iter()
         .map(|region| region.bounds)
@@ -1055,11 +1061,7 @@ fn raise_region_vector(
     if bounds.is_empty() {
         return Ok(None);
     }
-    let source = BasemapSource::regions(root, &bounds)?;
-    product_phase!(
-        "project.vector_field",
-        VectorField::raise(ctx, source, offline, ParkingAtlas::default()).map(Some)
-    )
+    BasemapSource::regions(root, &bounds).map(Some)
 }
 
 fn resurrect_workbench(
@@ -1122,6 +1124,47 @@ impl TrailApp {
         trail_data: trailgen_data::TrailDataConfig,
         indexed: Option<&trailgen_data::Summary>,
     ) -> Result<Self> {
+        let mut app =
+            Self::raise_shell(ctx, root, offline, session_state_path, trail_data, indexed)?;
+        app.vector = product_phase!(
+            "project.vector_field",
+            raise_region_vector(ctx, &app.root, &app.regions, offline)
+        )?;
+        Ok(app.settled_after_raise())
+    }
+
+    pub(crate) fn raise_from_survey(
+        ctx: &egui::Context,
+        root: &Path,
+        offline: bool,
+        session_state_path: PathBuf,
+        trail_data: trailgen_data::TrailDataConfig,
+        indexed: Option<&trailgen_data::Summary>,
+        retained_vector: &mut VectorField,
+    ) -> Result<Self> {
+        let app = Self::raise_shell(ctx, root, offline, session_state_path, trail_data, indexed)?;
+        let source = region_vector_source(&app.root, &app.regions)?
+            .context("survey promotion has no map area")?;
+        let _retired = retained_vector.retarget(ctx, source, offline, ParkingAtlas::default())?;
+        Ok(app.settled_after_raise())
+    }
+
+    pub(crate) fn inherit_survey_vector(&mut self, vector: VectorField) {
+        assert!(
+            self.vector.is_none(),
+            "trail workbench already owns a basemap"
+        );
+        self.vector = Some(vector);
+    }
+
+    fn raise_shell(
+        ctx: &egui::Context,
+        root: &Path,
+        offline: bool,
+        session_state_path: PathBuf,
+        trail_data: trailgen_data::TrailDataConfig,
+        indexed: Option<&trailgen_data::Summary>,
+    ) -> Result<Self> {
         let _open = enter_raise_span(root);
         let project = product_phase!("project.open", Project::open(root)?);
         let session_state = product_phase!(
@@ -1129,7 +1172,6 @@ impl TrailApp {
             SessionState::load(&session_state_path, &project.root)
         );
         let refresh = !offline && !trail_data.regions.is_empty() && indexed.is_none();
-        let vector = raise_region_vector(ctx, &project.root, &trail_data.regions, offline)?;
         let relief = product_phase!("project.relief", Relief::raise(ctx, &project.root)?);
         let civic = product_phase!(
             "project.civic_areas",
@@ -1189,7 +1231,7 @@ impl TrailApp {
             forge_phase: ForgePhase::Idle,
             trailhead_posture: TrailheadPosture::default(),
             trailhead_drag: None,
-            vector,
+            vector: None,
             relief,
             regions: trail_data.regions,
             region_names: trail_data.region_names,
@@ -1216,8 +1258,7 @@ impl TrailApp {
             map_regime: MapRegime::Browse,
             workspace_signal: None,
             post_armament: refresh.then_some(TrailDataMutation::Refresh),
-        }
-        .settled_after_raise())
+        })
     }
 
     fn settled_after_raise(mut self) -> Self {

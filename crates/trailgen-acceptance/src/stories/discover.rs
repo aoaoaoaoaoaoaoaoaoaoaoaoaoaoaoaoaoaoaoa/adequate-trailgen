@@ -782,7 +782,7 @@ fn create_project(story: &mut TrailStory<'_, '_>) -> Result<()> {
 fn acquire_region(story: &mut TrailStory<'_, '_>) -> Result<()> {
     let _drawing = story
         .click(Target::SurveyAddArea)?
-        .until(shows::survey_drawing())?;
+        .until(shows::survey_drawing() & shows::basemap_tiles_at_least(1))?;
     let [x0, y0, x1, y1] = story.anchor(Target::SurveyMap)?.rect;
     let center = (f32::midpoint(x0, x1), f32::midpoint(y0, y1));
     let from = screen_point([f64::from(center.0 - 8.0), f64::from(center.1 - 8.0)])?;
@@ -794,11 +794,22 @@ fn acquire_region(story: &mut TrailStory<'_, '_>) -> Result<()> {
     let _previewed = story.motion_to(to, Motion::default())?.next_frame()?;
     let release = story.session().button_up(Button::Primary)?;
     let _started = story.reaction(release).until(shows::survey_acquiring(1))?;
-    let _ready = story.wait_within(
+    let promoted = story.wait_within(
         Duration::from_secs(30),
-        shows::workspace(Workspace::Trail) & shows::candidates(0),
+        shows::condition("trail workspace or a blank basemap", |state| {
+            state.workspace == Workspace::Trail
+                || state.map.as_ref().is_some_and(|map| map.basemap_tiles == 0)
+        }),
     )?;
-    Ok(())
+    demand(
+        promoted.state.workspace == Workspace::Trail
+            && promoted
+                .state
+                .map
+                .as_ref()
+                .is_some_and(|map| map.basemap_tiles > 0),
+        "the first trail-data installation discarded the survey basemap",
+    )
 }
 
 fn find_and_keep(story: &mut TrailStory<'_, '_>) -> Result<()> {

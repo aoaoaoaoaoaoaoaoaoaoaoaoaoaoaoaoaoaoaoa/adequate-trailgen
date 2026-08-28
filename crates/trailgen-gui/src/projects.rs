@@ -61,12 +61,45 @@ enum WorkbenchTransition {
         workspace: ProjectWorkspace,
         application_paths: ApplicationPaths,
         offline: bool,
+        inherit_survey_vector: bool,
     },
 }
 
 enum ProjectWorkspace {
     Trail(Box<TrailApp>),
     Survey(Box<SurveyWorkbench>),
+}
+
+enum ProjectSuccession<'a> {
+    Open,
+    Reload(&'a mut ProjectWorkspace),
+}
+
+impl ProjectSuccession<'_> {
+    fn raise(
+        self,
+        ctx: &egui::Context,
+        root: &Path,
+        offline: bool,
+        session_state_path: PathBuf,
+        config: trailgen_data::TrailDataConfig,
+        indexed: Option<&trailgen_data::Summary>,
+    ) -> Result<TrailApp> {
+        match self {
+            Self::Reload(ProjectWorkspace::Survey(survey)) => TrailApp::raise_from_survey(
+                ctx,
+                root,
+                offline,
+                session_state_path,
+                config,
+                indexed,
+                survey.vector_mut(),
+            ),
+            Self::Reload(ProjectWorkspace::Trail(_)) | Self::Open => {
+                TrailApp::raise(ctx, root, offline, session_state_path, config, indexed)
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -161,13 +194,21 @@ impl Workbench {
                 Some(WorkspaceAction::Reload) => {
                     let root = workspace.root().to_owned();
                     let frame = workspace.reload_frame();
-                    match open_project(ui.ctx(), application_paths, &root, *offline) {
+                    let inherit_survey_vector = matches!(workspace, ProjectWorkspace::Survey(_));
+                    match forge_project_workspace(
+                        ui.ctx(),
+                        application_paths,
+                        &root,
+                        *offline,
+                        ProjectSuccession::Reload(workspace),
+                    ) {
                         Ok(mut workspace) => {
                             workspace.restore_reload_frame(frame);
                             Some(WorkbenchTransition::Project {
                                 workspace,
                                 application_paths: application_paths.clone(),
                                 offline: *offline,
+                                inherit_survey_vector,
                             })
                         }
                         Err(err) => {
@@ -183,6 +224,7 @@ impl Workbench {
                         workspace,
                         application_paths: deck.application_paths.clone(),
                         offline: deck.offline,
+                        inherit_survey_vector: false,
                     })
             }
             WorkbenchMode::Limbo => unreachable!("workbench transition escaped its pulse"),
@@ -288,10 +330,29 @@ impl Workbench {
         match self.transition.take() {
             Some(WorkbenchTransition::Projects) => self.open_project_deck(),
             Some(WorkbenchTransition::Project {
-                workspace,
+                mut workspace,
                 application_paths,
                 offline,
+                inherit_survey_vector,
             }) => {
+                if inherit_survey_vector {
+                    let displaced = std::mem::replace(&mut self.mode, WorkbenchMode::Limbo);
+                    let WorkbenchMode::Project {
+                        workspace: ProjectWorkspace::Survey(mut survey),
+                        ..
+                    } = displaced
+                    else {
+                        unreachable!("survey basemap inheritance escaped its workspace")
+                    };
+                    let ProjectWorkspace::Trail(app) = &mut workspace else {
+                        unreachable!("survey basemap inheritance missed the trail workbench")
+                    };
+                    let vector = survey
+                        .vector
+                        .take()
+                        .expect("survey basemap was surrendered before transition commit");
+                    app.inherit_survey_vector(vector);
+                }
                 self.mode = WorkbenchMode::Project {
                     workspace,
                     application_paths,
@@ -494,7 +555,7 @@ struct SurveyWorkbench {
     corpus_status: String,
     offline: bool,
     fault: Option<String>,
-    vector: VectorField,
+    vector: Option<VectorField>,
     viewport: Viewport,
     cartography: map::CartographicClock,
     scale_bar: map::ScaleBar,
@@ -551,7 +612,7 @@ impl SurveyWorkbench {
             },
             offline,
             fault: None,
-            vector,
+            vector: Some(vector),
             viewport,
             cartography,
             scale_bar: map::ScaleBar::default(),
@@ -572,6 +633,18 @@ impl SurveyWorkbench {
         Ok(project)
     }
 
+    const fn vector(&self) -> &VectorField {
+        self.vector
+            .as_ref()
+            .expect("survey basemap escaped before workspace promotion")
+    }
+
+    const fn vector_mut(&mut self) -> &mut VectorField {
+        self.vector
+            .as_mut()
+            .expect("survey basemap escaped before workspace promotion")
+    }
+
     fn pulse(
         &mut self,
         ui: &mut egui::Ui,
@@ -580,7 +653,7 @@ impl SurveyWorkbench {
     ) -> Option<WorkspaceAction> {
         let mut drain = EVENT_DRAIN.arm();
         self.absorb_persistence();
-        self.vector.absorb(ui.ctx());
+        self.vector_mut().absorb(ui.ctx());
         let guide_invoked = self.guide.take_shortcuts(ui.ctx());
         let mut action = None;
         if !guide_invoked
@@ -837,7 +910,7 @@ impl SurveyWorkbench {
                 &self.corpus_status
             } else if self.region_draft.active() {
                 "Drag a rectangle across the map to download its trails. Esc cancels."
-            } else if self.offline && !self.vector.has_presented_tiles() {
+            } else if self.offline && !self.vector().has_presented_tiles() {
                 "Go online once to load the map and download trails."
             } else if self.offline {
                 "The cached map is available offline. Go online to download trails."
@@ -934,7 +1007,7 @@ impl SurveyWorkbench {
         let frame = map::MapFramePlan::forge(self.viewport, rect);
         let cartography = self.cartography.observe(self.viewport, ui.ctx());
         painter.rect_filled(rect, 0.0, map::MAP_GROUND);
-        self.vector.paint_base(&painter, frame, cartography);
+        self.vector_mut().paint_base(&painter, frame, cartography);
         live_area::paint(
             &painter,
             live_area::Scene {
@@ -947,7 +1020,7 @@ impl SurveyWorkbench {
                 handles: handles_enabled,
             },
         );
-        self.vector
+        self.vector_mut()
             .paint_annotations(&painter, frame, cartography, 0, Vec::new);
         self.scale_bar.paint(&painter, self.viewport, rect);
         painter.rect_stroke(
@@ -1048,7 +1121,7 @@ impl SurveyWorkbench {
                 self.viewport.center,
                 map::world_pixels(self.viewport),
                 trailgen_contract::TrailColoring::Class,
-                self.vector.presented_tile_count(),
+                self.vector().presented_tile_count(),
                 0,
                 None,
             )
@@ -1133,12 +1206,12 @@ impl SurveyWorkbench {
         self.state_scribe
             .deadline()
             .into_iter()
-            .chain(self.vector.service_deadline())
+            .chain(self.vector().service_deadline())
             .min()
     }
 
     fn service_deadline_reached(&mut self, now: Instant) -> bool {
-        let mut changed = self.vector.service_deadline_reached(now);
+        let mut changed = self.vector_mut().service_deadline_reached(now);
         if self
             .state_scribe
             .deadline()
@@ -1577,6 +1650,22 @@ fn open_project(
     root: &Path,
     offline: bool,
 ) -> Result<ProjectWorkspace> {
+    forge_project_workspace(
+        ctx,
+        application_paths,
+        root,
+        offline,
+        ProjectSuccession::Open,
+    )
+}
+
+fn forge_project_workspace(
+    ctx: &egui::Context,
+    application_paths: &ApplicationPaths,
+    root: &Path,
+    offline: bool,
+    succession: ProjectSuccession<'_>,
+) -> Result<ProjectWorkspace> {
     let root = root
         .canonicalize()
         .with_context(|| format!("open project {}", root.display()))?;
@@ -1591,14 +1680,15 @@ fn open_project(
     };
     let trail_ready = trail_workspace_ready(has_graph, config.managed, indexed.is_some());
     let workspace = if trail_ready {
-        ProjectWorkspace::Trail(Box::new(TrailApp::raise(
+        let app = succession.raise(
             ctx,
             &root,
             offline,
             application_paths.session_state_path(&root),
             config,
             indexed.as_ref(),
-        )?))
+        )?;
+        ProjectWorkspace::Trail(Box::new(app))
     } else {
         ProjectWorkspace::Survey(Box::new(SurveyWorkbench::new(
             ctx,
