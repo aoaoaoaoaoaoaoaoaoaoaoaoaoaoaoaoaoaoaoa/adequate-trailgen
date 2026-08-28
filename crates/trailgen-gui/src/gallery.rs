@@ -293,7 +293,10 @@ impl MiniatureProjection {
         let height = (bounds[3] - bounds[1]).max(1.0e-12);
         Self {
             cos_lat,
-            center: [(bounds[0] + bounds[2]) * 0.5, (bounds[1] + bounds[3]) * 0.5],
+            center: [
+                f64::midpoint(bounds[0], bounds[2]),
+                f64::midpoint(bounds[1], bounds[3]),
+            ],
             scale: (f64::from(MINIATURE_SIZE.x) / width).min(f64::from(MINIATURE_SIZE.y) / height),
         }
     }

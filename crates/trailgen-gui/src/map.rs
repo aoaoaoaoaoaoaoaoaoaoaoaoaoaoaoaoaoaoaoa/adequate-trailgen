@@ -1603,7 +1603,10 @@ pub fn fit_coords(coords: impl Iterator<Item = Coord>, rect: Rect) -> Viewport {
     let span_y = (bounds[3] - bounds[1]).max(1.0e-9);
     let pixels_per_world = (f64::from(available.x) / span_x).min(f64::from(available.y) / span_y);
     let mut view = Viewport {
-        center: [(bounds[0] + bounds[2]) * 0.5, (bounds[1] + bounds[3]) * 0.5],
+        center: [
+            f64::midpoint(bounds[0], bounds[2]),
+            f64::midpoint(bounds[1], bounds[3]),
+        ],
         zoom: (pixels_per_world / TILE_EDGE).log2(),
     };
     view.normalize();

@@ -200,7 +200,7 @@ fn join_reach(points: &[Pos2], slot: usize, closed: bool) -> f32 {
     let next = points[(slot + 1) % points.len()];
     let incoming = (point - prior).normalized();
     let outgoing = (next - point).normalized();
-    let denominator = ((1.0 + incoming.dot(outgoing)) * 0.5).max(f32::EPSILON);
+    let denominator = f32::midpoint(1.0, incoming.dot(outgoing)).max(f32::EPSILON);
     denominator.sqrt().recip()
 }
 

@@ -407,7 +407,7 @@ fn paint_dead_ground(painter: &Painter, canvas: Rect, live: &[Rect]) {
         if bottom <= top {
             continue;
         }
-        let middle = (top + bottom) * 0.5;
+        let middle = f32::midpoint(top, bottom);
         let mut spans = live
             .iter()
             .filter(|rect| rect.top() <= middle && middle <= rect.bottom())

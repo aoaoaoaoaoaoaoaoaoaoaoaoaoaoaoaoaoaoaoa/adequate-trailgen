@@ -408,7 +408,7 @@ fn compress_span_arc(
         let span = spans[lo];
         supports.push(SupportPoint::forge(line_coord_at(
             &forge.graph.edges[span.edge.0].geometry,
-            (span.from_m + span.to_m) * 0.5,
+            f64::midpoint(span.from_m, span.to_m),
         ))?);
         return Some(());
     }

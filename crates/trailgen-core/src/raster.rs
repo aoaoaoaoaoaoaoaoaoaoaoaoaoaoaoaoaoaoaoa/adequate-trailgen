@@ -847,7 +847,7 @@ fn validate_geokeys<R: std::io::Read + std::io::Seek>(
     let mut geographic_crs = None;
     let mut projected_crs = None;
     let mut linear_units = None;
-    for entry in keys[4..][..count * 4].chunks_exact(4) {
+    for entry in keys[4..][..count * 4].as_chunks::<4>().0 {
         match entry[0] {
             1024 if entry[1] == 0 => model_type = Some(entry[3]),
             2048 if entry[1] == 0 => geographic_crs = Some(entry[3]),

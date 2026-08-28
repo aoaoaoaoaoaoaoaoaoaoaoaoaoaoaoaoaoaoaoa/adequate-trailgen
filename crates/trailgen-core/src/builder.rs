@@ -998,14 +998,14 @@ const fn endpoint_t(endpoint: usize) -> f64 {
     if endpoint.is_multiple_of(2) { 0.0 } else { 1.0 }
 }
 
-fn endpoint_root(parent: &[usize], mut endpoint: usize) -> usize {
+const fn endpoint_root(parent: &[usize], mut endpoint: usize) -> usize {
     while parent[endpoint] != endpoint {
         endpoint = parent[endpoint];
     }
     endpoint
 }
 
-fn endpoint_coord(primitives: &[Primitive], endpoint: usize) -> Coord {
+const fn endpoint_coord(primitives: &[Primitive], endpoint: usize) -> Coord {
     let primitive = primitives[endpoint / 2];
     if endpoint.is_multiple_of(2) {
         primitive.a

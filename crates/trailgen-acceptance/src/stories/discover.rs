@@ -304,7 +304,9 @@ fn civic_ink(frame: &Frame, region: PixelRegion) -> Result<usize> {
     let crop = frame.crop(region)?;
     Ok(crop
         .rgba()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|pixel| {
             pixel[0] >= 140
                 && pixel[0].saturating_sub(pixel[1]) >= 45
@@ -675,7 +677,9 @@ fn water_ink(frame: &Frame, region: PixelRegion) -> Result<usize> {
     let crop = frame.crop(region)?;
     Ok(crop
         .rgba()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|pixel| {
             i16::from(pixel[2]) - i16::from(pixel[0]) >= 28
                 && i16::from(pixel[1]) - i16::from(pixel[0]) >= 12
@@ -1043,7 +1047,7 @@ fn assert_solid_tube_is_coreless(
         y + 5,
     );
     let crop = frame.crop(region)?;
-    let pixels = crop.rgba().chunks_exact(4);
+    let pixels = crop.rgba().as_chunks::<4>().0.iter();
     let colored = pixels
         .clone()
         .filter(|pixel| {

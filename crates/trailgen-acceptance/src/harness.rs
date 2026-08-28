@@ -246,7 +246,7 @@ pub fn map_pixel(frame: &TrailFrame, coordinate: [f64; 2]) -> Result<(i16, i16)>
     let ppp = f64::from(frame.ppp);
     let world = world_from_coord(coordinate);
     let [x0, y0, x1, y1] = map.rect.map(f64::from);
-    let center = [(x0 + x1) * 0.5, (y0 + y1) * 0.5];
+    let center = [f64::midpoint(x0, x1), f64::midpoint(y0, y1)];
     let logical = [
         (world[0] - map.center[0]).mul_add(map.world_points, center[0]),
         (world[1] - map.center[1]).mul_add(map.world_points, center[1]),

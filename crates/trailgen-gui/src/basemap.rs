@@ -770,8 +770,8 @@ fn forge_archive(
     let (max_zoom, tiles) = bounded_extraction(regions, requested_zoom, MAX_FORGE_TILES)?;
     let mut staging = persistence::AtomicReplacement::raise(target)?;
     let center = [
-        (bounds.west + bounds.east) * 0.5,
-        (bounds.south + bounds.north) * 0.5,
+        f64::midpoint(bounds.west, bounds.east),
+        f64::midpoint(bounds.south, bounds.north),
     ];
     let mut writer = PmTilesWriter::new(remote.tile_type)
         .tile_compression(remote.compression)

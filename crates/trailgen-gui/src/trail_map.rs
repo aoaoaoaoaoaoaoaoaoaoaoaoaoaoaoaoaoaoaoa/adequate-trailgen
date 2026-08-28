@@ -519,7 +519,7 @@ fn cleave(points: &[Sample], tile_zoom: u8) -> Vec<Fragment> {
             if exit - enter <= 1.0e-12 {
                 continue;
             }
-            let midpoint = sample_between(start, end, (enter + exit) * 0.5);
+            let midpoint = sample_between(start, end, f64::midpoint(enter, exit));
             let x = (midpoint.world[0] * scale).floor() as i64;
             let y = (midpoint.world[1] * scale).floor().clamp(0.0, scale - 1.0) as u32;
             let key = TileKey {

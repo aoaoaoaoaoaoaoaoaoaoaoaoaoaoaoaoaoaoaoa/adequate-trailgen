@@ -1709,7 +1709,7 @@ fn clip_line(line: &LineString, regions: &[SurveyRegion]) -> Vec<LineString> {
             if to - from <= 1.0e-12 {
                 continue;
             }
-            let midpoint = a.lerp(b, (from + to) * 0.5);
+            let midpoint = a.lerp(b, f64::midpoint(from, to));
             if regions
                 .iter()
                 .any(|region| contains(region.bounds, midpoint))

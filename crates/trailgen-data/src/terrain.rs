@@ -315,7 +315,9 @@ impl Tile {
         let rgb = match info.color_type {
             png::ColorType::Rgb => pixels.to_vec(),
             png::ColorType::Rgba => pixels
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .flat_map(|pixel| pixel[..3].iter().copied())
                 .collect(),
             other => bail!("terrain PNG has unsupported color type {other:?}"),

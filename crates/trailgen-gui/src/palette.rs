@@ -274,7 +274,7 @@ fn oklch_srgb(lightness: f64, chroma: f64, hue_degrees: f64) -> Swatch {
     let mut low = 0.0;
     let mut high = chroma;
     for _ in 0..14 {
-        let probe = (low + high) * 0.5;
+        let probe = f64::midpoint(low, high);
         if linear(probe)
             .into_iter()
             .all(|channel| (0.0..=1.0).contains(&channel))

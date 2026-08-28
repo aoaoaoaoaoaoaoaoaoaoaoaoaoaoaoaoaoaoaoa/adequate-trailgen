@@ -155,7 +155,7 @@ impl SearchBoundary {
         cuts.sort_by(f64::total_cmp);
         cuts.dedup_by(|left, right| (*left - *right).abs() <= 1.0e-10);
         cuts.windows(2)
-            .map(|span| a.lerp(b, (span[0] + span[1]) * 0.5))
+            .map(|span| a.lerp(b, f64::midpoint(span[0], span[1])))
             .all(|point| self.contains(point))
     }
 }
