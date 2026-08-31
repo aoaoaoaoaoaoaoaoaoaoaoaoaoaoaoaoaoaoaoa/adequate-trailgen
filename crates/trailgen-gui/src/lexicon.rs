@@ -1,8 +1,5 @@
 use crate::{chrome, witness};
-use egui::{CursorIcon, Response, RichText, Ui};
-
-const GLOSS_TITLE_SIZE: f32 = 12.0;
-const GLOSS_BODY_SIZE: f32 = 12.0;
+use egui::{CursorIcon, Response, Ui};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -63,12 +60,12 @@ impl Glosses {
     pub fn card(self, ui: &mut Ui) {
         let _column = ui.vertical(|ui| {
             for term in Term::ALL.into_iter().filter(|term| self.contains(*term)) {
-                let _title = ui.label(chrome::eyebrow(term.title()).size(GLOSS_TITLE_SIZE));
+                let _title = ui.label(chrome::eyebrow(term.title()));
                 let _definition = ui.add(
                     egui::Label::new(
-                        RichText::new(term.definition())
-                            .monospace()
-                            .size(GLOSS_BODY_SIZE)
+                        chrome::TypeRole::Body
+                            .text(term.definition())
+                            .family(egui::FontFamily::Monospace)
                             .color(chrome::TEXT),
                     )
                     .wrap(),

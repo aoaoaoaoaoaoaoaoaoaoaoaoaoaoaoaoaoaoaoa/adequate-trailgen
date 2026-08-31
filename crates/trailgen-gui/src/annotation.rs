@@ -1,7 +1,5 @@
-use crate::{basemap, forge, map, vector_map::VectorGap};
-use egui::{
-    Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, Vec2, epaint::TextShape, vec2,
-};
+use crate::{basemap, chrome, forge, map, vector_map::VectorGap};
+use egui::{Align2, Color32, Painter, Pos2, Rect, Shape, Stroke, Vec2, epaint::TextShape, vec2};
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -654,7 +652,7 @@ fn prepare_parking<'a>(
         }
         let galley = painter.layout_no_wrap(
             name.to_owned(),
-            FontId::proportional(9.8),
+            chrome::spatial_font(painter.ctx(), 9.8, egui::FontFamily::Proportional),
             Color32::PLACEHOLDER,
         );
         let center = anchor + vec2(galley.size().x.mul_add(0.5, 13.0), 0.0);
@@ -702,7 +700,7 @@ fn prepare_points<'a>(
         let world_anchor = map::screen_at(viewport, rect, label.world);
         let galley = painter.layout_no_wrap(
             label.text.to_owned(),
-            FontId::proportional(label.size),
+            chrome::spatial_font(painter.ctx(), label.size, egui::FontFamily::Proportional),
             Color32::PLACEHOLDER,
         );
         let (identity_kind, ink, halo, symbol, offset) = match label.kind {
@@ -781,7 +779,7 @@ fn prepare_lines<'a>(
         }
         let galley = painter.layout_no_wrap(
             label.text.to_owned(),
-            FontId::proportional(label.size),
+            chrome::spatial_font(painter.ctx(), label.size, egui::FontFamily::Proportional),
             Color32::PLACEHOLDER,
         );
         for placement in
@@ -1075,6 +1073,7 @@ mod tests {
     #[test]
     fn navigation_history_cannot_alter_a_composition() {
         let context = egui::Context::default();
+        brass_poolrooms::chrome::install(&context);
         context
             .run_ui(egui::RawInput::default(), |ui| {
                 let painter = ui.painter().clone();
@@ -1143,6 +1142,7 @@ mod tests {
     #[test]
     fn temporal_ledger_retains_an_established_label_against_new_priority() {
         let context = egui::Context::default();
+        brass_poolrooms::chrome::install(&context);
         context
             .run_ui(egui::RawInput::default(), |ui| {
                 let painter = ui.painter().clone();

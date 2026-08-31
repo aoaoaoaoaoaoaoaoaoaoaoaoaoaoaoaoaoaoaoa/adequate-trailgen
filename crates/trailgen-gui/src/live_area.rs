@@ -267,7 +267,11 @@ pub fn paint(painter: &Painter, scene: Scene<'_>) {
         let text = names
             .get(&region.id)
             .map_or_else(|| slot.to_string(), |name| name.to_ascii_uppercase());
-        let galley = painter.layout_no_wrap(text, egui::FontId::monospace(10.5), chrome::HOT);
+        let galley = painter.layout_no_wrap(
+            text,
+            chrome::spatial_font(painter.ctx(), 10.5, egui::FontFamily::Monospace),
+            chrome::HOT,
+        );
         let plate = Rect::from_min_size(
             rect.left_top() + vec2(4.0, 4.0),
             galley.size() + vec2(10.0, 6.0),

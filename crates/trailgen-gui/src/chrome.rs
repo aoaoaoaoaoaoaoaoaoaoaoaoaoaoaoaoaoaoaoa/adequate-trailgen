@@ -1,9 +1,9 @@
 pub use brass_poolrooms::chrome::*;
-use egui::{RichText, Stroke, Vec2};
+use egui::{Stroke, Vec2};
 
 pub fn command_button(text: impl Into<String>, selected: bool) -> egui::Button<'static> {
-    let text = RichText::new(text.into())
-        .size(13.0)
+    let text = TypeRole::Label
+        .text(text)
         .strong()
         .color(if selected { HOT } else { TEXT });
     let button = egui::Button::new(text).min_size(Vec2::new(24.0, 20.0));

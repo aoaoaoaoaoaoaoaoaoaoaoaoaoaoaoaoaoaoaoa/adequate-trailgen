@@ -197,7 +197,7 @@ impl ElevationProfile {
                     pos2(x, lanes.terrain.bottom() + 6.0),
                     egui::Align2::CENTER_TOP,
                     label,
-                    egui::FontId::monospace(10.0),
+                    chrome::spatial_font(painter.ctx(), 10.0, egui::FontFamily::Monospace),
                     chrome::MUTED,
                 );
             }
@@ -206,21 +206,21 @@ impl ElevationProfile {
             pos2(plot.left() - 6.0, plot.top()),
             egui::Align2::RIGHT_TOP,
             format!("{:.0} m", self.maximum_m),
-            egui::FontId::monospace(10.0),
+            chrome::spatial_font(painter.ctx(), 10.0, egui::FontFamily::Monospace),
             chrome::MUTED,
         );
         painter.text(
             pos2(plot.left() - 6.0, plot.bottom()),
             egui::Align2::RIGHT_BOTTOM,
             format!("{:.0} m", self.minimum_m),
-            egui::FontId::monospace(10.0),
+            chrome::spatial_font(painter.ctx(), 10.0, egui::FontFamily::Monospace),
             chrome::MUTED,
         );
         painter.text(
             pos2(plot.left(), lanes.terrain.bottom() + 6.0),
             egui::Align2::LEFT_TOP,
             "DISTANCE · KM",
-            egui::FontId::monospace(9.0),
+            chrome::spatial_font(painter.ctx(), 9.0, egui::FontFamily::Monospace),
             chrome::MUTED,
         );
     }
@@ -316,7 +316,11 @@ impl ElevationProfile {
             sample.elevation_m,
             terrain_label(terrain)
         );
-        let galley = canvas.layout_no_wrap(text, egui::FontId::monospace(11.0), chrome::TEXT);
+        let galley = canvas.layout_no_wrap(
+            text,
+            chrome::spatial_font(canvas.ctx(), 11.0, egui::FontFamily::Monospace),
+            chrome::TEXT,
+        );
         let label = Rect::from_min_size(
             pos2(
                 (x + 8.0).min(plot.right() - galley.size().x - 10.0),

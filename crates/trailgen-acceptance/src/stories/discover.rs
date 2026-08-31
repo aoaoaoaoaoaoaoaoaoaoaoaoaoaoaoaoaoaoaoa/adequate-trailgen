@@ -900,6 +900,7 @@ fn configure_search(story: &mut TrailStory<'_, '_>) -> Result<()> {
         unprobed.difference_region(&probed, probe_plate, 2)? >= 0.01,
         "Alt-click reported a coordinate probe without painting its map marker",
     )?;
+    reveal_inspector_target(story, Target::TrailheadPlacement)?;
     let _armed = story.click(Target::TrailheadPlacement)?.next_frame()?;
     let _placed = story
         .click_at(trailhead, Button::Primary)?
@@ -914,17 +915,21 @@ fn configure_search(story: &mut TrailStory<'_, '_>) -> Result<()> {
             .is_some(),
         "Finder retained the trailhead without painting its map pin",
     )?;
+    reveal_inspector_target(story, Target::Boundary)?;
     let _armed = story
         .click(Target::Boundary)?
         .until(shows::boundary_drawing(true))?;
 
     let _bounded = lasso_boundary(story, 0.15)?;
+    reveal_inspector_target(story, Target::MovingTimeMin)?;
     let _time_min = story
         .replace_text(Target::MovingTimeMin, "0.5", shows::text_focused())?
         .next_frame()?;
+    reveal_inspector_target(story, Target::MovingTimeMax)?;
     let _time_max = story
         .replace_text(Target::MovingTimeMax, "4.0", shows::text_focused())?
         .next_frame()?;
+    reveal_inspector_target(story, Target::LowerLimbLoad)?;
     let _load = story
         .replace_text(Target::LowerLimbLoad, "8.0", shows::text_focused())?
         .next_frame()?;
@@ -933,7 +938,11 @@ fn configure_search(story: &mut TrailStory<'_, '_>) -> Result<()> {
 
 fn exercise_calibration(story: &mut TrailStory<'_, '_>) -> Result<()> {
     let _opened = story.key(Key::Function(2))?.until(shows::settings(true))?;
-    let target = "eternalist.settings.base_pace_kmh";
+    // egui centers a newly opened window once its first measured size is known. Force that
+    // reflow before resolving a coordinate from the settings witness.
+    let repaint = story.session().move_to(4, 4)?;
+    let _reflowed = story.reaction(repaint).next_frame()?;
+    let target = "eternalist.settings.entry/base_pace_kmh";
     let settled = story.wait_stable(
         Duration::from_secs(3),
         Duration::from_millis(160),
@@ -957,6 +966,12 @@ fn exercise_calibration(story: &mut TrailStory<'_, '_>) -> Result<()> {
         let _step = story.key(Key::Up)?.next_frame()?;
     }
     let _pace = story.wait_within(Duration::from_secs(4), shows::base_pace(BASE_PACE_KMH))?;
+    let scale = story.anchor("eternalist.settings.entry/font_scale")?;
+    let extra_large = screen_point([f64::from(scale.rect[2]) - 5.0, f64::from(scale.center().1)])?;
+    let _aimed = story
+        .motion_to(extra_large, Motion::default())?
+        .next_frame()?;
+    let _scaled = story.click_current(Button::Primary)?.next_frame()?;
     let _closed = story
         .chord(Modifiers::CTRL, Key::Character(','))?
         .until(shows::settings(false) & shows::configuration_settled())?;
@@ -989,6 +1004,13 @@ fn verify_configuration(harness: &Harness<'_>) -> Result<()> {
             .and_then(toml::Value::as_float)
             == Some(BASE_PACE_KMH),
         "Base Pace did not reach XDG configuration",
+    )?;
+    demand(
+        configuration
+            .get("font_scale")
+            .and_then(toml::Value::as_str)
+            == Some("extra_large"),
+        "Extra Large font scale did not reach XDG configuration",
     )
 }
 

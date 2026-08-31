@@ -398,7 +398,7 @@ fn tile_shell(
         let label = trail_standing_badge(standing);
         let galley = ui.painter().layout_no_wrap(
             label.to_owned(),
-            egui::FontId::monospace(9.0),
+            chrome::spatial_font(ui.ctx(), 9.0, egui::FontFamily::Monospace),
             chrome::TEXT,
         );
         let badge = Rect::from_min_size(
@@ -414,7 +414,7 @@ fn tile_shell(
     let load_text = readout::load_badge(metrics);
     let load = ui.painter().layout_no_wrap(
         load_text.text().to_owned(),
-        egui::FontId::monospace(9.0),
+        chrome::spatial_font(ui.ctx(), 9.0, egui::FontFamily::Monospace),
         chrome::TEXT,
     );
     let badge = Rect::from_min_size(
@@ -441,7 +441,7 @@ fn tile_shell(
         title.left_top(),
         egui::Align2::LEFT_TOP,
         name.to_ascii_uppercase(),
-        egui::FontId::monospace(12.0),
+        chrome::spatial_font(ui.ctx(), 12.0, egui::FontFamily::Monospace),
         if active { chrome::HOT } else { chrome::TEXT },
     );
     let measurements = readout::tile_measurements(metrics, pace);
@@ -449,7 +449,7 @@ fn tile_shell(
         pos2(title.left(), title.bottom()),
         egui::Align2::LEFT_BOTTOM,
         measurements.text(),
-        egui::FontId::monospace(10.5),
+        chrome::spatial_font(ui.ctx(), 10.5, egui::FontFamily::Monospace),
         chrome::MUTED,
     );
     Glosses::ROUTE_METRICS.explain(response)

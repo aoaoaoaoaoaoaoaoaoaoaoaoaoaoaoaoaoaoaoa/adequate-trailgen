@@ -741,7 +741,7 @@ fn legend_row(
         pos2(rect.left() + 33.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         label,
-        egui::FontId::monospace(13.0),
+        chrome::spatial_font(ui.ctx(), 13.0, egui::FontFamily::Monospace),
         chrome::TEXT,
     );
 }
@@ -1472,7 +1472,7 @@ fn paint_scale_length(
         origin + vec2(width * 0.5, -5.0),
         egui::Align2::CENTER_BOTTOM,
         label,
-        egui::FontId::monospace(11.0),
+        chrome::spatial_font(painter.ctx(), 11.0, egui::FontFamily::Monospace),
         ink,
     );
 }

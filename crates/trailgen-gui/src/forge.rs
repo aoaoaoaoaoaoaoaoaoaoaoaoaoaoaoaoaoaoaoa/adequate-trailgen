@@ -36,7 +36,7 @@ pub fn parking(painter: &Painter, anchor: Pos2, maturity: f32) {
         anchor,
         egui::Align2::CENTER_CENTER,
         "P",
-        egui::FontId::monospace(11.0),
+        crate::chrome::spatial_font(painter.ctx(), 11.0, egui::FontFamily::Monospace),
         Color32::from_rgb(244, 235, 211).gamma_multiply(maturity),
     );
 }

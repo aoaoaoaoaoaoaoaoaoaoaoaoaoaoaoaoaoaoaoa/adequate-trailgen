@@ -1,13 +1,11 @@
 use crate::{
-    map,
+    chrome, map,
     palette::{CARTOGRAPHIC_HUES, ColorCycle, CycleLaw, Span},
     persistence,
 };
 use anyhow::{Context as _, Result, bail, ensure};
 use crossbeam_channel::{Receiver, Sender, bounded};
-use egui::{
-    Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, Vec2, epaint::TextShape, vec2,
-};
+use egui::{Align2, Color32, Painter, Pos2, Rect, Shape, Stroke, Vec2, epaint::TextShape, vec2};
 use eternalist_apps::{
     NativeWake, ScribeOutcome, SettledScribe,
     responsiveness::{Drain, SupersedingSender, superseding_channel},
@@ -1287,7 +1285,7 @@ pub fn paint_labels(painter: &Painter, labels: &[CivicLabel]) {
     for label in labels {
         let galley = painter.layout_no_wrap(
             label.name.clone(),
-            FontId::monospace(13.0),
+            chrome::spatial_font(painter.ctx(), 13.0, egui::FontFamily::Monospace),
             Color32::PLACEHOLDER,
         );
         let plate_size = galley.size() + vec2(8.0, 4.0);

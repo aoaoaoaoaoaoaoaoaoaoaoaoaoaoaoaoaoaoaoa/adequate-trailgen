@@ -115,12 +115,13 @@ impl Workbench {
         intent: ProjectIntent,
         offline: bool,
     ) -> Result<Self> {
-        let configuration = ConfigurationLedger::raise(
+        let configuration: ConfigurationLedger<Configuration> = ConfigurationLedger::raise(
             "trailgen-configuration-scribe",
             ctx,
             application_paths.configuration_path(),
             CONFIGURATION_SETTLE,
         )?;
+        brass_poolrooms::chrome::set_font_scale(ctx, configuration.live().font_scale());
         let mut settings = SettingsSheet::default();
         if configuration.fault().is_some() {
             settings.require_attention(ctx);
@@ -169,6 +170,7 @@ impl Workbench {
     }
 
     pub fn pulse(&mut self, ui: &mut egui::Ui) {
+        brass_poolrooms::chrome::set_font_scale(ui.ctx(), self.configuration.live().font_scale());
         if self.configuration.absorb() {
             self.mode
                 .configuration_changed(self.configuration.live().base_pace());
@@ -292,6 +294,7 @@ impl Workbench {
         let path = self.configuration.path().to_owned();
         let fault = self.configuration.fault().map(ToString::to_string);
         let mut base_pace = self.configuration.live().base_pace().kmh();
+        let mut font_scale = self.configuration.live().font_scale();
         let file = fault.as_deref().map_or_else(
             || SettingsFile::ready(&path),
             |message| SettingsFile::fault(&path, message),
@@ -299,12 +302,15 @@ impl Workbench {
         let file = file
             .reloading(self.configuration.reload_pending())
             .reloadable(self.configuration.fault().is_some() || self.configuration.settled());
-        let mut changed = false;
+        let mut base_pace_changed = false;
+        let mut font_scale_changed = false;
         let response = self
             .settings
             .show(ctx, self.mode.water_mut(), file, |settings| {
-                settings.section("CALIBRATION");
-                changed |= settings.number(
+                settings.group("APPEARANCE");
+                font_scale_changed |= settings.font_scale(&mut font_scale);
+                settings.group("CALIBRATION");
+                base_pace_changed |= settings.number(
                     BASE_PACE_SETTING,
                     &mut base_pace,
                     MIN_BASE_PACE_KMH..=MAX_BASE_PACE_KMH,
@@ -312,12 +318,18 @@ impl Workbench {
                     1,
                 );
             });
-        if changed
+        if (base_pace_changed || font_scale_changed)
             && self
                 .configuration
-                .revise(|configuration| configuration.set_base_pace(base_pace))
+                .revise(|configuration| {
+                    configuration.set_base_pace(base_pace);
+                    configuration.set_font_scale(font_scale);
+                })
                 .is_ok()
         {
+            if font_scale_changed {
+                brass_poolrooms::chrome::set_font_scale(ctx, font_scale);
+            }
             self.mode
                 .configuration_changed(self.configuration.live().base_pace());
         }
@@ -778,7 +790,7 @@ impl SurveyWorkbench {
             .show(ui, &mut self.guide, settings, &mut self.water);
         ui.add_space(5.0);
         let mut panels = navigator.frame(ui.ctx());
-        let projects = panels.section(ui, "projects", "projects", true, |ui| {
+        let projects = panels.panel(ui, "projects", "projects", true, |ui| {
             let _name = ui.label(chrome::eyebrow(self.name.to_ascii_uppercase()));
             ui.add_space(4.0);
             let spec = commands::canon().spec(Edict::OpenProjects);
@@ -804,7 +816,7 @@ impl SurveyWorkbench {
         });
         crate::witness::response(ui, Target::Panel("projects"), &projects.header);
         self.water.fold(projects.wake);
-        let section = panels.section(ui, "areas", "map areas", true, |ui| {
+        let section = panels.panel(ui, "areas", "map areas", true, |ui| {
             self.area_panel(ui);
         });
         crate::witness::response(ui, Target::Panel("areas"), &section.header);
@@ -1733,8 +1745,8 @@ fn fault_label(ui: &mut egui::Ui, fault: &str) {
     ui.add_space(8.0);
     let _fault = ui.add(
         egui::Label::new(
-            RichText::new(fault.to_ascii_uppercase())
-                .size(11.0)
+            chrome::TypeRole::Annotation
+                .text(fault.to_ascii_uppercase())
                 .color(Color32::from_rgb(203, 113, 91)),
         )
         .wrap(),

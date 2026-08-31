@@ -29,7 +29,7 @@ use crossbeam_channel::{Receiver, Sender, bounded};
 use egui::{Color32, RichText, Stroke, vec2};
 use eternalist_apps::{
     ApplicationHeader, Inspector, LivingWait, NativeWake, ScribeOutcome, SettledScribe,
-    command_guide::{CommandGuide, GuideSection},
+    command_guide::{CommandGuide, GuideGroup},
     commands::{CommandDispatch, CommandStatus},
     configuration::ConfigurationLedger,
     panel_navigation::{PanelFrame, PanelNavigator},
@@ -1665,7 +1665,7 @@ impl TrailApp {
         }
     }
 
-    const fn command_guide_groups(&self) -> &'static [GuideSection] {
+    const fn command_guide_groups(&self) -> &'static [GuideGroup] {
         match &self.view {
             WorkbenchView::Browse => &commands::FINDER_GUIDE_GROUPS,
             WorkbenchView::Focus(Focus::Candidate { .. }) => &commands::CANDIDATE_GUIDE_GROUPS,
@@ -2140,7 +2140,7 @@ impl TrailApp {
         body: fn(&mut Self, &mut egui::Ui),
     ) {
         let open = self.panel_folds.get(id).copied().unwrap_or(open);
-        let section = panels.section(ui, id, title, open, |ui| body(self, ui));
+        let section = panels.panel(ui, id, title, open, |ui| body(self, ui));
         crate::witness::response(ui, Target::Panel(id), &section.header);
         if let Some(wake) = section.wake.as_ref() {
             let _prior = self
@@ -2906,12 +2906,12 @@ impl TrailApp {
         {
             let _standing = ui.colored_label(
                 detail_standing_color(standing),
-                RichText::new(format!(
-                    "PATH STATUS · {}",
-                    map::trail_standing_label(standing)
-                ))
-                .monospace()
-                .size(10.5),
+                chrome::TypeRole::Annotation
+                    .text(format!(
+                        "PATH STATUS · {}",
+                        map::trail_standing_label(standing)
+                    ))
+                    .family(egui::FontFamily::Monospace),
             );
         }
         if self.view.is_editing() {
@@ -3680,7 +3680,7 @@ impl TrailApp {
         let painter = ui.painter_at(map_rect);
         let galley = painter.layout_no_wrap(
             wait.message.to_ascii_uppercase(),
-            egui::FontId::monospace(10.5),
+            chrome::spatial_font(painter.ctx(), 10.5, egui::FontFamily::Monospace),
             chrome::HOT,
         );
         let size = galley.size() + vec2(18.0, 8.0);
@@ -4274,7 +4274,11 @@ impl TrailApp {
             None
         };
         let Some(text) = text else { return };
-        let galley = painter.layout_no_wrap(text, egui::FontId::monospace(13.0), chrome::TEXT);
+        let galley = painter.layout_no_wrap(
+            text,
+            chrome::spatial_font(painter.ctx(), 13.0, egui::FontFamily::Monospace),
+            chrome::TEXT,
+        );
         let plate = egui::Rect::from_min_size(
             rect.left_top() + vec2(12.0, 12.0),
             galley.size() + vec2(14.0, 8.0),
@@ -4301,7 +4305,7 @@ impl TrailApp {
         };
         let footer = painter.layout_no_wrap(
             format!("{attribution}Z {:.2}", self.viewport.zoom),
-            egui::FontId::monospace(9.5),
+            chrome::spatial_font(painter.ctx(), 9.5, egui::FontFamily::Monospace),
             Color32::from_black_alpha(190),
         );
         let plate = egui::Rect::from_min_size(
@@ -5934,9 +5938,9 @@ fn detail_text(
 ) -> egui::Response {
     let text = text.into();
     let response = ui.label(
-        RichText::new(text.text())
-            .monospace()
-            .size(12.0)
+        chrome::TypeRole::Label
+            .text(text.text())
+            .family(egui::FontFamily::Monospace)
             .color(color),
     );
     text.explain(response)
@@ -5944,10 +5948,10 @@ fn detail_text(
 
 fn detail_title(ui: &mut egui::Ui, text: impl Into<String>) -> egui::Response {
     ui.label(
-        RichText::new(text.into())
-            .monospace()
+        chrome::TypeRole::Heading
+            .text(text)
+            .family(egui::FontFamily::Monospace)
             .strong()
-            .size(14.0)
             .color(chrome::TEXT),
     )
 }
@@ -5983,9 +5987,9 @@ fn search_progress(ui: &mut egui::Ui, progress: SearchProgress) {
         SearchStage::Ranking => 1.0,
     };
     let _label = ui.label(
-        RichText::new(search_progress_text(progress).to_ascii_uppercase())
-            .monospace()
-            .size(10.0)
+        chrome::TypeRole::Annotation
+            .text(search_progress_text(progress).to_ascii_uppercase())
+            .family(egui::FontFamily::Monospace)
             .color(chrome::HOT),
     );
     let _progress = ui.add(
@@ -6204,14 +6208,14 @@ fn library_button(
                 rect.left_top() + vec2(8.0, 5.0),
                 egui::Align2::LEFT_TOP,
                 trail.name.to_ascii_uppercase(),
-                egui::FontId::monospace(12.5),
+                chrome::spatial_font(ui.ctx(), 12.5, egui::FontFamily::Monospace),
                 ink,
             );
             ui.painter().text(
                 rect.left_bottom() + vec2(8.0, -5.0),
                 egui::Align2::LEFT_BOTTOM,
                 readout::library_measurements(&trail.metrics),
-                egui::FontId::monospace(10.5),
+                chrome::spatial_font(ui.ctx(), 10.5, egui::FontFamily::Monospace),
                 chrome::MUTED,
             );
             let load = readout::library_load(&trail.metrics);
@@ -6219,7 +6223,7 @@ fn library_button(
                 rect.right_bottom() + vec2(-8.0, -5.0),
                 egui::Align2::RIGHT_BOTTOM,
                 load.text(),
-                egui::FontId::monospace(10.5),
+                chrome::spatial_font(ui.ctx(), 10.5, egui::FontFamily::Monospace),
                 chrome::MUTED,
             );
         }
@@ -6293,7 +6297,7 @@ fn gallery_empty(ui: &egui::Ui, message: &str) {
         ui.available_rect_before_wrap().center(),
         egui::Align2::CENTER_CENTER,
         message,
-        egui::FontId::monospace(13.0),
+        chrome::spatial_font(ui.ctx(), 13.0, egui::FontFamily::Monospace),
         chrome::MUTED,
     );
 }
@@ -6310,7 +6314,7 @@ fn paint_coordinate_callout(
 ) -> egui::Rect {
     let galley = painter.layout_no_wrap(
         coordinate_text(coord),
-        egui::FontId::monospace(11.0),
+        chrome::spatial_font(painter.ctx(), 11.0, egui::FontFamily::Monospace),
         chrome::TEXT,
     );
     let size = galley.size() + vec2(10.0, 6.0);
@@ -6351,7 +6355,7 @@ fn paint_support_fault(
     let wrap_width = (map_rect.width() - 24.0).clamp(96.0, 220.0);
     let galley = painter.layout(
         message.to_owned(),
-        egui::FontId::monospace(11.0),
+        chrome::spatial_font(painter.ctx(), 11.0, egui::FontFamily::Monospace),
         chrome::HOT,
         wrap_width,
     );

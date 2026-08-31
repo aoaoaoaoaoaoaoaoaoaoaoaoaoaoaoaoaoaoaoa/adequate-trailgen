@@ -26,7 +26,9 @@ pub fn reveal_inspector_target(
         f64::from(f32::midpoint(map.rect[1], map.rect[3])) * ppp,
     ])?;
     let screen_bottom = f64::from(story.capture()?.height().saturating_sub(20));
-    for _ in 0..4 {
+    // Coarse ten-notch strokes can leap across a target when enlarged typography makes the
+    // inspector tall. Traverse in smaller strokes and let the witness decide when to stop.
+    for _ in 0..12 {
         let anchor = story.anchor(target.as_str())?;
         let center = anchor.center();
         if f64::from(center.1) >= 50.0 && f64::from(center.1) <= screen_bottom {
@@ -43,9 +45,9 @@ pub fn reveal_inspector_target(
             return Ok(());
         }
         let ticks = if f64::from(center.1) > screen_bottom {
-            10
+            4
         } else {
-            -10
+            -4
         };
         let _scrolled = story
             .wheel(

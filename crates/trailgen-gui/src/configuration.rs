@@ -1,3 +1,4 @@
+use brass_poolrooms::chrome::FontScale;
 use eternalist_apps::configuration::Configuration as ConfigurationContract;
 use eternalist_apps::settings::SettingSpec;
 use serde::{Deserialize, Serialize};
@@ -51,12 +52,14 @@ impl BasePace {
 #[serde(default, deny_unknown_fields)]
 pub struct Configuration {
     base_pace_kmh: f64,
+    font_scale: FontScale,
 }
 
 impl Default for Configuration {
     fn default() -> Self {
         Self {
             base_pace_kmh: DEFAULT_BASE_PACE_KMH,
+            font_scale: FontScale::Standard,
         }
     }
 }
@@ -67,8 +70,17 @@ impl Configuration {
         BasePace::forge(self.base_pace_kmh).expect("live configuration must remain valid")
     }
 
+    #[must_use]
+    pub const fn font_scale(&self) -> FontScale {
+        self.font_scale
+    }
+
     pub fn set_base_pace(&mut self, kmh: f64) {
         self.base_pace_kmh = (kmh * 10.0).round() / 10.0;
+    }
+
+    pub const fn set_font_scale(&mut self, scale: FontScale) {
+        self.font_scale = scale;
     }
 }
 

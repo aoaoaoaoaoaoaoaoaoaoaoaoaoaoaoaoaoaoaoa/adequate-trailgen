@@ -1,7 +1,7 @@
 use std::sync::OnceLock;
 
 use eternalist_apps::{
-    command_guide::{GuideGesture, GuideSection},
+    command_guide::{GuideGesture, GuideGroup},
     commands::{
         CommandCanon, CommandScope, CommandSpec, Shortcut, ShortcutKey, ShortcutModifiers,
         TextFocusPolicy,
@@ -356,35 +356,35 @@ const PROFILE_GESTURES: [GuideGesture; 2] = [
     ),
 ];
 
-const PROJECT_GUIDE_GROUP: GuideSection = GuideSection::new("PROJECT DECK", &PROJECT_GESTURES);
-const INSPECTOR_GUIDE_GROUP: GuideSection = GuideSection::new("INSPECTOR", &INSPECTOR_GESTURES);
-const MAP_GUIDE_GROUP: GuideSection = GuideSection::new("MAP", &MAP_GESTURES);
-const SURVEY_GUIDE_GROUP: GuideSection = GuideSection::new("MAP AREAS", &SURVEY_GESTURES);
-const FINDER_GUIDE_GROUP: GuideSection = GuideSection::new("FIND TRAILS", &FINDER_GESTURES);
-const FOCUS_GUIDE_GROUP: GuideSection = GuideSection::new("TRAIL DETAIL", &FOCUS_GESTURES);
-const EDITOR_GUIDE_GROUP: GuideSection = GuideSection::new("TRAIL EDITOR", &EDITOR_GESTURES);
-const PROFILE_GUIDE_GROUP: GuideSection = GuideSection::new("ELEVATION PROFILE", &PROFILE_GESTURES);
+const PROJECT_GUIDE_GROUP: GuideGroup = GuideGroup::new("PROJECT DECK", &PROJECT_GESTURES);
+const INSPECTOR_GUIDE_GROUP: GuideGroup = GuideGroup::new("INSPECTOR", &INSPECTOR_GESTURES);
+const MAP_GUIDE_GROUP: GuideGroup = GuideGroup::new("MAP", &MAP_GESTURES);
+const SURVEY_GUIDE_GROUP: GuideGroup = GuideGroup::new("MAP AREAS", &SURVEY_GESTURES);
+const FINDER_GUIDE_GROUP: GuideGroup = GuideGroup::new("FIND TRAILS", &FINDER_GESTURES);
+const FOCUS_GUIDE_GROUP: GuideGroup = GuideGroup::new("TRAIL DETAIL", &FOCUS_GESTURES);
+const EDITOR_GUIDE_GROUP: GuideGroup = GuideGroup::new("TRAIL EDITOR", &EDITOR_GESTURES);
+const PROFILE_GUIDE_GROUP: GuideGroup = GuideGroup::new("ELEVATION PROFILE", &PROFILE_GESTURES);
 
-pub const PROJECT_GUIDE_GROUPS: [GuideSection; 1] = [PROJECT_GUIDE_GROUP];
-pub const SURVEY_GUIDE_GROUPS: [GuideSection; 3] =
+pub const PROJECT_GUIDE_GROUPS: [GuideGroup; 1] = [PROJECT_GUIDE_GROUP];
+pub const SURVEY_GUIDE_GROUPS: [GuideGroup; 3] =
     [INSPECTOR_GUIDE_GROUP, MAP_GUIDE_GROUP, SURVEY_GUIDE_GROUP];
-pub const FINDER_GUIDE_GROUPS: [GuideSection; 3] =
+pub const FINDER_GUIDE_GROUPS: [GuideGroup; 3] =
     [INSPECTOR_GUIDE_GROUP, MAP_GUIDE_GROUP, FINDER_GUIDE_GROUP];
-pub const CANDIDATE_GUIDE_GROUPS: [GuideSection; 5] = [
+pub const CANDIDATE_GUIDE_GROUPS: [GuideGroup; 5] = [
     INSPECTOR_GUIDE_GROUP,
     MAP_GUIDE_GROUP,
     FINDER_GUIDE_GROUP,
     FOCUS_GUIDE_GROUP,
     PROFILE_GUIDE_GROUP,
 ];
-pub const SAVED_GUIDE_GROUPS: [GuideSection; 5] = [
+pub const SAVED_GUIDE_GROUPS: [GuideGroup; 5] = [
     INSPECTOR_GUIDE_GROUP,
     MAP_GUIDE_GROUP,
     FINDER_GUIDE_GROUP,
     FOCUS_GUIDE_GROUP,
     PROFILE_GUIDE_GROUP,
 ];
-pub const EDITOR_GUIDE_GROUPS: [GuideSection; 4] = [
+pub const EDITOR_GUIDE_GROUPS: [GuideGroup; 4] = [
     INSPECTOR_GUIDE_GROUP,
     MAP_GUIDE_GROUP,
     EDITOR_GUIDE_GROUP,
