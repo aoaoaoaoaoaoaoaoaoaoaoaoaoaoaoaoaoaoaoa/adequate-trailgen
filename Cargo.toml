@@ -23,14 +23,14 @@ bytemuck = { version = "1.25.2", features = ["derive"] }
 clap = { version = "4.6.6", features = ["derive"] }
 crossbeam-channel = "0.5.16"
 directories = "6.0.0"
-brass_poolrooms = "0.14.6"
+brass_poolrooms = "0.14.7"
 egui = "=0.36.1"
 egui-wgpu = { version = "=0.36.1", default-features = false }
 eternalist-apps = "0.9.4"
 fast-mvt = { version = "0.6.2", default-features = false, features = ["reader"] }
 futures-util = "0.3.34"
 geo-types = "0.7.20"
-lyon_tessellation = "1.0.20"
+lyon_tessellation = "1.0.21"
 num-traits = "0.2.19"
 pmtiles = { version = "0.24.0", default-features = false, features = ["http-async", "mmap-async-tokio", "reqwest-rustls", "write"] }
 png = "0.18.1"
@@ -50,22 +50,22 @@ tempfile = "3.27.0"
 thiserror = "2.0.20"
 tiff = "0.11.3"
 tokio = { version = "1.53.1", features = ["rt"] }
-toml = "1.1.4"
+toml = "1.1.5"
 tracing = "0.1.44"
 tracing-chrome = "0.7.2"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry"] }
-trailgen-core = { path = "crates/trailgen-core", version = "0.3.11" }
-trailgen-contract = { path = "crates/trailgen-contract", version = "0.3.11" }
-trailgen-data = { path = "crates/trailgen-data", version = "0.3.11" }
-trailgen-gui = { path = "crates/trailgen-gui", version = "0.3.11" }
+trailgen-core = { path = "crates/trailgen-core", version = "0.3.12" }
+trailgen-contract = { path = "crates/trailgen-contract", version = "0.3.12" }
+trailgen-data = { path = "crates/trailgen-data", version = "0.3.12" }
+trailgen-gui = { path = "crates/trailgen-gui", version = "0.3.12" }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 zstd = "0.13.3"
 
 [workspace.dependencies.egui-tester]
-version = "0.9.7"
+version = "0.9.8"
 
 [workspace.dependencies.egui-tester-witness]
-version = "0.9.7"
+version = "0.9.8"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
