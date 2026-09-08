@@ -11,7 +11,7 @@ keywords = ["gis", "hiking", "routing", "egui", "wgpu"]
 categories = ["gui", "science::geo"]
 
 [features]
-egui-test = ["dep:egui-tester-witness", "eternalist-apps/egui-test"]
+egui-test = ["eternalist-apps/egui-test"]
 
 [dependencies]
 anyhow.workspace = true
@@ -20,8 +20,6 @@ crossbeam-channel.workspace = true
 directories.workspace = true
 brass_poolrooms.workspace = true
 egui.workspace = true
-egui-wgpu.workspace = true
-egui-tester-witness = { workspace = true, optional = true, features = ["egui"] }
 eternalist-apps.workspace = true
 fast-mvt.workspace = true
 futures-util.workspace = true

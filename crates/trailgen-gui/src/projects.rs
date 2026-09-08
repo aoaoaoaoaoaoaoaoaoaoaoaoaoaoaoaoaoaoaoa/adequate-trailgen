@@ -308,7 +308,7 @@ impl Workbench {
             .settings
             .show(ctx, self.mode.water_mut(), file, |settings| {
                 settings.group("APPEARANCE");
-                font_scale_changed |= settings.font_scale(&mut font_scale);
+                font_scale_changed |= settings.font_size(&mut font_scale);
                 settings.group("CALIBRATION");
                 base_pace_changed |= settings.number(
                     BASE_PACE_SETTING,

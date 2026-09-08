@@ -1,5 +1,5 @@
 use crate::{
-    application_paths::platform_dirs,
+    application_paths::cache_root,
     map::{self, MapFramePlan},
     persistence,
 };
@@ -77,7 +77,7 @@ impl Source {
                 roaming_cache: None,
             });
         }
-        let roaming_cache = platform_dirs()?.cache_dir().join(ROAMING_CACHE);
+        let roaming_cache = cache_root()?.join(ROAMING_CACHE);
         Ok(Self {
             archive: root.join("cache").join(ARCHIVE_NAME),
             forge_regions: Some(vec![forge_bounds(graph)?]),
@@ -103,12 +103,12 @@ impl Source {
                 .join(format!("basemap-{}.pmtiles", region_key(regions))),
             forge_regions: Some(regions.to_vec()),
             forge_zoom: MAX_SOURCE_ZOOM,
-            roaming_cache: Some(platform_dirs()?.cache_dir().join(ROAMING_CACHE)),
+            roaming_cache: Some(cache_root()?.join(ROAMING_CACHE)),
         })
     }
 
     pub fn bootstrap() -> Result<Self> {
-        let roaming_cache = platform_dirs()?.cache_dir().join(ROAMING_CACHE);
+        let roaming_cache = cache_root()?.join(ROAMING_CACHE);
         if let Some(override_path) = std::env::var_os("TRAILGEN_BASEMAP_ARCHIVE") {
             return Ok(Self {
                 archive: override_path.into(),

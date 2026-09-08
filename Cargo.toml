@@ -25,7 +25,6 @@ crossbeam-channel = "0.5.16"
 directories = "6.0.0"
 brass_poolrooms = "0.14.8"
 egui = "=0.36.1"
-egui-wgpu = { version = "=0.36.1", default-features = false }
 eternalist-apps = "0.9.6"
 fast-mvt = { version = "0.6.2", default-features = false, features = ["reader"] }
 futures-util = "0.3.34"
@@ -79,3 +78,8 @@ module_name_repetitions = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 multiple_crate_versions = "allow"
+
+[patch.crates-io]
+brass_poolrooms = { path = "../../../brass_poolrooms/.worktrees/cell-walls" }
+eternalist-apps = { path = "../../../eternalist_apps/.worktrees/cell-walls" }
+egui-tester-witness = { git = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/egui-tester", rev = "2411accb64b9c4012190d1bd0915d68113b8dcf1" }

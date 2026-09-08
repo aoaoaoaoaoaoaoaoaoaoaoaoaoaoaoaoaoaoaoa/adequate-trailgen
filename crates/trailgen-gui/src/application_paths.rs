@@ -1,6 +1,7 @@
 use crate::persistence;
 use anyhow::{Context as _, Result, ensure};
-use directories::{ProjectDirs, UserDirs};
+use directories::UserDirs;
+use eternalist_apps::ProductIdentity;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::{
@@ -9,6 +10,11 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
 };
+
+pub const PRODUCT: ProductIdentity = ProductIdentity::declare(
+    trailgen_contract::PRODUCT_IDENTIFIER,
+    trailgen_contract::PRODUCT_NAME,
+);
 
 const LIBRARY: &str = "trailgen";
 const CONFIGURATION_FILE: &str = "preferences.toml";
@@ -65,18 +71,13 @@ impl ProjectPlace {
 
 impl ApplicationPaths {
     pub fn discover() -> Result<Self> {
-        let platform = platform_dirs()?;
-        let config = platform.config_dir().to_owned();
-        let state = platform
-            .state_dir()
-            .unwrap_or_else(|| platform.data_local_dir())
-            .to_owned();
+        let platform = eternalist_apps::ApplicationPaths::claim(PRODUCT)?;
         let library =
             UserDirs::new().and_then(|dirs| dirs.document_dir().map(|root| root.join(LIBRARY)));
         Ok(Self {
-            config,
+            config: platform.config,
             library,
-            state,
+            state: platform.state,
         })
     }
 
@@ -106,10 +107,6 @@ impl ApplicationPaths {
     pub fn configuration_path(&self) -> PathBuf {
         // The filename is durable configuration ABI.
         self.config.join(CONFIGURATION_FILE)
-    }
-
-    pub fn state_dir(&self) -> &Path {
-        &self.state
     }
 
     pub fn session_state_path(&self, root: &Path) -> PathBuf {
@@ -214,9 +211,9 @@ fn write_state(path: &Path, bytes: &[u8]) -> Result<()> {
         .with_context(|| format!("commit state file {}", path.display()))
 }
 
-pub fn platform_dirs() -> Result<ProjectDirs> {
-    ProjectDirs::from("dev", "adequate", "trailgen")
-        .context("platform exposes no trailgen application directories")
+/// The shared map cache root beneath the platform cache directory.
+pub fn cache_root() -> Result<PathBuf> {
+    eternalist_apps::ApplicationPaths::claim(PRODUCT).map(|platform| platform.cache)
 }
 
 fn is_project(root: &Path) -> bool {

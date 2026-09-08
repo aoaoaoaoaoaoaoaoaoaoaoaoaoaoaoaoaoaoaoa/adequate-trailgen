@@ -8,7 +8,7 @@ use crate::{
 };
 use bytemuck::{Pod, Zeroable};
 use egui::{Color32, Painter};
-use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor, wgpu};
+use eternalist_apps::egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor, wgpu};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     ops::Range,
@@ -345,7 +345,7 @@ impl TrailField {
                 transition.map_or(opacity, |(_, maturity)| maturity.min(1.0) * opacity)
             },
         });
-        painter.add(egui_wgpu::Callback::new_paint_callback(
+        painter.add(eternalist_apps::egui_wgpu::Callback::new_paint_callback(
             frame.rect,
             TrailPaint {
                 corpus: self.corpus,

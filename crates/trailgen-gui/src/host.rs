@@ -1,9 +1,15 @@
 use crate::{
-    ProjectIntent, application_paths::ApplicationPaths, projects::Workbench,
-    trail_map::TrailMapGpu, vector_map::VectorMapGpu,
+    ProjectIntent,
+    application_paths::{ApplicationPaths, PRODUCT},
+    projects::Workbench,
+    trail_map::TrailMapGpu,
+    vector_map::VectorMapGpu,
 };
 use anyhow::Result;
-use eternalist_apps::{CrashProduct, CrashReportSpec, NativeApp, WindowSpec};
+use eternalist_apps::{
+    NativeApp, ProductIdentity, WindowSpec,
+    egui_wgpu::{Renderer, wgpu},
+};
 use std::time::Instant;
 
 pub fn run(ctx: egui::Context, intent: ProjectIntent, offline: bool) -> Result<()> {
@@ -18,17 +24,10 @@ pub fn run(ctx: egui::Context, intent: ProjectIntent, offline: bool) -> Result<(
 }
 
 impl NativeApp for Workbench {
+    const PRODUCT: ProductIdentity = PRODUCT;
+    const RELEASE: &'static str = env!("CARGO_PKG_VERSION");
     const WINDOW: WindowSpec = WindowSpec::new("trailgen · trail workbench", [1_440.0, 920.0]);
-
-    fn crash_reports() -> Option<CrashReportSpec> {
-        ApplicationPaths::discover().ok().map(|application_paths| {
-            CrashReportSpec::new(
-                CrashProduct::Trailgen,
-                env!("CARGO_PKG_VERSION"),
-                application_paths.state_dir(),
-            )
-        })
-    }
+    const CRASH_REPORTS: bool = true;
 
     fn window_title(&self) -> String {
         Self::window_title(self)
@@ -59,11 +58,7 @@ impl NativeApp for Workbench {
         self.water_frame(ctx, pixels_per_point, tooltip_rects)
     }
 
-    fn register_gpu(
-        renderer: &mut egui_wgpu::Renderer,
-        device: &egui_wgpu::wgpu::Device,
-        format: egui_wgpu::wgpu::TextureFormat,
-    ) {
+    fn register_gpu(renderer: &mut Renderer, device: &wgpu::Device, format: wgpu::TextureFormat) {
         let _prior = renderer
             .callback_resources
             .insert(VectorMapGpu::new(device, format));

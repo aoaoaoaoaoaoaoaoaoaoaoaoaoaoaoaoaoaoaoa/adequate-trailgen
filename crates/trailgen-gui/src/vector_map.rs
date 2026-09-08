@@ -1,7 +1,7 @@
 use crate::basemap::{FillPoint, StrokePoint, TileCell, TileKey, VectorTile};
 use bytemuck::{Pod, Zeroable};
 use egui::{Rect, pos2};
-use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor, wgpu};
+use eternalist_apps::egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor, wgpu};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     ops::Range,

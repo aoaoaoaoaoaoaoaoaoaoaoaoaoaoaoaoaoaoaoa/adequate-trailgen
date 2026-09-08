@@ -7,6 +7,10 @@ use std::{borrow::Cow, fmt};
 
 use serde::{Deserialize, Serialize};
 
+/// Reverse-DNS product identifier; the sole source of Trailgen's platform and crash identity.
+pub const PRODUCT_IDENTIFIER: &str = "dev.adequate.trailgen";
+/// Product display name.
+pub const PRODUCT_NAME: &str = "Trailgen";
 pub const UI_FINGERPRINT: &str = "trailgen.ui/23";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

@@ -291,7 +291,7 @@ impl Relief {
         if patches.is_empty() {
             return;
         }
-        painter.add(egui_wgpu::Callback::new_paint_callback(
+        painter.add(eternalist_apps::egui_wgpu::Callback::new_paint_callback(
             frame.rect,
             VectorPaint {
                 layer: VectorLayer::Relief,
