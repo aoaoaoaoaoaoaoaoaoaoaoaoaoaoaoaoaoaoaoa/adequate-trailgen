@@ -21,7 +21,7 @@ macOS and Windows prove the ordinary packaged lifecycle; unsigned artifacts
 retain the documented Gatekeeper and SmartScreen friction. Uninstall preserves
 projects and application state.
 
-`scripts/release VERSION publish` publishes the five-crate Cargo graph in
+The Poolrooms line's `scripts/release adequate_trailgen VERSION --publish` publishes the five-crate Cargo graph in
 dependency order. Foundry may publish installers, checksums, and the support
 manifest only after that exact `trailgen` version is visible on crates.io.
 Release commits and annotated tags use the Eternalist identity and the

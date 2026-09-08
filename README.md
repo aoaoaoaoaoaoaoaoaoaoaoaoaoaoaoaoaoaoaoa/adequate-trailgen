@@ -90,7 +90,7 @@ and nonblack compositor capture.
 
 `scripts/package` executes a locked workspace package transaction for every
 publishable crate without relying on already-published internal versions.
-`scripts/release VERSION publish` requires the pushed commit and a valid signed
+The line's `scripts/release adequate_trailgen VERSION --publish` requires the pushed commit and a valid signed
 tag, repeats every gate, publishes the five-crate graph in dependency order,
 then verifies the complete registry-resolved package graph. The pinned Foundry
 workflow publishes the unsigned native artifacts and a machine-readable support
