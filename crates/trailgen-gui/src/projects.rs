@@ -1685,12 +1685,12 @@ fn forge_project_workspace(
     let has_graph = root.join("routes/generated.graph.json").is_file()
         || root.join(trailgen_core::GRAPH_CACHE).is_file();
     let config = trailgen_data::project_config(&root)?;
-    let indexed = if config.managed {
+    let indexed = if config.governed {
         trailgen_data::indexed_summary(&root)?
     } else {
         None
     };
-    let trail_ready = trail_workspace_ready(has_graph, config.managed, indexed.is_some());
+    let trail_ready = trail_workspace_ready(has_graph, config.governed, indexed.is_some());
     let workspace = if trail_ready {
         let app = succession.raise(
             ctx,
@@ -1715,8 +1715,8 @@ fn forge_project_workspace(
     Ok(workspace)
 }
 
-const fn trail_workspace_ready(has_graph: bool, managed: bool, indexed: bool) -> bool {
-    if managed { indexed } else { has_graph }
+const fn trail_workspace_ready(has_graph: bool, governed: bool, indexed: bool) -> bool {
+    if governed { indexed } else { has_graph }
 }
 
 fn project_slug(name: &str) -> Option<String> {

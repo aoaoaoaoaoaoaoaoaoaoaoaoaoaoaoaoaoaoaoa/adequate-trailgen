@@ -281,7 +281,8 @@ fn hex(bytes: &[u8]) -> String {
 #[serde(default)]
 pub struct TrailDataConfig {
     /// Whether this project graph is governed by the live-region corpus.
-    pub managed: bool,
+    #[serde(rename = "managed")]
+    pub governed: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub regions: Vec<SurveyRegion>,
     /// User-facing names keyed by immutable survey-region identity.
@@ -293,7 +294,7 @@ pub struct TrailDataConfig {
 impl Default for TrailDataConfig {
     fn default() -> Self {
         Self {
-            managed: false,
+            governed: false,
             regions: Vec::new(),
             region_names: BTreeMap::new(),
             providers: automatic_provider_ids(),
@@ -607,7 +608,7 @@ where
         validate_project(project)?;
         let region = SurveyRegion::new(bounds)?;
         let mut config = project_config(project)?;
-        config.managed = true;
+        config.governed = true;
         if self.fixed_providers {
             let providers = self.provider_ids();
             if config.providers != providers {
@@ -2078,7 +2079,7 @@ pub fn project_config(project: &Path) -> Result<TrailDataConfig> {
     {
         config.regions.push(SurveyRegion::new(bounds)?);
     }
-    config.managed |= legacy_place || !config.regions.is_empty();
+    config.governed |= legacy_place || !config.regions.is_empty();
     validate_config(&config)?;
     Ok(config)
 }
@@ -3194,7 +3195,7 @@ mod tests {
                 .is_none()
         );
         assert!(project_config(project)?.regions.is_empty());
-        assert!(project_config(project)?.managed);
+        assert!(project_config(project)?.governed);
         assert!(!project.join(GRAPH_CACHE).exists());
         assert!(!project.join(&first.raw_paths[0]).exists());
         Ok(())
