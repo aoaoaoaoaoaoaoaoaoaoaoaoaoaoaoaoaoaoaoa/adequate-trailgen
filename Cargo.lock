@@ -4078,7 +4078,7 @@ dependencies = [
 
 [[package]]
 name = "trailgen"
-version = "0.3.14"
+version = "0.3.15"
 dependencies = [
  "anyhow",
  "clap",
@@ -4087,7 +4087,7 @@ dependencies = [
 
 [[package]]
 name = "trailgen-acceptance"
-version = "0.3.14"
+version = "0.3.15"
 dependencies = [
  "arboard",
  "egui-tester",
@@ -4112,7 +4112,7 @@ dependencies = [
 
 [[package]]
 name = "trailgen-core"
-version = "0.3.14"
+version = "0.3.15"
 dependencies = [
  "num-traits",
  "osmpbfreader",
@@ -4132,7 +4132,7 @@ dependencies = [
 
 [[package]]
 name = "trailgen-data"
-version = "0.3.14"
+version = "0.3.15"
 dependencies = [
  "anyhow",
  "png",
@@ -4148,7 +4148,7 @@ dependencies = [
 
 [[package]]
 name = "trailgen-gui"
-version = "0.3.14"
+version = "0.3.15"
 dependencies = [
  "anyhow",
  "brass_poolrooms",
