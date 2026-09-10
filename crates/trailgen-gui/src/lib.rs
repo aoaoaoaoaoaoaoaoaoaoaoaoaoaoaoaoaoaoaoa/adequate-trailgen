@@ -61,7 +61,7 @@ pub fn run(intent: ProjectIntent, offline: bool) -> Result<()> {
     let trace = eternalist_apps::TraceGuard::arm()?;
     let ctx = egui::Context::default();
     brass_poolrooms::chrome::install(&ctx);
-    let result = host::run(ctx, intent, offline);
+    let result = host::run(eternalist_apps::Ingress::Desktop, ctx, intent, offline);
     trace.flush();
     result
 }

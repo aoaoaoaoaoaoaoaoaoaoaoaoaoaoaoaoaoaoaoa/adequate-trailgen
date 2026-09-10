@@ -7,13 +7,18 @@ use crate::{
 };
 use anyhow::Result;
 use eternalist_apps::{
-    NativeApp, ProductIdentity, WindowSpec,
+    Capabilities, Ingress, NativeApp, ProductIdentity, WindowSpec,
     egui_wgpu::{Renderer, wgpu},
 };
 use std::time::Instant;
 
-pub fn run(ctx: egui::Context, intent: ProjectIntent, offline: bool) -> Result<()> {
-    eternalist_apps::run_with(ctx, |ctx| {
+pub fn run(
+    ingress: Ingress,
+    ctx: egui::Context,
+    intent: ProjectIntent,
+    offline: bool,
+) -> Result<()> {
+    eternalist_apps::run_with(ingress, ctx, |ctx, _ingress| {
         let bootstrap =
             tracing::info_span!(target: "eternalist::startup", "application.bootstrap").entered();
         let application_paths = ApplicationPaths::discover()?;
@@ -58,7 +63,12 @@ impl NativeApp for Workbench {
         self.water_frame(ctx, pixels_per_point, tooltip_rects)
     }
 
-    fn register_gpu(renderer: &mut Renderer, device: &wgpu::Device, format: wgpu::TextureFormat) {
+    fn register_gpu(
+        renderer: &mut Renderer,
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        _capabilities: Capabilities,
+    ) {
         let _prior = renderer
             .callback_resources
             .insert(VectorMapGpu::new(device, format));

@@ -306,7 +306,7 @@ impl Workbench {
         let mut font_scale_changed = false;
         let response = self
             .settings
-            .show(ctx, self.mode.water_mut(), file, |settings| {
+            .show(ctx, self.mode.water_mut(), Some(file), |settings| {
                 settings.group("APPEARANCE");
                 font_scale_changed |= settings.font_size(&mut font_scale);
                 settings.group("CALIBRATION");
