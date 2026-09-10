@@ -1,6 +1,6 @@
 [package]
 name = "trailgen-contract"
-version = "0.3.14"
+version = "0.3.15"
 description = "Stable UI identity shared by Trailgen and its black-box acceptance stories."
 edition.workspace = true
 license.workspace = true
