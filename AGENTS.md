@@ -1,44 +1,21 @@
-# Trailgen Agent Guidance
+adequate_trailgen: Trailgen, native workbench for finding, drawing, inspecting, keeping long-day hiking routes
 
-The GUI is the product frontend; the CLI is its debug frontend. Preserve one
-engine and prefer GUI semantics whenever frontend concerns diverge.
+## gate
+- Feature done only after `scripts/install-local.sh` installs release build and PATH-resolved `trailgen` is verified; install failure blocks release
 
-Before changing visible controls, labels, legends, navigation, or feedback,
-load and obey `$ui-doctrine`.
+## invariants
+- GUI = product frontend; CLI = debug frontend; one engine; GUI semantics win where frontends diverge
+- Renderer work incomplete until many-candidate dogfood trace and its visual states are checked
+- Acceptance scenarios are full user stories; xdotool choreography forbidden
+- CI: thin scheduler over app-owned, independently runnable evidence units
+- Native host and optional inspector live in pinned `eternalist-apps`; never recreate local event-loop, water-composition, trace-spine, inspector-layout rivals
+- Never manufacture shared machinery before its common law is proved
 
-Before changing map, trail, gallery, annotation, or GPU code, read and obey
-[rendering contract](docs/rendering.md). Renderer work is incomplete until
-the many-candidate dogfood trace and its visual states have been checked.
-
-Before changing workbench navigation, tools, search sessions, overlays, or
-persistence, read and obey [spec/UI_STATE_MODEL.md](spec/UI_STATE_MODEL.md).
-
-Before changing startup publication, event-loop work, background drains, frame
-production, or latency evidence, load `$eternalist-apps`, read its current
-responsiveness contract, and retain Trailgen's measured evidence in
-[rendering](docs/rendering.md).
-
-Before changing pedestrian ingestion, graph topology, support binding, routing,
-or routing realms, read and obey
-[routing contract](docs/routing.md).
-
-Before changing a critical GUI behavior or its witness surface, read and obey
-[spec/GUI_ACCEPTANCE.md](spec/GUI_ACCEPTANCE.md). Acceptance scenarios are
-full user stories; xdotool choreography is forbidden.
-
-Before changing CI, release gates, supported platforms, installation, or
-removal, read and obey [releasing](docs/releasing.md). CI is a
-thin scheduler over app-owned, independently runnable evidence units.
-
-Before extracting lifecycle, application primitives, physical controls, or
-tester machinery, load the `$eternalist-apps` skill and inspect the current
-Eternalist Apps, Brass Poolrooms, and egui-tester contracts. Do not manufacture
-shared machinery before its common law has been proved.
-
-The native host and optional inspector live in the pinned `eternalist-apps`
-dependency. Do not recreate local event-loop, water-composition, trace-spine,
-or inspector-layout rivals.
-
-A feature is not done until its release build has been installed locally with
-`scripts/install-local.sh` and the `trailgen` executable resolved through
-`PATH` has been verified. An installation failure is a release blocker.
+## routes
+- Changing map, trail, gallery, annotation, or GPU code → `docs/rendering.md`
+- Changing workbench navigation, tools, search sessions, overlays, persistence → `spec/UI_STATE_MODEL.md`
+- Changing startup publication, event loop, background drains, frame production, latency evidence → `$eternalist-apps`; keep evidence in `docs/rendering.md`
+- Changing pedestrian ingestion, graph topology, support binding, routing, routing realms → `docs/routing.md`
+- Changing critical GUI behavior or its witness surface → `spec/GUI_ACCEPTANCE.md`
+- Changing CI, release gates, platforms, install, removal → `docs/releasing.md`
+- Extracting lifecycle, app primitives, physical controls, tester machinery → `$eternalist-apps` plus current Apps, Poolrooms, egui-tester contracts
