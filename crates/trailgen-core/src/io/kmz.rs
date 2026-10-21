@@ -18,7 +18,10 @@ pub fn route_file_from_bytes(bytes: &[u8]) -> Result<RouteFile> {
         let file = archive
             .by_index(index)
             .map_err(|e| TrailgenError::InvalidData(format!("invalid KMZ member: {e}")))?;
-        if !file.name().to_ascii_lowercase().ends_with(".kml") {
+        let name = file
+            .name()
+            .map_err(|e| TrailgenError::InvalidData(format!("invalid KMZ member name: {e}")))?;
+        if !name.to_ascii_lowercase().ends_with(".kml") {
             continue;
         }
         if file.size() > MAX_KML_BYTES {

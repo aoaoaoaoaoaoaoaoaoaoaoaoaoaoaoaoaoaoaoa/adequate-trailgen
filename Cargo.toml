@@ -57,7 +57,7 @@ trailgen-core = { path = "crates/trailgen-core", version = "0.3.15" }
 trailgen-contract = { path = "crates/trailgen-contract", version = "0.3.15" }
 trailgen-data = { path = "crates/trailgen-data", version = "0.3.15" }
 trailgen-gui = { path = "crates/trailgen-gui", version = "0.3.15" }
-zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 zstd = "0.13.3"
 
 [workspace.dependencies.egui-tester]
