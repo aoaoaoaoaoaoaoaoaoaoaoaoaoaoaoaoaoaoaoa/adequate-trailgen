@@ -1060,8 +1060,8 @@ fn projected_snap(
     let wy = (endpoint.lat - target_a.lat) * latitude_scale;
     let t = (wx.mul_add(vx, wy * vy) / len2).clamp(0.0, 1.0);
     let coord = target_a.lerp(target_b, t);
-    let dx = wx - t * vx;
-    let dy = wy - t * vy;
+    let dx = t.mul_add(-vx, wx);
+    let dy = t.mul_add(-vy, wy);
     let distance_m2 = dx.mul_add(dx, dy * dy);
     (distance_m2 <= tolerance_m2).then_some((t, coord, distance_m2))
 }

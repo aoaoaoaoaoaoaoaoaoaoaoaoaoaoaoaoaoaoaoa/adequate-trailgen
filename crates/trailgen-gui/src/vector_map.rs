@@ -1069,11 +1069,10 @@ mod tests {
         let tile = TileInstance::forge(key, 1.0);
         let local = 1234.0_f32 / 4096.0;
         let [center_high, center_low] = split(center);
-        let actual = f64::from(
-            (tile.origin_high[0] - center_high)
-                + (tile.origin_low[0] - center_low)
-                + local * tile.span,
-        ) * world_points;
+        let actual = f64::from(local.mul_add(
+            tile.span,
+            (tile.origin_high[0] - center_high) + (tile.origin_low[0] - center_low),
+        )) * world_points;
         let point = (f64::from(key.x) + f64::from(local)) / 4096.0;
         let expected = (point - center) * world_points;
         assert!((actual - expected).abs() < 0.1, "{actual} != {expected}");

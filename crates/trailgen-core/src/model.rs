@@ -1564,9 +1564,11 @@ fn segment_projection(head: Coord, tail: Coord, point: Coord) -> (f64, f64) {
     if span_len2 <= f64::EPSILON {
         return (head_x.hypot(head_y), 0.0);
     }
-    let interpolation = (-(head_x * span_x + head_y * span_y) / span_len2).clamp(0.0, 1.0);
+    let interpolation = (-head_y.mul_add(span_y, head_x * span_x) / span_len2).clamp(0.0, 1.0);
     (
-        (head_x + span_x * interpolation).hypot(head_y + span_y * interpolation),
+        span_x
+            .mul_add(interpolation, head_x)
+            .hypot(span_y.mul_add(interpolation, head_y)),
         interpolation,
     )
 }

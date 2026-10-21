@@ -520,8 +520,8 @@ fn point_segment_distance(point: Coord, a: Coord, b: Coord) -> (f64, f64) {
     }
     let projection = vx.mul_add(wx, vy * wy) / length2;
     let t = projection.clamp(0.0, 1.0);
-    let dx = wx - t * vx;
-    let dy = wy - t * vy;
+    let dx = t.mul_add(-vx, wx);
+    let dy = t.mul_add(-vy, wy);
     (dx.mul_add(dx, dy * dy).sqrt(), projection)
 }
 
