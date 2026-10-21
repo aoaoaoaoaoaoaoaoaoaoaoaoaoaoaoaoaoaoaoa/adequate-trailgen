@@ -3,7 +3,6 @@ schema = 1
 [product]
 name = "Trailgen"
 package = "trailgen"
-binary = "trailgen"
 identifier = "dev.adequate.trailgen"
 profile = "native-gui"
 
@@ -31,19 +30,6 @@ laws = ["source"]
 run = ["./scripts/check"]
 setup = "wayland"
 timeout-minutes = 60
-
-[[proofs]]
-name = "security"
-laws = ["security"]
-run = ["./scripts/audit"]
-timeout-minutes = 15
-
-[[proofs]]
-name = "source-package"
-laws = ["source-package"]
-run = ["./scripts/package"]
-setup = "wayland"
-timeout-minutes = 45
 
 [[proofs]]
 name = "runtime"

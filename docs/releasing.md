@@ -7,8 +7,8 @@ runnable:
 | Evidence | Command | Product claim |
 | --- | --- | --- |
 | Source | `scripts/check` | formatting, lints, tests, and rustdoc |
-| Security | `scripts/audit` | no unadjudicated RustSec finding |
-| Cargo graph | `scripts/package` | all five publishable crates package and resolve together |
+| Security | `cargo audit --deny warnings` | no RustSec finding without a reason in `.cargo/audit.toml` |
+| Cargo graph | `foundry package` | all five publishable crates package and resolve together |
 | Runtime | `scripts/prove-runtime` | public install, identity, first presentation, and removal |
 | X11 | `scripts/test-gui` | complete native user stories and host-GPU budgets |
 | Wayland | `scripts/test-wayland` | isolated launch, witnessed presentation, and nonblack capture |

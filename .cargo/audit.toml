@@ -1,0 +1,7 @@
+[advisories]
+ignore = [
+  # osmpbfreader 0.19.1 still exposes smartstring 1.0.1. RUSTSEC-2026-0249 is
+  # maintenance status, not a vulnerability; no maintained osmpbfreader release
+  # removes it. Keep the exact exception visible until that parser moves.
+  "RUSTSEC-2026-0249",
+]

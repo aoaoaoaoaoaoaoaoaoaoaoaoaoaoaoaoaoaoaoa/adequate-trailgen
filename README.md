@@ -72,7 +72,7 @@ Bare `trailgen` and `trailgen gui` launch the same native workbench. `saved` pri
 
 ```sh
 scripts/check
-scripts/audit
+cargo audit --deny warnings
 scripts/verify-install
 scripts/test-gui
 scripts/test-wayland
@@ -88,8 +88,8 @@ modal key isolation, and inspector-panel traversal. `scripts/test-wayland` owns 
 isolated Wayland contract: native launch, first presentation, semantic witness,
 and nonblack compositor capture.
 
-`scripts/package` executes a locked workspace package transaction for every
-publishable crate without relying on already-published internal versions.
+The Foundry's `source-package` law packages every publishable crate in one
+locked transaction, without relying on already-published internal versions.
 The line's `scripts/release adequate_trailgen VERSION --publish` requires the pushed commit and a valid signed
 tag, repeats every gate, publishes the five-crate graph in dependency order,
 then verifies the complete registry-resolved package graph. The pinned Foundry

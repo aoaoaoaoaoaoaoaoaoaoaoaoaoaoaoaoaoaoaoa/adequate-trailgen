@@ -45,7 +45,7 @@ Useful verification gates:
 
 ```sh
 scripts/check
-scripts/audit
+cargo audit --deny warnings
 scripts/verify-install
 scripts/test-gui
 ```
