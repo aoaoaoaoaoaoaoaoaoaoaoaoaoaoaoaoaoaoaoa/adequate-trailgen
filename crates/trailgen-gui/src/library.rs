@@ -905,7 +905,7 @@ mod tests {
         library.trails.clear();
         library.save(temp.path())?;
         let reopened = Library::open(temp.path(), &LoopConstraints::default())?;
-        assert!(reopened.trails.is_empty());
+        assert_eq!(reopened.trails, []);
         assert!(!reopened.legacy_routes_pending());
         Ok(())
     }

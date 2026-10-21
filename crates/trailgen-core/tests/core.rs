@@ -106,7 +106,7 @@ fn graph_adjacency_respects_one_way_travel() {
     let b = graph.edges[0].b;
 
     assert_eq!(graph.adjacency[a.0], vec![edge]);
-    assert!(graph.adjacency[b.0].is_empty());
+    assert_eq!(graph.adjacency[b.0], []);
     assert_eq!(graph.walk_edges(a, &[edge]), Some(b));
     assert_eq!(graph.walk_edges(b, &[edge]), None);
 }
@@ -141,15 +141,13 @@ fn solvers_respect_directed_turn_bans() {
             .walk_edges(graph.edges[0].a, &[EdgeId(0), EdgeId(1), EdgeId(2)])
             .is_none()
     );
-    assert!(
-        ExactLoopSolver::default()
-            .enumerate(&graph, graph.edges[0].a, &constraints, 4)
-            .is_empty()
+    assert_eq!(
+        ExactLoopSolver::default().enumerate(&graph, graph.edges[0].a, &constraints, 4),
+        []
     );
-    assert!(
-        LoopHunter::default()
-            .hunt(&graph, graph.edges[0].a, &constraints, 4)
-            .is_empty()
+    assert_eq!(
+        LoopHunter::default().hunt(&graph, graph.edges[0].a, &constraints, 4),
+        []
     );
 }
 
@@ -618,7 +616,7 @@ fn terrain_overlays_override_edges_with_provenance_and_physical_estimates() {
             })
         })
         .collect::<Vec<_>>();
-    assert!(!overlaid.is_empty());
+    assert!(!overlaid.is_empty(), "the overlay marks talus edges");
     assert!(
         overlaid
             .iter()
@@ -754,7 +752,7 @@ fn route_coverage_ignores_a_closer_disconnected_shadow_line() {
 
     let coverage = graph.trace_coverage(&route, 20.0);
 
-    assert!(coverage.gaps.is_empty());
+    assert_eq!(coverage.gaps, []);
     assert_eq!(coverage.stats.disconnected_transition_count, 0);
     assert_eq!(coverage.edges, vec![EdgeId(0)]);
 }

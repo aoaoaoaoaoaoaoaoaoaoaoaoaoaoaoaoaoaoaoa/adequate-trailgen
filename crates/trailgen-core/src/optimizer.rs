@@ -2731,7 +2731,10 @@ mod tests {
             &[],
             &(),
         );
-        assert!(!revised.is_empty());
+        assert!(
+            !revised.is_empty(),
+            "revision under the edicts yields routes"
+        );
         assert!(revised.iter().all(|route| edicts.admits(route)));
 
         edicts.toggle_forbidden(compulsory);
@@ -2852,7 +2855,7 @@ mod tests {
             &(),
         );
 
-        assert!(!routes.is_empty());
+        assert!(!routes.is_empty(), "the scoped search yields routes");
         assert!(
             routes
                 .iter()
@@ -2900,7 +2903,7 @@ mod tests {
             &monitor,
         );
 
-        assert!(routes.is_empty());
+        assert_eq!(routes, []);
         assert!(
             monitor
                 .progress

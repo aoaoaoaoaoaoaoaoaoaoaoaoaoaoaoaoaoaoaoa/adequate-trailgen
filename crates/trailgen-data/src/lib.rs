@@ -3194,7 +3194,7 @@ mod tests {
                 .remove_region(project, &first.regions[0].id, drop)?
                 .is_none()
         );
-        assert!(project_config(project)?.regions.is_empty());
+        assert_eq!(project_config(project)?.regions, []);
         assert!(project_config(project)?.governed);
         assert!(!project.join(GRAPH_CACHE).exists());
         assert!(!project.join(&first.raw_paths[0]).exists());
