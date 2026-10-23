@@ -31,7 +31,7 @@ use crate::{
     observation::{CorpusPhase, MapState, SearchPhase, View, Workspace, shows},
 };
 
-const PRODUCT: &str = "trailgen";
+const PRODUCT: ArtifactStem = ArtifactStem::literal("trailgen");
 const FILM: &str = "trailgen-showcase";
 /// Layout of a sealed specimen and the forge that seals it.
 const SPECIMEN_FORMAT: u32 = 1;
@@ -79,7 +79,7 @@ impl Exposure {
 /// project rather than re-querying them. The directory is named by a digest
 /// of everything that forged it, so any change forges afresh.
 pub fn specimen(bed: TestbedBuilder, binary: &Path) -> Result<PathBuf> {
-    let home = specimen_cache(PRODUCT)?.join("specimens");
+    let home = specimen_cache(&PRODUCT)?;
     let sealed = home.join(format!("{PROJECT}-{}", recipe_digest()));
     fs::create_dir_all(&home).map_err(|source| io("create specimen home", &home, source))?;
     let Some((staging, _claim)) = stage(&home, &sealed)? else {
@@ -269,12 +269,7 @@ fn cards(frame: &TrailFrame) -> Result<Vec<Anchor>> {
     let mut cards = frame
         .anchors
         .iter()
-        .filter(|anchor| {
-            anchor
-                .name
-                .as_str()
-                .starts_with(TargetClass::Candidate.prefix())
-        })
+        .filter(|anchor| anchor.name.semantic() == TargetClass::Candidate.semantic())
         .cloned()
         .collect::<Vec<_>>();
     cards.sort_by(|left, right| left.rect[0].total_cmp(&right.rect[0]));
@@ -465,7 +460,7 @@ fn gui(binary: &Path) -> AppCommand {
 /// the product fetches whatever the operator's cache lacks.
 fn seed_roaming(testbed: &Testbed, bootstrap: bool) -> Result<()> {
     // The specimen cache's XDG cache home also holds the operator's own.
-    let source = specimen_cache(PRODUCT)?.with_file_name(ROAMING);
+    let source = specimen_cache(&PRODUCT)?.with_file_name(ROAMING);
     let destination = Path::new("xdg/cache").join(ROAMING);
     if bootstrap && source.join(ROAMING_BOOTSTRAP).is_file() {
         let _bootstrap = testbed.copy_private(

@@ -349,11 +349,12 @@ pub enum TargetClass {
 }
 
 impl TargetClass {
+    /// The semantic part every member Target of this class shares.
     #[must_use]
-    pub const fn prefix(self) -> &'static str {
+    pub const fn semantic(self) -> &'static str {
         match self {
-            Self::LibraryTrail => "trailgen.library.trail/",
-            Self::Candidate => "trailgen.results.candidate/",
+            Self::LibraryTrail => "trailgen.library.trail",
+            Self::Candidate => "trailgen.results.candidate",
         }
     }
 
@@ -362,9 +363,9 @@ impl TargetClass {
     #[must_use]
     pub fn member(self, identity: &str) -> Option<impl fmt::Display + '_> {
         let identity = encode_identity(identity)?;
-        let prefix = self.prefix();
+        let semantic = self.semantic();
         Some(fmt::from_fn(move |formatter| {
-            write!(formatter, "{prefix}{identity}")
+            write!(formatter, "{semantic}/{identity}")
         }))
     }
 }

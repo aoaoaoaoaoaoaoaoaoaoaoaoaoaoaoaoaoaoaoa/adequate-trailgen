@@ -145,7 +145,7 @@ the Large type tier.
 Its specimen is the Harriman · Bear Mountain project. The first run of a recipe
 forges it in a testbed of its own by drawing the parks' map area through
 ordinary acquisition, then seals the project tree under
-`specimens/` in the kernel's specimen cache, named by a digest of the
+the kernel's specimen cache, named by a digest of the
 recipe, the UI contract, the product's durable formats, and its version; later
 takes copy it private rather than re-query public providers. Forges lock their
 staging directories, so concurrent forges are safe and abandoned ones are swept.
