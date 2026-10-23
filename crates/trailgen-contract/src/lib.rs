@@ -357,10 +357,15 @@ impl TargetClass {
         }
     }
 
-    /// The member Target naming one raw runtime `identity` in this class.
+    /// The member Target naming one raw runtime `identity` in this class; an
+    /// empty identity has no spelling and so names none.
     #[must_use]
-    pub fn member(self, identity: &str) -> String {
-        format!("{}{}", self.prefix(), encode_identity(identity))
+    pub fn member(self, identity: &str) -> Option<impl fmt::Display + '_> {
+        let identity = encode_identity(identity)?;
+        let prefix = self.prefix();
+        Some(fmt::from_fn(move |formatter| {
+            write!(formatter, "{prefix}{identity}")
+        }))
     }
 }
 

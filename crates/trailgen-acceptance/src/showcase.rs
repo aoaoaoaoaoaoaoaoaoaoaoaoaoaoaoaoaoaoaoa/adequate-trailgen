@@ -4,17 +4,16 @@
 //! never a verdict.
 
 use std::{
-    env,
     fmt::Write as _,
     fs::{self, File, TryLockError},
     path::{Path, PathBuf},
     time::Duration,
 };
 
-use egui_demo::Showcase;
+use egui_demo::{Showcase, specimen_cache};
 use egui_tester::{
-    Anchor, AppCommand, Button, Error, Graphics, Key, Motion, Network, ReactionBudget, Result,
-    Silent, StoryObserver, Testbed, TestbedBuilder, Wheel, demand,
+    Anchor, AppCommand, ArtifactStem, Button, Error, Graphics, Key, Motion, Network,
+    ReactionBudget, Result, Silent, StoryObserver, Testbed, TestbedBuilder, Wheel, demand,
 };
 use num_traits::ToPrimitive as _;
 use sha2::{Digest as _, Sha256};
@@ -32,6 +31,7 @@ use crate::{
     observation::{CorpusPhase, MapState, SearchPhase, View, Workspace, shows},
 };
 
+const PRODUCT: &str = "trailgen";
 const FILM: &str = "trailgen-showcase";
 /// Layout of a sealed specimen and the forge that seals it.
 const SPECIMEN_FORMAT: u32 = 1;
@@ -50,6 +50,7 @@ const DISTANCE_MAX_KM: &str = "20";
 const SUMMIT: [f64; 2] = [-74.133_942_1, 41.240_458_3];
 /// Enlarged type, so the take still reads at half size.
 const PREFERENCES: &str = "font_scale = \"large\"\n";
+/// The operator's roaming tile cache, relative to the XDG cache home.
 const ROAMING: &str = "trailgen/protomaps-v4";
 const ROAMING_BOOTSTRAP: &str = "bootstrap-us.pmtiles";
 const ROAMING_ZOOM: u32 = 15;
@@ -66,7 +67,7 @@ impl Exposure {
     fn develop(self) -> Result<Showcase> {
         match self {
             Self::Stills(directory) => Showcase::stills(directory),
-            Self::Film(directory) => Showcase::film(directory, FILM),
+            Self::Film(directory) => Showcase::film(directory, &ArtifactStem::new(FILM)?),
         }
     }
 }
@@ -78,7 +79,7 @@ impl Exposure {
 /// project rather than re-querying them. The directory is named by a digest
 /// of everything that forged it, so any change forges afresh.
 pub fn specimen(bed: TestbedBuilder, binary: &Path) -> Result<PathBuf> {
-    let home = cache_home()?.join("trailgen-acceptance/specimens");
+    let home = specimen_cache(PRODUCT)?.join("specimens");
     let sealed = home.join(format!("{PROJECT}-{}", recipe_digest()));
     fs::create_dir_all(&home).map_err(|source| io("create specimen home", &home, source))?;
     let Some((staging, _claim)) = stage(&home, &sealed)? else {
@@ -202,7 +203,7 @@ fn perform<O: StoryObserver>(story: &mut TrailStory<'_, '_, O>) -> Result<()> {
     let _zoomed = story
         .wheel(trailhead, -1, Wheel::default())?
         .until(shows::map_scale_at_least(scale * 1.2) & shows::painted())?;
-    expose(story, "frontispiece")?;
+    expose(story, &ArtifactStem::FRONTISPIECE)?;
     story.hold(Duration::from_secs(2))?;
 
     story.chapter("Refine")?;
@@ -247,7 +248,7 @@ fn perform<O: StoryObserver>(story: &mut TrailStory<'_, '_, O>) -> Result<()> {
     let _stepped = story
         .wheel(center, 1, Wheel::default())?
         .until(shows::map_scale_at_most(scale / 1.2) & shows::painted())?;
-    expose(story, "kept")?;
+    expose(story, &ArtifactStem::new("kept")?)?;
     story.hold(Duration::from_secs(3))
 }
 
@@ -268,7 +269,12 @@ fn cards(frame: &TrailFrame) -> Result<Vec<Anchor>> {
     let mut cards = frame
         .anchors
         .iter()
-        .filter(|anchor| anchor.name.starts_with(TargetClass::Candidate.prefix()))
+        .filter(|anchor| {
+            anchor
+                .name
+                .as_str()
+                .starts_with(TargetClass::Candidate.prefix())
+        })
         .cloned()
         .collect::<Vec<_>>();
     cards.sort_by(|left, right| left.rect[0].total_cmp(&right.rect[0]));
@@ -335,8 +341,8 @@ fn pull_support<O: StoryObserver>(
 }
 
 /// Withdraw the pointer, await a wholly painted map, and name the still.
-fn expose<O: StoryObserver>(story: &mut TrailStory<'_, '_, O>, name: &str) -> Result<()> {
-    let _left = story.leave()?.next_frame()?;
+fn expose<O: StoryObserver>(story: &mut TrailStory<'_, '_, O>, name: &ArtifactStem) -> Result<()> {
+    let _left = story.leave()?;
     let _painted = story.wait(shows::painted())?;
     story.still(name)
 }
@@ -458,7 +464,8 @@ fn gui(binary: &Path) -> AppCommand {
 /// the private cache, with the continental bootstrap archive when surveying;
 /// the product fetches whatever the operator's cache lacks.
 fn seed_roaming(testbed: &Testbed, bootstrap: bool) -> Result<()> {
-    let source = cache_home()?.join(ROAMING);
+    // The specimen cache's XDG cache home also holds the operator's own.
+    let source = specimen_cache(PRODUCT)?.with_file_name(ROAMING);
     let destination = Path::new("xdg/cache").join(ROAMING);
     if bootstrap && source.join(ROAMING_BOOTSTRAP).is_file() {
         let _bootstrap = testbed.copy_private(
@@ -536,20 +543,6 @@ fn admit(testbed: &Testbed, source: &Path, relative: &Path) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// XDG's cache home; a relative `XDG_CACHE_HOME` is invalid and ignored.
-fn cache_home() -> Result<PathBuf> {
-    env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .filter(|home| home.is_absolute())
-        .or_else(|| {
-            env::var_os("HOME")
-                .map(PathBuf::from)
-                .filter(|home| home.is_absolute())
-                .map(|home| home.join(".cache"))
-        })
-        .ok_or_else(|| verdict("neither XDG_CACHE_HOME nor HOME is an absolute path"))
 }
 
 fn io(operation: &'static str, path: impl Into<PathBuf>, source: std::io::Error) -> Error {

@@ -46,6 +46,7 @@ use std::{
 #[cfg(feature = "egui-test")]
 use trailgen_contract::BoundaryPhase;
 use trailgen_contract::Target;
+#[cfg(feature = "egui-test")]
 use trailgen_contract::TargetClass;
 use trailgen_core::{
     Coord, EdgeDisposition, EdgeEdicts, EdgeIndex, LoopConstraints, RouteMetrics, RouteShape,
@@ -2555,11 +2556,9 @@ impl TrailApp {
             let mut latched = self.latched_saved.contains(&trail.id);
             let response = library_button(ui, trail, selected, navigable, &mut latched);
             #[cfg(feature = "egui-test")]
-            crate::witness::anchor(
-                ui,
-                TargetClass::LibraryTrail.member(trail.id.as_str()),
-                response.open.rect,
-            );
+            if let Some(member) = TargetClass::LibraryTrail.member(trail.id.as_str()) {
+                crate::witness::anchor(ui, member, response.open.rect);
+            }
             crate::witness::anchor(ui, Target::SavedVisibility(slot), response.visibility.rect);
             crate::witness::anchor(ui, Target::SavedExport(slot), response.export.rect);
             self.water.monoglyph(&response.visibility);
@@ -3430,11 +3429,10 @@ impl TrailApp {
                             identity,
                             active,
                         );
-                        crate::witness::anchor(
-                            ui,
-                            TargetClass::Candidate.member(&identity.to_string()),
-                            response.rect,
-                        );
+                        #[cfg(feature = "egui-test")]
+                        if let Some(member) = TargetClass::Candidate.member(&identity.to_string()) {
+                            crate::witness::anchor(ui, member, response.rect);
+                        }
                         if response.hovered() {
                             self.water.hover(("candidate", slot), response.rect);
                         }

@@ -250,7 +250,7 @@ pub fn first_anchor(
     frame
         .anchors
         .iter()
-        .find(|anchor| anchor.name.starts_with(class.prefix()))
+        .find(|anchor| anchor.name.as_str().starts_with(class.prefix()))
         .cloned()
         .ok_or_else(|| verdict(missing))
 }
