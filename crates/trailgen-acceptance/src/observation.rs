@@ -43,6 +43,7 @@ pub struct MapState {
     pub world_points: f64,
     pub coloring: TrailColoring,
     pub basemap_tiles: usize,
+    pub painted: bool,
     pub parking_marks: usize,
     pub probe: Option<[f64; 2]>,
 }
@@ -222,6 +223,13 @@ pub mod shows {
                     .as_ref()
                     .is_some_and(|map| map.basemap_tiles >= minimum)
             },
+        )
+    }
+
+    pub fn painted() -> Condition<Observation> {
+        condition(
+            "every visible map layer painted at its resolved detail",
+            |state| state.map.as_ref().is_some_and(|map| map.painted),
         )
     }
 

@@ -17,6 +17,8 @@ use geo_types::{line_string, polygon};
 use num_traits::ToPrimitive as _;
 use pmtiles::{Compression, PmTilesWriter, TileCoord, TileType};
 
+use crate::harness::world_from_coord;
+
 const PROVIDER_SOCKET: &str = "fixtures/provider.sock";
 const MINI_NETWORK: &[u8] =
     include_bytes!("../../trailgen-core/tests/fixtures/mini_network.geojson");
@@ -398,14 +400,6 @@ fn fixture_vector_tile() -> Result<Vec<u8>> {
     }
     .encode()
     .map_err(|error| verdict_owned(format!("encode fixture vector tile: {error}")))
-}
-
-fn world_from_coord([longitude, latitude]: [f64; 2]) -> [f64; 2] {
-    let latitude = latitude.to_radians();
-    [
-        (longitude + 180.0) / 360.0,
-        (1.0 - latitude.tan().asinh() / std::f64::consts::PI) * 0.5,
-    ]
 }
 
 fn dense_network() -> Vec<u8> {

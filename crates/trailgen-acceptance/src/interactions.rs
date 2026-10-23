@@ -1,14 +1,35 @@
 use std::time::Duration;
 
-use egui_tester::{Button, Key, Modifiers, Motion, PixelRegion, Result, Timed, Wheel};
+use egui_tester::{
+    Button, Key, Modifiers, Motion, PixelRegion, Result, StoryObserver, Timed, Wheel,
+};
 
 use crate::{
     harness::{Target, TrailFrame, TrailStory, demand, map_pixel, screen_point, verdict},
-    observation::shows,
+    observation::{View, Workspace, shows},
 };
 
-pub fn reveal_inspector_target(
-    story: &mut TrailStory<'_, '_>,
+/// From the project deck, create `name` beneath `parent` and enter its survey.
+pub fn create_project<O: StoryObserver>(
+    story: &mut TrailStory<'_, '_, O>,
+    name: &str,
+    parent: &str,
+) -> Result<()> {
+    let _deck = story.wait(shows::workspace(Workspace::Projects) & shows::view(View::Projects))?;
+    let _name = story
+        .replace_text(Target::ProjectName, name, shows::text_focused())?
+        .next_frame()?;
+    let _parent = story
+        .replace_text(Target::ProjectParent, parent, shows::text_focused())?
+        .next_frame()?;
+    let _created = story
+        .click(Target::ProjectCreate)?
+        .until(shows::workspace(Workspace::Survey))?;
+    Ok(())
+}
+
+pub fn reveal_inspector_target<O: StoryObserver>(
+    story: &mut TrailStory<'_, '_, O>,
     target: impl std::fmt::Display,
 ) -> Result<()> {
     let target = target.to_string();
@@ -75,8 +96,8 @@ pub fn add_support(
     story.click_at(target, Button::Primary)?.until(effect)
 }
 
-pub fn drag_support(
-    story: &mut TrailStory<'_, '_>,
+pub fn drag_support<O: StoryObserver>(
+    story: &mut TrailStory<'_, '_, O>,
     frame: &TrailFrame,
     slot: usize,
     target: [f64; 2],

@@ -8,7 +8,7 @@ use crate::harness::{
     DataMode, Harness, RunClass, Target, TargetClass, TrailStory, durable_budget, first_anchor,
     instant_budget, map_pixel, read_json, screen_point,
 };
-use crate::interactions::{lasso_boundary, reveal_inspector_target};
+use crate::interactions::{create_project, lasso_boundary, reveal_inspector_target};
 use crate::observation::{
     AreaCorner, CorpusPhase, Observation, SearchPhase, TrailColoring, View, Workspace, shows,
 };
@@ -22,7 +22,7 @@ pub fn run(harness: &Harness<'_>) -> Result<()> {
     let app = harness.launch_gui(None, DataMode::FixtureProviders, RunClass::Functional)?;
     let mut story = harness.story(&app, RunClass::Functional)?;
 
-    create_project(&mut story)?;
+    create_project(&mut story, "Discover Loop", "/test")?;
     acquire_region(&mut story)?;
     exercise_command_guide(&mut story, harness.artifacts)?;
     find_and_keep(&mut story)?;
@@ -767,20 +767,6 @@ fn verify_area_persistence(harness: &Harness<'_>) -> Result<()> {
 
 fn near_map(left: [f64; 2], right: [f64; 2]) -> bool {
     (left[0] - right[0]).abs() <= 1.0e-12 && (left[1] - right[1]).abs() <= 1.0e-12
-}
-
-fn create_project(story: &mut TrailStory<'_, '_>) -> Result<()> {
-    let _deck = story.wait(shows::workspace(Workspace::Projects) & shows::view(View::Projects))?;
-    let _name = story
-        .replace_text(Target::ProjectName, "Discover Loop", shows::text_focused())?
-        .next_frame()?;
-    let _parent = story
-        .replace_text(Target::ProjectParent, "/test", shows::text_focused())?
-        .next_frame()?;
-    let _created = story
-        .click(Target::ProjectCreate)?
-        .until(shows::workspace(Workspace::Survey))?;
-    Ok(())
 }
 
 fn acquire_region(story: &mut TrailStory<'_, '_>) -> Result<()> {

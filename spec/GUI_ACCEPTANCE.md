@@ -132,6 +132,25 @@ frame journals, captures, diagnostics, and explicitly retained private files.
 All private-file oracles use confined `Testbed` operations that reject
 application-created symlinks.
 
+## Showcase
+
+The showcase is Trailgen's presentation take, outside the suite and never a
+verdict. `trailgen-acceptance --stills DIR` develops its stills, including the
+portfolio `frontispiece`; `--film DIR` also records `DIR/trailgen-showcase.mp4`
+with its event trace. Both print every published artifact. The score finds
+loops from Lake Skannatati, pulls the best over Black Rock Mountain and keeps
+it, compares its rivals, and reopens the kept loop, under host graphics and
+the Large type tier.
+
+Its specimen is the Harriman + Bear Mountain project. The first run forges it
+in a testbed of its own by drawing the parks' map area through ordinary
+acquisition over host networking, then seals the project tree under
+`$XDG_CACHE_HOME/trailgen-acceptance/specimens/`; later takes copy it private
+rather than re-query public providers. Delete it to reforge. Takes admit host
+networking only for roaming basemap tiles, seeded from the operator's
+disposable tile cache. Stills wait for the witnessed `painted` fact: every
+visible basemap cell at its own detail and relief settled.
+
 ## Platform Doctrine
 
 X11 owns the complete release-tested GUI vertical: private display authority,

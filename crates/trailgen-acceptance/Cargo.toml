@@ -10,6 +10,7 @@ publish = false
 
 [dependencies]
 arboard.workspace = true
+egui-demo.workspace = true
 egui-tester.workspace = true
 fast-mvt = { workspace = true, features = ["writer"] }
 geo-types.workspace = true
@@ -18,6 +19,7 @@ pmtiles.workspace = true
 png.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 toml.workspace = true
 trailgen-contract.workspace = true
 trailgen-core.workspace = true

@@ -6,7 +6,7 @@ use std::{
 
 use egui_tester::{
     Anchor, AppCommand, Application, Error, Graphics, Network, ProbeFrame, ReactionBudget, Result,
-    Story, Testbed, WindowQuery,
+    Silent, Story, StoryObserver, Testbed, WindowQuery,
 };
 use num_traits::ToPrimitive as _;
 use serde_json::Value;
@@ -20,8 +20,9 @@ use crate::{fixture::FixtureWorld, observation::Observation};
 pub use egui_tester::demand;
 
 pub const TITLE_FRAGMENT: &str = "trailgen";
+pub const WITNESS: &str = "probes/trailgen.observations";
 
-pub type TrailStory<'app, 'bed> = Story<'app, 'bed, Observation>;
+pub type TrailStory<'app, 'bed, O = Silent> = Story<'app, 'bed, Observation, O>;
 pub type TrailFrame = ProbeFrame<Observation>;
 pub use trailgen_contract::{Target, TargetClass};
 
@@ -163,7 +164,7 @@ impl<'a> Harness<'a> {
                 RunClass::Performance => Graphics::Host,
             })
             .network(Network::Deny)
-            .witness("probes/trailgen.observations")
+            .witness(WITNESS)
             .runtime(Duration::from_mins(3));
         if let Some(project) = project {
             command = command.env(
@@ -202,26 +203,43 @@ impl<'a> Harness<'a> {
         app: &'app Application<'a>,
         run: RunClass,
     ) -> Result<TrailStory<'app, 'a>> {
-        let mut story: TrailStory<'app, 'a> = Story::bind(
+        bind(
             self.testbed,
             app,
-            WindowQuery::title_contains(TITLE_FRAGMENT),
             match run {
-                RunClass::Functional => ReactionBudget::functional(Duration::from_secs(30)),
+                RunClass::Functional => functional_budget(),
                 RunClass::Performance => instant_budget(),
             },
-        )?;
-        let frame = story.ready(Duration::from_secs(30))?;
-        demand(
-            frame.state.contract == trailgen_contract::UI_FINGERPRINT,
-            format!(
-                "Trailgen UI contract mismatch: expected {}, observed {}",
-                trailgen_contract::UI_FINGERPRINT,
-                frame.state.contract
-            ),
-        )?;
-        Ok(story)
+            Silent,
+        )
     }
+}
+
+/// Bind a story to Trailgen's window, attach its observer before the first
+/// frame, and refuse a product speaking another UI contract.
+pub fn bind<'app, 'bed, O: StoryObserver>(
+    testbed: &'bed Testbed,
+    app: &'app Application<'bed>,
+    budget: ReactionBudget,
+    observer: O,
+) -> Result<TrailStory<'app, 'bed, O>> {
+    let mut story = TrailStory::bind(
+        testbed,
+        app,
+        WindowQuery::title_contains(TITLE_FRAGMENT),
+        budget,
+    )?
+    .with_observer(observer)?;
+    let frame = story.ready(Duration::from_secs(30))?;
+    demand(
+        frame.state.contract == trailgen_contract::UI_FINGERPRINT,
+        format!(
+            "Trailgen UI contract mismatch: expected {}, observed {}",
+            trailgen_contract::UI_FINGERPRINT,
+            frame.state.contract
+        ),
+    )?;
+    Ok(story)
 }
 
 pub fn first_anchor(
@@ -280,6 +298,10 @@ pub fn instant_budget() -> ReactionBudget {
         .timeout(Duration::from_secs(6))
 }
 
+pub const fn functional_budget() -> ReactionBudget {
+    ReactionBudget::functional(Duration::from_secs(30))
+}
+
 pub fn durable_budget() -> ReactionBudget {
     ReactionBudget::performance(Duration::from_millis(650))
         .through_surface_present()
@@ -315,7 +337,7 @@ pub fn sibling_binary() -> Result<PathBuf> {
     Ok(binary)
 }
 
-fn world_from_coord([longitude, latitude]: [f64; 2]) -> [f64; 2] {
+pub fn world_from_coord([longitude, latitude]: [f64; 2]) -> [f64; 2] {
     let x = (longitude + 180.0) / 360.0;
     let latitude = latitude.clamp(-85.051_128_78, 85.051_128_78).to_radians();
     let y = (1.0 - latitude.tan().asinh() / std::f64::consts::PI) * 0.5;
