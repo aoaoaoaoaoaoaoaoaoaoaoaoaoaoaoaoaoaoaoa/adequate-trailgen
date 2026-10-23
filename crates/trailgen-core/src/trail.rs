@@ -1028,7 +1028,6 @@ fn materialize_walk(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn materialized_edge(
     source: &WalkGraph,
     source_edge: EdgeId,
@@ -1269,7 +1268,6 @@ fn shortest_path_excluding(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn route_path_excluding(
     router: &crate::WalkRouter,
     workspace: &mut crate::RoutingWorkspace,

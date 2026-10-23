@@ -335,7 +335,6 @@ impl SolverKind {
     }
 
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
     pub fn revise_scoped(
         self,
         mut params: SearchParams,
@@ -881,7 +880,6 @@ fn support_loop_portfolio(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn support_loop_portfolio_obeying(
     params: SearchParams,
     scope: SearchScope<'_>,
