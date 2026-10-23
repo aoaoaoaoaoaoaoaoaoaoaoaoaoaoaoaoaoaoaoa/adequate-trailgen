@@ -50,6 +50,9 @@ const AUTOMATIC_OSM_PROFILE: OsmProfile = OsmProfile::All;
 const INDEX_SCHEMA: u8 = 24;
 const RAW_SCHEMA: u8 = 4;
 const PARKING_CACHE_SCHEMA: u8 = 1;
+/// Every durable format a prepared project's sources and caches carry beside
+/// its graph; a project prepared under others is prepared again.
+pub const PROJECT_FORMATS: [u8; 3] = [INDEX_SCHEMA, RAW_SCHEMA, PARKING_CACHE_SCHEMA];
 const MAX_OSM_CONNECTOR_M: f64 = 1_000.0;
 const LOCATION_CACHE: &str = "sources/location.json";
 const TRAIL_INDEX: &str = "cache/trails.json";

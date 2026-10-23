@@ -44,6 +44,7 @@ pub struct MapState {
     pub coloring: TrailColoring,
     pub basemap_tiles: usize,
     pub painted: bool,
+    pub archived: bool,
     pub parking_marks: usize,
     pub probe: Option<[f64; 2]>,
 }
@@ -224,6 +225,21 @@ pub mod shows {
                     .is_some_and(|map| map.basemap_tiles >= minimum)
             },
         )
+    }
+
+    pub fn archived() -> Condition<Observation> {
+        condition("the basemap archive sealed and open", |state| {
+            state.map.as_ref().is_some_and(|map| map.archived)
+        })
+    }
+
+    pub fn map_scale_at_most(maximum: f64) -> Condition<Observation> {
+        condition(format!("map scale <= {maximum}"), move |state| {
+            state
+                .map
+                .as_ref()
+                .is_some_and(|map| map.world_points <= maximum)
+        })
     }
 
     pub fn painted() -> Condition<Observation> {

@@ -142,13 +142,17 @@ loops from Lake Skannatati, pulls the best over Black Rock Mountain and keeps
 it, compares its rivals, and reopens the kept loop, under host graphics and
 the Large type tier.
 
-Its specimen is the Harriman + Bear Mountain project. The first run forges it
-in a testbed of its own by drawing the parks' map area through ordinary
-acquisition over host networking, then seals the project tree under
-`$XDG_CACHE_HOME/trailgen-acceptance/specimens/`; later takes copy it private
-rather than re-query public providers. Delete it to reforge. Takes admit host
-networking only for roaming basemap tiles, seeded from the operator's
-disposable tile cache. Stills wait for the witnessed `painted` fact: every
+Its specimen is the Harriman · Bear Mountain project. The first run of a recipe
+forges it in a testbed of its own by drawing the parks' map area through
+ordinary acquisition, then seals the project tree under
+`$XDG_CACHE_HOME/trailgen-acceptance/specimens/`, named by a digest of the
+recipe, the UI contract, the product's durable formats, and its version; later
+takes copy it private rather than re-query public providers. Forges lock their
+staging directories, so concurrent forges are safe and abandoned ones are swept.
+Forge and take both run with host networking, which the kernel grants whole:
+the forge needs every provider, and a take uses it only to fetch roaming
+basemap tiles beyond the area that the operator's disposable tile cache lacks.
+Stills wait for the witnessed `painted` fact: a settled camera with every
 visible basemap cell at its own detail and relief settled.
 
 ## Platform Doctrine

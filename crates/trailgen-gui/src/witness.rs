@@ -82,6 +82,9 @@ mod active {
         /// Every visible basemap cell and relief detail is presented at its
         /// resolved level, with no cross-fade outstanding.
         pub painted: bool,
+        /// The basemap archive is materialized and open, so the project's
+        /// cache holds every tile its areas need.
+        pub archived: bool,
         pub parking_marks: usize,
         pub probe: Option<[f64; 2]>,
     }
@@ -94,6 +97,7 @@ mod active {
             coloring: TrailColoring,
             basemap_tiles: usize,
             painted: bool,
+            archived: bool,
             parking_marks: usize,
             probe: Option<[f64; 2]>,
         ) -> Self {
@@ -104,6 +108,7 @@ mod active {
                 coloring,
                 basemap_tiles,
                 painted,
+                archived,
                 parking_marks,
                 probe,
             }

@@ -255,19 +255,28 @@ impl VectorField {
         self.presented.len()
     }
 
-    /// Whether every visible cell presents its own tile, not an ancestor,
-    /// and no presentation cross-fade remains.
+    /// Whether a settled camera's every visible cell presents its own tile,
+    /// not an ancestor, with no presentation cross-fade remaining. A moving
+    /// camera's cells still belong to the zoom it is leaving.
     #[cfg(feature = "egui-test")]
     #[must_use]
     pub fn painted(&self) -> bool {
         self.transition.is_none()
             && self.presentation.as_ref().is_some_and(|stamp| {
-                stamp.cells.len() == self.presented.len()
+                stamp.permit_upgrade
+                    && stamp.cells.len() == self.presented.len()
                     && self
                         .presented
                         .iter()
                         .all(|patch| patch.cell.is_some_and(|cell| cell.key == patch.tile.key))
             })
+    }
+
+    /// Whether the basemap archive this field reads is materialized and open.
+    #[cfg(feature = "egui-test")]
+    #[must_use]
+    pub const fn archived(&self) -> bool {
+        self.archive_zoom.is_some()
     }
 
     #[cfg(feature = "egui-test")]

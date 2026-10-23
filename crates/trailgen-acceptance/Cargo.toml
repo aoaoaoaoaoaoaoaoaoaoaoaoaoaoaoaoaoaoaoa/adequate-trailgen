@@ -19,10 +19,12 @@ pmtiles.workspace = true
 png.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tempfile.workspace = true
 toml.workspace = true
 trailgen-contract.workspace = true
 trailgen-core.workspace = true
+trailgen-data.workspace = true
 
 [lints]
 workspace = true

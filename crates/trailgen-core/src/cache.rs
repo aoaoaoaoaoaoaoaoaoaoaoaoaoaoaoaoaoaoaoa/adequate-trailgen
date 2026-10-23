@@ -3,13 +3,14 @@ use serde::{Deserialize, Serialize as _};
 
 pub const GRAPH_CACHE: &str = "cache/graph.bin";
 const MAGIC: &[u8; 16] = b"TRAILGEN-GRAPH\0\0";
-const FORMAT: u16 = 2;
+/// The durable graph encoding; a cache of another format is rebuilt.
+pub const GRAPH_FORMAT: u16 = 2;
 
 pub fn encode_graph(graph: &WalkGraph) -> Result<Vec<u8>> {
     graph.validate()?;
     let mut bytes = Vec::new();
     bytes.extend_from_slice(MAGIC);
-    bytes.extend_from_slice(&FORMAT.to_le_bytes());
+    bytes.extend_from_slice(&GRAPH_FORMAT.to_le_bytes());
     let mut encoder = zstd::stream::write::Encoder::new(bytes, 3)
         .map_err(|error| TrailgenError::InvalidData(format!("open graph encoder: {error}")))?;
     graph
@@ -37,7 +38,7 @@ pub fn decode_graph(bytes: &[u8]) -> Result<WalkGraph> {
             .try_into()
             .expect("header length was checked"),
     );
-    if format != FORMAT {
+    if format != GRAPH_FORMAT {
         return Err(TrailgenError::InvalidData(format!(
             "graph cache format {format} is unsupported"
         )));

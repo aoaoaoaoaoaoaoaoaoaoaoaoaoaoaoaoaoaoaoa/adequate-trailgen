@@ -4,17 +4,24 @@
 //! never a verdict.
 
 use std::{
-    env, fs,
+    env,
+    fmt::Write as _,
+    fs::{self, File, TryLockError},
     path::{Path, PathBuf},
     time::Duration,
 };
 
 use egui_demo::Showcase;
 use egui_tester::{
-    Anchor, AppCommand, Button, Error, Graphics, Key, Motion, Network, Result, Silent,
-    StoryObserver, Testbed, TestbedBuilder, Wheel, demand,
+    Anchor, AppCommand, Button, Error, Graphics, Key, Motion, Network, ReactionBudget, Result,
+    Silent, StoryObserver, Testbed, TestbedBuilder, Wheel, demand,
 };
 use num_traits::ToPrimitive as _;
+use sha2::{Digest as _, Sha256};
+use tempfile::TempDir;
+use trailgen_contract::UI_FINGERPRINT;
+use trailgen_core::GRAPH_FORMAT;
+use trailgen_data::PROJECT_FORMATS;
 
 use crate::{
     harness::{
@@ -22,11 +29,16 @@ use crate::{
         functional_budget, map_pixel, verdict, world_from_coord,
     },
     interactions::{create_project, reveal_inspector_target},
-    observation::{CorpusPhase, SearchPhase, View, Workspace, shows},
+    observation::{CorpusPhase, MapState, SearchPhase, View, Workspace, shows},
 };
 
 const FILM: &str = "trailgen-showcase";
-const PROJECT_NAME: &str = "Harriman + Bear Mountain";
+/// Layout of a sealed specimen and the forge that seals it.
+const SPECIMEN_FORMAT: u32 = 1;
+const FORGING: &str = ".forging-";
+/// Survey tiles stream from the network; framing waits this long per step.
+const SURVEY_PATIENCE: Duration = Duration::from_mins(2);
+const PROJECT_NAME: &str = "Harriman · Bear Mountain";
 /// The deck's slug of [`PROJECT_NAME`], relative to the private root.
 const PROJECT: &str = "harriman-bear-mountain";
 /// Harriman and Bear Mountain State Parks as west, south, east, north.
@@ -63,26 +75,78 @@ impl Exposure {
 /// map-area acquisition in a testbed of its own. Acquisition queries public
 /// Overpass, USGS, NYS OPRHP, Protomaps, and AWS terrain services whose
 /// latency and rate limits lie outside any take, so takes replay the sealed
-/// project rather than re-querying them. Delete the directory to reforge.
+/// project rather than re-querying them. The directory is named by a digest
+/// of everything that forged it, so any change forges afresh.
 pub fn specimen(bed: TestbedBuilder, binary: &Path) -> Result<PathBuf> {
-    let sealed = cache_home()?
-        .join("trailgen-acceptance/specimens")
-        .join(PROJECT);
-    if sealed.is_dir() {
+    let home = cache_home()?.join("trailgen-acceptance/specimens");
+    let sealed = home.join(format!("{PROJECT}-{}", recipe_digest()));
+    fs::create_dir_all(&home).map_err(|source| io("create specimen home", &home, source))?;
+    let Some((staging, _claim)) = stage(&home, &sealed)? else {
         return Ok(sealed);
-    }
-    let parent = sealed
-        .parent()
-        .expect("a specimen path is nested beneath the cache home");
-    fs::create_dir_all(parent).map_err(|source| io("create specimen home", parent, source))?;
-    let staging = tempfile::Builder::new()
-        .prefix(".forging-")
-        .tempdir_in(parent)
-        .map_err(|source| io("stage specimen", parent, source))?;
+    };
     bed.run(|testbed| forge(testbed, binary, staging.path()))?;
-    // Sealing moves the staged tree; the guard then has nothing left to remove.
-    fs::rename(staging.path(), &sealed).map_err(|source| io("seal specimen", &sealed, source))?;
-    Ok(sealed)
+    match fs::rename(staging.path(), &sealed) {
+        // Sealing moves the staged tree; its guard then has nothing to remove.
+        Ok(()) => Ok(sealed),
+        // A concurrent forge sealed the same recipe first; this copy dies
+        // with its guard.
+        Err(_) if sealed.is_dir() => Ok(sealed),
+        Err(source) => Err(io("seal specimen", &sealed, source)),
+    }
+}
+
+/// Under the specimen home's lock, sweep forges whose owners have died, then
+/// stage and claim a fresh forge unless the specimen is already sealed. Every
+/// forge holds an exclusive lock on its staging directory until it ends.
+fn stage(home: &Path, sealed: &Path) -> Result<Option<(TempDir, File)>> {
+    let guard = File::open(home).map_err(|source| io("open specimen home", home, source))?;
+    guard
+        .lock()
+        .map_err(|source| io("lock specimen home", home, source))?;
+    let entries = fs::read_dir(home).map_err(|source| io("read specimen home", home, source))?;
+    for entry in entries {
+        let entry = entry.map_err(|source| io("read specimen home entry", home, source))?;
+        let path = entry.path();
+        if !entry.file_name().to_string_lossy().starts_with(FORGING) {
+            continue;
+        }
+        let forge = File::open(&path).map_err(|source| io("open forge", &path, source))?;
+        match forge.try_lock() {
+            Ok(()) => fs::remove_dir_all(&path)
+                .map_err(|source| io("remove abandoned forge", &path, source))?,
+            Err(TryLockError::WouldBlock) => {}
+            Err(TryLockError::Error(source)) => return Err(io("probe forge", &path, source)),
+        }
+    }
+    if sealed.is_dir() {
+        return Ok(None);
+    }
+    let staging = tempfile::Builder::new()
+        .prefix(FORGING)
+        .tempdir_in(home)
+        .map_err(|source| io("stage specimen", home, source))?;
+    let claim =
+        File::open(staging.path()).map_err(|source| io("open forge", staging.path(), source))?;
+    claim
+        .lock()
+        .map_err(|source| io("claim forge", staging.path(), source))?;
+    Ok(Some((staging, claim)))
+}
+
+/// Digest of the specimen layout, its recipe, and every product format it
+/// seals.
+fn recipe_digest() -> String {
+    let recipe = format!(
+        "trailgen-specimen/{SPECIMEN_FORMAT}\n{PROJECT_NAME}\n{AREA:?}\n{UI_FINGERPRINT}\n{PROJECT_FORMATS:?}\n{GRAPH_FORMAT}\n{}\n",
+        env!("CARGO_PKG_VERSION")
+    );
+    Sha256::digest(recipe)
+        .iter()
+        .take(8)
+        .fold(String::with_capacity(16), |mut digest, byte| {
+            write!(digest, "{byte:02x}").expect("writing to a String cannot fail");
+            digest
+        })
 }
 
 /// Perform the showcase against a private copy of the sealed specimen and
@@ -134,8 +198,10 @@ fn perform<O: StoryObserver>(story: &mut TrailStory<'_, '_, O>) -> Result<()> {
     )?;
     story.hold(Duration::from_secs(1))?;
     let trailhead = map_pixel(&found, TRAILHEAD)?;
-    let _zoomed = story.wheel(trailhead, -1, Wheel::default())?.next_frame()?;
-    let _settled = settle(story)?;
+    let scale = map_state(&found)?.world_points;
+    let _zoomed = story
+        .wheel(trailhead, -1, Wheel::default())?
+        .until(shows::map_scale_at_least(scale * 1.2) & shows::painted())?;
     expose(story, "frontispiece")?;
     story.hold(Duration::from_secs(2))?;
 
@@ -170,14 +236,17 @@ fn perform<O: StoryObserver>(story: &mut TrailStory<'_, '_, O>) -> Result<()> {
         TargetClass::LibraryTrail,
         "the Library lost the kept loop",
     )?;
-    let _reopened = story
+    let reopened = story
         .click_anchor(&kept)?
-        .until(shows::view(View::FocusSaved) & shows::profile_visible())?;
+        .until(shows::view(View::FocusSaved) & shows::profile_visible() & shows::painted())?
+        .into_value();
     // Step back from the fitted loop so its north-east leg clears the legend
     // (jira bug/focus-fit-ignores-legend).
     let center = story.anchor(Target::Map)?.center();
-    let _stepped = story.wheel(center, 1, Wheel::default())?.next_frame()?;
-    let _settled = settle(story)?;
+    let scale = map_state(&reopened)?.world_points;
+    let _stepped = story
+        .wheel(center, 1, Wheel::default())?
+        .until(shows::map_scale_at_most(scale / 1.2) & shows::painted())?;
     expose(story, "kept")?;
     story.hold(Duration::from_secs(3))
 }
@@ -273,14 +342,14 @@ fn expose<O: StoryObserver>(story: &mut TrailStory<'_, '_, O>, name: &str) -> Re
 }
 
 /// Create the specimen project, frame the parks, draw their map area, and
-/// await the installed corpus; then harvest the project tree.
+/// await the installed corpus and its sealed basemap archive; then harvest
+/// the project tree.
 fn forge(testbed: &Testbed, binary: &Path, staging: &Path) -> Result<()> {
     seed_roaming(testbed, true)?;
     let app = testbed.launch(gui(binary).runtime(Duration::from_mins(40)))?;
     let mut story = bind(testbed, &app, functional_budget(), Silent)?;
     create_project(&mut story, PROJECT_NAME, "/test")?;
-    frame_area(&mut story)?;
-    let frame = story.frame()?;
+    let frame = frame_area(&mut story)?;
     let northwest = map_pixel(&frame, [AREA[0], AREA[3]])?;
     let southeast = map_pixel(&frame, [AREA[2], AREA[1]])?;
     let _armed = story
@@ -297,25 +366,10 @@ fn forge(testbed: &Testbed, binary: &Path, staging: &Path) -> Result<()> {
     let _acquiring = story.reaction(release).until(shows::survey_acquiring(1))?;
     let _installed = story.wait_within(
         Duration::from_mins(30),
-        shows::workspace(Workspace::Trail) & shows::corpus(CorpusPhase::Idle) & shows::painted(),
-    )?;
-    // The map paints from roaming tiles while the area's own basemap archive
-    // is still forging; the project is whole only once that archive is sealed.
-    let cache = testbed.private_path(Path::new(PROJECT).join("cache"))?;
-    app.wait_until(
-        Duration::from_mins(10),
-        "the area's basemap archive to be sealed",
-        || {
-            let names = fs::read_dir(&cache)
-                .map_err(|source| io("read private project cache", &cache, source))?
-                .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
-                .collect::<std::io::Result<Vec<_>>>()
-                .map_err(|source| io("read private project cache entry", &cache, source))?;
-            Ok(names
-                .iter()
-                .any(|name| name.starts_with("basemap-") && name.ends_with(".pmtiles"))
-                && !names.iter().any(|name| name.ends_with(".partial")))
-        },
+        shows::workspace(Workspace::Trail)
+            & shows::corpus(CorpusPhase::Idle)
+            & shows::painted()
+            & shows::archived(),
     )?;
     drop(story);
     app.terminate()?;
@@ -323,40 +377,59 @@ fn forge(testbed: &Testbed, binary: &Path, staging: &Path) -> Result<()> {
 }
 
 /// Pan the parks to the survey map's centre, then zoom until they fill most
-/// of it.
-fn frame_area(story: &mut TrailStory<'_, '_>) -> Result<()> {
-    let frame = story.wait(shows::workspace(Workspace::Survey) & shows::painted())?;
+/// of it, answering the painted frame that frames them.
+fn frame_area(story: &mut TrailStory<'_, '_>) -> Result<TrailFrame> {
+    let surveying = story.wait_within(
+        SURVEY_PATIENCE,
+        shows::workspace(Workspace::Survey) & shows::painted(),
+    )?;
     let center = story.anchor(Target::SurveyMap)?.center();
     let grip = map_pixel(
-        &frame,
+        &surveying,
         [
             f64::midpoint(AREA[0], AREA[2]),
             f64::midpoint(AREA[1], AREA[3]),
         ],
     )?;
+    let unpanned = map_state(&surveying)?.center.map(f64::to_bits);
     let press = story
         .session()
         .button_down(grip.0, grip.1, Button::Primary)?;
     let _gripped = story.reaction(press).next_frame()?;
-    let _panned = story.motion_to(center, Motion::default())?.next_frame()?;
+    let _carried = story.motion_to(center, Motion::default())?.next_frame()?;
     let release = story.session().button_up(Button::Primary)?;
-    let _released = story.reaction(release).next_frame()?;
+    let mut frame = story
+        .reaction(release)
+        .within(ReactionBudget::functional(SURVEY_PATIENCE))
+        .until(
+            shows::condition(
+                "the survey camera to leave its first centre",
+                move |state| {
+                    state
+                        .map
+                        .as_ref()
+                        .is_some_and(|map| map.center.map(f64::to_bits) != unpanned)
+                },
+            ) & shows::painted(),
+        )?
+        .into_value();
     for _ in 0..FRAMING_NOTCHES {
-        if area_scale(&settle(story)?)? >= 0.55 {
-            return Ok(());
+        if area_scale(&frame)? >= 0.55 {
+            return Ok(frame);
         }
-        let _zoomed = story.wheel(center, -1, Wheel::default())?.next_frame()?;
+        let scale = map_state(&frame)?.world_points;
+        frame = story
+            .wheel(center, -1, Wheel::default())?
+            .within(ReactionBudget::functional(SURVEY_PATIENCE))
+            .until(shows::map_scale_at_least(scale * 1.2) & shows::painted())?
+            .into_value();
     }
     Err(verdict("the survey map never framed the parks"))
 }
 
 /// The fraction of the map's limiting axis the area spans.
 fn area_scale(frame: &TrailFrame) -> Result<f64> {
-    let map = frame
-        .state
-        .map
-        .as_ref()
-        .ok_or_else(|| verdict("survey omitted its map transform"))?;
+    let map = map_state(frame)?;
     let [west, north] = world_from_coord([AREA[0], AREA[3]]);
     let [east, south] = world_from_coord([AREA[2], AREA[1]]);
     let [x0, y0, x1, y1] = map.rect.map(f64::from);
@@ -364,21 +437,12 @@ fn area_scale(frame: &TrailFrame) -> Result<f64> {
         .max((south - north) * map.world_points / (y1 - y0)))
 }
 
-fn settle<O: StoryObserver>(story: &mut TrailStory<'_, '_, O>) -> Result<TrailFrame> {
-    story.wait_stable(
-        Duration::from_secs(8),
-        Duration::from_millis(160),
-        "map viewport to settle",
-        |frame| {
-            frame.state.map.as_ref().map(|map| {
-                [
-                    map.center[0].to_bits(),
-                    map.center[1].to_bits(),
-                    map.world_points.to_bits(),
-                ]
-            })
-        },
-    )
+fn map_state(frame: &TrailFrame) -> Result<&MapState> {
+    frame
+        .state
+        .map
+        .as_ref()
+        .ok_or_else(|| verdict("witness omitted the map transform"))
 }
 
 fn gui(binary: &Path) -> AppCommand {
@@ -474,12 +538,18 @@ fn admit(testbed: &Testbed, source: &Path, relative: &Path) -> Result<()> {
     Ok(())
 }
 
+/// XDG's cache home; a relative `XDG_CACHE_HOME` is invalid and ignored.
 fn cache_home() -> Result<PathBuf> {
     env::var_os("XDG_CACHE_HOME")
-        .filter(|home| !home.is_empty())
         .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
-        .ok_or_else(|| verdict("neither XDG_CACHE_HOME nor HOME names a cache home"))
+        .filter(|home| home.is_absolute())
+        .or_else(|| {
+            env::var_os("HOME")
+                .map(PathBuf::from)
+                .filter(|home| home.is_absolute())
+                .map(|home| home.join(".cache"))
+        })
+        .ok_or_else(|| verdict("neither XDG_CACHE_HOME nor HOME is an absolute path"))
 }
 
 fn io(operation: &'static str, path: impl Into<PathBuf>, source: std::io::Error) -> Error {

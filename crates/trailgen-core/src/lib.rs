@@ -23,7 +23,7 @@ pub use builder::{
     DEFAULT_SNAP_TOLERANCE_M, GraphBuilder, JunctionKey, JunctionPolicy, SegmentDraft,
     TurnRestrictionDraft, TurnRestrictionRule,
 };
-pub use cache::{GRAPH_CACHE, decode_graph, encode_graph};
+pub use cache::{GRAPH_CACHE, GRAPH_FORMAT, decode_graph, encode_graph};
 pub use conflate::{
     ConflatedNetwork, ConflationDecision, ConflationPolicy, ConflationReport, ConflationStats,
     NetworkStratum, conflate,

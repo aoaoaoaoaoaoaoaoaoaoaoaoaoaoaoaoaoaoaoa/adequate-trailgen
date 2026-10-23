@@ -1135,6 +1135,7 @@ impl SurveyWorkbench {
                 trailgen_contract::TrailColoring::Class,
                 self.vector().presented_tile_count(),
                 self.vector().painted(),
+                self.vector().archived(),
                 0,
                 None,
             )

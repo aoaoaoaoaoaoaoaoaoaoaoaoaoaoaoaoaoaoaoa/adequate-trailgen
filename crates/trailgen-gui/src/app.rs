@@ -1519,6 +1519,7 @@ impl TrailApp {
                         .as_ref()
                         .map_or(0, VectorField::presented_tile_count),
                     self.vector.as_ref().is_some_and(VectorField::painted) && self.relief.settled(),
+                    self.vector.as_ref().is_some_and(VectorField::archived),
                     self.vector
                         .as_ref()
                         .map_or(0, VectorField::parking_mark_count),

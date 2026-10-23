@@ -88,6 +88,14 @@ modal key isolation, and inspector-panel traversal. `scripts/test-wayland` owns 
 isolated Wayland contract: native launch, first presentation, semantic witness,
 and nonblack compositor capture.
 
+The acceptance executable also performs Trailgen's presentation take, which is
+never a verdict: `trailgen-acceptance --stills DIR` finds, refines, and compares
+long-day loops across Harriman and Bear Mountain State Parks and develops its
+stills, the portfolio's `frontispiece` among them; `--film DIR` also records
+`DIR/trailgen-showcase.mp4`. Both need the witnessed build. The first run
+forges the specimen project from public providers and caches it; see the
+[GUI acceptance](spec/GUI_ACCEPTANCE.md) showcase notes.
+
 The Foundry's `source-package` law packages every publishable crate in one
 locked transaction, without relying on already-published internal versions.
 The line's `scripts/release adequate_trailgen VERSION --publish` requires the pushed commit and a valid signed
