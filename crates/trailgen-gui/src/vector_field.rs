@@ -67,11 +67,16 @@ struct Retry {
 
 struct ReadinessOracle(Duration);
 
+/// Every input of one presentation choice; any change re-chooses residents.
 struct PresentationStamp {
     frame: MapFramePlan,
     source: basemap::SourceLevel,
     cells: Vec<basemap::TileCell>,
     bank_revision: u64,
+    /// Settled cartography may upgrade every cell coherently; a moving camera
+    /// keeps prior patches. The stamp must remember which law chose it, or a
+    /// camera that settles after its last tile arrives never upgrades.
+    permit_upgrade: bool,
 }
 
 struct PresentationTransition {
@@ -380,11 +385,13 @@ impl VectorField {
         }
         self.cartographic_zoom = frame.zoom.get() as f32;
         let bank_revision = self.tiles.revision();
+        let permit_upgrade = !cartography.moving;
         if !self.demand_dirty
-            && self
-                .presentation
-                .as_ref()
-                .is_some_and(|stamp| stamp.frame == frame && stamp.bank_revision == bank_revision)
+            && self.presentation.as_ref().is_some_and(|stamp| {
+                stamp.frame == frame
+                    && stamp.bank_revision == bank_revision
+                    && stamp.permit_upgrade == permit_upgrade
+            })
         {
             return;
         }
@@ -398,6 +405,7 @@ impl VectorField {
                 && stamp.source == cover.source
                 && stamp.cells == cover.cells
                 && stamp.bank_revision == bank_revision
+                && stamp.permit_upgrade == permit_upgrade
         }) {
             return;
         }
@@ -409,7 +417,7 @@ impl VectorField {
         let choices = choose_residents(
             &cover.cells,
             cover.source,
-            !cartography.moving,
+            permit_upgrade,
             &preferred,
             |key| self.tiles.contains(key),
         );
@@ -466,6 +474,7 @@ impl VectorField {
             source: cover.source,
             cells: cover.cells,
             bank_revision,
+            permit_upgrade,
         });
     }
 

@@ -67,6 +67,8 @@ guess:
 - simplify against a fixed screen-space error budget;
 - make finer geometries nested refinements of coarser ones;
 - choose bands from settled zoom with hysteresis;
+- promote every visible cell to its own resident tile once the camera settles,
+  even when that tile arrived while it still moved;
 - fade uniformly across a band boundary;
 - let patterns and cores recede before their colored tubes;
 - retain exact geometry at the declared deep-detail ceiling.
