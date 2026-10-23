@@ -46,6 +46,7 @@ use std::{
 #[cfg(feature = "egui-test")]
 use trailgen_contract::BoundaryPhase;
 use trailgen_contract::Target;
+use trailgen_contract::TargetClass;
 use trailgen_core::{
     Coord, EdgeDisposition, EdgeEdicts, EdgeIndex, LoopConstraints, RouteMetrics, RouteShape,
     RoutingLaw, SearchParams, SearchProgress, SearchStage, SolverKind, SupportPoint, Trail,
@@ -408,14 +409,6 @@ enum MeasureKind {
 }
 
 impl MeasureKind {
-    const fn id(self) -> &'static str {
-        match self {
-            Self::Distance => "distance",
-            Self::MovingTime => "moving-time",
-            Self::Climb => "climb",
-        }
-    }
-
     const fn label(self) -> &'static str {
         match self {
             Self::Distance => "DISTANCE · KM",
@@ -1525,6 +1518,7 @@ impl TrailApp {
                     self.vector
                         .as_ref()
                         .map_or(0, VectorField::presented_tile_count),
+                    self.vector.as_ref().is_some_and(VectorField::painted) && self.relief.settled(),
                     self.vector
                         .as_ref()
                         .map_or(0, VectorField::parking_mark_count),
@@ -2452,11 +2446,6 @@ impl TrailApp {
         let _shapes = ui.horizontal_wrapped(|ui| {
             for (shape, label) in SHAPES {
                 let response = chrome::command(ui, label, recipe.shape == shape);
-                crate::witness::anchor(
-                    ui,
-                    format!("search.shape/{}", route_shape_name(shape)),
-                    response.rect,
-                );
                 if response.clicked() && recipe.shape != shape {
                     recipe.shape = shape;
                     shape_changed = true;
@@ -2567,7 +2556,7 @@ impl TrailApp {
             #[cfg(feature = "egui-test")]
             crate::witness::anchor(
                 ui,
-                format!("library.trail/{}", trail.id.as_str()),
+                TargetClass::LibraryTrail.member(trail.id.as_str()),
                 response.open.rect,
             );
             crate::witness::anchor(ui, Target::SavedVisibility(slot), response.visibility.rect);
@@ -2951,7 +2940,6 @@ impl TrailApp {
             {
                 let response = chrome::command(ui, "CLEAR", false)
                     .on_hover_text("Clear generated candidates without changing Saved Trails");
-                crate::witness::anchor(ui, "results.clear", response.rect);
                 if response.clicked() {
                     clear = Some(response.rect);
                 }
@@ -3245,7 +3233,6 @@ impl TrailApp {
         let (enter, escape) = rename_shortcuts(ui, &edit);
         let save = chrome::command_enabled(ui, valid, "SAVE", true)
             .on_hover_text("Commit this trail name · Enter");
-        crate::witness::anchor(ui, "focus.rename.save", save.rect);
         let cancel = chrome::command(ui, "CANCEL", false).on_hover_text("Cancel this rename · Esc");
         if valid && (enter || save.clicked()) {
             Some(RenameAction::Commit)
@@ -3444,7 +3431,7 @@ impl TrailApp {
                         );
                         crate::witness::anchor(
                             ui,
-                            format!("results.candidate/{identity}"),
+                            TargetClass::Candidate.member(&identity.to_string()),
                             response.rect,
                         );
                         if response.hovered() {
@@ -6018,15 +6005,6 @@ fn search_progress_text(progress: SearchProgress) -> String {
     }
 }
 
-const fn route_shape_name(shape: RouteShape) -> &'static str {
-    match shape {
-        RouteShape::Loop => "loop",
-        RouteShape::OutAndBack => "out-and-back",
-        RouteShape::FigureEight => "figure-eight",
-        RouteShape::Open => "open",
-    }
-}
-
 const fn coloring_target(coloring: map::TrailColoring) -> Target {
     match coloring {
         map::TrailColoring::Class => Target::LegendClass,
@@ -6102,8 +6080,6 @@ fn measure_range(
             );
             if let Some(target) = targets[0] {
                 crate::witness::anchor(ui, target, low.rect);
-            } else {
-                crate::witness::anchor(ui, format!("search.{}.min", kind.id()), low.rect);
             }
             let high = ui.add(
                 egui::DragValue::new(maximum)
@@ -6114,8 +6090,6 @@ fn measure_range(
             );
             if let Some(target) = targets[1] {
                 crate::witness::anchor(ui, target, high.rect);
-            } else {
-                crate::witness::anchor(ui, format!("search.{}.max", kind.id()), high.rect);
             }
             let low_changed = low.changed();
             let high_changed = high.changed();

@@ -210,6 +210,13 @@ impl Relief {
         self.revision
     }
 
+    /// Whether the forged field is installed and no detail cross-fade remains.
+    #[cfg(feature = "egui-test")]
+    #[must_use]
+    pub fn settled(&self) -> bool {
+        self.worker.is_finished() && self.events.is_empty() && self.transition.is_none()
+    }
+
     pub fn paint(&mut self, painter: &Painter, frame: MapFramePlan, gaps: Arc<[VectorGap]>) {
         let Some((detail, _law)) = ReliefLaw::resolve(
             self.visibility.as_ref().map(|visibility| visibility.detail),

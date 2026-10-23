@@ -1134,6 +1134,7 @@ impl SurveyWorkbench {
                 map::world_pixels(self.viewport),
                 trailgen_contract::TrailColoring::Class,
                 self.vector().presented_tile_count(),
+                self.vector().painted(),
                 0,
                 None,
             )
@@ -1511,7 +1512,6 @@ impl ProjectDeck {
                     .hint_text("folder containing trailgen.toml")
                     .text_color(chrome::TEXT),
             );
-            crate::witness::anchor(ui, "projects.open.path", edit.rect);
             chrome::tension(ui, &edit);
             if edit.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
                 *action = Some(ProjectAction::Open(PathBuf::from(self.open_root.trim())));
@@ -1535,7 +1535,6 @@ impl ProjectDeck {
             let open = open
                 .on_hover_text("Open this project · Enter from the folder field")
                 .on_disabled_hover_text("Choose a project folder first.");
-            crate::witness::anchor(ui, "projects.open", open.rect);
             chrome::tension(ui, &open);
             if chrome::exact_activation(ui, &open) {
                 *action = Some(ProjectAction::Open(PathBuf::from(self.open_root.trim())));
@@ -1570,11 +1569,6 @@ impl ProjectDeck {
                 )
                 .on_hover_text(project.root.display().to_string());
             chrome::tension(ui, &response);
-            crate::witness::anchor(
-                ui,
-                format!("projects.known/{}", project.name),
-                response.rect,
-            );
             if response.clicked() {
                 *action = Some(ProjectAction::Open(project.root.clone()));
             }

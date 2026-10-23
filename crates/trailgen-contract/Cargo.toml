@@ -11,6 +11,7 @@ keywords = ["gis", "hiking", "egui", "testing"]
 categories = ["gui", "science::geo"]
 
 [dependencies]
+egui-tester-witness.workspace = true
 serde.workspace = true
 
 [lints]

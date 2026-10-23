@@ -255,6 +255,21 @@ impl VectorField {
         self.presented.len()
     }
 
+    /// Whether every visible cell presents its own tile, not an ancestor,
+    /// and no presentation cross-fade remains.
+    #[cfg(feature = "egui-test")]
+    #[must_use]
+    pub fn painted(&self) -> bool {
+        self.transition.is_none()
+            && self.presentation.as_ref().is_some_and(|stamp| {
+                stamp.cells.len() == self.presented.len()
+                    && self
+                        .presented
+                        .iter()
+                        .all(|patch| patch.cell.is_some_and(|cell| cell.key == patch.tile.key))
+            })
+    }
+
     #[cfg(feature = "egui-test")]
     pub const fn parking_mark_count(&self) -> usize {
         self.annotations.parking_mark_count()

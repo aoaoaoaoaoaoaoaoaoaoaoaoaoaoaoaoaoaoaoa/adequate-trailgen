@@ -79,6 +79,9 @@ mod active {
         pub world_points: f64,
         pub coloring: TrailColoring,
         pub basemap_tiles: usize,
+        /// Every visible basemap cell and relief detail is presented at its
+        /// resolved level, with no cross-fade outstanding.
+        pub painted: bool,
         pub parking_marks: usize,
         pub probe: Option<[f64; 2]>,
     }
@@ -90,6 +93,7 @@ mod active {
             world_points: f64,
             coloring: TrailColoring,
             basemap_tiles: usize,
+            painted: bool,
             parking_marks: usize,
             probe: Option<[f64; 2]>,
         ) -> Self {
@@ -99,6 +103,7 @@ mod active {
                 world_points,
                 coloring,
                 basemap_tiles,
+                painted,
                 parking_marks,
                 probe,
             }

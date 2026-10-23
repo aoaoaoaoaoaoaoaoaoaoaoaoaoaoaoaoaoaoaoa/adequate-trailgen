@@ -1,17 +1,19 @@
 //! Tester-independent vocabulary shared across Trailgen's GUI boundary.
 //!
 //! This crate owns stable semantic names and wire encodings. It contains no
-//! product behavior, fixture authority, or testing-framework dependency.
+//! product behavior or fixture authority, and borrows only the witness wire
+//! grammar, never the tester.
 
 use std::{borrow::Cow, fmt};
 
+use egui_tester_witness::encode_identity;
 use serde::{Deserialize, Serialize};
 
 /// Reverse-DNS product identifier; the sole source of Trailgen's platform and crash identity.
 pub const PRODUCT_IDENTIFIER: &str = "dev.adequate.trailgen";
 /// Product display name.
 pub const PRODUCT_NAME: &str = "Trailgen";
-pub const UI_FINGERPRINT: &str = "trailgen.ui/23";
+pub const UI_FINGERPRINT: &str = "trailgen.ui/24";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -350,9 +352,15 @@ impl TargetClass {
     #[must_use]
     pub const fn prefix(self) -> &'static str {
         match self {
-            Self::LibraryTrail => "library.trail/",
-            Self::Candidate => "results.candidate/",
+            Self::LibraryTrail => "trailgen.library.trail/",
+            Self::Candidate => "trailgen.results.candidate/",
         }
+    }
+
+    /// The member Target naming one raw runtime `identity` in this class.
+    #[must_use]
+    pub fn member(self, identity: &str) -> String {
+        format!("{}{}", self.prefix(), encode_identity(identity))
     }
 }
 
