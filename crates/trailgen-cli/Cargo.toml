@@ -1,6 +1,6 @@
 [package]
 name = "trailgen"
-version = "0.3.15"
+version = "0.3.16"
 description = "Native trail-design workbench and narrow debug shell."
 edition.workspace = true
 license.workspace = true
